@@ -1,0 +1,808 @@
+{
+    "corpus_id": "semantic-registry-phase-2-acceptance-v1",
+    "schema_version": "1.0.0",
+    "description": "Phase 2 acceptance fixture corpus for the OmniVia Core semantic registry. Covers B1 fixture requirements and Phase 2 exit criteria phase2-exit-1 through phase2-exit-6.",
+    "coverage": {
+        "b1_requirements": {
+            "b1-exact-duplicate-evidence-one-workspace": [
+                "case-evidence-dedup-workspace-scoped"
+            ],
+            "b1-identical-evidence-two-workspaces": [
+                "case-evidence-cross-workspace-no-dedup"
+            ],
+            "b1-multiple-observations-one-evidence": [
+                "case-observation-multi-support-single-evidence"
+            ],
+            "b1-contradictory-observations-remain-visible": [
+                "case-observation-contradictory-retained"
+            ],
+            "b1-rejected-candidates-and-reconsideration-triggers": [
+                "case-candidate-rejected-suppressed-baseline",
+                "case-candidate-reconsideration-new-evidence",
+                "case-candidate-reconsideration-rule-version-changed",
+                "case-candidate-reconsideration-expired",
+                "case-candidate-reconsideration-human-override"
+            ],
+            "b1-permission-filtered-evidence-metadata-and-sensitive-content": [
+                "case-permission-metadata-filtered",
+                "case-permission-sensitive-content-denied"
+            ],
+            "b1-temporal-boundary-states": [
+                "case-temporal-boundary-stated",
+                "case-temporal-boundary-absent",
+                "case-temporal-boundary-attested",
+                "case-temporal-boundary-unknown",
+                "case-temporal-boundary-open"
+            ],
+            "b1-temporal-precision-levels": [
+                "case-temporal-precision-year",
+                "case-temporal-precision-month",
+                "case-temporal-precision-day",
+                "case-temporal-precision-hour",
+                "case-temporal-precision-minute",
+                "case-temporal-precision-second"
+            ],
+            "b1-timezone-handling": [
+                "case-temporal-timezone-explicit-offset",
+                "case-temporal-timezone-trusted-source",
+                "case-temporal-timezone-less-text"
+            ],
+            "b1-historical-backfill-source-time": [
+                "case-temporal-historical-backfill-source-time",
+                "case-temporal-historical-backfill-ingestion-fallback"
+            ],
+            "b1-correction-supersession-no-history-rewrite": [
+                "case-assertion-correction-supersession-no-rewrite"
+            ]
+        },
+        "phase2_exit_criteria": {
+            "phase2-exit-1": {
+                "description": "Every proposal traces to authorised evidence sources and spans.",
+                "cases": [
+                    "case-observation-multi-support-single-evidence",
+                    "case-evidence-dedup-workspace-scoped"
+                ]
+            },
+            "phase2-exit-2": {
+                "description": "Exact duplicate evidence is suppressed only within its workspace.",
+                "cases": [
+                    "case-evidence-dedup-workspace-scoped",
+                    "case-evidence-cross-workspace-no-dedup"
+                ]
+            },
+            "phase2-exit-3": {
+                "description": "Contradictory evidence remains visible.",
+                "cases": [
+                    "case-observation-contradictory-retained"
+                ]
+            },
+            "phase2-exit-4": {
+                "description": "Rejected equivalent candidates remain suppressed until a recorded condition changes.",
+                "cases": [
+                    "case-candidate-rejected-suppressed-baseline",
+                    "case-candidate-reconsideration-new-evidence",
+                    "case-candidate-reconsideration-rule-version-changed",
+                    "case-candidate-reconsideration-expired",
+                    "case-candidate-reconsideration-human-override"
+                ]
+            },
+            "phase2-exit-5": {
+                "description": "Unstated, unknown, open and stated temporal bounds remain distinct across reads and derivations.",
+                "cases": [
+                    "case-temporal-boundary-stated",
+                    "case-temporal-boundary-absent",
+                    "case-temporal-boundary-attested",
+                    "case-temporal-boundary-unknown",
+                    "case-temporal-boundary-open"
+                ]
+            },
+            "phase2-exit-6": {
+                "description": "Historical backfill uses authorised evidence time when it exists.",
+                "cases": [
+                    "case-temporal-historical-backfill-source-time"
+                ]
+            }
+        }
+    },
+    "cases": [
+        {
+            "case_id": "case-evidence-dedup-workspace-scoped",
+            "requirement": "b1-exact-duplicate-evidence-one-workspace",
+            "description": "Two exact-duplicate evidence items ingested into the same workspace must dedup to one canonical evidence record.",
+            "input": {
+                "workspace_id": "ws-alpha",
+                "evidence_items": [
+                    {
+                        "evidence_id": "ev-0001",
+                        "workspace_id": "ws-alpha",
+                        "source_id": "src-crm-001",
+                        "content_hash": "sha256:aaaa000000000000000000000000000000000000000000000000000000aa",
+                        "content_placeholder": "PLACEHOLDER_EVIDENCE_TEXT_ALPHA_1"
+                    },
+                    {
+                        "evidence_id": "ev-0002",
+                        "workspace_id": "ws-alpha",
+                        "source_id": "src-crm-001",
+                        "content_hash": "sha256:aaaa000000000000000000000000000000000000000000000000000000aa",
+                        "content_placeholder": "PLACEHOLDER_EVIDENCE_TEXT_ALPHA_1"
+                    }
+                ]
+            },
+            "expected_result": {
+                "outcome": "deduplicated",
+                "canonical_evidence_id": "ev-0001",
+                "suppressed_evidence_ids": [
+                    "ev-0002"
+                ],
+                "distinct_evidence_count": 1
+            }
+        },
+        {
+            "case_id": "case-evidence-cross-workspace-no-dedup",
+            "requirement": "b1-identical-evidence-two-workspaces",
+            "description": "Identical content ingested into two different workspaces must not be deduplicated against each other.",
+            "input": {
+                "evidence_items": [
+                    {
+                        "evidence_id": "ev-0003",
+                        "workspace_id": "ws-alpha",
+                        "source_id": "src-crm-001",
+                        "content_hash": "sha256:bbbb000000000000000000000000000000000000000000000000000000bb",
+                        "content_placeholder": "PLACEHOLDER_EVIDENCE_TEXT_SHARED_1"
+                    },
+                    {
+                        "evidence_id": "ev-0004",
+                        "workspace_id": "ws-beta",
+                        "source_id": "src-crm-001",
+                        "content_hash": "sha256:bbbb000000000000000000000000000000000000000000000000000000bb",
+                        "content_placeholder": "PLACEHOLDER_EVIDENCE_TEXT_SHARED_1"
+                    }
+                ]
+            },
+            "expected_result": {
+                "outcome": "not_deduplicated",
+                "distinct_evidence_ids": [
+                    "ev-0003",
+                    "ev-0004"
+                ],
+                "distinct_evidence_count": 2
+            }
+        },
+        {
+            "case_id": "case-observation-multi-support-single-evidence",
+            "requirement": "b1-multiple-observations-one-evidence",
+            "description": "One evidence item supports two distinct observations, each independently traceable to it.",
+            "input": {
+                "evidence_id": "ev-0005",
+                "workspace_id": "ws-alpha",
+                "observations": [
+                    {
+                        "observation_id": "obs-0001",
+                        "feature": "role_title",
+                        "value_placeholder": "PLACEHOLDER_ROLE_TITLE_1",
+                        "supporting_evidence_ids": [
+                            "ev-0005"
+                        ]
+                    },
+                    {
+                        "observation_id": "obs-0002",
+                        "feature": "reporting_line",
+                        "value_placeholder": "PLACEHOLDER_REPORTING_LINE_1",
+                        "supporting_evidence_ids": [
+                            "ev-0005"
+                        ]
+                    }
+                ]
+            },
+            "expected_result": {
+                "outcome": "linked",
+                "evidence_id": "ev-0005",
+                "observation_ids": [
+                    "obs-0001",
+                    "obs-0002"
+                ],
+                "each_observation_traces_to_evidence": true
+            }
+        },
+        {
+            "case_id": "case-observation-contradictory-retained",
+            "requirement": "b1-contradictory-observations-remain-visible",
+            "description": "Two observations of the same feature with conflicting values must both remain queryable, neither is deleted or hidden.",
+            "input": {
+                "workspace_id": "ws-alpha",
+                "observations": [
+                    {
+                        "observation_id": "obs-0003",
+                        "feature": "role_title",
+                        "value_placeholder": "PLACEHOLDER_ROLE_TITLE_A",
+                        "supporting_evidence_ids": [
+                            "ev-0006"
+                        ]
+                    },
+                    {
+                        "observation_id": "obs-0004",
+                        "feature": "role_title",
+                        "value_placeholder": "PLACEHOLDER_ROLE_TITLE_B",
+                        "supporting_evidence_ids": [
+                            "ev-0007"
+                        ]
+                    }
+                ]
+            },
+            "expected_result": {
+                "outcome": "both_retained",
+                "visible_observation_ids": [
+                    "obs-0003",
+                    "obs-0004"
+                ],
+                "contradiction_flagged": true,
+                "suppressed_observation_ids": []
+            }
+        },
+        {
+            "case_id": "case-candidate-rejected-suppressed-baseline",
+            "requirement": "b1-rejected-candidates-and-reconsideration-triggers",
+            "description": "A rejected equivalent candidate is suppressed and stays suppressed absent a recorded reconsideration trigger.",
+            "input": {
+                "candidate_id": "cand-0001",
+                "workspace_id": "ws-alpha",
+                "equivalence_signature": "sig-person-equiv-0001",
+                "rejection": {
+                    "rejected_by": "human-reviewer-0001",
+                    "rejected_at": "2026-01-10T00:00:00Z",
+                    "reason_code": "not_equivalent"
+                },
+                "reconsideration_query_at": "2026-01-15T00:00:00Z"
+            },
+            "expected_result": {
+                "outcome": "suppressed",
+                "suppression_active": true,
+                "reconsideration_trigger": null
+            }
+        },
+        {
+            "case_id": "case-candidate-reconsideration-new-evidence",
+            "requirement": "b1-rejected-candidates-and-reconsideration-triggers",
+            "description": "A suppressed candidate becomes reconsiderable when new supporting evidence is recorded.",
+            "input": {
+                "candidate_id": "cand-0001",
+                "workspace_id": "ws-alpha",
+                "equivalence_signature": "sig-person-equiv-0001",
+                "suppression_state": "active",
+                "trigger_event": {
+                    "trigger_type": "new_evidence",
+                    "evidence_id": "ev-0008",
+                    "occurred_at": "2026-02-01T00:00:00Z"
+                }
+            },
+            "expected_result": {
+                "outcome": "reconsideration_triggered",
+                "reconsideration_trigger": "new_evidence",
+                "suppression_active": false,
+                "requires_re_evaluation": true
+            }
+        },
+        {
+            "case_id": "case-candidate-reconsideration-rule-version-changed",
+            "requirement": "b1-rejected-candidates-and-reconsideration-triggers",
+            "description": "A suppressed candidate becomes reconsiderable when the governing aggregation rule version changes.",
+            "input": {
+                "candidate_id": "cand-0002",
+                "workspace_id": "ws-alpha",
+                "equivalence_signature": "sig-person-equiv-0002",
+                "suppression_state": "active",
+                "trigger_event": {
+                    "trigger_type": "rule_version_changed",
+                    "previous_rule_version": "aggregation-rules-1.0.0",
+                    "new_rule_version": "aggregation-rules-1.1.0",
+                    "occurred_at": "2026-02-05T00:00:00Z"
+                }
+            },
+            "expected_result": {
+                "outcome": "reconsideration_triggered",
+                "reconsideration_trigger": "rule_version_changed",
+                "suppression_active": false,
+                "requires_re_evaluation": true
+            }
+        },
+        {
+            "case_id": "case-candidate-reconsideration-expired",
+            "requirement": "b1-rejected-candidates-and-reconsideration-triggers",
+            "description": "A suppressed candidate becomes reconsiderable once its recorded suppression expiry passes.",
+            "input": {
+                "candidate_id": "cand-0003",
+                "workspace_id": "ws-alpha",
+                "equivalence_signature": "sig-person-equiv-0003",
+                "suppression_state": "active",
+                "suppression_expires_at": "2026-03-01T00:00:00Z",
+                "trigger_event": {
+                    "trigger_type": "expired",
+                    "occurred_at": "2026-03-01T00:00:01Z"
+                }
+            },
+            "expected_result": {
+                "outcome": "reconsideration_triggered",
+                "reconsideration_trigger": "expired",
+                "suppression_active": false,
+                "requires_re_evaluation": true
+            }
+        },
+        {
+            "case_id": "case-candidate-reconsideration-human-override",
+            "requirement": "b1-rejected-candidates-and-reconsideration-triggers",
+            "description": "A suppressed candidate becomes reconsiderable when a human reviewer records an explicit override.",
+            "input": {
+                "candidate_id": "cand-0004",
+                "workspace_id": "ws-alpha",
+                "equivalence_signature": "sig-person-equiv-0004",
+                "suppression_state": "active",
+                "trigger_event": {
+                    "trigger_type": "human_override",
+                    "overridden_by": "human-reviewer-0002",
+                    "occurred_at": "2026-02-10T00:00:00Z"
+                }
+            },
+            "expected_result": {
+                "outcome": "reconsideration_triggered",
+                "reconsideration_trigger": "human_override",
+                "suppression_active": false,
+                "requires_re_evaluation": true
+            }
+        },
+        {
+            "case_id": "case-permission-metadata-filtered",
+            "requirement": "b1-permission-filtered-evidence-metadata-and-sensitive-content",
+            "description": "A caller without sensitive-content authority may read evidence metadata but not the protected content span.",
+            "input": {
+                "evidence_id": "ev-0009",
+                "workspace_id": "ws-alpha",
+                "actor_id": "actor-metadata-only",
+                "actor_capabilities": [
+                    "evidence.metadata.read"
+                ],
+                "evidence": {
+                    "source_id": "src-crm-002",
+                    "span_reference": "span-ref-0001",
+                    "sensitive_content_placeholder": "PLACEHOLDER_SENSITIVE_CONTENT_1"
+                }
+            },
+            "expected_result": {
+                "outcome": "metadata_returned",
+                "metadata_visible": true,
+                "sensitive_content_visible": false,
+                "returned_fields": [
+                    "evidence_id",
+                    "workspace_id",
+                    "source_id",
+                    "span_reference"
+                ]
+            }
+        },
+        {
+            "case_id": "case-permission-sensitive-content-denied",
+            "requirement": "b1-permission-filtered-evidence-metadata-and-sensitive-content",
+            "description": "A caller without sensitive-content authority requesting the protected span is denied with a stable error code and no content leak.",
+            "input": {
+                "evidence_id": "ev-0009",
+                "workspace_id": "ws-alpha",
+                "actor_id": "actor-metadata-only",
+                "actor_capabilities": [
+                    "evidence.metadata.read"
+                ],
+                "requested_operation": "sensitive_content.read"
+            },
+            "expected_result": {
+                "outcome": "denied",
+                "error_code": "PERMISSION_DENIED_SENSITIVE_CONTENT",
+                "sensitive_content_visible": false,
+                "error_message_contains_sensitive_content": false
+            }
+        },
+        {
+            "case_id": "case-temporal-boundary-stated",
+            "requirement": "b1-temporal-boundary-states",
+            "description": "A stated valid_from and stated valid_to produce an effective interval taken directly from stated values, per B3 formula.",
+            "input": {
+                "boundary_id": "temporal-boundary-0001",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2025-01-01T00:00:00Z",
+                    "precision": "day"
+                },
+                "valid_to": {
+                    "state": "stated",
+                    "value": "2025-06-01T00:00:00Z",
+                    "precision": "day"
+                },
+                "attested_from": {
+                    "state": "absent"
+                },
+                "attested_to": {
+                    "state": "absent"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2025-01-01T00:00:00Z",
+                "effective_to": "2025-06-01T00:00:00Z",
+                "interval_type": "half_open",
+                "end_state": "stated"
+            }
+        },
+        {
+            "case_id": "case-temporal-boundary-absent",
+            "requirement": "b1-temporal-boundary-states",
+            "description": "A missing stated start with no attested_from must fail closed rather than default to negative infinity, per B3 rule against negative-infinity interpretation.",
+            "input": {
+                "boundary_id": "temporal-boundary-0002",
+                "valid_from": {
+                    "state": "absent"
+                },
+                "attested_from": {
+                    "state": "absent"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_error": {
+                "error_code": "TEMPORAL_START_INDETERMINATE",
+                "reason": "no_stated_or_attested_start_available"
+            }
+        },
+        {
+            "case_id": "case-temporal-boundary-attested",
+            "requirement": "b1-temporal-boundary-states",
+            "description": "No stated start but a present attested_from resolves effective_from to the attested value, per B3 formula.",
+            "input": {
+                "boundary_id": "temporal-boundary-0003",
+                "valid_from": {
+                    "state": "absent"
+                },
+                "attested_from": {
+                    "state": "attested",
+                    "value": "2025-02-15T00:00:00Z",
+                    "precision": "day"
+                },
+                "valid_to": {
+                    "state": "unknown"
+                },
+                "attested_to": {
+                    "state": "attested",
+                    "value": "2025-08-15T00:00:00Z",
+                    "precision": "day"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2025-02-15T00:00:00Z",
+                "effective_to": "2025-08-15T00:00:00Z",
+                "interval_type": "half_open",
+                "end_state": "unknown"
+            }
+        },
+        {
+            "case_id": "case-temporal-boundary-unknown",
+            "requirement": "b1-temporal-boundary-states",
+            "description": "An unknown end state with no attested_to must fail closed rather than default to open-ended, per B3 rule against open-ended interpretation of unknown ends.",
+            "input": {
+                "boundary_id": "temporal-boundary-0004",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2025-03-01T00:00:00Z",
+                    "precision": "day"
+                },
+                "valid_to": {
+                    "state": "unknown"
+                },
+                "attested_to": {
+                    "state": "absent"
+                }
+            },
+            "expected_error": {
+                "error_code": "TEMPORAL_END_INDETERMINATE",
+                "reason": "unknown_end_without_attested_fallback"
+            }
+        },
+        {
+            "case_id": "case-temporal-boundary-open",
+            "requirement": "b1-temporal-boundary-states",
+            "description": "An explicitly open end state resolves effective_to to positive infinity, per B3 formula.",
+            "input": {
+                "boundary_id": "temporal-boundary-0005",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2025-04-01T00:00:00Z",
+                    "precision": "day"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2025-04-01T00:00:00Z",
+                "effective_to": "+Infinity",
+                "interval_type": "half_open",
+                "end_state": "open"
+            }
+        },
+        {
+            "case_id": "case-temporal-precision-year",
+            "requirement": "b1-temporal-precision-levels",
+            "description": "A year-precision stated value is truncated canonically to the start of the year while preserving original source text.",
+            "input": {
+                "boundary_id": "temporal-precision-0001",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2024-01-01T00:00:00Z",
+                    "precision": "year",
+                    "source_text": "PLACEHOLDER_SOURCE_TEXT_2024"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-01-01T00:00:00Z",
+                "canonical_precision": "year",
+                "preserved_source_text": "PLACEHOLDER_SOURCE_TEXT_2024"
+            }
+        },
+        {
+            "case_id": "case-temporal-precision-month",
+            "requirement": "b1-temporal-precision-levels",
+            "description": "A month-precision stated value truncates canonically to the start of the month while preserving original source text.",
+            "input": {
+                "boundary_id": "temporal-precision-0002",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2024-05-01T00:00:00Z",
+                    "precision": "month",
+                    "source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-01T00:00:00Z",
+                "canonical_precision": "month",
+                "preserved_source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05"
+            }
+        },
+        {
+            "case_id": "case-temporal-precision-day",
+            "requirement": "b1-temporal-precision-levels",
+            "description": "A day-precision stated value truncates canonically to midnight of the stated day while preserving original source text.",
+            "input": {
+                "boundary_id": "temporal-precision-0003",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2024-05-17T00:00:00Z",
+                    "precision": "day",
+                    "source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-17T00:00:00Z",
+                "canonical_precision": "day",
+                "preserved_source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17"
+            }
+        },
+        {
+            "case_id": "case-temporal-precision-hour",
+            "requirement": "b1-temporal-precision-levels",
+            "description": "An hour-precision stated value truncates canonically to the start of the stated hour while preserving original source text.",
+            "input": {
+                "boundary_id": "temporal-precision-0004",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2024-05-17T09:00:00Z",
+                    "precision": "hour",
+                    "source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17_09"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-17T09:00:00Z",
+                "canonical_precision": "hour",
+                "preserved_source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17_09"
+            }
+        },
+        {
+            "case_id": "case-temporal-precision-minute",
+            "requirement": "b1-temporal-precision-levels",
+            "description": "A minute-precision stated value truncates canonically to the start of the stated minute while preserving original source text.",
+            "input": {
+                "boundary_id": "temporal-precision-0005",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2024-05-17T09:30:00Z",
+                    "precision": "minute",
+                    "source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17_0930"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-17T09:30:00Z",
+                "canonical_precision": "minute",
+                "preserved_source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17_0930"
+            }
+        },
+        {
+            "case_id": "case-temporal-precision-second",
+            "requirement": "b1-temporal-precision-levels",
+            "description": "A second-precision stated value is retained exactly at second granularity while preserving original source text.",
+            "input": {
+                "boundary_id": "temporal-precision-0006",
+                "valid_from": {
+                    "state": "stated",
+                    "value": "2024-05-17T09:30:45Z",
+                    "precision": "second",
+                    "source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17_093045"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-17T09:30:45Z",
+                "canonical_precision": "second",
+                "preserved_source_text": "PLACEHOLDER_SOURCE_TEXT_2024_05_17_093045"
+            }
+        },
+        {
+            "case_id": "case-temporal-timezone-explicit-offset",
+            "requirement": "b1-timezone-handling",
+            "description": "Source text carrying an explicit UTC offset is normalized to canonical UTC without guessing timezone.",
+            "input": {
+                "boundary_id": "temporal-timezone-0001",
+                "valid_from": {
+                    "state": "stated",
+                    "source_text": "2024-05-17T09:30:00-05:00",
+                    "precision": "minute",
+                    "timezone_kind": "explicit_offset"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-17T14:30:00Z",
+                "timezone_resolution": "explicit_offset",
+                "preserved_source_text": "2024-05-17T09:30:00-05:00"
+            }
+        },
+        {
+            "case_id": "case-temporal-timezone-trusted-source",
+            "requirement": "b1-timezone-handling",
+            "description": "Timezone-less source text from a source with a recorded trusted default timezone is resolved using that trusted timezone.",
+            "input": {
+                "boundary_id": "temporal-timezone-0002",
+                "source_id": "src-trusted-tz-0001",
+                "trusted_source_timezone": "America/Chicago",
+                "valid_from": {
+                    "state": "stated",
+                    "source_text": "2024-05-17T09:30:00",
+                    "precision": "minute",
+                    "timezone_kind": "trusted_source_default"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_from": "2024-05-17T14:30:00Z",
+                "timezone_resolution": "trusted_source_default",
+                "applied_timezone": "America/Chicago",
+                "preserved_source_text": "2024-05-17T09:30:00"
+            }
+        },
+        {
+            "case_id": "case-temporal-timezone-less-text",
+            "requirement": "b1-timezone-handling",
+            "description": "Timezone-less source text from a source with no recorded trusted timezone must fail closed rather than guess a timezone.",
+            "input": {
+                "boundary_id": "temporal-timezone-0003",
+                "source_id": "src-unknown-tz-0001",
+                "trusted_source_timezone": null,
+                "valid_from": {
+                    "state": "stated",
+                    "source_text": "2024-05-17T09:30:00",
+                    "precision": "minute",
+                    "timezone_kind": "none"
+                },
+                "valid_to": {
+                    "state": "open"
+                }
+            },
+            "expected_error": {
+                "error_code": "TEMPORAL_TIMEZONE_INDETERMINATE",
+                "reason": "timezone_less_text_without_trusted_source_default"
+            }
+        },
+        {
+            "case_id": "case-temporal-historical-backfill-source-time",
+            "requirement": "b1-historical-backfill-source-time",
+            "description": "Historical backfill of an evidence item must use authorised source time, not ingestion time, when source time exists.",
+            "input": {
+                "evidence_id": "ev-0010",
+                "workspace_id": "ws-alpha",
+                "ingested_at": "2026-01-20T00:00:00Z",
+                "authorised_source_time": "2019-06-15T00:00:00Z",
+                "backfill_mode": "historical"
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_record_time": "2019-06-15T00:00:00Z",
+                "time_source_used": "authorised_source_time",
+                "ingestion_time_used_as_fallback": false
+            }
+        },
+        {
+            "case_id": "case-temporal-historical-backfill-ingestion-fallback",
+            "requirement": "b1-historical-backfill-source-time",
+            "description": "When authorised source time is unavailable, backfill falls back explicitly and queryably to ingestion time.",
+            "input": {
+                "evidence_id": "ev-0011",
+                "workspace_id": "ws-alpha",
+                "ingested_at": "2026-01-20T00:00:00Z",
+                "authorised_source_time": null,
+                "backfill_mode": "historical"
+            },
+            "expected_result": {
+                "outcome": "resolved",
+                "effective_record_time": "2026-01-20T00:00:00Z",
+                "time_source_used": "ingestion_time_fallback",
+                "ingestion_time_used_as_fallback": true,
+                "fallback_is_queryable": true
+            }
+        },
+        {
+            "case_id": "case-assertion-correction-supersession-no-rewrite",
+            "requirement": "b1-correction-supersession-no-history-rewrite",
+            "description": "Correcting a governed assertion appends a superseding record and leaves the original assertion's recorded history intact and queryable.",
+            "input": {
+                "workspace_id": "ws-alpha",
+                "original_assertion": {
+                    "assertion_id": "assert-0001",
+                    "recorded_at": "2025-09-01T00:00:00Z",
+                    "value_placeholder": "PLACEHOLDER_ASSERTION_VALUE_ORIGINAL"
+                },
+                "correction": {
+                    "assertion_id": "assert-0002",
+                    "supersedes_assertion_id": "assert-0001",
+                    "recorded_at": "2025-10-01T00:00:00Z",
+                    "value_placeholder": "PLACEHOLDER_ASSERTION_VALUE_CORRECTED"
+                }
+            },
+            "expected_result": {
+                "outcome": "superseded",
+                "original_assertion_id": "assert-0001",
+                "original_assertion_mutated": false,
+                "original_assertion_still_queryable": true,
+                "current_assertion_id": "assert-0002",
+                "supersession_chain": [
+                    "assert-0001",
+                    "assert-0002"
+                ]
+            }
+        }
+    ]
+}
