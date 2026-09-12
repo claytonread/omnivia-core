@@ -13,6 +13,10 @@ object.  All public failures are fixed, payload-free sentences.
 the POSIX owner and mode bits, or on Windows a native owner and DACL proof that
 the file's owner is this process's user and that no access-allowed ACE grants
 anyone else.  Either proof fails closed.
+
+This module also decides which exposure profile a server advertises, once, from
+that validated document plus one protected answer it cannot give itself: see
+:func:`effective_profile`.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import json
 import os
 import re
 import stat
+from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +35,7 @@ from typing import Any, Final, Literal, NoReturn, Protocol
 from omnivia_core_client import (
     ClientError,
     CredentialReference,
+    ServiceClient,
     parse_http_endpoint,
 )
 
@@ -38,12 +44,15 @@ from omnivia_core.contracts.v1 import (
     PURPOSE_PATTERN,
     WORKSPACE_ID_PATTERN,
 )
+from omnivia_core_mcp.manifest import AUTHORING_PROFILE, RESTRICTED_PROFILE
 
 __all__ = [
     "CONFIGURATION_FORMAT",
     "MAXIMUM_CONFIGURATION_BYTES",
+    "AuthoringAdmission",
     "McpConfiguration",
     "McpConfigurationError",
+    "effective_profile",
     "parse_configuration",
     "read_configuration",
 ]
@@ -318,6 +327,84 @@ def parse_configuration(document: object) -> McpConfiguration:
         endpoint=endpoint,
         credential_reference=reference,
     )
+
+
+#: The protected authoring-admission seam, and **the whole of what Phase 6 owes
+#: this module**.
+#:
+#: Called with the **already connected** :class:`~omnivia_core_client.ServiceClient`,
+#: the configured principal and the selected workspace, it answers one question
+#: and only from durable protected state: *did a human owner or administrator
+#: explicitly record informed authoring intent for exactly this principal and
+#: this workspace, and does that authority hold right now?*  It is not a policy
+#: this package can evaluate -- nothing readable from the public configuration is
+#: evidence of it -- so it is an argument rather than a default.
+#:
+#: **The connected client is the first argument because it is the only way Phase
+#: 6 can answer honestly.**  That record lives behind the same authenticated,
+#: authorised Core service this session has just reached and proved serves this
+#: workspace, so an implementation reads it through this client.  Handing over
+#: only the two identifiers would leave Phase 6 opening the installation database
+#: itself or dialling a second connection -- both of them a way around the
+#: authority the session already established, and both of them a boundary this
+#: package must not invite anyone across.
+#:
+#: **No implementation of this exists yet**, which is the honest state of Gate B:
+#: `omnivia mcp configure` and the installed principal/grant store are Phase 6's
+#: work.  Until one is injected, `authoring` is unreachable in production: the
+#: console entry point passes nothing, so every installed server is `restricted`
+#: whatever its configuration says.  Only a test or a trusted embedding host
+#: supplies one today.
+AuthoringAdmission = Callable[[ServiceClient, str, str], bool]
+
+
+def effective_profile(
+    configuration: McpConfiguration,
+    client: ServiceClient,
+    workspace_id: str,
+    *,
+    authoring_admission: AuthoringAdmission | None = None,
+) -> str:
+    """The one exposure profile this server advertises, decided once at startup.
+
+    Two independent conditions, both required, neither sufficient:
+
+    * `mutation_enabled` is the **ceiling** the public document sets. Absent or
+      false is `restricted`, always -- there is no argument, prompt, purpose or
+      host setting that widens it.
+    * `authoring_admission` is the **floor** only protected state can raise.
+      `mutation_enabled: true` alone selects nothing: an editor who flips that
+      byte in a configuration file has raised a ceiling over an empty room.
+
+    So a legacy or hand-edited `mutation_enabled: true` cannot silently activate
+    authoring, which is the upgrade rule stated as code rather than as migration
+    prose, and the production default is `restricted` because production injects
+    no resolver yet.
+
+    `client` is connected and already proved to serve `workspace_id`; the caller
+    is :func:`~omnivia_core_mcp.server.connect`, which is what guarantees both.
+    A service that could not be reached, or that answered for another workspace,
+    never gets this far -- so a failed connection and a descriptor mismatch are
+    `restricted` by never producing a session at all, and the admission is not
+    consulted about a service nobody has agreed with.
+
+    Fails closed in every other direction too: no resolver, a resolver that
+    answers anything but `True`, and a resolver that raises all give
+    `restricted`. A protected authority that cannot be consulted has not
+    confirmed anything, and a server that widened its surface because a lookup
+    broke would be widening it for exactly the reason it should not.
+    """
+    if not configuration.mutation_enabled or authoring_admission is None:
+        return RESTRICTED_PROFILE
+    admitted = False
+    try:
+        admitted = (
+            authoring_admission(client, configuration.principal_id, workspace_id)
+            is True
+        )
+    except Exception:  # noqa: BLE001 -- an admission that failed has not admitted.
+        admitted = False
+    return AUTHORING_PROFILE if admitted else RESTRICTED_PROFILE
 
 
 def _same_file(first: os.stat_result, second: os.stat_result) -> bool:

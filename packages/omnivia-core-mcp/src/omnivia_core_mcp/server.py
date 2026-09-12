@@ -36,6 +36,28 @@ name any of them: :data:`RESERVED_ARGUMENTS` refuses the attempt by name and the
 advertised closed schema refuses it again as an undeclared key, both before a
 request exists, let alone a call.
 
+**Which surface is exposed is settled once, before a tool is advertised.**
+:func:`connect` asks
+:func:`~omnivia_core_mcp.configuration.effective_profile` for the profile and
+freezes it on the session, and both `tools/list` and the call path read that one
+value -- so the advertised inventory and the callable inventory are the same
+inventory, and neither varies with a prompt, an argument or an allowed purpose.
+It asks *after* the service is connected and its descriptor agreed, and hands the
+protected admission seam that connected client, so the Phase 6 implementation
+reads its record through the authority this session already established rather
+than through an installation database or a second connection of its own. The
+console entry point injects no seam, so an installed server today is `restricted`
+whatever its configuration file says.
+
+**An authoring call is checked against the canonical contract before it is
+sent.** The advertised wrapper is a call shape and the schema projection is a
+key list; neither says what a value may be. So every operation the `authoring`
+profile adds has its unwrapped input put through the *public* decoder
+`omnivia_core.contracts.v1` publishes for it, and a mutation's key through
+`is_idempotency_key`, before `ServiceClient.call` is reached. Nothing about
+those constraints is transcribed here -- a copied bound is a bound that goes
+stale -- and a refusal is fixed text that quotes none of what was sent.
+
 **MCP does not own the lease and does not stop what it started.** Neither
 appears below, and their absence is the implementation: there is no lease call,
 no stop call and no shutdown hook. A service started here is an independent Core
@@ -48,7 +70,7 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,21 +97,34 @@ from omnivia_core_client import (
 from omnivia_core.contracts.v1 import (
     CapabilityRequirement,
     ClientIdentity,
+    ContractDecodeError,
+    ContractSemanticError,
     PrincipalClaim,
     RequestEnvelope,
     RequestMetadata,
     ResponseEnvelope,
     SuccessResponseEnvelope,
     codec,
+    decode_evidence_capture_input,
+    decode_import_start_input,
+    decode_job_events_input,
+    decode_job_get_input,
+    decode_memory_create_input,
     get_operation_metadata,
+    is_idempotency_key,
 )
 from omnivia_core_mcp import __version__
 from omnivia_core_mcp.configuration import (
+    AuthoringAdmission,
     McpConfiguration,
     McpConfigurationError,
+    effective_profile,
     read_configuration,
 )
 from omnivia_core_mcp.manifest import (
+    ADMITTED_MUTATIONS,
+    AUTHORING_PROFILE,
+    RESTRICTED_PROFILE,
     ExposedOperation,
     exposed_by_tool_name,
     input_schema,
@@ -167,6 +202,29 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: The public canonical decoder for each operation the `authoring` profile adds.
+#:
+#: `omnivia_core.contracts.v1`'s own `decode_<operation>_input`, which parses the
+#: wire document into the contract's type *and* runs its semantic validator --
+#: the same pair the service runs on the way in. Named here rather than
+#: reimplemented, and reached through the public package rather than through any
+#: module inside it, so this adapter carries no bound, no pattern, no allowlist
+#: and no cross-field rule of its own: a contract that tightens one tightens this
+#: call path in the same commit, and one that relaxes one does not leave a stale
+#: copy refusing valid input.
+#:
+#: Only the five the `authoring` profile adds. The restricted six are unchanged
+#: accepted behaviour and are validated where they always were -- at the service,
+#: which answers with its own typed refusal.
+_CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
+    "memory.create": decode_memory_create_input,
+    "evidence.capture": decode_evidence_capture_input,
+    "import.start": decode_import_start_input,
+    "job.get": decode_job_get_input,
+    "job.events": decode_job_events_input,
+}
+
+
 class StartupError(Exception):
     """A fixed-text refusal raised before MCP initialization.
 
@@ -212,6 +270,14 @@ class ConnectedSession:
     this exists. Frozen, because nothing serving a session may swap the service
     or the authority under it.
 
+    `profile` is the exposure profile this session advertises and dispatches
+    against, decided once by
+    :func:`~omnivia_core_mcp.configuration.effective_profile` before any tool is
+    advertised. It is here rather than recomputed per request so that the
+    listing and the call path cannot disagree, and frozen with the rest so a
+    running session cannot be widened: `restricted` by default, for a caller
+    that builds a session without going through :func:`connect` at all.
+
     `credentials` is the cache this process created for a remote endpoint, held
     for exactly one reason -- :meth:`clear_credentials` at shutdown and on every
     failed startup path. Local mode has none, and `None` is that fact rather
@@ -223,6 +289,7 @@ class ConnectedSession:
     workspace_id: str
     status: str
     credentials: CredentialCache | None = None
+    profile: str = RESTRICTED_PROFILE
 
     def clear_credentials(self) -> None:
         """Drop any credential this process resolved. Safe to call twice."""
@@ -234,6 +301,7 @@ def connect(
     configuration: McpConfiguration,
     *,
     credential_resolver: CredentialResolver | None = None,
+    authoring_admission: AuthoringAdmission | None = None,
 ) -> ConnectedSession:
     """Reach the service this configuration names, or refuse before MCP starts.
 
@@ -246,31 +314,55 @@ def connect(
     `credential_resolver` is the host's, injected. There is no default, no
     environment lookup, no argv secret and no file beside the configuration: a
     remote endpoint with no resolver fails closed here.
+
+    `authoring_admission` is injected on exactly the same terms and for the same
+    reason: the protected seam described on
+    :data:`~omnivia_core_mcp.configuration.AuthoringAdmission`, which Phase 6
+    must implement and nothing in this repository implements yet.
+
+    **The profile is settled last, and that ordering is the seam's contract.**
+    The admission is asked only after the service is connected *and* after its
+    descriptor is proved to name the selected workspace, because it is handed
+    that connected client and must be able to read the protected record through
+    it rather than opening an installation database or dialling a second
+    connection of its own. It is still settled before `stdio_server()` is
+    entered and before one tool is advertised, so `tools/list` and the call path
+    read one frozen decision and neither can be reached by a prompt or an
+    argument. A connect that fails and a descriptor that disagrees both raise
+    here, so neither reaches the admission and neither yields a session at all.
     """
     workspace_id = configuration.selected_workspace_id
     if workspace_id is None:
         raise StartupError(_AMBIGUOUS_WORKSPACE)
 
+    credentials: CredentialCache | None = None
     if configuration.service_mode == "managed_local":
         client, status = _connect_managed_local(configuration, workspace_id)
-        session = ConnectedSession(
-            configuration=configuration,
-            client=client,
-            workspace_id=workspace_id,
-            status=status,
-        )
     else:
-        session = _connect_service_client(
-            configuration, workspace_id, credential_resolver
+        client, status, credentials = _connect_service_client(
+            configuration, credential_resolver
         )
 
-    if session.client.descriptor.workspace_id != workspace_id:
+    if client.descriptor.workspace_id != workspace_id:
         # The one check both modes need and neither transport can make: a
         # service may be reachable, compatible and live, and still be serving a
         # workspace this configuration never allow-listed.
-        session.clear_credentials()
+        if credentials is not None:
+            credentials.clear()
         raise StartupError(_WORKSPACE_MISMATCH)
-    return session
+    return ConnectedSession(
+        configuration=configuration,
+        client=client,
+        workspace_id=workspace_id,
+        status=status,
+        credentials=credentials,
+        profile=effective_profile(
+            configuration,
+            client,
+            workspace_id,
+            authoring_admission=authoring_admission,
+        ),
+    )
 
 
 def _connect_managed_local(
@@ -314,9 +406,8 @@ def _connect_managed_local(
 
 def _connect_service_client(
     configuration: McpConfiguration,
-    workspace_id: str,
     credential_resolver: CredentialResolver | None,
-) -> ConnectedSession:
+) -> tuple[ServiceClient, str, CredentialCache]:
     """Connect to the configured HTTP endpoint with the host's own resolver.
 
     The configuration carries the *name* of a credential and the normalized
@@ -348,13 +439,7 @@ def _connect_service_client(
             credentials.clear()
     if connected is None:
         raise StartupError(_SERVICE_UNAVAILABLE)
-    return ConnectedSession(
-        configuration=configuration,
-        client=connected,
-        workspace_id=workspace_id,
-        status="connected",
-        credentials=credentials,
-    )
+    return connected, "connected", credentials
 
 
 def build_server(*, session: ConnectedSession) -> Server[object]:
@@ -369,18 +454,21 @@ def build_server(*, session: ConnectedSession) -> Server[object]:
     async def on_list_tools(
         _context: object, _params: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
-        """Every allow-listed tool, in manifest order, on every call.
+        """Every allow-listed tool of this session's profile, in manifest order.
 
-        R004-06 requires this to be deterministic for a given package version. It
-        is built once at import in :mod:`omnivia_core_mcp.manifest` and returned
-        as it stands: nothing is filtered, sorted, or read from the environment
-        here, and neither the session nor the configuration is consulted. In
-        particular the allowed-purpose set does *not* filter the listing -- a
+        R004-06 requires this to be deterministic for a given package version and
+        configuration. Both inventories are built once at import in
+        :mod:`omnivia_core_mcp.manifest`, and the profile was settled once in
+        :func:`connect`, so the listing is a lookup: nothing is filtered, sorted,
+        or read from the environment here, and nothing about a prompt or an
+        argument can reach it.
+
+        In particular the allowed-purpose set does *not* filter the listing -- a
         listing that varied with the authority granted to one host would not be
         deterministic, and the purpose is enforced on call instead, which is
         where refusing it is a decision rather than a disappearance.
         """
-        return types.ListToolsResult(tools=list(tools()))
+        return types.ListToolsResult(tools=list(tools(session.profile)))
 
     async def on_call_tool(
         _context: object, params: types.CallToolRequestParams
@@ -392,9 +480,15 @@ def build_server(*, session: ConnectedSession) -> Server[object]:
         version=__version__,
         title="OmniVia Core",
         instructions=(
-            "Read-only access to a local OmniVia Core workspace. Every tool is "
-            "explicitly allow-listed; service lifecycle, workspace creation and "
-            "every mutation are deliberately absent and cannot be called."
+            "Read and authoring access to a local OmniVia Core workspace. Every "
+            "tool is explicitly allow-listed; service lifecycle, workspace "
+            "creation, governance decisions and every other mutation are "
+            "deliberately absent and cannot be called. A writing tool takes the "
+            "operation input under `input` and a caller-chosen `idempotency_key`."
+            if session.profile == AUTHORING_PROFILE
+            else "Read-only access to a local OmniVia Core workspace. Every tool "
+            "is explicitly allow-listed; service lifecycle, workspace creation "
+            "and every mutation are deliberately absent and cannot be called."
         ),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
@@ -406,22 +500,30 @@ def _call_tool(
 ) -> types.CallToolResult:
     """Dispatch one tool call against the allow-list and the configured authority.
 
-    Three refusals come before anything is sent, in this order and for three
+    Four refusals come before anything is sent, in this order and for four
     different reasons. The allow-list is the *only* lookup, so an operation
     absent from the manifest is not callable rather than merely unadvertised.
     The manifest's purpose must be one the configuration allows, so a host
     granted `workspace_inspection` alone cannot retrieve knowledge with a tool
-    it can see. And the payload must be one the advertised schema declares, with
-    no authority-shaped key anywhere in it.
+    it can see. The payload must be one the advertised schema declares, with no
+    authority-shaped key anywhere in it. And for the five operations the
+    `authoring` profile adds, the canonical contract must accept the values too
+    -- its own public decoder decides that, and a mutation's idempotency key is
+    put through the envelope's own predicate beside it.
 
-    None of the three reaches the client, so none of them costs a dial, a
+    None of the four reaches the client, so none of them costs a dial, a
     credential resolution or a service round trip.
+
+    The lookup is the *session's profile's* allow-list, which is the same
+    inventory `tools/list` returned, so the two cannot disagree: a restricted
+    server does not merely omit `memory_create` from its listing, it has no way
+    to resolve that name to an operation at all.
     """
-    exposed = exposed_by_tool_name(params.name)
+    exposed = exposed_by_tool_name(params.name, session.profile)
     if exposed is None:
         return _failure(
             f"{params.name!r} is not a tool this server exposes. "
-            f"Available: {', '.join(tool.name for tool in tools())}."
+            f"Available: {', '.join(tool.name for tool in tools(session.profile))}."
         )
 
     if exposed.purpose not in session.configuration.allowed_purposes:
@@ -546,33 +648,52 @@ def _request(
     selection the session connected to and proved the service serves.
 
     **A model supplies neither, and cannot.** :data:`RESERVED_ARGUMENTS` refuses
-    an authority-shaped key by name, and the advertised schema's own `properties`
-    refuses every key it does not declare -- read off the projection rather than
-    from a literal list, so what `tools/list` says and what this accepts stay one
-    document. Every advertised payload declares `unevaluatedProperties: false`,
-    so a key outside that set is one the contract refuses anyway; refusing it
-    here costs the model a round trip to find that out. Value-level validation
-    stays where it belongs: the service validates the payload against the
-    operation contract and answers with its own typed refusal.
+    an authority-shaped key by name -- at the outer object *and* inside a
+    mutation's nested input, so unwrapping cannot become a way to smuggle one in
+    -- and the advertised schema's own `properties` refuses every key it does not
+    declare, read off the projection rather than from a literal list, so what
+    `tools/list` says and what this accepts stay one document. Every advertised
+    payload declares `unevaluatedProperties: false`, so a key outside that set is
+    one the contract refuses anyway; refusing it here costs the model a round
+    trip to find that out.
+
+    **Values are checked too, and by the contract itself.** A key list is not a
+    schema, so the five operations the `authoring` profile added go through
+    :func:`_refuse_uncanonical`, which runs the public
+    `omnivia_core.contracts.v1` decoder for the operation and nothing of its
+    own. The service still validates what it receives -- it must, because MCP is
+    not its only caller -- so this is the same judgment reached earlier, not a
+    substitute for it.
+
+    **A mutation's key travels in the envelope, not in the payload.** The
+    advertised wrapper is unwrapped here and nowhere else: `input` becomes the
+    request's `input` unchanged, and `idempotency_key` becomes
+    `RequestMetadata.idempotency_key`, which is where the contract puts it and
+    where the service's own durable mutation coordinator looks for it. A read
+    carries no key at all. Nothing about a repeat is decided here: this builds a
+    fresh envelope for every call, so a replay is a real call that Core settles
+    against its stored outcome -- and re-checks its authority for -- rather than
+    an answer this process remembered.
     """
-    supplied = set(arguments or {})
-    reserved = sorted(supplied & RESERVED_ARGUMENTS)
-    if reserved:
-        raise ValueError(
-            f"{exposed.tool_name} does not take {reserved[0]!r}: the principal, "
-            "the workspace, the purpose, the granted authority, the endpoint and "
-            "the credential are fixed by this server's trusted configuration and "
-            "cannot be set by a caller"
-        )
+    supplied = dict(arguments or {})
+    _refuse_reserved(exposed, supplied)
     entry = get_operation_metadata(exposed.operation)
-    advertised = set(input_schema(entry)["properties"])
-    unknown = sorted(supplied - advertised)
+    schema = input_schema(entry)
+    if exposed.operation in ADMITTED_MUTATIONS:
+        payload, key = _unwrapped(exposed, supplied)
+        _refuse_reserved(exposed, payload)
+        advertised = set(schema["properties"]["input"]["properties"])
+    else:
+        payload, key = supplied, None
+        advertised = set(schema["properties"])
+    unknown = sorted(set(payload) - advertised)
     if unknown:
         raise ValueError(
             f"{exposed.tool_name} accepts no argument named {unknown[0]!r}"
             + (f" (or {len(unknown) - 1} other(s))" if len(unknown) > 1 else "")
             + f"; its advertised schema declares {sorted(advertised)} and is closed"
         )
+    _refuse_uncanonical(exposed, payload)
     required = entry.required_capability
     request_id = f"mcp-{uuid.uuid4()}"
     return RequestEnvelope(
@@ -587,6 +708,7 @@ def _request(
             scopes=tuple(entry.scope.required_scopes),
             # A claim, not authority: the service decides from its own grant.
             purpose=exposed.purpose,
+            idempotency_key=key,
             required_capabilities=(
                 CapabilityRequirement(
                     id=required.id,
@@ -598,8 +720,101 @@ def _request(
                 claimed_principal_id=configuration.principal_id
             ),
         ),
-        input=dict(arguments or {}),
+        input=payload,
     )
+
+
+def _refuse_reserved(exposed: ExposedOperation, supplied: Mapping[str, Any]) -> None:
+    """Refuse an authority-shaped key by name, wherever in the call it appears."""
+    reserved = sorted(set(supplied) & RESERVED_ARGUMENTS)
+    if reserved:
+        raise ValueError(
+            f"{exposed.tool_name} does not take {reserved[0]!r}: the principal, "
+            "the workspace, the purpose, the granted authority, the endpoint and "
+            "the credential are fixed by this server's trusted configuration and "
+            "cannot be set by a caller"
+        )
+
+
+def _refuse_uncanonical(exposed: ExposedOperation, payload: Mapping[str, Any]) -> None:
+    """Refuse an input the operation's own canonical contract does not accept.
+
+    The advertised wrapper proves a call is the right *shape* and the projected
+    schema's `properties` proves its keys are declared; neither says a thing
+    about a value. `omnivia_core.contracts.v1`'s public decoder does, and it is
+    the same decode-then-validate pair the service runs -- so a missing required
+    field, a media type outside the allowlist, a malformed timestamp or a
+    cross-field contradiction is refused here, once, rather than becoming a round
+    trip whose only outcome is the service's refusal.
+
+    **The refusal is fixed and quotes nothing.** A contract error names the path
+    it failed at and frequently the value, and this server's refusals go to a
+    model over a channel that is not the caller's own: the same rule every other
+    refusal in this module follows. The advertised input schema already carries
+    every constraint, so a caller reading it has what it needs to correct the
+    call.
+
+    Only the five operations the `authoring` profile adds are checked, because
+    they are the ones this phase added. Nothing here is a second opinion about
+    them: an operation absent from :data:`_CANONICAL_INPUT` is sent exactly as it
+    always was.
+    """
+    decode = _CANONICAL_INPUT.get(exposed.operation)
+    if decode is None:
+        return
+    try:
+        decode(dict(payload))
+    except (ContractDecodeError, ContractSemanticError) as refusal:
+        raise ValueError(
+            "the input this call carries is not a valid document for "
+            f"{exposed.operation}, so it was not sent. Its advertised input "
+            "schema states every field, type and bound the operation requires; "
+            "this refusal deliberately repeats none of what was supplied"
+        ) from refusal
+
+
+def _unwrapped(
+    exposed: ExposedOperation, supplied: Mapping[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """The canonical input and the idempotency key out of a mutation's wrapper.
+
+    The closed two-field object the tool already advertises, enforced rather than
+    described: both halves present, an object and a string, and nothing else
+    alongside them. An extra outer key is refused rather than dropped -- it is a
+    caller saying something this seam does not accept, and silently ignoring it
+    would make the mutation look like it had honoured a constraint it never saw.
+
+    What a key may *spell* is the canonical contract's business, and it is asked
+    rather than restated: :func:`~omnivia_core.contracts.v1.is_idempotency_key`
+    is the envelope's own primitive for exactly this, applying the pattern and
+    the length bounds the advertised wrapper already published. A key that fails
+    it would be refused by `RequestMetadata` anyway, as an exception out of a
+    handler rather than an answer -- and refusing it here means a write whose key
+    cannot settle a replay is never sent at all, which is the one shape where a
+    round trip is worse than a refusal.
+    """
+    payload = supplied.get("input")
+    key = supplied.get("idempotency_key")
+    if (
+        set(supplied) != {"input", "idempotency_key"}
+        or not isinstance(payload, dict)
+        or not isinstance(key, str)
+    ):
+        raise ValueError(
+            f"{exposed.tool_name} writes, so it takes exactly the advertised "
+            "wrapper: an `input` object holding the operation's own arguments, "
+            "and an `idempotency_key` string that makes a repeat answer from the "
+            "settled outcome instead of writing twice. No other property is "
+            "accepted, and this server never chooses or retries a key itself"
+        )
+    if not is_idempotency_key(key):
+        raise ValueError(
+            f"{exposed.tool_name} takes an `idempotency_key` the canonical "
+            "request envelope accepts, and this one is not one. The advertised "
+            "wrapper carries that definition's own pattern and length bounds; "
+            "this server never chooses a key on a caller's behalf"
+        )
+    return dict(payload), key
 
 
 async def serve(*, session: ConnectedSession) -> None:
@@ -676,6 +891,14 @@ def main(argv: list[str] | None = None) -> int:
     rather than reaching for an environment variable, an argv secret or a file
     beside the configuration. A host that has a resolver calls :func:`connect`
     and :func:`serve` itself and injects one.
+
+    **There is no authoring admission here either, for the same reason and one
+    more.** A console process holds no protected record of a human's authoring
+    intent, and nothing in this repository yet writes one -- that is Phase 6's
+    installed setup path. So this entry point injects none and every server it
+    starts is `restricted`, including one whose configuration says
+    `mutation_enabled: true`: editing that byte raises a ceiling and admits
+    nothing.
     """
     args = build_parser().parse_args(argv)
     try:
