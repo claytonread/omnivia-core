@@ -1,11 +1,12 @@
-"""Phase 1 Semantic Registry domain layer (standard library only).
+"""Phase 1 + Phase 2 Semantic Registry domain layer (standard library only).
 
 Immutable, validated models for semantic models/versions/elements, the 18
 typed change-operation kinds (spec section 11), deterministic ordering and
-diff classification, consumer/dependency/binding records, and canonical
-digesting. No persistence, no LLM calls, no third-party dependencies: this is
-the pure domain layer used by the runtime's SQLite repository and manual
-authoring service (spec 9.1, Phase 1 deliverables).
+diff classification, consumer/dependency/binding records, canonical
+digesting, and the Phase 2 temporal resolution primitives. No persistence,
+no LLM calls, no third-party dependencies: this is the pure domain layer
+used by the runtime's SQLite repository and manual authoring service
+(spec 9.1).
 """
 
 from __future__ import annotations
@@ -34,10 +35,14 @@ from omnivia_core.semantic_registry.diff import (
     impact_to_compatibility,
 )
 from omnivia_core.semantic_registry.errors import (
+    CandidateConflictError,
+    EvidenceValidationError,
+    PermissionDeniedError,
     SemanticConflictError,
     SemanticErrorCode,
     SemanticRegistryError,
     SemanticValidationError,
+    TemporalValidationError,
 )
 from omnivia_core.semantic_registry.ids import (
     DEFAULT_ALLOCATOR,
@@ -96,13 +101,28 @@ from omnivia_core.semantic_registry.records import (
     Severity,
     ValidationFinding,
 )
+from omnivia_core.semantic_registry.temporal import (
+    TEMPORAL_CONTRACT_VERSION,
+    EffectiveValidInterval,
+    EndBoundaryState,
+    TemporalInstant,
+    TemporalPrecision,
+    TemporalProvenance,
+    canonical_utc,
+    effective_interval_projection,
+    parse_source_time,
+    resolve_effective_valid_interval,
+    select_record_time,
+)
 
 __all__ = [
     "CANONICALIZER_VERSION",
     "DEFAULT_ALLOCATOR",
+    "TEMPORAL_CONTRACT_VERSION",
     "ActionType",
     "ActivationRecord",
     "Alias",
+    "CandidateConflictError",
     "ChangeOperation",
     "ChangeRecord",
     "CompatibilityClassification",
@@ -115,12 +135,16 @@ __all__ = [
     "ConsumerKind",
     "DecisionExplanation",
     "DependencyMode",
+    "EffectiveValidInterval",
+    "EndBoundaryState",
+    "EvidenceValidationError",
     "ExactBinding",
     "HistoryEntry",
     "IdAllocator",
     "LifecycleState",
     "ModelVersion",
     "OperationKind",
+    "PermissionDeniedError",
     "Property",
     "PropertyValueKind",
     "PublicationRecord",
@@ -134,6 +158,10 @@ __all__ = [
     "SemanticRegistryError",
     "SemanticValidationError",
     "Severity",
+    "TemporalInstant",
+    "TemporalPrecision",
+    "TemporalProvenance",
+    "TemporalValidationError",
     "UUIDv7Allocator",
     "ValidationFinding",
     "VersionImpact",
@@ -146,6 +174,7 @@ __all__ = [
     "add_relationship",
     "add_vocabulary_member",
     "canonical_bytes",
+    "canonical_utc",
     "change_action_contract",
     "change_cardinality",
     "change_description",
@@ -160,12 +189,16 @@ __all__ = [
     "classify_operation",
     "content_digest",
     "deprecate_element",
+    "effective_interval_projection",
     "impact_to_compatibility",
     "model_version_digest",
     "model_version_payload",
     "operation_payload",
     "order_operations",
+    "parse_source_time",
     "remove_element",
     "replace_element",
+    "resolve_effective_valid_interval",
+    "select_record_time",
     "uuid7",
 ]
