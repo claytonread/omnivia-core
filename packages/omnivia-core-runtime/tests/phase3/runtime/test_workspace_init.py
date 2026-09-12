@@ -589,8 +589,14 @@ def test_a_root_this_call_cannot_restrict_is_the_same_write_failure(
     mechanism in isolation -- and fails closed exactly like every other
     creation step this sequence guards when it cannot. Forcing that one step
     to fail here proves it is bounded the same way: `WRITE_FAILURE`, with a
-    whole workspace already on disk and nothing installation-side beyond the
-    bare, unrestricted root itself.
+    whole workspace already on disk and the bare root itself rolled back --
+    `test_backup.py` proves the rollback mechanism directly; this proves it
+    reaches all the way to the public refusal, and not just the bare root
+    it once left behind.
+
+    The reason string is checked for what it must not carry, too: the
+    installation root never appears in it, unlike the workspace root that
+    every `WRITE_FAILURE` deliberately names.
     """
     monkeypatch.setattr(backup, "_restrict_root_to_owner", lambda _path: False)
 
@@ -598,13 +604,14 @@ def test_a_root_this_call_cannot_restrict_is_the_same_write_failure(
 
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert backup._ROOT_RESTRICTION_FAILURE in result.reason
+    installation = tmp_path / "installation-state"
+    assert str(installation) not in result.reason
     layout = WorkspaceLayout(root=tmp_path / "workspace")
     assert layout.manifest_path.is_file()
     assert layout.database_path.is_file()
     assert layout.blobs_path.is_dir()
-    installation = tmp_path / "installation-state"
-    assert installation.is_dir()
-    assert list(installation.iterdir()) == []
+    assert not installation.exists()
 
 
 def test_a_busy_workspace_is_refused_before_any_directory_is_created(

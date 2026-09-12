@@ -57,6 +57,23 @@ _SID_RE = re.compile(r"S-1-[0-9-]+")
 #: root -- the closest Windows has to leaving a POSIX `mkdir`'s mode untouched.
 _WINDOWS_ROOT_RIGHTS = "(OI)(CI)F"
 
+#: What a freshly created installation-state root is made with, at the `mkdir`
+#: syscall itself rather than left to its default 0o777 filtered by whatever
+#: umask this process happens to run under: a permissive umask (0) would
+#: otherwise hand a fresh root group- or world-writable, off Windows, where
+#: nothing later in `_ensure_root` tightens it. The same value
+#: `omnivia_core_client.owner_private` gives its own freshly created
+#: directories, for the same reason.
+_ROOT_MODE = 0o700
+
+#: Fixed and path-free, for the one failure `_ensure_root` raises directly.
+#: This reaches a caller through `workspace_init`'s public refusal reason, and
+#: that surface carries no path, no SID and no subprocess output -- R004-10
+#: requires it free of exactly this kind of payload.
+_ROOT_RESTRICTION_FAILURE = (
+    "could not restrict a newly created installation-state root to its owner"
+)
+
 
 class BackupError(StorageError):
     """A backup could not be created or could not be verified."""
@@ -117,8 +134,9 @@ def _windows_restrict_root(path: Path) -> bool:
 def _restrict_root_to_owner(path: Path) -> bool:
     """Reduce a freshly created installation-state root to an owner-only DACL.
 
-    A no-op success off Windows: the mode this process's umask already gave
-    `mkdir` is the whole of the proof there. On Windows a brand new directory
+    A no-op success off Windows: `_ensure_root` creates the root at an
+    explicit, restrictive mode a permissive umask cannot widen, so there is
+    nothing further to enforce there. On Windows a brand new directory
     inherits whatever DACL its parent's inheritance supplies -- routinely
     SYSTEM or the local administrators, on a hosted runner's temp tree -- and
     every store under `runtime/` proves this exact root out with the parent
@@ -192,28 +210,56 @@ class InstallationLayout:
         A root this call *finds* already there is left exactly as it is: it may
         be the caller's own pre-existing directory, and every store that walks
         beneath it proves the parent policy out on every use regardless of who
-        made it. A root this call *creates* has no owner yet, and the mode this
-        gives `mkdir` is not a promise Windows keeps -- a freshly created
-        directory there inherits whatever DACL its parent's inheritance
+        made it. A root this call *creates* has no owner yet: it is made at
+        `_ROOT_MODE`, explicitly, at the `mkdir` syscall itself -- `mkdir`'s own
+        default of 0o777 is filtered by whatever umask this process runs under,
+        and a permissive one would otherwise hand a fresh root group- or
+        world-writable before anything below gets a chance to narrow it -- and,
+        on Windows, where that mode is not a promise the filesystem keeps, then
+        reduced to an owner-only DACL before a single child exists: a freshly
+        created directory there inherits whatever DACL its parent's inheritance
         supplies, which a hosted runner's temp tree can make writable by SYSTEM
-        or the local administrators alongside this user. Restricting it here,
-        before a single child exists, establishes the invariant
-        `InstalledCredentialStore` and `InstalledConfigStore` require of this
-        exact root rather than leaving them to discover it missing.
+        or the local administrators alongside this user. Restricting it here
+        establishes the invariant `InstalledCredentialStore` and
+        `InstalledConfigStore` require of this exact root rather than leaving
+        them to discover it missing.
 
         `exist_ok=False` (the default) is the mechanism: a `FileExistsError`
         from this exact call is the only way to learn the root was already
         there rather than just created, since asking first and creating second
         would leave a window in which a concurrent creator's answer is stale.
+
+        Fails closed, including when the native tool itself does not complete:
+        an installation root this call could not restrict is never treated as
+        restricted merely because nothing has proved otherwise yet. And because
+        this call is the one that just created it, with nothing yet made
+        inside it, it rolls that creation back before raising -- a plain,
+        non-recursive `rmdir` of that exact empty directory -- so the ordinary
+        failure leaves the path absent and a retry re-creates and re-restricts
+        it, rather than finding a bare root already there, taking that for a
+        pre-existing directory of somebody else's, and populating it
+        unrestricted while appearing to succeed.
+
+        That rollback is itself best-effort, and the failure path is honest
+        about it rather than assuming it: a root this call cannot even remove
+        (an `OSError`, the same way a racing writer would produce one) is left
+        exactly as the restriction failure made it, bare and unrestricted, and
+        the error raised is the same fail-closed one either way -- it does not
+        claim the rollback succeeded.
         """
         try:
-            self.root.mkdir(parents=True)
+            self.root.mkdir(parents=True, mode=_ROOT_MODE)
         except OSError:
             if not self.root.is_dir():
                 raise
             return
-        if not _restrict_root_to_owner(self.root):
-            raise BackupError(f"could not restrict {self.root} to its owner")
+        if _restrict_root_to_owner(self.root):
+            return
+        try:
+            self.root.rmdir()
+        except OSError:
+            pass
+        raise BackupError(_ROOT_RESTRICTION_FAILURE)
 
 
 @dataclass(frozen=True)

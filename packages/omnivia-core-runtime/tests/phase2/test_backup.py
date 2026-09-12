@@ -14,9 +14,11 @@ temp-nested installation-state root ever saw.
 same way `packages/omnivia-core-client/tests/test_owner_private.py` exercises
 the identical, independently hosted mechanism -- see that module's docstring
 for why `icacls` rather than `ctypes`. The one real-Windows case at the bottom
-is unmocked and drives the installed stores through the exact root/layout
-creation path `workspace_init._bootstrap` uses, rather than a hand-restricted
-root.
+is unmocked and drives the installed stores through `InstallationLayout.create`
+itself -- the same production method `workspace_init._bootstrap` calls to
+establish this root, though calling it directly here is not a run of
+`_bootstrap` or the `--init` CLI, which the hosted Standard journey proves
+end-to-end -- rather than a hand-restricted root.
 """
 
 from __future__ import annotations
@@ -165,6 +167,32 @@ def test_restrict_root_to_owner_delegates_to_the_windows_mechanism(
 # --- InstallationLayout.create establishes the root, once and only once -----
 
 
+def test_ensure_root_creates_a_freshly_made_root_at_an_explicit_owner_only_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX has no later DACL step the way Windows does: the mode has to be
+    right at the `mkdir` syscall itself, passed explicitly rather than left to
+    `mkdir`'s own 0o777 default, because a permissive umask filters a default
+    the same way it would filter any other mode -- there is nothing here that
+    narrows it afterwards.
+    """
+    root = tmp_path / "installation-state"
+    monkeypatch.setattr(backup, "_restrict_root_to_owner", lambda _path: True)
+    real_mkdir = Path.mkdir
+    calls: list[dict[str, object]] = []
+
+    def spy(self: Path, *args: object, **kwargs: object) -> None:
+        calls.append(kwargs)
+        real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", spy)
+
+    InstallationLayout(root=root)._ensure_root()
+
+    assert calls == [{"parents": True, "mode": 0o700}]
+    assert root.is_dir()
+
+
 def test_create_restricts_a_freshly_made_root_and_only_then_populates_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -219,20 +247,60 @@ def test_a_repeat_create_does_not_restrict_the_root_again(
     assert calls == []
 
 
-def test_create_raises_and_creates_nothing_beneath_a_root_it_cannot_restrict(
+def test_create_raises_and_rolls_back_a_root_it_cannot_restrict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fail closed: an unrestrictable root is never treated as restricted."""
+    """Fail closed, and leave nothing behind for a retry to misread.
+
+    A bare, unrestricted root left in place is not merely inert: the next
+    `_ensure_root` finds it with `mkdir`, takes the `FileExistsError` branch
+    that means "somebody else's pre-existing directory", and skips
+    restriction entirely -- so a retry could populate an unrestricted root
+    and report success while the installed stores still refuse it. Rolling
+    the bare root back keeps the path absent, which is what makes a retry
+    re-create and re-restrict it instead.
+
+    The message is checked for what it must not carry as much as for what it
+    must: no path, so it is safe wherever `BackupError` surfaces, including
+    through `workspace_init`'s public refusal reason.
+    """
     root = tmp_path / "installation-state"
     monkeypatch.setattr(backup, "_restrict_root_to_owner", lambda _p: False)
 
-    with pytest.raises(BackupError):
+    with pytest.raises(BackupError) as excinfo:
         InstallationLayout(root=root).create(WORKSPACE_ID)
 
-    # The bare root exists -- `mkdir` is what created it -- but nothing was
-    # ever created inside an object this call could not restrict.
+    assert str(excinfo.value) == backup._ROOT_RESTRICTION_FAILURE
+    assert str(root) not in str(excinfo.value)
+    assert not root.exists()
+
+
+def test_create_still_raises_when_the_bare_root_cannot_be_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rollback is best-effort: a second failure must not hide the first.
+
+    Simulated the same way a slower concurrent writer could produce it: a
+    child appears under the root before `_ensure_root` attempts its plain,
+    non-recursive `rmdir` -- the one condition that makes that call fail --
+    so the root survives, honestly, exactly where the ordinary failure would
+    have left it if this repair did not exist. The error raised is the same
+    fixed, path-free one either way.
+    """
+    root = tmp_path / "installation-state"
+
+    def unrestrictable(path: Path) -> bool:
+        (path / "unexpected").mkdir()
+        return False
+
+    monkeypatch.setattr(backup, "_restrict_root_to_owner", unrestrictable)
+
+    with pytest.raises(BackupError) as excinfo:
+        InstallationLayout(root=root).create(WORKSPACE_ID)
+
+    assert str(excinfo.value) == backup._ROOT_RESTRICTION_FAILURE
     assert root.is_dir()
-    assert list(root.iterdir()) == []
+    assert [entry.name for entry in root.iterdir()] == ["unexpected"]
 
 
 def test_a_pre_existing_installation_state_root_that_is_a_file_still_raises(
@@ -267,10 +335,13 @@ def test_the_real_init_created_root_satisfies_the_installed_stores_on_real_windo
     journey's own `--init` produces is one either store can ever use, and on a
     hosted Windows runner it was not: `InstallationLayout.create` left the
     installation-state root exactly as `mkdir` made it, inheriting whatever
-    DACL its temp-directory parent's inheritance supplied. This test calls the
-    exact production entry point `workspace_init._bootstrap` calls -- nothing
-    here restricts the root before handing it to the stores -- against a fresh
-    child of `tmp_path` that was never touched by hand.
+    DACL its temp-directory parent's inheritance supplied. This test calls
+    `InstallationLayout.create` itself -- the same production method
+    `_bootstrap` calls to bring this exact root into being, not `_bootstrap`
+    or the `--init` CLI path -- against a fresh child of `tmp_path` that was
+    never touched by hand; nothing here restricts the root before handing it
+    to the stores. The hosted Standard journey is what proves `_bootstrap`
+    and `--init` do this end-to-end.
     """
     from omnivia_core_client import (
         Credential,
