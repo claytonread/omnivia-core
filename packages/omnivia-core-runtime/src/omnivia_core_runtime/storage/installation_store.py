@@ -4,21 +4,31 @@ One :class:`InstallationStore` owns one lifetime file lock and one SQLite
 connection.  The lock excludes another installation service; the persisted
 generation makes a predecessor permanently stale even if it resumes with an old
 Python object.  No writable connection escapes this module.
+
+Two kinds of installation authority live here.  The workspace allocation family
+records which workspaces this installation created and under whose authority.
+The installed-MCP family below it records which host has a dedicated principal,
+bound to which workspace, holding exactly which rights, verified against which
+salted credential digest -- durable state that every MCP call is resolved against
+afresh, so a rotation or a revocation lands on the next call rather than when
+some cached session happens to expire.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from omnivia_core_runtime.ownership.locks import FileLock, LockRole, create_lock
 from omnivia_core_runtime.storage.backup import InstallationLayout
@@ -31,6 +41,7 @@ from omnivia_core_runtime.storage.installation_migrations import (
     INSTALLATION_FORMAT_VERSION,
     INSTALLATION_WRITER_FUNCTION,
     apply_initial_installation_schema,
+    apply_pending_installation_migrations,
     installation_schema_present,
     verify_installation_schema,
 )
@@ -118,6 +129,213 @@ class AllocationClaim:
     created: bool
     allocation: InstallationAllocation
     outcome: InstallationOutcome | None
+
+
+class McpHost(str, Enum):
+    """A supported MCP host, spelled as the installed command names it."""
+
+    CLAUDE_CODE = "claude-code"
+    CODEX = "codex"
+
+
+class McpProfile(str, Enum):
+    """The exposure profile a setup was configured for."""
+
+    RESTRICTED = "restricted"
+    AUTHORING = "authoring"
+
+
+class McpSetupStatus(str, Enum):
+    """Whether a configured host's authority is live."""
+
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
+class McpGrantKind(str, Enum):
+    """Which kind of right one grant row states."""
+
+    OPERATION = "operation"
+    SCOPE = "scope"
+    PURPOSE = "purpose"
+    CAPABILITY = "capability"
+
+
+@dataclass(frozen=True, order=True)
+class McpGrant:
+    """One exact right: never a pattern, never a set, never a wildcard.
+
+    `version` is the capability's minimum contract version and belongs to a
+    capability alone. Ordered so a stored policy and a requested one can be
+    compared as sorted tuples rather than by whatever order either was built in.
+    """
+
+    kind: McpGrantKind
+    value: str
+    version: str | None = None
+
+
+@dataclass(frozen=True)
+class NewMcpSetup:
+    """Server-minted identity and verification material for one provisioning.
+
+    Minted by the caller, but only from inside the catalogue write transaction and
+    only once the store has established that a write is actually needed -- so an
+    idempotent reconfigure does not even generate a credential it would discard.
+
+    No secret is here. `credential_digest` is `sha256:<salt || secret>` and
+    `credential_reference` is an opaque public name; neither can produce the bearer
+    that satisfies them.
+    """
+
+    audit_ref: str
+    setup_id: str
+    principal_id: str
+    credential_reference: str
+    credential_salt: str
+    credential_digest: str
+    grants: tuple[McpGrant, ...]
+
+
+@dataclass(frozen=True)
+class InstalledMcpSetup:
+    """One durable MCP setup, as a value that is safe to print.
+
+    Deliberately missing the salt and the digest as well as the secret. This is
+    what `omnivia mcp status` reports and what a refusal may name, and a field that
+    is not on the value cannot reach a log line, a `repr` or an error message by
+    somebody's oversight.
+    """
+
+    setup_id: str
+    host: McpHost
+    workspace_id: str
+    principal_id: str
+    profile: McpProfile
+    authoring_intent: bool
+    credential_reference: str
+    status: McpSetupStatus
+    setup_generation: int
+    created_at_us: int
+    updated_at_us: int
+    revoked_at_us: int | None
+
+
+@dataclass(frozen=True)
+class McpSetupOutcome:
+    """A configure result: the durable setup, and whether it was rotated.
+
+    `rotated` is false exactly when the requested state was already the live one,
+    which is the only case in which the previous credential keeps working.
+    """
+
+    rotated: bool
+    setup: InstalledMcpSetup
+
+
+@dataclass(frozen=True)
+class ResolvedMcpSetup:
+    """An authenticated setup and the exact policy its current generation holds."""
+
+    setup: InstalledMcpSetup
+    grants: tuple[McpGrant, ...]
+
+
+def mcp_credential_digest(salt: str, secret: str) -> str:
+    """The stored verifier for one bearer secret: `sha256:<salt || secret>`.
+
+    Salted per setup so two hosts that were somehow issued the same secret do not
+    share a digest, and so a stored digest is useless against any other catalogue.
+
+    A single SHA-256 rather than a password hash on purpose: the input is 256 bits
+    of `secrets` randomness, not something a human chose, so there is no dictionary
+    to slow down and no work factor that would buy anything against a search space
+    nothing can enumerate. The cost that matters here is on verification, which
+    happens on every call.
+    """
+    return "sha256:" + hashlib.sha256(f"{salt}{secret}".encode()).hexdigest()
+
+
+#: The audit vocabulary the installed-MCP lifecycle records itself under, in the
+#: installation's own append-only audit table.
+_MCP_ADMINISTRATION_PURPOSE = "installed_mcp_administration"
+_MCP_CONFIGURE_OPERATION = "mcp.setup.configure"
+_MCP_REVOKE_OPERATION = "mcp.setup.revoke"
+
+#: Every redaction-safe setup column, in :class:`InstalledMcpSetup` field order.
+#: Named once so a query cannot select the salt or the digest by accident and a
+#: reader cannot map a column to the wrong field.
+_MCP_SETUP_COLUMNS = (
+    "setup_id, host, workspace_id, principal_id, profile, authoring_intent, "
+    "credential_reference, status, setup_generation, created_at_us, updated_at_us, "
+    "revoked_at_us"
+)
+
+
+def _mcp_setup_from_row(row: Sequence[Any]) -> InstalledMcpSetup:
+    """One setup row as its redacted value. Trailing columns are ignored.
+
+    Ignoring them is what lets the authentication query select the salt and the
+    digest it has to compare without those ever reaching the value it returns.
+    """
+    return InstalledMcpSetup(
+        setup_id=str(row[0]),
+        host=McpHost(str(row[1])),
+        workspace_id=str(row[2]),
+        principal_id=str(row[3]),
+        profile=McpProfile(str(row[4])),
+        authoring_intent=bool(int(row[5])),
+        credential_reference=str(row[6]),
+        status=McpSetupStatus(str(row[7])),
+        setup_generation=int(row[8]),
+        created_at_us=int(row[9]),
+        updated_at_us=int(row[10]),
+        revoked_at_us=None if row[11] is None else int(row[11]),
+    )
+
+
+def _checked_grants(grants: Sequence[McpGrant]) -> tuple[McpGrant, ...]:
+    """The requested rights, proved exact, in canonical order.
+
+    The schema refuses a wildcard too. This refuses it first, with a message that
+    names what was wrong rather than an integrity error from three layers down --
+    and it refuses the two things a CHECK constraint cannot see: an empty policy,
+    which is not a least-privilege grant but the absence of one, and a right stated
+    twice, which would make "the exact rights" a multiset nothing could compare
+    against the profile it is supposed to be.
+    """
+    checked: list[McpGrant] = []
+    for grant in grants:
+        if not isinstance(grant, McpGrant):
+            raise TypeError("installed MCP rights must be McpGrant values")
+        if not 1 <= len(grant.value) <= 128 or _wildcard(grant.value):
+            raise InstallationStoreError(
+                "an installed MCP right must be an exact bounded value, never a "
+                "wildcard"
+            )
+        if (grant.kind is McpGrantKind.CAPABILITY) != (grant.version is not None):
+            raise InstallationStoreError(
+                "a capability right states a minimum version and no other right may"
+            )
+        if grant.version is not None and (
+            not 1 <= len(grant.version) <= 32 or _wildcard(grant.version)
+        ):
+            raise InstallationStoreError(
+                "a capability right must state an exact bounded minimum version"
+            )
+        checked.append(grant)
+    if not checked:
+        raise InstallationStoreError(
+            "an installed MCP setup must grant at least one exact right"
+        )
+    ordered = tuple(sorted(set(checked)))
+    if len(ordered) != len(checked):
+        raise InstallationStoreError("an installed MCP right was granted twice")
+    return ordered
+
+
+def _wildcard(value: str) -> bool:
+    return "*" in value or "?" in value
 
 
 def _wall_clock_us() -> int:
@@ -566,6 +784,357 @@ class InstallationStore:
                 results.append((str(workspace_id), outcome))
             return tuple(results)
 
+    # --- dedicated installed-MCP authority (Gate B) ---------------------------
+
+    def configure_mcp_setup(
+        self,
+        authority: InstallationAuthority,
+        *,
+        host: McpHost,
+        workspace_id: str,
+        profile: McpProfile,
+        authoring_intent: bool,
+        grants: Sequence[McpGrant],
+        identity_factory: Callable[[], NewMcpSetup],
+    ) -> McpSetupOutcome:
+        """Provision, or re-provision, the one MCP setup for `host`.
+
+        The requested state is the whole of what a caller may ask for: a host, a
+        workspace this installation already authorised, a profile, an explicit
+        authoring intent and the exact rights that profile implies. Every identity
+        and every piece of credential material is minted by the factory *inside*
+        this transaction, after the store has decided a write is needed, so a
+        caller cannot choose a principal, a reference or a verifier and an
+        idempotent reconfigure never generates a secret it would throw away.
+
+        Requesting exactly the live state is answered from it, unrotated -- a
+        repeated `configure` is not a reason to invalidate a working credential.
+        Anything else is a rotation: a new generation, a new principal, a new
+        reference and a new verifier, in one statement with the old one, so there
+        is no instant at which both the previous and the next credential work.
+
+        The workspace is proved to be in this installation's authorised inventory
+        before anything is written. The composite foreign key proves it a second
+        time, but an unknown workspace is a thing the caller got wrong and deserves
+        to be told so rather than an integrity error from underneath.
+        """
+        requested = _checked_grants(grants)
+        if (profile is McpProfile.AUTHORING) != bool(authoring_intent):
+            raise InstallationStoreError(
+                "the authoring profile requires recorded authoring intent, and "
+                "authoring intent requires the authoring profile"
+            )
+        with self._transaction(authority) as connection:
+            self._require_installation_workspace(connection, workspace_id)
+            existing = self._mcp_setup_for_host(connection, host)
+            if (
+                existing is not None
+                and existing.status is McpSetupStatus.ACTIVE
+                and existing.workspace_id == workspace_id
+                and existing.profile is profile
+                and existing.authoring_intent == bool(authoring_intent)
+                and self._mcp_grants(
+                    connection, existing.setup_id, existing.setup_generation
+                )
+                == requested
+            ):
+                return McpSetupOutcome(rotated=False, setup=existing)
+
+            minted = identity_factory()
+            now_us = self._now_us()
+            generation = 1 if existing is None else existing.setup_generation + 1
+            setup_id = minted.setup_id if existing is None else existing.setup_id
+            try:
+                self._insert_mcp_audit_event(
+                    connection,
+                    audit_ref=minted.audit_ref,
+                    principal_id=minted.principal_id,
+                    operation=_MCP_CONFIGURE_OPERATION,
+                    now_us=now_us,
+                )
+                if existing is None:
+                    connection.execute(
+                        "INSERT INTO omnivia_installation_mcp_setups "
+                        "(setup_id, installation_id, host, workspace_id, "
+                        "principal_id, profile, authoring_intent, "
+                        "credential_reference, credential_salt, credential_digest, "
+                        "status, setup_generation, fencing_generation, "
+                        "created_at_us, updated_at_us, revoked_at_us) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, "
+                        "NULL)",
+                        (
+                            setup_id,
+                            self._authority.installation_id,
+                            host.value,
+                            workspace_id,
+                            minted.principal_id,
+                            profile.value,
+                            int(bool(authoring_intent)),
+                            minted.credential_reference,
+                            minted.credential_salt,
+                            minted.credential_digest,
+                            self._authority.fencing_generation,
+                            now_us,
+                            now_us,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE omnivia_installation_mcp_setups "
+                        "SET workspace_id = ?, principal_id = ?, profile = ?, "
+                        "authoring_intent = ?, credential_reference = ?, "
+                        "credential_salt = ?, credential_digest = ?, "
+                        "status = 'active', setup_generation = ?, "
+                        "fencing_generation = ?, updated_at_us = ?, "
+                        "revoked_at_us = NULL "
+                        "WHERE installation_id = ? AND setup_id = ?",
+                        (
+                            workspace_id,
+                            minted.principal_id,
+                            profile.value,
+                            int(bool(authoring_intent)),
+                            minted.credential_reference,
+                            minted.credential_salt,
+                            minted.credential_digest,
+                            generation,
+                            self._authority.fencing_generation,
+                            now_us,
+                            self._authority.installation_id,
+                            setup_id,
+                        ),
+                    )
+                for index, grant in enumerate(requested):
+                    connection.execute(
+                        "INSERT INTO omnivia_installation_mcp_grants "
+                        "(grant_row_id, installation_id, setup_id, setup_generation, "
+                        "grant_kind, grant_value, grant_version, fencing_generation, "
+                        "granted_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            f"{setup_id}-{generation}-{index}",
+                            self._authority.installation_id,
+                            setup_id,
+                            generation,
+                            grant.kind.value,
+                            grant.value,
+                            grant.version,
+                            self._authority.fencing_generation,
+                            now_us,
+                        ),
+                    )
+            except sqlite3.IntegrityError as error:
+                raise InstallationStoreError(
+                    "installed MCP configuration violated durable authority"
+                ) from error
+            settled = self._mcp_setup_for_host(connection, host)
+            if settled is None:  # pragma: no cover - same-transaction invariant
+                raise InstallationStoreError("installed MCP setup was not persisted")
+            return McpSetupOutcome(rotated=True, setup=settled)
+
+    def revoke_mcp_setup(
+        self,
+        authority: InstallationAuthority,
+        *,
+        host: McpHost,
+        audit_ref: str,
+        credential_salt: str,
+        credential_digest: str,
+    ) -> InstalledMcpSetup | None:
+        """Revoke `host`'s authority, idempotently. `None` if it was never configured.
+
+        The verifier is overwritten with material that answers to nothing, rather
+        than merely being marked unusable. `status` alone would already refuse
+        every resolution, and this is the second lock: a future reader that forgot
+        the status check still cannot authenticate the revoked bearer.
+
+        The rights go with it. A revocation advances the generation, and a policy
+        read is scoped to the setup's current generation, so the previous
+        generation's grant rows stop being anybody's authority in the same
+        statement -- while staying on disk as evidence of what was granted.
+
+        Revoking an already revoked host changes nothing and returns the durable
+        row, which is what makes a repeated `omnivia mcp revoke` free rather than a
+        second revocation with a second timestamp.
+        """
+        with self._transaction(authority) as connection:
+            existing = self._mcp_setup_for_host(connection, host)
+            if existing is None or existing.status is McpSetupStatus.REVOKED:
+                return existing
+            now_us = self._now_us()
+            try:
+                self._insert_mcp_audit_event(
+                    connection,
+                    audit_ref=audit_ref,
+                    principal_id=existing.principal_id,
+                    operation=_MCP_REVOKE_OPERATION,
+                    now_us=now_us,
+                )
+                connection.execute(
+                    "UPDATE omnivia_installation_mcp_setups "
+                    "SET status = 'revoked', credential_salt = ?, "
+                    "credential_digest = ?, setup_generation = ?, "
+                    "fencing_generation = ?, updated_at_us = ?, revoked_at_us = ? "
+                    "WHERE installation_id = ? AND setup_id = ?",
+                    (
+                        credential_salt,
+                        credential_digest,
+                        existing.setup_generation + 1,
+                        self._authority.fencing_generation,
+                        now_us,
+                        now_us,
+                        self._authority.installation_id,
+                        existing.setup_id,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise InstallationStoreError(
+                    "installed MCP revocation violated durable authority"
+                ) from error
+            settled = self._mcp_setup_for_host(connection, host)
+            if settled is None:  # pragma: no cover - same-transaction invariant
+                raise InstallationStoreError("installed MCP setup was not persisted")
+            return settled
+
+    def mcp_setup(self, host: McpHost) -> InstalledMcpSetup | None:
+        """The durable setup for one host, redacted, or `None`."""
+        with self._mutex:
+            return self._mcp_setup_for_host(self._require_connection(), host)
+
+    def mcp_setups(self) -> tuple[InstalledMcpSetup, ...]:
+        """Every configured host's setup, redacted, in host order."""
+        with self._mutex:
+            connection = self._require_connection()
+            rows = connection.execute(
+                f"SELECT {_MCP_SETUP_COLUMNS} FROM omnivia_installation_mcp_setups "
+                "WHERE installation_id = ? ORDER BY host",
+                (self._authority.installation_id,),
+            ).fetchall()
+            return tuple(_mcp_setup_from_row(row) for row in rows)
+
+    def mcp_grants(self, setup_id: str, setup_generation: int) -> tuple[McpGrant, ...]:
+        """The exact rights one setup generation holds, in canonical order."""
+        with self._mutex:
+            return self._mcp_grants(
+                self._require_connection(), setup_id, setup_generation
+            )
+
+    def resolve_mcp_credential(self, secret: str) -> ResolvedMcpSetup | None:
+        """The active setup one bearer secret authenticates, read fresh, or `None`.
+
+        Every call re-reads durable state, and nothing here is cached: a rotation
+        or a revocation therefore takes effect on the next call and on the next
+        replay, which is the property a cached session would destroy.
+
+        Only active setups are candidates, and each is compared with
+        :func:`hmac.compare_digest` against its own salted verifier. Every
+        candidate is compared even once one has matched, so the work this does is
+        the same whichever host was configured first.
+
+        `None` rather than a refusal: which of "no setup", "wrong secret" and
+        "revoked" happened is not something this can tell a caller apart from the
+        others without saying more than a failed authentication may say.
+        """
+        if not isinstance(secret, str) or not secret:
+            return None
+        with self._mutex:
+            connection = self._require_connection()
+            rows = connection.execute(
+                f"SELECT {_MCP_SETUP_COLUMNS}, credential_salt, credential_digest "
+                "FROM omnivia_installation_mcp_setups "
+                "WHERE installation_id = ? AND status = 'active' ORDER BY host",
+                (self._authority.installation_id,),
+            ).fetchall()
+            matched: InstalledMcpSetup | None = None
+            for row in rows:
+                digest = mcp_credential_digest(str(row[-2]), secret)
+                if hmac.compare_digest(digest, str(row[-1])) and matched is None:
+                    matched = _mcp_setup_from_row(row)
+            if matched is None:
+                return None
+            grants = self._mcp_grants(
+                connection, matched.setup_id, matched.setup_generation
+            )
+            if not grants:
+                raise InstallationStoreError(
+                    "an active installed MCP setup holds no durable rights"
+                )
+            return ResolvedMcpSetup(setup=matched, grants=grants)
+
+    def _require_installation_workspace(
+        self, connection: sqlite3.Connection, workspace_id: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT 1 FROM omnivia_installation_workspaces "
+            "WHERE installation_id = ? AND workspace_id = ?",
+            (self._authority.installation_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise InstallationStoreError(
+                "the named workspace is not in this installation's authorised inventory"
+            )
+
+    def _mcp_setup_for_host(
+        self, connection: sqlite3.Connection, host: McpHost
+    ) -> InstalledMcpSetup | None:
+        row = connection.execute(
+            f"SELECT {_MCP_SETUP_COLUMNS} FROM omnivia_installation_mcp_setups "
+            "WHERE installation_id = ? AND host = ?",
+            (self._authority.installation_id, host.value),
+        ).fetchone()
+        return None if row is None else _mcp_setup_from_row(row)
+
+    def _mcp_grants(
+        self, connection: sqlite3.Connection, setup_id: str, setup_generation: int
+    ) -> tuple[McpGrant, ...]:
+        rows = connection.execute(
+            "SELECT grant_kind, grant_value, grant_version "
+            "FROM omnivia_installation_mcp_grants "
+            "WHERE installation_id = ? AND setup_id = ? AND setup_generation = ? "
+            "ORDER BY grant_kind, grant_value",
+            (self._authority.installation_id, setup_id, setup_generation),
+        ).fetchall()
+        return tuple(
+            McpGrant(
+                kind=McpGrantKind(str(row[0])),
+                value=str(row[1]),
+                version=None if row[2] is None else str(row[2]),
+            )
+            for row in rows
+        )
+
+    def _insert_mcp_audit_event(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        audit_ref: str,
+        principal_id: str,
+        operation: str,
+        now_us: int,
+    ) -> None:
+        """Append the lifecycle evidence for one administration decision.
+
+        The installation's own append-only audit table, reused rather than
+        duplicated: it already records "which principal, which operation, which
+        purpose, decided how, under which generation" and already refuses UPDATE
+        and DELETE outright. `principal_id` is the dedicated MCP principal the
+        decision was about, which is the subject a later reader needs; no
+        credential, reference, salt, digest or content has a column here.
+        """
+        connection.execute(
+            "INSERT INTO omnivia_installation_audit_events "
+            "(audit_ref, installation_id, principal_id, operation, purpose, "
+            "outcome_class, error_code, fencing_generation, recorded_at_us) "
+            "VALUES (?, ?, ?, ?, ?, 'succeeded', NULL, ?, ?)",
+            (
+                audit_ref,
+                self._authority.installation_id,
+                principal_id,
+                operation,
+                _MCP_ADMINISTRATION_PURPOSE,
+                self._authority.fencing_generation,
+                now_us,
+            ),
+        )
+
     @contextmanager
     def _transaction(
         self, authority: InstallationAuthority
@@ -809,7 +1378,13 @@ def open_installation_store(
                 raise
             generation = 1
         else:
-            verify_installation_schema(connection)
+            # An existing catalogue is read for its identity *before* it is verified
+            # against the pinned head, because it is legitimately allowed to be
+            # behind that head: this build must be able to tell a catalogue that
+            # needs migrating from one that has drifted. Everything that would have
+            # been checked here is still checked -- the ledger, `user_version` and
+            # the schema fingerprint are held to the prefix the ledger claims before
+            # a single statement is applied, and to the head immediately after.
             row = connection.execute(
                 "SELECT installation_id, installation_format_version, "
                 "fencing_generation FROM omnivia_installation_state WHERE singleton = 1"
@@ -835,6 +1410,16 @@ def open_installation_store(
                 if connection.in_transaction:
                     connection.execute("ROLLBACK")
                 raise
+            # After the generation advance, never before: every ledger row this
+            # applies must name the owner that is current now, which is the rule the
+            # schema's own INSERT trigger enforces from inside the transaction.
+            apply_pending_installation_migrations(
+                connection,
+                installation_id=installation_id,
+                owner_instance_id=owner_instance_id,
+                fencing_generation=generation,
+                now_us=now_us,
+            )
 
         verify_installation_schema(connection)
         authority = InstallationAuthority(
@@ -881,6 +1466,16 @@ __all__ = [
     "InstallationOutcome",
     "InstallationStore",
     "InstallationStoreError",
+    "InstalledMcpSetup",
+    "McpGrant",
+    "McpGrantKind",
+    "McpHost",
+    "McpProfile",
+    "McpSetupOutcome",
+    "McpSetupStatus",
     "NewInstallationAllocation",
+    "NewMcpSetup",
+    "ResolvedMcpSetup",
+    "mcp_credential_digest",
     "open_installation_store",
 ]
