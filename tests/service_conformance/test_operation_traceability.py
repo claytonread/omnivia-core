@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "1.1",
+    "manifest_version": "2.0",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
