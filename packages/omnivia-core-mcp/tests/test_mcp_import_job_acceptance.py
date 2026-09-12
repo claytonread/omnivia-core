@@ -1,4 +1,4 @@
-"""R004 section 13.D: one staged import, started and observed through MCP alone.
+"""R004 section 13.D: one staged import, executed and observed through MCP alone.
 
 Section 13.B's journey proves an empty workspace can be authored into. This one
 proves the other half of the authoring profile -- the asynchronous half -- on a
@@ -20,29 +20,25 @@ explicit 2025-06-18 `InitializeRequest` rather than whatever the SDK currently
 prefers. The only thing read out of the protected document is where it is -- the
 path the redacted snippet names -- and nothing is read out of it at all.
 
+**Nothing here executes the job, and that is the claim.** `import_start` settles
+a durable job and answers; Core's own service-owned executor runs it, on the
+service's thread, under the service's identity and fencing generation, with no
+call from this file and no state written by it. What this module can therefore
+say about execution is only what an MCP client can see: a terminal result whose
+accounting adds up, an event stream that says the job ran, and an evidence
+artifact bound to that run which `evidence_search` answers with. Every one of
+those is read back through a tool.
+
 **The revocation happens while the session is open, which is the only time it
 means anything.** A revoked host that had already closed its session proves
 nothing; what section 13.D asks is whether a *live* server can keep reading and
 keep replaying a settled mutation after the owner has revoked it. So
 `omnivia mcp revoke` runs mid-session, between the observations that must succeed
 and the ones that must not, and the owner's own `omnivia job get` runs afterwards
-to show that the committed job outlived the principal that started it.
+to show that the committed work outlived the principal that started it.
 Revocation is not cancellation, and this journey is the difference stated twice:
-the MCP side stops answering, the job does not stop.
-
-**Where this journey stops, and why it stops there.** Nothing in this build
-carries an `ingestion.import` job past the state `import.start` records. The
-handler writes the job, its first attempt and its first event inside the mutation
-fence, and no worker in the service consumes it: the functions that would
-terminalize an application job have no caller outside the runtime's own tests.
-So the terminal-result, terminal-accounting and created-evidence half of section
-13.D is not observable yet, and this module asserts the state that *is* the truth
--- `running`, one attempt, one event, no terminal result -- rather than arranging
-a terminal one. Writing job state here, or completing the job from the test,
-would make the passing assertion a statement about this file instead of about
-Core. When a worker lands, the three assertions naming `running` and the absent
-terminal result are the ones that fail, and they are where the rest of section
-13.D's journey belongs.
+the MCP side stops answering, the job does not stop -- and by then the job has
+already finished, under an identity the revocation never touched.
 
 **No assertion message carries anything it could leak.** Every message below is a
 fixed sentence: no paths, no bearers, no job identifiers, no service envelopes
@@ -91,15 +87,34 @@ ABSENT_TOOLS = ("job_cancel", "job_retry")
 IMPORT_KEY = "ovmcpimport-start-001"
 
 #: The job this workspace must hold exactly one of, spelled as the catalogue
-#: spells it.
+#: spells it, and the terminal result kind `import.start` bound to it.
 IMPORT_JOB_KIND = "ingestion.import"
 IMPORT_OPERATION = "import.start"
+IMPORT_RESULT_KIND = "import_completion"
 
-#: A query no artifact in this workspace can answer, because this workspace holds
-#: no artifact. Asserted rather than assumed: section 13.D asks that every
-#: evidence item an import created be retrievable through MCP, and the honest
-#: reading of that on a job nothing has executed is that there are none to find.
-EVIDENCE_QUERY = "ovmcpimport"
+#: The accounting one staged descriptor must produce. A staged handle names one
+#: immutable blob, so the run discovers one item and turns it into one L0 evidence
+#: artifact; nothing is skipped and nothing fails, and `partial` follows from that
+#: rather than being an independent claim.
+EXPECTED_ACCOUNTING = {
+    "discovered_items": 1,
+    "evidence_records_created": 1,
+    "skipped_items": 0,
+    "failed_items": 0,
+    "partial": False,
+}
+
+#: The query the created evidence must answer. The staged source's own kind, taken
+#: from the fixture's descriptor rather than spelled again: it is the one part of
+#: the evidence's public source identity this journey already knows, and this
+#: workspace holds no other artifact for it to be confused with. A query this file
+#: invented could only prove that some artifact matched some word.
+EVIDENCE_QUERY = str(fixture.STAGED_SOURCE["source_kind"])
+
+#: One event per page, which is what makes the traversal a traversal: the settled
+#: job has more events than this, so the first page cannot be the whole snapshot
+#: and the continuation token has to be followed to see the rest.
+EVENTS_PAGE_LIMIT = 1
 
 #: The whole session's budget, generous enough to contain the installed
 #: revocation that runs inside it.
@@ -195,6 +210,12 @@ async def _journey(config: Path, installation_state: Path) -> dict[str, Any]:
     interpreter's environment deliberately: the SDK sanitizes it when `env` is
     `None`, which in a worktree drops the `PYTHONPATH` that selects the source
     tree under test.
+
+    Nothing here waits for the job, polls it, or retries a read. The service
+    executes committed import work on its own serving thread between requests, so
+    by the time it accepts the call after `import_start` the work is done -- and
+    an observation that had to be retried until it agreed would be evidence about
+    this loop rather than about Core.
     """
     parameters = StdioServerParameters(
         command=sys.executable,
@@ -258,10 +279,33 @@ async def _journey(config: Path, installation_state: Path) -> dict[str, Any]:
             # distinguishable from the replay's own answer. A second enqueue under
             # this key would show here as a second attempt or a second event.
             observed["get"] = await call("job_get", {"job_id": job_id})
+
+            # The traversal. One event per page, followed by its own continuation
+            # token, until the snapshot the first page declared is exhausted.
+            pages: list[dict[str, Any]] = []
+            page_arguments: dict[str, Any] = {
+                "job_id": job_id,
+                "limit": EVENTS_PAGE_LIMIT,
+            }
+            while True:
+                page = await call("job_events", page_arguments)
+                pages.append(page)
+                assert page["is_error"] is False, "an event page was refused"
+                token = page["structured_content"]["page"].get("continuation_token")
+                if token is None:
+                    break
+                page_arguments = {
+                    "job_id": job_id,
+                    "limit": EVENTS_PAGE_LIMIT,
+                    "page": {"continuation_token": token},
+                }
+                assert len(pages) < 16, "the event traversal did not terminate"
+            observed["pages"] = pages
+            # The same first page again, unpaged and unbounded: a snapshot that
+            # moved between the traversal and this read would show as a different
+            # count, and a stream that was not ordered would show as a different
+            # sequence.
             observed["events"] = await call("job_events", {"job_id": job_id})
-            observed["events_page"] = await call(
-                "job_events", {"job_id": job_id, "limit": 1}
-            )
             observed["evidence"] = await call(
                 "evidence_search", {"query": EVIDENCE_QUERY}
             )
@@ -284,13 +328,17 @@ async def _journey(config: Path, installation_state: Path) -> dict[str, Any]:
             return observed
 
 
-def _answer(observed: dict[str, Any], key: str) -> dict[str, Any]:
+def _succeeded(called: dict[str, Any], key: str) -> dict[str, Any]:
     """One successful call's structured content, refusing anything else."""
-    called = observed[key]
     assert called["is_error"] is False, f"{key} did not succeed"
     answer = called["structured_content"]
     assert isinstance(answer, dict), f"{key} carried no structured answer"
     return answer
+
+
+def _answer(observed: dict[str, Any], key: str) -> dict[str, Any]:
+    """The same, for one call the journey recorded under a name."""
+    return _succeeded(observed[key], key)
 
 
 def _relayed(called: dict[str, Any], key: str) -> dict[str, Any]:
@@ -328,8 +376,8 @@ def _blocked(observed: dict[str, Any], key: str) -> None:
     assert "could not be called" in message, f"{key} was refused for another reason"
 
 
-def test_a_staged_import_is_started_observed_and_survives_revocation() -> None:
-    """Section 13.D, executed: one staged handle in, one durable job out.
+def test_a_staged_import_is_executed_observed_and_survives_revocation() -> None:
+    """Section 13.D, executed: one staged handle in, one settled import out.
 
     The workspace holds exactly one thing when this begins -- the verified staged
     source a trusted installed path left behind -- and no host is configured. In
@@ -341,22 +389,27 @@ def test_a_staged_import_is_started_observed_and_survives_revocation() -> None:
     * the advertised surface is the authoring eleven, and neither `job_cancel`
       nor `job_retry` is among them or reachable by name;
     * `import_start` over that staged descriptor answers with one durable
-      `ingestion.import` job, running, on its first attempt;
-    * replaying the same key over the same descriptor answers with that identical
-      job rather than a second one, and the job read back afterwards is still on
-      attempt one with one event -- which is where a second enqueue would show;
+      `ingestion.import` job, and Core's own executor carries it to a terminal
+      `import_completion` with no call from here;
+    * replaying the same key over the same descriptor answers with the settled
+      outcome rather than starting a second job, and the job read back afterwards
+      is still on attempt one -- which is where a second enqueue would show;
     * the same key over a descriptor naming different bytes is refused as an
       `idempotency_conflict`, and the refusal still names the job the key is
       bound to, so the conflict is the key defending its settled outcome rather
       than the descriptor being rejected on its own;
-    * `job_get` observes the state, and `job_events` answers one ordered,
-      snapshot-bounded page -- the sequence starting at zero, the count the page
-      is bounded by, and no continuation because that snapshot is exhausted;
-    * nothing this import has done is evidence yet, and `evidence_search` says so
-      rather than this module assuming it;
+    * `job_get` observes the terminal result, and its accounting adds up: one item
+      discovered, one L0 evidence record created, nothing skipped, nothing failed
+      and therefore not partial;
+    * `job_events` is traversed one event per page across more than one page, and
+      the pages are contiguous, ordered and bounded by the one snapshot the first
+      page declared -- a second, unpaged read of the same stream agrees with them;
+    * the evidence that import created is retrievable through MCP, bound to this
+      run, addressing the bytes the staged descriptor named, and carrying no
+      locator -- nothing this workspace holds names a path;
     * the owner revokes the host *while the session is open*, and every later
       read, observation and same-key replay is refused without reaching Core;
-    * and the job is still there and still running when the owner asks through
+    * and the job is still there and still settled when the owner asks through
       the canonical CLI path, because revocation is not cancellation.
     """
     with fixture.serving(seed=False, stage=True, configure=False) as service:
@@ -392,9 +445,7 @@ def test_a_staged_import_is_started_observed_and_survives_revocation() -> None:
     identity = started["identity"]
     assert identity["job_kind"] == IMPORT_JOB_KIND, "another kind of job was started"
     assert identity["originating_operation"] == IMPORT_OPERATION, "another operation"
-    assert started["state"] == "running", "the started job was not running"
     assert started["latest_attempt"]["attempt_number"] == 1, "not the first attempt"
-    assert started["latest_attempt"]["state"] == "running", "the attempt is not running"
 
     # --- the replay settles to that job, and enqueues nothing -----------------
 
@@ -408,11 +459,58 @@ def test_a_staged_import_is_started_observed_and_survives_revocation() -> None:
     assert read["job"]["latest_attempt"]["attempt_number"] == 1, (
         "the replay opened a second attempt"
     )
-    # Not observable yet, and asserted rather than omitted: nothing in this build
-    # carries an `ingestion.import` job past the state `import.start` records, so
-    # there is no terminal result to observe and no terminal accounting to check.
-    # This is the assertion that fails the day a worker lands.
-    assert "terminal_result" not in read, "a job nothing executed reported a terminal"
+
+    # --- the job reached a terminal import completion -------------------------
+
+    assert read["job"]["state"] == "succeeded", "the started import did not settle"
+    assert read["job"]["latest_attempt"]["state"] == "succeeded", "the attempt is open"
+    terminal = read["terminal_result"]
+    assert terminal["state"] == "succeeded", "the terminal result is not a success"
+    assert terminal["result_kind"] == IMPORT_RESULT_KIND, "another result kind"
+    completion = terminal["result"]
+    assert completion["import_run_id"] == observed["job_id"], (
+        "the completion names another run than the job it settled"
+    )
+    assert completion["source"] == _source(), (
+        "the completion reports a descriptor other than the one accepted"
+    )
+    assert {key: completion[key] for key in EXPECTED_ACCOUNTING} == EXPECTED_ACCOUNTING, (
+        "the terminal accounting is not the one this staged source can produce"
+    )
+
+    # --- the events paginate, ordered and snapshot-stable ---------------------
+
+    pages = [
+        _succeeded(page, f"event page {number}")
+        for number, page in enumerate(observed["pages"])
+    ]
+    assert len(pages) > 1, "the traversal was not more than one page"
+    snapshot = pages[0]["snapshot_event_count"]
+    sequences = [event["sequence"] for page in pages for event in page["events"]]
+    assert sequences == list(range(snapshot)), (
+        "the traversal is not one contiguous ordered stream covering its snapshot"
+    )
+    for page in pages:
+        assert page["job_id"] == observed["job_id"], "another job's events"
+        assert page["snapshot_event_count"] == snapshot, "the snapshot moved mid-session"
+        assert 0 < len(page["events"]) <= EVENTS_PAGE_LIMIT, "a page ignored its limit"
+    for page in pages[:-1]:
+        assert page["page"].get("continuation_token"), (
+            "a page short of the snapshot offered no way to continue"
+        )
+    assert pages[-1]["page"] == {}, "an exhausted snapshot offered a continuation"
+    assert [event["state"] for page in pages for event in page["events"]] == [
+        "running",
+        "succeeded",
+    ], "the stream does not say the job ran and then succeeded"
+
+    # The same stream read again, in one unbounded page, agrees with the walk.
+    whole = _answer(observed, "events")
+    assert whole["snapshot_event_count"] == snapshot, "the stream moved between reads"
+    assert [event["sequence"] for event in whole["events"]] == sequences, (
+        "an unpaged read disagrees with the traversal"
+    )
+    assert whole["page"] == {}, "an exhausted snapshot offered a continuation"
 
     # --- the same key over a different descriptor conflicts -------------------
 
@@ -423,27 +521,28 @@ def test_a_staged_import_is_started_observed_and_survives_revocation() -> None:
         "the conflict named another job than the key is bound to"
     )
 
-    # --- the events are ordered, and the page is bounded by its snapshot ------
+    # --- the evidence the import created is retrievable through MCP -----------
 
-    events = _answer(observed, "events")
-    assert events["job_id"] == observed["job_id"], "another job's events"
-    assert [event["sequence"] for event in events["events"]] == [0], (
-        "the event sequence is not one ordered page from zero"
+    (artifact,) = _answer(observed, "evidence")["evidence"]
+    assert artifact["import_run_id"] == observed["job_id"], (
+        "the artifact is not bound to the import run that created it"
     )
-    assert events["events"][0]["state"] == "running", "the first event was not running"
-    assert events["snapshot_event_count"] == len(events["events"]), (
-        "the page did not cover the snapshot it declared"
+    assert artifact["content_checksum"] == _source()["content_checksum"], (
+        "the artifact does not address the bytes the staged descriptor named"
     )
-    assert events["page"] == {}, "an exhausted snapshot offered a continuation"
-    # The same page under an explicit limit: the answer is the snapshot's, not the
-    # limit's, and reading it twice does not move it.
-    assert _answer(observed, "events_page") == events, "the page moved between reads"
-
-    # --- the import has created no evidence, and says so ----------------------
-
-    assert _answer(observed, "evidence")["evidence"] == [], (
-        "an import nothing executed produced an artifact"
+    assert artifact["media_type"] == _source()["media_type"], "another media type"
+    assert artifact["source"]["kind"] == _source()["source_kind"], "another source kind"
+    assert "locator" not in artifact["source"], "the artifact published a locator"
+    assert artifact["provenance_history"], "the artifact carries no provenance"
+    assert artifact["provenance_history"][0]["actor_kind"] == "service", (
+        "the evidence was not attributed to the Core service"
     )
+    # Nothing about the source identity may be a path or a URL, whatever the
+    # staging recorded about itself: this is the readable half of that claim.
+    for fragment in ("/", "\\", "://"):
+        assert fragment not in artifact["source"]["source_id"], (
+            "the source identity carries something path-shaped"
+        )
 
     # --- revocation stops the session, and does not stop the job --------------
 
@@ -451,7 +550,10 @@ def test_a_staged_import_is_started_observed_and_survives_revocation() -> None:
         _blocked(observed, key)
 
     assert owned["job"]["identity"] == identity, "the owner observed another job"
-    assert owned["job"]["state"] == "running", "revocation cancelled committed work"
+    assert owned["job"]["state"] == "succeeded", "revocation disturbed committed work"
     assert owned["job"]["latest_attempt"]["attempt_number"] == 1, (
         "revocation disturbed the committed attempt"
+    )
+    assert owned["terminal_result"]["result"] == completion, (
+        "the owner's own path reports a different outcome than MCP was told"
     )
