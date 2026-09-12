@@ -29,18 +29,24 @@ import mcp_types as types
 import pytest
 from mcp import Client
 from omnivia_core_client import (
+    AuthenticatedLocalTransport,
+    AuthoringAdmissionResult,
     CancellationToken,
     Credential,
     CredentialCache,
+    CredentialMissingError,
     CredentialReference,
     Deadline,
     HttpServiceConfig,
     InstallationServiceConfig,
+    InstalledCredentialStore,
+    LocalIpcTransport,
     ManagedServiceConnection,
     ManagedStartError,
     NegotiatedEndpoint,
     ServiceClient,
     TransportError,
+    authenticated_client,
 )
 from omnivia_core_mcp import server
 from omnivia_core_mcp.configuration import McpConfiguration, parse_configuration
@@ -65,6 +71,7 @@ from omnivia_core.contracts.v1 import (
     UpgradeState,
     VersionCapabilityEnvelope,
     VersionWindow,
+    codec,
 )
 
 WORKSPACE = "ws-authority-01"
@@ -73,6 +80,9 @@ PRINCIPAL = "mcp-authority-principal"
 STATE = Path("/srv/omnivia/installation-state")
 ENDPOINT = "https://core.example.com"
 REFERENCE = "core-api"
+INSTALLED_REFERENCE = "omcp-installed-principal-0001"
+INSTALLED_SECRET = "omcp_live_5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d"
+ROTATED_SECRET = "omcp_live_00112233445566778899aabbccddeeff"
 
 ALL_PURPOSES = ["workspace_inspection", "knowledge_retrieval"]
 
@@ -111,9 +121,7 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
                 "actor_kind": "agent",
                 "actor_role": "author",
                 "asserted_at": "2026-01-01T00:00:00Z",
-                "evidence": [
-                    {"source": {"kind": "document", "source_id": "note-1"}}
-                ],
+                "evidence": [{"source": {"kind": "document", "source_id": "note-1"}}],
             },
         },
         "idempotency_key": "k-1",
@@ -146,6 +154,27 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
 # --- the trusted configuration, as a document -----------------------------------
 
 
+@pytest.fixture(autouse=True)
+def installed_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A real installation root, holding the credential every document below names.
+
+    Autouse because an installed server presents its own bearer or does not
+    start: a managed-local configuration without one is refused at
+    :func:`server.connect`, so a test about workspace selection, managed start,
+    or the profile would otherwise never reach the code it is about. `STATE`
+    points here for the duration, which is what keeps the documents
+    :func:`configuration` builds and the assertions that compare against `STATE`
+    one thing rather than two.
+    """
+    root = tmp_path / "installation-state"
+    root.mkdir()
+    InstalledCredentialStore(root).store(
+        CredentialReference(INSTALLED_REFERENCE), Credential(INSTALLED_SECRET)
+    )
+    monkeypatch.setitem(globals(), "STATE", root)
+    return root
+
+
 def configuration(**overrides: Any) -> McpConfiguration:
     """One validated configuration, parsed from a document rather than built.
 
@@ -153,6 +182,30 @@ def configuration(**overrides: Any) -> McpConfiguration:
     `McpConfiguration` directly could assemble a combination the document reader
     would never accept, and would then be proving something about a shape that
     cannot reach the server.
+
+    The installed shape, because it is the only managed-local shape that starts:
+    it names the credential `installed_state` filed. :func:`legacy_configuration`
+    is the pre-setup document, and the only thing it is good for now is proving
+    that it is refused.
+    """
+    document: dict[str, Any] = {
+        "format": "omnivia.mcp-config.v1",
+        "principal_id": PRINCIPAL,
+        "allowed_workspace_ids": [WORKSPACE],
+        "allowed_purposes": list(ALL_PURPOSES),
+        "service_mode": "managed_local",
+        "installation_state": str(STATE),
+        "credential_reference": INSTALLED_REFERENCE,
+    }
+    document.update(overrides)
+    return parse_configuration(document)
+
+
+def legacy_configuration(**overrides: Any) -> McpConfiguration:
+    """The managed-local document every installation had before the setup path.
+
+    Well-formed, readable, and naming no dedicated principal -- which is why the
+    reader still parses it and the server no longer starts on it.
     """
     document: dict[str, Any] = {
         "format": "omnivia.mcp-config.v1",
@@ -572,12 +625,12 @@ def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
     are a per-call check that never reaches it.
     """
     for purposes in (["workspace_inspection"], ["audit_export"], list(ALL_PURPOSES)):
-        assert listed(
-            session(config=configuration(allowed_purposes=purposes))
-        ) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
-    assert listed(
-        authoring_session(config=configuration(mutation_enabled=True))
-    ) == [entry.tool_name for entry in exposure_manifest("authoring")]
+        assert listed(session(config=configuration(allowed_purposes=purposes))) == [
+            entry.tool_name for entry in EXPOSURE_MANIFEST
+        ]
+    assert listed(authoring_session(config=configuration(mutation_enabled=True))) == [
+        entry.tool_name for entry in exposure_manifest("authoring")
+    ]
 
 
 # --- the profile: settled once, and the only thing that widens the surface -------
@@ -644,7 +697,7 @@ def test_connect_freezes_the_profile_it_was_admitted(
     monkeypatch.setattr(
         server.ServiceClient,
         "connect",
-        classmethod(lambda _cls, _config, **_kw: client(RecordingTransport())),
+        classmethod(lambda _cls, _config, **_kw: client(local_transport())),
     )
     admission = AdmissionRecorder(answer=answer) if inject else None
     connected = server.connect(
@@ -672,7 +725,8 @@ def test_the_admission_is_asked_with_the_connected_client_and_nothing_else(
     installation database itself or dialling a second connection, which is a way
     around authority that has already been established.
     """
-    connected_client = client(RecordingTransport())
+    held = local_transport()
+    connected_client = client(held)
     monkeypatch.setattr(
         server.ServiceClient,
         "connect",
@@ -681,16 +735,16 @@ def test_the_admission_is_asked_with_the_connected_client_and_nothing_else(
     admission = AdmissionRecorder()
 
     connected = server.connect(
-        configuration(
-            mutation_enabled=True, allowed_purposes=list(AUTHORING_PURPOSES)
-        ),
+        configuration(mutation_enabled=True, allowed_purposes=list(AUTHORING_PURPOSES)),
         authoring_admission=admission,
     )
 
     assert connected.profile == "authoring"
     (asked,) = admission.seen
-    assert asked[0] is connected_client, "the seam was handed a different client"
-    assert asked[0] is connected.client
+    assert asked[0] is connected.client, "the seam was handed a different client"
+    # The session's own client: the shared client's, wrapped so the admission is
+    # asked over the same authenticated control every later call travels.
+    assert asked[0].transport.transport is held  # type: ignore[union-attr]
     assert asked[1:] == (PRINCIPAL, WORKSPACE)
     assert asked[0].descriptor.workspace_id == WORKSPACE
 
@@ -1146,9 +1200,7 @@ def test_a_same_key_replay_is_a_real_call_every_time() -> None:
         )
 
     failing = RecordingTransport(answer=refuse)
-    result = call(
-        "evidence_capture", arguments, connected=authoring_session(failing)
-    )
+    result = call("evidence_capture", arguments, connected=authoring_session(failing))
     assert result.is_error is True
     assert len(failing.calls) == 1, "a mutation was retried on this server's initiative"
 
@@ -1174,7 +1226,7 @@ def test_a_sole_allow_listed_workspace_selects_itself(
     monkeypatch.setattr(
         server.ServiceClient,
         "connect",
-        classmethod(lambda _cls, _config, **_kw: client(RecordingTransport())),
+        classmethod(lambda _cls, _config, **_kw: client(local_transport())),
     )
     assert server.connect(configuration()).workspace_id == WORKSPACE
 
@@ -1185,7 +1237,7 @@ def test_a_default_workspace_selects_itself_out_of_several(
     monkeypatch.setattr(
         server.ServiceClient,
         "connect",
-        classmethod(lambda _cls, _config, **_kw: client(RecordingTransport())),
+        classmethod(lambda _cls, _config, **_kw: client(local_transport())),
     )
     connected = server.connect(
         configuration(
@@ -1207,7 +1259,7 @@ def test_a_service_serving_another_workspace_is_refused_at_startup(
         server.ServiceClient,
         "connect",
         classmethod(
-            lambda _cls, _config, **_kw: client(RecordingTransport(), OTHER_WORKSPACE)
+            lambda _cls, _config, **_kw: client(local_transport(), OTHER_WORKSPACE)
         ),
     )
     with pytest.raises(server.StartupError) as refusal:
@@ -1240,7 +1292,8 @@ def test_managed_local_delegates_the_whole_startup_to_the_shared_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The adapter supplies configuration and one deadline, and owns no launcher."""
-    expected = client(RecordingTransport())
+    held = local_transport()
+    expected = client(held)
     seen: list[tuple[Any, Deadline]] = []
 
     def managed(config: Any, *, deadline: Deadline, **_kwargs: Any) -> Any:
@@ -1257,25 +1310,27 @@ def test_managed_local_delegates_the_whole_startup_to_the_shared_client(
     assert seen[0][0].workspace_id == WORKSPACE
     assert isinstance(seen[0][1], Deadline)
     assert connected.status == "attached"
-    assert connected.client is expected
+    # The shared client's, presented as the dedicated principal: the session
+    # carries the wrapper, and under it the very transport that came back.
+    assert connected.client.transport.transport is held  # type: ignore[union-attr]
 
 
 def test_managed_local_preserves_the_shared_client_start_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = client(RecordingTransport())
+    held = local_transport()
     monkeypatch.setattr(
         server,
         "connect_managed_local",
         lambda _config, **_kwargs: ManagedServiceConnection(
-            client=expected, status="started"
+            client=client(held), status="started"
         ),
     )
 
     connected = server.connect(configuration())
 
     assert connected.status == "started"
-    assert connected.client is expected
+    assert connected.client.transport.transport is held  # type: ignore[union-attr]
 
 
 def test_a_shared_managed_start_failure_becomes_a_fixed_startup_refusal(
@@ -1404,7 +1459,7 @@ def test_both_modes_go_through_the_shared_service_client(
     imported a transport directly would be free to grow a second dial loop later,
     whatever this test observed today.
     """
-    recorder = ConnectRecorder([client(RecordingTransport())])
+    recorder = ConnectRecorder([client(local_transport())])
     install(monkeypatch, recorder)
     local = server.connect(configuration())
     assert isinstance(local.client, ServiceClient)
@@ -1437,3 +1492,518 @@ def test_the_session_is_immutable() -> None:
 def test_clearing_credentials_is_safe_when_there_are_none() -> None:
     """Local mode holds no cache, and shutdown does not have to know that."""
     session().clear_credentials()
+
+
+# --- the installed managed-local principal --------------------------------------
+#
+# A `managed_local` configuration the installed setup path wrote names a
+# credential this installation holds in its own protected store. Everything below
+# is about what that name does and, just as importantly, what its *absence* does:
+# a configuration without one has no dedicated principal to call as, and an
+# installed server presents its own bearer or does not run at all.
+
+
+def installed_store() -> InstalledCredentialStore:
+    """The store `installed_state` filed this session's credential into."""
+    return InstalledCredentialStore(STATE)
+
+
+def stored_files() -> list[Path]:
+    return sorted((STATE / "runtime" / ".installed-credentials").iterdir())
+
+
+def local_transport() -> LocalIpcTransport:
+    """A real local transport that is never dialled by the tests that hold one."""
+    return LocalIpcTransport(endpoint_uri="unix:///nonexistent/omnivia/s.sock")
+
+
+def attach(monkeypatch: pytest.MonkeyPatch, transport: Any) -> ServiceClient:
+    """Make managed-local startup hand back a client over `transport`."""
+    connected = client(transport)
+    monkeypatch.setattr(
+        server,
+        "connect_managed_local",
+        lambda *_a, **_k: ManagedServiceConnection(client=connected, status="attached"),
+    )
+    return connected
+
+
+def test_an_installed_configuration_calls_as_its_dedicated_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every application call is wrapped; nothing above the transport changes.
+
+    `ConnectedSession` and every handler still go through `ServiceClient.call` --
+    what that reaches is the authenticated local control rather than the plain
+    application path, so the service dispatches under the dedicated principal
+    instead of its own.
+    """
+    held = local_transport()
+    attach(monkeypatch, held)
+
+    connected = server.connect(configuration())
+
+    assert isinstance(connected.client.transport, AuthenticatedLocalTransport)
+    assert connected.client.transport.transport is held
+    assert connected.client.transport.credential().reveal() == INSTALLED_SECRET
+
+
+@pytest.mark.parametrize("mutation_enabled", [False, True])
+def test_a_configuration_with_no_reference_gets_no_session_at_all(
+    monkeypatch: pytest.MonkeyPatch, mutation_enabled: bool
+) -> None:
+    """The pre-setup shape is a refusal now, not an unauthenticated session.
+
+    A managed-local endpoint accepts the plain application path, so the fallback
+    this replaces was a *working* session dispatching as whatever the service
+    itself runs as -- the service's own administrator identity, silently, with
+    `authoring` the only thing it could not reach. Both bytes of
+    `mutation_enabled` end the same way: no session comes back, and
+    `RefusingTransport` proves no call was issued on the way to saying so.
+    """
+    attach(monkeypatch, RefusingTransport())
+
+    with pytest.raises(server.StartupError) as refused:
+        server.connect(legacy_configuration(mutation_enabled=mutation_enabled))
+
+    assert "no usable credential" in str(refused.value)
+
+
+def test_the_legacy_document_is_still_read_and_only_refused_at_startup() -> None:
+    """The refusal is `connect`'s, not the reader's, and that split is deliberate.
+
+    `parse_configuration` describes a document it can describe -- a legacy
+    installation's configuration is well-formed and says exactly what it means --
+    and the server is what declines to run on it. A reader that refused instead
+    would make an upgrade look like a corrupt file.
+    """
+    config = legacy_configuration()
+    assert config.service_mode == "managed_local"
+    assert config.credential_reference is None
+
+
+def test_the_bearer_is_read_again_for_every_call_rather_than_captured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rotation and revocation land on the next call, not at the next restart."""
+    store = installed_store()
+    attach(monkeypatch, local_transport())
+
+    connected = server.connect(configuration())
+    source = connected.client.transport.credential  # type: ignore[union-attr]
+
+    store.store(CredentialReference(INSTALLED_REFERENCE), Credential(ROTATED_SECRET))
+    assert source().reveal() == ROTATED_SECRET
+
+    store.remove(CredentialReference(INSTALLED_REFERENCE))
+    with pytest.raises(CredentialMissingError):
+        source()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["no-store", "revoked", "unreadable", "not-a-credential", "wrong-reference"],
+)
+def test_a_credential_this_installation_cannot_produce_fails_closed_at_startup(
+    monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    """Before one tool is advertised, and without falling back to the service.
+
+    The refusal is one fixed sentence for every cause, because the reference, the
+    store and the bytes are all things it reaches a host's stderr carrying.
+    """
+    store = installed_store()
+    reference = CredentialReference(INSTALLED_REFERENCE)
+    if damage == "no-store":
+        for path in stored_files():
+            path.unlink()
+        (STATE / "runtime" / ".installed-credentials").rmdir()
+    elif damage == "revoked":
+        store.remove(reference)
+    elif damage == "unreadable":
+        for path in stored_files():
+            path.chmod(0o644)
+    elif damage == "not-a-credential":
+        for path in stored_files():
+            path.write_bytes(b"not a credential\n")
+            path.chmod(0o600)
+    elif damage == "wrong-reference":
+        store.remove(reference)
+        store.store(
+            CredentialReference("omcp-some-other-reference"),
+            Credential(INSTALLED_SECRET),
+        )
+
+    attach(monkeypatch, local_transport())
+
+    with pytest.raises(server.StartupError) as refused:
+        server.connect(configuration())
+    rendered = " ".join((str(refused.value), repr(refused.value.args)))
+    assert "no usable credential" in rendered
+    for absent in (INSTALLED_SECRET, str(STATE), INSTALLED_REFERENCE):
+        assert absent not in rendered
+
+
+def test_a_startup_refusal_never_leaves_a_session_calling_unauthenticated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """There is no fallback branch: a missing credential is a refusal, not a downgrade."""
+    installed_store().remove(CredentialReference(INSTALLED_REFERENCE))
+    attach(monkeypatch, RefusingTransport())
+    with pytest.raises(server.StartupError):
+        server.connect(configuration())
+
+
+# --- the production authoring admission -----------------------------------------
+
+
+@dataclass
+class AdmissionPeer:
+    """Stands in for `mcp_authoring_admission`, recording what it was presented."""
+
+    answer: Any
+    seen: list[tuple[Any, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.seen is None:
+            self.seen = []
+
+    def __call__(self, transport: Any, credential: str, **_kwargs: Any) -> Any:
+        self.seen.append((transport, credential))
+        return self.answer
+
+
+def admission_result(
+    *,
+    admitted: bool = True,
+    principal_id: str = PRINCIPAL,
+    workspace_id: str = WORKSPACE,
+) -> AuthoringAdmissionResult:
+    return AuthoringAdmissionResult(
+        admitted=admitted, principal_id=principal_id, workspace_id=workspace_id
+    )
+
+
+def test_no_reference_means_no_admission_to_inject() -> None:
+    """Nothing to present means nothing to ask with.
+
+    A remote configuration's credential is the injecting host's rather than this
+    installation's, so no admission is built and `restricted` is the only profile
+    `effective_profile` can reach. A managed-local configuration with no reference
+    answers the same way -- and never gets as far as a profile, because
+    :func:`connect` has already refused it.
+    """
+    assert server._installed_admission(remote_configuration()) is None
+    assert server._installed_admission(legacy_configuration()) is None
+    assert server._installed_store(legacy_configuration()) is None
+
+
+def test_the_admission_presents_the_bearer_over_the_session_s_own_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = local_transport()
+    peer = AdmissionPeer(admission_result())
+    monkeypatch.setattr(server, "mcp_authoring_admission", peer)
+
+    admission = server._installed_admission(configuration())
+    assert admission is not None
+    wrapped = authenticated_client(client(held), lambda: Credential(INSTALLED_SECRET))
+
+    assert admission(wrapped, PRINCIPAL, WORKSPACE) is True
+    assert peer.seen == [(held, INSTALLED_SECRET)]
+
+
+@pytest.mark.parametrize(
+    ("answer", "admitted"),
+    [
+        (admission_result(), True),
+        (admission_result(admitted=False), False),
+        (admission_result(principal_id="some-other-principal"), False),
+        (admission_result(workspace_id="ws-some-other-workspace"), False),
+        (admission_result(principal_id="", workspace_id=""), False),
+    ],
+)
+def test_admission_requires_the_protected_answer_to_name_this_very_session(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: AuthoringAdmissionResult,
+    admitted: bool,
+) -> None:
+    """A true `admitted` for somebody else is an answer about somebody else.
+
+    Accepting it would let a credential filed for one workspace author in
+    another, so both identifiers are compared against the trusted configuration's
+    -- which no prompt, argument or tool call can reach.
+    """
+    monkeypatch.setattr(server, "mcp_authoring_admission", AdmissionPeer(answer))
+    admission = server._installed_admission(configuration())
+    assert admission is not None
+    wrapped = authenticated_client(
+        client(local_transport()), lambda: Credential(INSTALLED_SECRET)
+    )
+    assert admission(wrapped, PRINCIPAL, WORKSPACE) is admitted
+
+
+def test_a_revoked_credential_makes_the_admission_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolution is fresh inside the admission, so a revocation is felt there too."""
+    store = installed_store()
+    peer = AdmissionPeer(admission_result())
+    monkeypatch.setattr(server, "mcp_authoring_admission", peer)
+    admission = server._installed_admission(configuration())
+    assert admission is not None
+    wrapped = authenticated_client(
+        client(local_transport()), lambda: Credential(INSTALLED_SECRET)
+    )
+
+    store.remove(CredentialReference(INSTALLED_REFERENCE))
+    with pytest.raises(CredentialMissingError):
+        admission(wrapped, PRINCIPAL, WORKSPACE)
+    assert peer.seen == []
+
+
+# --- the whole startup decision -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mutation_enabled", "answer", "profile"),
+    [
+        # The ceiling and the protected floor together, and nothing less.
+        (True, admission_result(), "authoring"),
+        (True, admission_result(admitted=False), "restricted"),
+        (True, admission_result(principal_id="elsewhere"), "restricted"),
+        (True, admission_result(workspace_id="ws-elsewhere"), "restricted"),
+        (False, admission_result(), "restricted"),
+    ],
+)
+def test_the_profile_a_started_server_freezes(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation_enabled: bool,
+    answer: AuthoringAdmissionResult,
+    profile: str,
+) -> None:
+    """Every profile a server can actually start with, and every row names one.
+
+    There is no unreferenced row any more: a managed-local configuration with no
+    credential has no profile to freeze because it has no session --
+    `test_a_configuration_with_no_reference_gets_no_session_at_all` is that case.
+    """
+    monkeypatch.setattr(server, "mcp_authoring_admission", AdmissionPeer(answer))
+    attach(monkeypatch, local_transport())
+
+    config = configuration(
+        mutation_enabled=mutation_enabled,
+        allowed_purposes=list(AUTHORING_PURPOSES),
+    )
+    connected = server.connect(
+        config, authoring_admission=server._installed_admission(config)
+    )
+    assert connected.profile == profile
+    assert [tool.name for tool in server.tools(connected.profile)] == [
+        tool.name for tool in server.tools(profile)
+    ]
+
+
+def test_public_intent_alone_never_reaches_a_mutation_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully installed server with `mutation_enabled: true` and no protected record.
+
+    The one case the public document can produce on its own now that a credential
+    is mandatory: everything the editable file can say is said, the bearer
+    resolves, the session starts -- and the protected authority has recorded
+    nothing, so the profile is `restricted`. Not merely unlisted: a restricted
+    session has no way to resolve a mutation tool's name to an operation at all,
+    so the call is refused by the allow-list before a request exists.
+    """
+    monkeypatch.setattr(
+        server,
+        "mcp_authoring_admission",
+        AdmissionPeer(admission_result(admitted=False)),
+    )
+    attach(monkeypatch, local_transport())
+    config = configuration(
+        mutation_enabled=True,
+        allowed_purposes=list(AUTHORING_PURPOSES),
+    )
+    connected = server.connect(
+        config, authoring_admission=server._installed_admission(config)
+    )
+    assert connected.profile == "restricted"
+    for tool_name in sorted(ADMITTED_MUTATIONS):
+        result = call(tool_name, {}, connected=connected)
+        assert result.is_error is True
+        assert "is not a tool this server exposes" in result.content[0].text  # type: ignore[union-attr]
+
+
+def test_an_installed_server_never_calls_as_the_service_s_own_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point, asserted where a regression would actually land.
+
+    A future edit that dropped the wrapper -- or added a fallback for a transport
+    the authenticated control cannot travel -- would leave the session calling
+    over the plain application path as whatever the service runs as. Both halves
+    fail here if that ever happens: a local transport must come back wrapped, and
+    one the control has no form for must be refused rather than used bare.
+    """
+    held = local_transport()
+    attach(monkeypatch, held)
+    connected = server.connect(configuration())
+    assert connected.client.transport is not held
+    assert isinstance(connected.client.transport, AuthenticatedLocalTransport)
+
+    attach(monkeypatch, RecordingTransport())
+    with pytest.raises(TransportError):
+        server.connect(configuration())
+
+
+@dataclass
+class ExchangingPeer:
+    """Stands where the local endpoint does, recording the document written to it.
+
+    `call_authenticated` reaches a transport through `exchange` and nothing else,
+    so this is the whole of what an installed session puts on the wire -- built by
+    the real wrapper, from the real request, with the real bearer.
+    """
+
+    answer: Any = None
+    exchanges: list[dict[str, Any]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.exchanges is None:
+            self.exchanges = []
+
+    def exchange(
+        self,
+        document: dict[str, Any],
+        *,
+        deadline: Any,
+        cancellation: Any = None,
+        operation: str,
+    ) -> dict[str, Any]:
+        self.exchanges.append(document)
+        return self.answer(document)
+
+
+def test_an_installed_session_dispatches_every_tool_call_authenticated() -> None:
+    """The application request reaches the wire inside an authenticated control.
+
+    Not a probe, not the plain application path, and carrying the bearer the store
+    holds -- with the request itself the contract-encoded envelope the tool built.
+    """
+
+    def answer(document: dict[str, Any]) -> dict[str, Any]:
+        request = codec.decode_request(document["request"])
+        # Built through the codec in both directions, so what comes back is a
+        # document a real service could have written and this package decodes.
+        refs = (CapabilityRef(id="workspace.read", version="1.0"),)
+        metadata = ResponseMetadata(
+            request_id=request.metadata.request_id,
+            correlation_id=request.metadata.correlation_id,
+            version=VersionCapabilityEnvelope(
+                api_version=request.metadata.api_version,
+                server_version="0.1.0",
+                workspace_format_version="1.0",
+                compatibility=CompatibilityMetadata(
+                    selected_api_version=request.metadata.api_version,
+                    selected_workspace_version="1.0",
+                    supported_api_versions=VersionWindow(
+                        minimum=request.metadata.api_version,
+                        maximum=request.metadata.api_version,
+                    ),
+                    supported_workspace_versions=VersionWindow(
+                        minimum="1.0", maximum="1.0"
+                    ),
+                    status="compatible",
+                    upgrade_state=UpgradeState(value="none"),
+                    deprecations=(),
+                ),
+                capabilities=CapabilitySet(
+                    supported=refs, granted=refs, effective=refs
+                ),
+            ),
+            # The dedicated principal, as the service reports who it dispatched
+            # under -- not the service's own worker or administrator identity.
+            authority=GrantedAuthority(
+                principal_id=PRINCIPAL, roles=(), capabilities=refs
+            ),
+        )
+        return {
+            "local_control_result": "omnivia.local-control.v1",
+            "kind": "application.call",
+            "result": {
+                "response": codec.encode_response(
+                    SuccessResponseEnvelope(metadata=metadata, result={"workspace": {}})
+                )
+            },
+        }
+
+    peer = ExchangingPeer(answer=answer)
+    store = installed_store()
+    reference = CredentialReference(INSTALLED_REFERENCE)
+    connected = session(
+        AuthenticatedLocalTransport(
+            transport=peer,  # type: ignore[arg-type]
+            credential=lambda: store.resolve(reference),
+        )
+    )
+
+    result = call("workspace_inspect", {}, connected=connected)
+
+    assert result.is_error is not True
+    assert len(peer.exchanges) == 1
+    written = peer.exchanges[0]
+    assert written["local_control"] == "omnivia.local-control.v1"
+    assert written["kind"] == "application.call"
+    assert written["credential"] == INSTALLED_SECRET
+    assert written["request"]["operation"] == "workspace.inspect"
+    assert written["request"]["metadata"]["principal_claim"][
+        "claimed_principal_id"
+    ] == (PRINCIPAL)
+
+
+def test_a_revoked_credential_fails_the_next_tool_call_rather_than_the_next_restart() -> (
+    None
+):
+    """No session to expire and no cached bearer: the store is read per call."""
+    store = installed_store()
+    reference = CredentialReference(INSTALLED_REFERENCE)
+    peer = ExchangingPeer(
+        answer=lambda _document: pytest.fail("nothing should be sent")
+    )
+    connected = session(
+        AuthenticatedLocalTransport(
+            transport=peer,  # type: ignore[arg-type]
+            credential=lambda: store.resolve(reference),
+        )
+    )
+
+    store.remove(reference)
+    result = call("workspace_inspect", {}, connected=connected)
+
+    assert result.is_error is True
+    assert peer.exchanges == []
+    rendered = result.content[0].text  # type: ignore[union-attr]
+    assert "could not be called" in rendered
+    for absent in (INSTALLED_SECRET, INSTALLED_REFERENCE, str(STATE)):
+        assert absent not in rendered
+
+
+def test_no_command_line_option_can_carry_a_credential() -> None:
+    """The only argument is a path to the trusted document, and it holds a name.
+
+    A secret must never reach a process argument: an argument vector is readable
+    by every process this user runs and is copied into shells, logs and crash
+    reports. There is no option here to put one in, and the document the one
+    option names carries a reference rather than material.
+    """
+    options = {
+        option
+        for action in server.build_parser()._actions
+        for option in action.option_strings
+    }
+    assert options == {"-h", "--help", "--config"}
+    for option in options:
+        for forbidden in ("credential", "secret", "token", "bearer", "password", "key"):
+            assert forbidden not in option

@@ -195,6 +195,11 @@ def test_the_production_package_contains_only_the_declared_cli_modules() -> None
         "__init__.py",
         "dispatch.py",
         "main.py",
+        # R004 section 9.2's installed MCP administration family. A separate
+        # module rather than more of `main.py`, because it is a separate command
+        # class: it administers this installation's dedicated MCP principals
+        # rather than calling one workspace's service.
+        "mcp_admin.py",
         "py.typed",
         "safe_status.py",
         "surface.py",
