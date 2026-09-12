@@ -28,6 +28,28 @@ credential source. What was a `TransportFactory` seam is gone with the direct
 transport construction it existed for: a connected :class:`ConnectedSession` is
 what a test substitutes now, and it substitutes the same object production uses.
 
+**An installed managed-local server calls as its own dedicated principal.** A
+configuration the installed setup path wrote carries the *name* of a credential
+this installation filed in its own protected store; this package asks the shared
+client's :class:`~omnivia_core_client.InstalledCredentialStore` for it by that
+name, at a location the store derives from the installation root and nothing here
+chooses, and wraps the connected client with
+:func:`~omnivia_core_client.authenticated_client` so every application request
+travels the local endpoint's authenticated control. The bearer is never held: it
+is read from the store for each call, so revoking or rotating it changes the very
+next call. Nothing above this sees any of it -- `ConnectedSession` and every
+handler still go through `ServiceClient.call`.
+
+**There is no unauthenticated managed-local session, and no way to ask for one.**
+A managed-local configuration that names no credential, and one naming a
+credential this installation cannot produce, both refuse at :func:`connect` --
+before a service is started and long before MCP initialization -- with one fixed
+sentence that quotes neither. The local endpoint would accept the plain
+application path, so the fallback that used to exist was a session that worked,
+dispatching under whatever identity the service itself runs as; a document that
+predates the installed setup path is now re-run through that setup rather than
+silently borrowing the service's authority.
+
 **Authority is the configuration's, never the model's.** The principal, the
 workspace, the allowed purposes, the endpoint and the credential *reference* all
 come from the trusted `omnivia.mcp-config.v1` document, which is read from an
@@ -43,11 +65,15 @@ freezes it on the session, and both `tools/list` and the call path read that one
 value -- so the advertised inventory and the callable inventory are the same
 inventory, and neither varies with a prompt, an argument or an allowed purpose.
 It asks *after* the service is connected and its descriptor agreed, and hands the
-protected admission seam that connected client, so the Phase 6 implementation
-reads its record through the authority this session already established rather
-than through an installation database or a second connection of its own. The
-console entry point injects no seam, so an installed server today is `restricted`
-whatever its configuration file says.
+protected admission seam that connected client, so the implementation reads its
+record through the authority this session already established rather than through
+an installation database or a second connection of its own. The console entry
+point injects that seam only for a configuration that names a credential -- see
+:func:`_installed_admission` -- and the admission it injects requires the
+protected answer to name exactly the configured principal and workspace. A
+managed-local configuration with no reference never reaches a profile at all,
+and a remote one gets no admission and is `restricted` whatever its
+`mutation_enabled` byte says.
 
 **An authoring call is checked against the canonical contract before it is
 sent.** The advertised wrapper is a call shape and the schema projection is a
@@ -63,21 +89,36 @@ appears below, and their absence is the implementation: there is no lease call,
 no stop call and no shutdown hook. A service started here is an independent Core
 service and outlives the stdio session, exactly as R004-07 requires. The one
 thing this process does drop at shutdown is its own credential cache.
+
+**The one process this module does own is a copy of itself.**
+:func:`verify_installed_setup` qualifies a protected configuration by running
+this entry point as a child and speaking MCP to it with the official SDK's own
+client, because that is the only way to answer the question an installed setup
+actually asks: *would a host that launched this command get this server, with
+this inventory?* An in-process rehearsal cannot answer it -- it proves a session
+object was built, not that a subprocess speaks the protocol -- and the child is
+stopped, on success and on every failure, before the answer is returned. It is
+still no launcher: the child is this interpreter running this module, its whole
+command line is the configuration path, and nothing about a Core *service*
+process is decided here.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TextIO
 
 import anyio
 import mcp_types as types
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
@@ -85,13 +126,18 @@ from omnivia_core_client import (
     CLIENT_API_VERSION,
     ClientError,
     CredentialCache,
+    CredentialReference,
     CredentialResolver,
     Deadline,
     HttpServiceConfig,
     InstallationServiceConfig,
+    InstalledCredentialStore,
     ManagedStartError,
     ServiceClient,
+    authenticated_client,
     connect_managed_local,
+    local_control_transport,
+    mcp_authoring_admission,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -127,6 +173,7 @@ from omnivia_core_mcp.manifest import (
     RESTRICTED_PROFILE,
     ExposedOperation,
     exposed_by_tool_name,
+    exposure_manifest,
     input_schema,
     tools,
 )
@@ -135,6 +182,7 @@ __all__ = [
     "CALL_TIMEOUT_SECONDS",
     "CLIENT_NAME",
     "CONNECT_TIMEOUT_SECONDS",
+    "EXPECTED_TOOL_COUNT",
     "RESERVED_ARGUMENTS",
     "SERVER_NAME",
     "ConnectedSession",
@@ -143,6 +191,7 @@ __all__ = [
     "connect",
     "main",
     "serve",
+    "verify_installed_setup",
 ]
 
 #: The name this server advertises to a host. Stable MCP-facing vocabulary.
@@ -256,6 +305,20 @@ _MANAGED_START_UNREACHABLE: Final = (
 )
 _NO_CREDENTIAL_RESOLVER: Final = (
     "remote service mode requires an injected trusted credential resolver"
+)
+#: What a managed-local configuration with no usable dedicated principal is told.
+#: One sentence for every reason -- no reference in the document at all, nothing
+#: filed under the one it carries, a stored file that is not owner-private, one
+#: that is not a credential, a store that could not be read -- because the
+#: reference, the store and the bytes are all things this refusal reaches a
+#: host's stderr carrying, and the answer to every one of them is the same:
+#: re-run the installed setup for this host. It is the *only* outcome besides a
+#: resolved bearer: there is no branch below that reaches the service unauthenticated.
+_NO_INSTALLED_CREDENTIAL: Final = (
+    "this installation holds no usable credential for the configured reference. "
+    "Re-run the installed OmniVia MCP setup for this host: the server presents a "
+    "dedicated principal's credential on every call and will not fall back to "
+    "the service's own authority"
 )
 _SERVICE_UNAVAILABLE: Final = "the configured service could not be connected"
 
@@ -391,17 +454,134 @@ def _connect_managed_local(
     state = configuration.installation_state
     if state is None:  # pragma: no cover - the configuration model forbids it
         raise StartupError(_SERVICE_UNAVAILABLE)
+    # Before anything is started, because a configuration that cannot present
+    # its own bearer has no session to reach whatever happens next, and starting
+    # a service this process is about to refuse to talk to is a cold start and a
+    # running service bought for a refusal.
+    store, reference = _installed_credential(configuration)
     service_config = InstallationServiceConfig(
         installation_state=state, workspace_id=workspace_id
     )
     deadline = Deadline.after(MANAGED_START_TIMEOUT_SECONDS)
+    connected = None
     try:
         connected = connect_managed_local(service_config, deadline=deadline)
     except ManagedStartError:
-        pass
-    else:
-        return connected.client, connected.status
-    raise StartupError(_MANAGED_START_UNREACHABLE)
+        connected = None
+    if connected is None:
+        raise StartupError(_MANAGED_START_UNREACHABLE)
+    return (
+        authenticated_client(connected.client, lambda: store.resolve(reference)),
+        connected.status,
+    )
+
+
+def _installed_credential(
+    configuration: McpConfiguration,
+) -> tuple[InstalledCredentialStore, CredentialReference]:
+    """The store and the name this managed-local session presents, or a refusal.
+
+    **There is no other outcome, and that is the whole of the rule.** A
+    managed-local configuration that names no credential, and one naming a
+    credential this installation cannot produce, are the same thing to this
+    server: a configuration with no dedicated principal to call as. Both refuse
+    here, before a service is started and long before MCP initialization, rather
+    than reaching the installation-local endpoint as whatever the service itself
+    runs as. A local endpoint admits an unauthenticated application call, so
+    falling back would be a working session dispatching under the service's own
+    administrator identity -- silently, with `authoring` the only thing it could
+    not do, which is the wrong half to be stopped by.
+
+    One sentence covers both, because the difference between them is which
+    reference a document carries and which file a store could not read, and a
+    refusal that reaches a host's stderr carries neither. The instruction is the
+    same either way: re-run the installed setup for this host.
+
+    The bearer is resolved **once here and then not kept**: the resolution is a
+    startup check rather than a cached value, so a credential this installation
+    does not hold, or holds in a file that is not owner-private, fails before one
+    tool is advertised instead of at the first call a model makes. What the
+    session carries is the store and the name, asked again on every call -- so a
+    revoked or rotated credential takes effect on the next call rather than at
+    the next restart, and nothing this process holds outlives the authority
+    behind it.
+    """
+    reference = configuration.credential_reference
+    store = _installed_store(configuration)
+    if reference is None or store is None:
+        raise StartupError(_NO_INSTALLED_CREDENTIAL)
+    resolvable = True
+    try:
+        store.resolve(reference)
+    except ClientError:
+        resolvable = False
+    if not resolvable:
+        # Outside the handler: a `ClientError` reachable through `__context__`
+        # is the store's own refusal, and this one must quote nothing at all.
+        raise StartupError(_NO_INSTALLED_CREDENTIAL)
+    return store, reference
+
+
+def _installed_store(
+    configuration: McpConfiguration,
+) -> InstalledCredentialStore | None:
+    """This installation's protected store, for a configuration that names one.
+
+    The store is rooted at the configuration's own ``installation_state`` and
+    chooses everything below it: this adapter passes a trusted root and never a
+    path, a filename or a directory, so there is no configuration value and no
+    argument that could point credential resolution anywhere else.
+    """
+    state = configuration.installation_state
+    if state is None or configuration.credential_reference is None:
+        return None
+    return InstalledCredentialStore(state)
+
+
+def _installed_admission(configuration: McpConfiguration) -> AuthoringAdmission | None:
+    """The production authoring admission, for an installation that can answer one.
+
+    ``None`` whenever there is no bearer to present: a remote configuration, whose
+    credential is the injecting host's rather than this installation's. Such a
+    server has no way to ask the protected authority anything, so
+    :func:`~omnivia_core_mcp.configuration.effective_profile` is given nothing and
+    `restricted` is the only profile it can reach, whatever `mutation_enabled`
+    says. A managed-local configuration with no reference also answers ``None``
+    here, but nothing reaches a profile on that path any more --
+    :func:`_installed_credential` has already refused it -- so this is a total
+    function rather than a second gate.
+
+    With a bearer, the answer comes from
+    :func:`~omnivia_core_client.mcp_authoring_admission`: the service reads
+    durable protected state fresh on that call and says whether the principal
+    that bearer resolves to is admitted to author, and for whom. **Both
+    identifiers are then compared, and that comparison is the admission.** A true
+    ``admitted`` for some other principal or some other workspace is an answer
+    about a different session, and accepting it would let a credential filed for
+    one workspace author in another; the identifiers the comparison uses are the
+    trusted configuration's, which no prompt, argument or tool call can reach.
+
+    The credential is resolved inside the call, not captured: an admission asked
+    after a revocation asks with whatever the store holds then, which is nothing.
+    """
+    reference = configuration.credential_reference
+    store = _installed_store(configuration)
+    if reference is None or store is None:
+        return None
+
+    def admission(client: ServiceClient, principal_id: str, workspace_id: str) -> bool:
+        answer = mcp_authoring_admission(
+            local_control_transport(client),
+            store.resolve(reference).reveal(),
+            deadline=Deadline.after(CALL_TIMEOUT_SECONDS),
+        )
+        return (
+            answer.admitted
+            and answer.principal_id == principal_id
+            and answer.workspace_id == workspace_id
+        )
+
+    return admission
 
 
 def _connect_service_client(
@@ -854,6 +1034,210 @@ async def serve(*, session: ConnectedSession) -> None:
             )
 
 
+#: What each profile advertises, exactly, and what R004 section 9.2 step 7 says
+#: an installed setup must have proved before it reports success.
+#:
+#: Two numbers rather than a derivation, because the point is to notice a change:
+#: the inventory is settled in :mod:`omnivia_core_mcp.manifest` and the counts
+#: there are what a build produces, so a check that recomputed them from the
+#: manifest would agree with any inventory the manifest happened to hold. These
+#: are the requirement's own figures, and a build whose manifest has moved fails
+#: this check rather than certifying itself.
+EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
+    RESTRICTED_PROFILE: 6,
+    AUTHORING_PROFILE: 11,
+}
+
+_UNEXPECTED_INVENTORY: Final = (
+    "this configuration does not start a server with the exposure this "
+    "installation's setup requires"
+)
+#: What a peer that answered the handshake as somebody else is told. Distinct
+#: from the inventory refusal because the remedy is different: an inventory that
+#: does not match is this build's own surface having moved, and a server that
+#: names itself something else is not this build at all.
+_UNEXPECTED_SERVER: Final = (
+    "the configured command did not start this installation's own MCP server"
+)
+#: The one thing every failed exchange is told, whatever failed -- the child
+#: could not be spawned, refused its own startup and exited, never completed
+#: initialization, answered nothing before the budget expired, or wrote something
+#: the SDK would not parse. Naming which would mean relaying a child's exit
+#: status, a transport exception or the sentence the child wrote to its own
+#: stderr, and that stderr is discarded precisely so there is nothing to relay.
+_NOT_QUALIFIED: Final = (
+    "the configured MCP server did not complete an initialize and tools/list "
+    "exchange within this installation's setup budget"
+)
+
+#: The whole budget for one qualification: spawning the child, its own startup --
+#: which includes reaching, and if necessary starting, the managed service --
+#: initialization, and `tools/list`.
+#:
+#: Above :data:`MANAGED_START_TIMEOUT_SECONDS` rather than equal to it, because
+#: the child spends that budget *before* it writes one protocol byte: a
+#: qualification that expired first would report a cold start as an unqualified
+#: server and make the installed setup fail for being slow.
+QUALIFICATION_TIMEOUT_SECONDS: Final = MANAGED_START_TIMEOUT_SECONDS + 30.0
+
+#: The module a qualification child runs, and with :data:`sys.executable` the
+#: whole of its command line besides `--config`.
+#:
+#: `-m omnivia_core_mcp.server` rather than the `omnivia-core-mcp` console script
+#: a host would name: this interpreter, and therefore this import path, so the
+#: child is the build being qualified rather than whichever distribution happens
+#: to be first on `PATH`. `main` is the same function the console script points
+#: at, so what is exercised is the entry point either way.
+_QUALIFICATION_MODULE: Final = "omnivia_core_mcp.server"
+
+
+def verify_installed_setup(config_path: Path) -> int:
+    """Qualify one protected configuration over real MCP; return its tool count.
+
+    The handshake and `tools/list` verification an installed setup must pass
+    before it reports success, owned here because every part of it is this
+    package's: what a trusted configuration is, what this server's identity is,
+    and which tools each profile advertises. The installed administration
+    command calls this and holds none of it.
+
+    **It is a protocol exchange with a real child, not an in-process rehearsal.**
+    :func:`_qualification` runs this module's own entry point as a subprocess and
+    drives it with the official SDK's `stdio_client` and `ClientSession`: the
+    same transport, framing and handshake an MCP host would use. So what is
+    proved is the thing a setup actually needs proved -- that launching this
+    command with this configuration yields a server that initializes and
+    advertises the expected surface -- rather than that a session object could be
+    constructed in this process.
+
+    **The child is told a path and nothing else.** Its whole command line is this
+    interpreter, this module and `--config <absolute path>`, and its environment
+    is the SDK's sanitized default. No credential, token or bearer appears in
+    either: the child resolves its own from this installation's protected store,
+    exactly as it does under a host.
+
+    **Three things are then checked.** The peer must identify itself as this
+    build -- :data:`SERVER_NAME` at this package's version -- so a command that
+    started something else does not qualify. The advertised inventory must be one
+    of the two the manifest defines, exactly: every tool name, in order, at the
+    count :data:`EXPECTED_TOOL_COUNT` fixes. And the configuration's allowed
+    purposes must be exactly the purposes that profile's manifest states, so a
+    setup that wrote a purpose list the exposed tools do not need -- or needs one
+    it did not write -- is refused rather than published.
+
+    Which profile the child settled on is read off the inventory it advertised
+    and never assumed from the document: a `mutation_enabled: true` configuration
+    whose protected authority declines to admit it starts `restricted`, and the
+    purpose comparison is then what refuses it.
+
+    The count comes back so the caller can report it. Every failure is an
+    exception with this module's fixed, payload-free text, and the child is
+    stopped on every one of them.
+    """
+    configuration = read_configuration(config_path)
+    name, version, advertised = _qualification(config_path)
+    if name != SERVER_NAME or version != __version__:
+        raise StartupError(_UNEXPECTED_SERVER)
+    profile = _advertised_profile(advertised)
+    if profile is None or set(configuration.allowed_purposes) != {
+        exposed.purpose for exposed in exposure_manifest(profile)
+    }:
+        raise StartupError(_UNEXPECTED_INVENTORY)
+    return len(advertised)
+
+
+def _advertised_profile(advertised: tuple[str, ...]) -> str | None:
+    """Which profile advertises exactly this inventory, or `None` for neither.
+
+    Exact and ordered, against the manifest this build holds *and* against the
+    requirement's own two numbers. A listing that is one of the two inventories
+    but the wrong length is impossible unless the manifest has moved, which is
+    precisely the drift :data:`EXPECTED_TOOL_COUNT` exists to catch, so both are
+    asked rather than one standing in for the other.
+    """
+    for profile, expected in EXPECTED_TOOL_COUNT.items():
+        names = tuple(tool.name for tool in tools(profile))
+        if len(names) == expected and advertised == names:
+            return profile
+    return None
+
+
+def _qualification(config_path: Path) -> tuple[str, str | None, tuple[str, ...]]:
+    """One bounded exchange with a child server: who answered, and what it listed.
+
+    Every way this can fail is one refusal, raised outside the handler so that a
+    transport error, a spawn failure or an expired budget is not reachable
+    through `__context__` from the exception a CLI prints. `Exception` rather
+    than a named set on purpose: the SDK, anyio and the operating system each
+    have their own vocabulary for "no server here", and a qualification that
+    admitted a cause it had not enumerated would be a qualification that passed
+    by accident.
+    """
+    observed: tuple[str, str | None, tuple[str, ...]] | None = None
+    try:
+        # **The child's stderr goes to the null device.** It is the one channel
+        # that carries a refusal in the child's own words -- a path, a workspace,
+        # a reference -- and a setup command must not relay any of it.
+        # Discarding it at the descriptor is stronger than capturing it and
+        # choosing not to print it: there is then no buffer for a later
+        # diagnostic to reach into.
+        with Path(os.devnull).open("w", encoding="utf-8") as discarded:
+            observed = anyio.run(lambda: _exchange(config_path, discarded))
+    except Exception:  # noqa: BLE001 -- an exchange that failed has not qualified.
+        observed = None
+    if observed is None:
+        raise StartupError(_NOT_QUALIFIED)
+    return observed
+
+
+async def _exchange(
+    config_path: Path, discarded: TextIO
+) -> tuple[str, str | None, tuple[str, ...]]:
+    """Spawn, initialize, list, and stop. Bounded twice and shut down once.
+
+    :func:`anyio.fail_after` bounds the whole exchange, and the session carries
+    the same budget as its per-request read timeout, so neither a child that
+    never answers nor one that answers the handshake and then stops can hold this
+    process past :data:`QUALIFICATION_TIMEOUT_SECONDS`. Termination is
+    `stdio_client`'s, which closes stdin, waits, and then kills the process tree
+    inside a cancellation shield -- so the child is stopped on the expiry path
+    exactly as it is on the successful one, and this function holds no process
+    object to have to remember to reap.
+
+    `discarded` is where the child's stderr goes -- the null device, opened by
+    the caller -- so nothing it says about a path, a workspace or a reference is
+    held anywhere this process could later relay it from.
+
+    **The child is told a path and nothing else.** `env` is left `None`, so the
+    SDK hands the child its own sanitized default environment: no credential,
+    token or bearer appears in the argument vector or in the environment, and the
+    child resolves its own from this installation's protected store exactly as it
+    does under a host.
+    """
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        # `-P` keeps the working directory off the child's `sys.path`: a
+        # qualification that imported an `omnivia_core_mcp` somebody left beside
+        # the terminal would be qualifying that package instead of this one.
+        args=["-P", "-m", _QUALIFICATION_MODULE, "--config", str(config_path)],
+    )
+    with anyio.fail_after(QUALIFICATION_TIMEOUT_SECONDS):
+        async with (
+            stdio_client(parameters, errlog=discarded) as (read_stream, write_stream),
+            ClientSession(
+                read_stream,
+                write_stream,
+                read_timeout_seconds=QUALIFICATION_TIMEOUT_SECONDS,
+            ) as session,
+        ):
+            initialized = await session.initialize()
+            listed = await session.list_tools()
+            return (
+                initialized.server_info.name,
+                initialized.server_info.version,
+                tuple(tool.name for tool in listed.tools),
+            )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omnivia-core-mcp",
@@ -892,17 +1276,29 @@ def main(argv: list[str] | None = None) -> int:
     beside the configuration. A host that has a resolver calls :func:`connect`
     and :func:`serve` itself and injects one.
 
-    **There is no authoring admission here either, for the same reason and one
-    more.** A console process holds no protected record of a human's authoring
-    intent, and nothing in this repository yet writes one -- that is Phase 6's
-    installed setup path. So this entry point injects none and every server it
-    starts is `restricted`, including one whose configuration says
-    `mutation_enabled: true`: editing that byte raises a ceiling and admits
-    nothing.
+    **The authoring admission is different, and it is built here.** A console
+    process holds no protected record of a human's authoring intent -- but an
+    installation does, and a managed-local configuration written by the installed
+    setup path names the credential that can ask for it. So this entry point
+    injects :func:`_installed_admission` when the configuration carries a
+    credential reference and nothing when it does not.
+
+    That is the upgrade rule, stated as the code that implements it. A
+    managed-local configuration from before the setup path existed carries no
+    reference, and this entry point does not start on it: :func:`connect` refuses
+    with the one fixed credential sentence, because the alternative is a session
+    calling the local endpoint as the service's own identity. Running the
+    installed setup for this host is what writes the reference. One that does
+    carry a reference still reaches `authoring` only if the protected authority
+    admits exactly this principal and this workspace when asked, on this startup
+    -- editing `mutation_enabled` alone raises a ceiling over an empty room.
     """
     args = build_parser().parse_args(argv)
     try:
-        session = connect(read_configuration(args.config))
+        configuration = read_configuration(args.config)
+        session = connect(
+            configuration, authoring_admission=_installed_admission(configuration)
+        )
     except (
         McpConfigurationError,
         StartupError,

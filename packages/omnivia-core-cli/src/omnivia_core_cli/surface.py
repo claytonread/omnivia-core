@@ -25,6 +25,12 @@ never heard of, and exiting 0 on it would be a lie.
 `service.discover` are runtime probes, deliberately outside the catalogue, and
 so they carry no purpose and are listed separately.
 
+*Administration is not an operation either.* The `service` lifecycle paths and
+the `mcp` installed-administration paths reach no catalogue operation, declare no
+purpose, and cannot be named by an MCP tool. They are listed separately for the
+same reason the probes are, and their paths join the uniqueness check below so no
+administration path can collide with an application one.
+
 Imports reach the contract package only. Nothing here imports the runtime or
 the MCP adapter: the surface must be readable by a client that has neither
 installed.
@@ -60,6 +66,22 @@ class ProbeCommand:
 @dataclass(frozen=True, slots=True)
 class LifecycleCommand:
     """One administrative path under the explicit ``service`` namespace."""
+
+    path: tuple[str, ...]
+    action: str
+
+
+@dataclass(frozen=True, slots=True)
+class McpCommand:
+    """One installed-MCP administration path under the explicit ``mcp`` namespace.
+
+    A separate class rather than a third :class:`LifecycleCommand`, because the
+    two families differ in the one way a reader has to notice: a lifecycle
+    command addresses one workspace's service and an MCP command administers this
+    *installation's* dedicated MCP principals. R004 section 9.2 requires these to
+    be an owner/administrator command family and never a model-callable
+    operation, and nothing here is in ``OPERATION_CATALOGUE``.
+    """
 
     path: tuple[str, ...]
     action: str
@@ -132,6 +154,16 @@ LIFECYCLE_COMMANDS: Final[tuple[LifecycleCommand, ...]] = (
     LifecycleCommand(("service", "status"), "status"),
 )
 
+#: R004 section 9.2's required installed experience, in its order. Three paths,
+#: two segments each, and no fourth: there is no `mcp list`, `mcp rotate` or
+#: `mcp grant`, because rotation is what a repeated `configure` does and a grant
+#: is never a thing a caller states.
+MCP_COMMANDS: Final[tuple[McpCommand, ...]] = (
+    McpCommand(("mcp", "configure"), "configure"),
+    McpCommand(("mcp", "status"), "status"),
+    McpCommand(("mcp", "revoke"), "revoke"),
+)
+
 #: The exit code for an error code this build does not recognise, and for
 #: `internal_non_recoverable`. A failure nothing here can classify is still a
 #: failure.
@@ -196,6 +228,7 @@ def _validate() -> None:
     paths = [command.path for command in APPLICATION_COMMANDS]
     paths.extend(probe.path for probe in PROBE_COMMANDS)
     paths.extend(command.path for command in LIFECYCLE_COMMANDS)
+    paths.extend(command.path for command in MCP_COMMANDS)
     if len(paths) != len(set(paths)):
         raise RuntimeError("surface: a command path is declared more than once")
     if set(EXIT_CODES) != set(FROZEN_ERROR_CODES):

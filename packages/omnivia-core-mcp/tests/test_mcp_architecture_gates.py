@@ -9,16 +9,26 @@ together: a gate recorded as accepted must name a test function that exists and
 that no pytest skip can reach -- which is why this module has no `skipif`.
 
 **One service, two transports, one workspace state.** `live_service` is the
-seeded governed workspace `_mcp_v06_3_fixture` builds, owned by one real
-`omnivia-core-service` process that serves the local socket *and* authenticated
-loopback HTTP. The HTTP half is reached through the fixture's test-only embedder
-because the standalone service entry point intentionally ships no credential
-resolver and so no credential-to-session policy; the embedder supplies that
-policy for this test only, and nothing else about the service differs from
-production. `managed_local` sessions attach through the published descriptor;
+registered, seeded governed workspace `_mcp_v06_3_fixture` creates through the
+real installation authority, owned by one real `omnivia-core-service` process
+that serves the local socket *and* authenticated loopback HTTP. The HTTP half is
+reached through the fixture's test-only embedder because the standalone service
+entry point intentionally ships no credential resolver and so no
+credential-to-session policy; the embedder supplies that policy for this test
+only, and nothing else about the service differs from production.
+`managed_local` sessions attach through the published descriptor and present the
+dedicated MCP bearer this installation issued through `mcp.configure`;
 `service_client` is MCP's outbound Core HTTP client mode, dialing that listener
 with a bearer the host's injected resolver supplies -- the only way that mode is
 ever given a credential.
+
+**The two modes therefore call as two different principals, by design.** A
+managed-local server calls as the installed dedicated principal; the HTTP
+listener serves only sessions for the service's own principal, which is why
+`remote_document` overrides the claim. Everything a read answers with is
+unaffected except the authority a Context Pack records having been built under,
+and :data:`PRINCIPAL_FACTS` is where that difference is named rather than
+ignored.
 
 **The MCP server under test is the production one.** Stdio sessions run the
 production server in a subprocess through `_mcp_stdio_probe.py`, which builds it
@@ -66,7 +76,7 @@ from test_mcp_stdio_end_to_end import (
     ALL_PURPOSES,
     ARGUMENTS,
     PRINCIPAL_ID,
-    configuration_file,
+    live_configuration,
     parameters,
     session,
 )
@@ -103,6 +113,21 @@ CLOCK_FACTS: dict[str, tuple[tuple[str, ...], ...]] = {
     ),
 }
 
+#: Per-principal facts, as paths into a tool's structured content, and the whole
+#: of what the two modes may differ in.
+#:
+#: A Context Pack records the authority it was actually built under, and the two
+#: modes are built under two: managed-local presents the installed dedicated
+#: principal's bearer, and the loopback HTTP listener serves only sessions for
+#: the service's own principal. That is the V06-6 design rather than a defect --
+#: an installed server calling as the service's own identity is exactly what
+#: `connect` refuses to do -- so the difference is *named* here and asserted
+#: separately below, not quietly dropped. Everything else in both answers,
+#: including every cited record and every section, must still be identical.
+PRINCIPAL_FACTS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "context_pack_build": (("reproducibility", "authorization_context", "authority"),),
+}
+
 
 # --- a live service, and the two ways MCP reaches it ----------------------------
 
@@ -114,9 +139,17 @@ def live_service() -> Iterator[fixture.GovernedService]:
 
 
 def _document(service: fixture.GovernedService, **overrides: Any) -> dict[str, Any]:
+    """The members both modes share, with this installation's own principal.
+
+    `principal_id` is the dedicated one `mcp.configure` minted for this service,
+    not a name chosen here: a managed-local session presents that principal's
+    bearer, and the service refuses a claim it did not grant. The remote document
+    below overrides it, because the HTTP lane's embedder resolves its bearer to
+    the service's own principal and that listener serves no other.
+    """
     document: dict[str, Any] = {
         "format": "omnivia.mcp-config.v1",
-        "principal_id": PRINCIPAL_ID,
+        "principal_id": service.principal_id,
         "allowed_workspace_ids": [service.workspace_id],
         "allowed_purposes": list(ALL_PURPOSES),
     }
@@ -124,20 +157,33 @@ def _document(service: fixture.GovernedService, **overrides: Any) -> dict[str, A
     return document
 
 
-def managed_configuration(service: fixture.GovernedService) -> McpConfiguration:
-    return parse_configuration(
-        _document(
-            service,
-            service_mode="managed_local",
-            installation_state=str(service.installation_state),
-        )
+def managed_document(
+    service: fixture.GovernedService, **overrides: Any
+) -> dict[str, Any]:
+    """A managed-local document naming the credential this installation filed.
+
+    Every managed-local server presents its own dedicated bearer or does not
+    start, so the reference is not optional decoration: a document without one is
+    refused at `connect` before a service is reached.
+    """
+    return _document(
+        service,
+        service_mode="managed_local",
+        installation_state=str(service.installation_state),
+        credential_reference=service.credential_reference,
+        **overrides,
     )
+
+
+def managed_configuration(service: fixture.GovernedService) -> McpConfiguration:
+    return parse_configuration(managed_document(service))
 
 
 def remote_document(service: fixture.GovernedService) -> dict[str, Any]:
     assert service.http_endpoint is not None
     return _document(
         service,
+        principal_id=PRINCIPAL_ID,
         service_mode="service_client",
         endpoint=service.http_endpoint,
         credential_reference=CREDENTIAL_REFERENCE,
@@ -174,14 +220,25 @@ def call_all(
         connected.clear_credentials()
 
 
-def _without_clock_facts(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+def _without(
+    tool_name: str,
+    result: dict[str, Any],
+    *facts: dict[str, tuple[tuple[str, ...], ...]],
+) -> dict[str, Any]:
+    """`result` with the named paths removed, refusing a path that is not there.
+
+    A missing path is an assertion failure rather than a silent skip: these
+    tables exist to name the *only* admissible differences, and one that stopped
+    matching the document would start hiding a real one.
+    """
     stripped = copy.deepcopy(result)
-    for path in CLOCK_FACTS.get(tool_name, ()):
-        parent = stripped
-        for key in path[:-1]:
-            parent = parent[key]
-        assert path[-1] in parent, (tool_name, path)
-        del parent[path[-1]]
+    for table in facts:
+        for path in table.get(tool_name, ()):
+            parent = stripped
+            for key in path[:-1]:
+                parent = parent[key]
+            assert path[-1] in parent, (tool_name, path)
+            del parent[path[-1]]
     return stripped
 
 
@@ -342,20 +399,19 @@ def test_architecture_gate_mcp_desktop_independence(
     )
     assert _fresh_import_roots() == MCP_FIRST_PARTY_IMPORT_ROOTS
 
-    config = configuration_file(
-        tmp_path,
-        installation_state=live_service.installation_state,
-        workspace_id=live_service.workspace_id,
-    )
+    config = live_configuration(tmp_path, live_service)
     observed = session(config)
     assert [tool["name"] for tool in observed["tools"]] == [
         entry.tool_name for entry in EXPOSURE_MANIFEST
     ]
     for name in ARGUMENTS:
         assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
-    assert observed["calls"]["workspace_inspect"]["structured_content"]["workspace"][
-        "workspace_id"
-    ] == live_service.workspace_id
+    assert (
+        observed["calls"]["workspace_inspect"]["structured_content"]["workspace"][
+            "workspace_id"
+        ]
+        == live_service.workspace_id
+    )
 
 
 # --- g08: MCP network mode is authenticated and loopback-safe by default ---------
@@ -494,8 +550,11 @@ def test_architecture_gate_mcp_mode_authorized_result_equivalence(
     `service_client` dials authenticated HTTP with the production HTTP client
     transport. Each session connects to the same service instance, and every
     successful answer is identical after removing the per-call clock facts in
-    :data:`CLOCK_FACTS` -- which differ between two calls in one mode too. A
-    value-level refusal is the service's own in both, with the same code.
+    :data:`CLOCK_FACTS` -- which differ between two calls in one mode too -- and
+    the recorded authority in :data:`PRINCIPAL_FACTS`, which differs because the
+    two modes authenticate as two different principals and is asserted on its
+    own below rather than dropped. A value-level refusal is the service's own in
+    both, with the same code.
 
     Scope: the HTTP side's credential-to-session policy is supplied by the
     fixture's test-only embedder, because the standalone service entry point
@@ -533,9 +592,24 @@ def test_architecture_gate_mcp_mode_authorized_result_equivalence(
     for name in ARGUMENTS:
         assert over_local[name]["is_error"] is False, over_local[name]
         assert over_remote[name]["is_error"] is False, over_remote[name]
-        assert _without_clock_facts(name, over_local[name]["structured_content"]) == (
-            _without_clock_facts(name, over_remote[name]["structured_content"])
+        assert _without(
+            name, over_local[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
+        ) == _without(
+            name, over_remote[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
         ), name
+
+    # The one admitted difference, asserted rather than merely removed: each mode
+    # recorded the authority it really ran under, and they are the two this
+    # installation has -- the dedicated MCP principal over the local socket, the
+    # service's own over HTTP.
+    authority = {
+        mode: call["context_pack_build"]["structured_content"]["reproducibility"][
+            "authorization_context"
+        ]["authority"]["principal_id"]
+        for mode, call in (("local", over_local), ("remote", over_remote))
+    }
+    assert authority == {"local": live_service.principal_id, "remote": PRINCIPAL_ID}
+    assert authority["local"] != authority["remote"]
 
     for refused in (refused_local, refused_remote):
         assert refused["is_error"] is True
@@ -573,11 +647,7 @@ def test_architecture_gate_clients_never_own_workspace_lease(tmp_path: Path) -> 
     """
     with fixture.serving() as service:
         before = service.descriptor()
-        config = configuration_file(
-            tmp_path,
-            installation_state=service.installation_state,
-            workspace_id=service.workspace_id,
-        )
+        config = live_configuration(tmp_path, service)
         observed = session(config)
         for name in ARGUMENTS:
             assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
@@ -617,11 +687,7 @@ def test_architecture_gate_stdio_mcp_workspace_grants(
       is refused at startup too; both before MCP initialization, and neither
       quotes a workspace identifier.
     """
-    config = configuration_file(
-        tmp_path,
-        installation_state=live_service.installation_state,
-        workspace_id=live_service.workspace_id,
-    )
+    config = live_configuration(tmp_path, live_service)
     observed = anyio.run(
         lambda: _stdio(
             config,
@@ -651,21 +717,14 @@ def test_architecture_gate_stdio_mcp_workspace_grants(
 
     ambiguous = _private_file(
         tmp_path / "ambiguous.json",
-        _document(
+        managed_document(
             live_service,
             allowed_workspace_ids=[live_service.workspace_id, UNGRANTED_WORKSPACE],
-            service_mode="managed_local",
-            installation_state=str(live_service.installation_state),
         ),
     )
     ungranted = _private_file(
         tmp_path / "ungranted.json",
-        _document(
-            live_service,
-            allowed_workspace_ids=[UNGRANTED_WORKSPACE],
-            service_mode="managed_local",
-            installation_state=str(live_service.installation_state),
-        ),
+        managed_document(live_service, allowed_workspace_ids=[UNGRANTED_WORKSPACE]),
     )
     state_before = set(live_service.installation_state.rglob("*"))
     for refused_config, reason in (

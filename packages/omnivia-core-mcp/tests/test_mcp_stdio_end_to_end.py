@@ -13,12 +13,21 @@ transport are all the ones a host would use.
 **There is no stand-in left, at either end, and no endpoint on a command line.**
 V06-6 made the trusted `omnivia.mcp-config.v1` document the only thing the
 server is told: this module writes one owner-private file naming the principal,
-the single allow-listed workspace, the allowed purposes and the installation
-state root, and `server.connect` composes `omnivia-core-client`'s `ServiceClient`
-from it -- descriptor read, transport choice, version negotiation and liveness
-probe included. Every call below therefore travels an OVC1 frame over a Unix
-domain socket to an `omnivia-core-service` process this module started, reached
-through the shared client, and comes back as that service's own answer.
+the single allow-listed workspace, the allowed purposes, the installation state
+root and the credential reference, and `server.connect` composes
+`omnivia-core-client`'s `ServiceClient` from it -- descriptor read, transport
+choice, version negotiation and liveness probe included. Every call below
+therefore travels an OVC1 frame over a Unix domain socket to an
+`omnivia-core-service` process this module started, reached through the shared
+client, and comes back as that service's own answer.
+
+**Every call is made as a dedicated principal this installation issued.** A
+managed-local server presents its own bearer or does not start, so the
+configurations below are built from `_mcp_v06_3_fixture`'s live setup: the
+reference the service filed the bearer under and the principal that bearer
+resolves to. Neither is chosen here, and the bearer itself appears nowhere in
+this module -- the server reads it from the installation's protected store for
+itself.
 
 **The child process gets this interpreter's environment, deliberately.** The SDK
 sanitizes a child's environment when `StdioServerParameters.env` is `None`, which
@@ -130,11 +139,22 @@ AUTHORING_PURPOSES = (
 )
 
 
+#: The principal a configuration claims when nothing has issued it one: the
+#: service's own, which is what the HTTP lane in the architecture-gate suite
+#: serves under. A managed-local configuration built by :func:`live_configuration`
+#: never uses it -- an installed server calls as its own dedicated principal, and
+#: `test_the_request_carries_the_configured_principal_claim` in the manifest
+#: suite is where the claim is proven at the envelope.
+PRINCIPAL_ID = "local-user"
+
+
 def configuration_file(
     directory: Path,
     *,
     installation_state: Path,
     workspace_id: str,
+    credential_reference: str | None = None,
+    principal_id: str = PRINCIPAL_ID,
     purposes: tuple[str, ...] = ALL_PURPOSES,
     name: str = "omnivia-mcp.json",
     mutation_enabled: bool = False,
@@ -145,19 +165,28 @@ def configuration_file(
     refuses anything else, so a fixture that wrote 0644 would be testing the
     refusal rather than the server.
 
-    `mutation_enabled` is written only when it is true, so the default file is
-    the one an existing installation already has -- the field absent entirely --
-    rather than a file that states the safe value and would pass a check the
-    upgrade rule is about.
+    `credential_reference` is the opaque *name* the installation filed this
+    host's bearer under -- never the bearer, which is not reachable from this
+    module at all. It is written only when it is given, because a document
+    without one is exactly the shape every installation had before the installed
+    setup path existed, and refusing to start on that is what
+    :func:`live_configuration`'s callers are contrasted against.
+
+    `mutation_enabled` is written only when it is true, for the same reason: the
+    default file is the one an existing installation already has -- the field
+    absent entirely -- rather than a file that states the safe value and would
+    pass a check the upgrade rule is about.
     """
     document: dict[str, Any] = {
         "format": "omnivia.mcp-config.v1",
-        "principal_id": PRINCIPAL_ID,
+        "principal_id": principal_id,
         "allowed_workspace_ids": [workspace_id],
         "allowed_purposes": list(purposes),
         "service_mode": "managed_local",
         "installation_state": str(installation_state),
     }
+    if credential_reference is not None:
+        document["credential_reference"] = credential_reference
     if mutation_enabled:
         document["mutation_enabled"] = True
     path = directory / name
@@ -166,10 +195,26 @@ def configuration_file(
     return path
 
 
-#: The principal every request below claims. Fixed by the configuration, never
-#: by a caller: `test_the_request_carries_the_configured_principal_claim` in the
-#: manifest suite is where that is proven at the envelope.
-PRINCIPAL_ID = "local-user"
+def live_configuration(
+    directory: Path, service: fixture.GovernedService, **overrides: Any
+) -> Path:
+    """The configuration an installed setup would have written for `service`.
+
+    All four authority-shaped members come off the live setup rather than out of
+    this module: the installation root, the one allow-listed workspace, the
+    reference the service filed its bearer under, and the dedicated principal
+    that bearer resolves to. A configuration naming any other principal is
+    refused by the service on the first call -- a claim it did not grant -- so
+    this is not merely tidy.
+    """
+    return configuration_file(
+        directory,
+        installation_state=service.installation_state,
+        workspace_id=service.workspace_id,
+        credential_reference=service.credential_reference,
+        principal_id=service.principal_id,
+        **overrides,
+    )
 
 
 def _environment() -> dict[str, str]:
@@ -245,11 +290,7 @@ def live_config(
     live_service: fixture.GovernedService, tmp_path_factory: pytest.TempPathFactory
 ) -> Path:
     """The trusted configuration every session below is started from."""
-    return configuration_file(
-        tmp_path_factory.mktemp("mcp-config"),
-        installation_state=live_service.installation_state,
-        workspace_id=live_service.workspace_id,
-    )
+    return live_configuration(tmp_path_factory.mktemp("mcp-config"), live_service)
 
 
 @pytest.fixture(scope="module")
@@ -414,21 +455,24 @@ def test_every_success_carries_one_json_text_item_equal_to_its_structured_conten
 
 
 def test_workspace_inspect_returns_the_fixture_workspace(
-    observed: dict[str, Any],
+    observed: dict[str, Any], live_service: fixture.GovernedService
 ) -> None:
-    """The workspace id and display name were written into a temporary workspace
-    by this module's fixture moments earlier; no stand-in, cache or default in
-    either package could produce them."""
+    """The workspace the installation minted for this module moments earlier.
+
+    The identifier is not a literal anywhere: the installation service chose it
+    when `_mcp_v06_3_fixture` dispatched `workspace.create`, so no stand-in,
+    cache or default in either package could produce it."""
     workspace = structured(observed, "workspace_inspect")["workspace"]
-    assert workspace["workspace_id"] == fixture.WORKSPACE_ID
+    assert workspace["workspace_id"] == live_service.workspace_id
     assert workspace["display_name"] == fixture.WORKSPACE_NAME
     assert workspace["status"] == "active"
-    # The manifest on disk stores the offset spelling; the wire carries the
-    # contract's canonical one. Both halves are asserted, so a handler that passed
-    # the stored string through -- which is what the official client refused against
-    # the advertised output schema -- fails here rather than only under a host.
-    assert workspace["created_at"] == fixture.WORKSPACE_CREATED_AT_CANONICAL
-    assert workspace["created_at"] != fixture.WORKSPACE_CREATED_AT
+    # The manifest on disk stores the offset spelling `datetime.isoformat()`
+    # writes; the wire carries the contract's canonical one. Both halves are
+    # asserted, so a handler that passed the stored string through -- which is
+    # what the official client refused against the advertised output schema --
+    # fails here rather than only under a host.
+    assert workspace["created_at"] == live_service.created_at_canonical
+    assert workspace["created_at"] != live_service.created_at
     # Nested past the top level on purpose: `dict(response.result)` converted
     # only the outer mapping and left this one a `mappingproxy`, which
     # `to_canonical_json` refuses. Reading it here is what keeps that fixed.
@@ -436,7 +480,7 @@ def test_workspace_inspect_returns_the_fixture_workspace(
 
 
 def test_evidence_search_returns_the_one_seeded_l0_artifact(
-    observed: dict[str, Any],
+    observed: dict[str, Any], live_service: fixture.GovernedService
 ) -> None:
     """L0, and exactly one of it.
 
@@ -449,7 +493,7 @@ def test_evidence_search_returns_the_one_seeded_l0_artifact(
     (artifact,) = result["evidence"]
     assert artifact["evidence_id"] == fixture.EVIDENCE_ID
     assert artifact["source"]["locator"] == fixture.EVIDENCE_LOCATOR
-    assert artifact["workspace_id"] == fixture.WORKSPACE_ID
+    assert artifact["workspace_id"] == live_service.workspace_id
     assert artifact["tombstoned"] is False
     assert [event["action"] for event in artifact["provenance_history"]] == ["captured"]
 
@@ -517,7 +561,7 @@ def test_graph_traverse_returns_the_seed_and_the_sealed_relation(
 
 
 def test_context_pack_build_returns_a_cited_pack_needing_fresh_authorization(
-    observed: dict[str, Any],
+    observed: dict[str, Any], live_service: fixture.GovernedService
 ) -> None:
     """Every section carries seeded content and a citation that resolves, the pack
     cites the seeded evidence and both seeded records, and holding it grants
@@ -556,9 +600,14 @@ def test_context_pack_build_returns_a_cited_pack_needing_fresh_authorization(
     assert {fixture.SOURCE_RECORD_ID, fixture.TARGET_RECORD_ID} <= cited_records
 
     authorization = pack["reproducibility"]["authorization_context"]
-    assert authorization["workspace_id"] == fixture.WORKSPACE_ID
+    assert authorization["workspace_id"] == live_service.workspace_id
     assert authorization["purpose"] == "knowledge_retrieval"
     assert authorization["pre_ranking_authorization_enforced"] is True
+    # The authority the service actually applied, and it is the dedicated MCP
+    # principal rather than the service's own: a managed-local server presents
+    # its installed bearer on every call, so what the pack records is who that
+    # bearer resolved to.
+    assert authorization["authority"]["principal_id"] == live_service.principal_id
 
 
 # --- what is not callable, and what the service itself refuses ----------------
@@ -638,17 +687,28 @@ def test_a_service_refusal_is_relayed_as_the_services_own_error(
     assert refusal["error"]["retry_class"] == "non_retryable"
 
 
-def test_an_absent_service_refuses_rather_than_starting_one_elsewhere(
+def test_a_root_nobody_configured_refuses_before_anything_is_started(
     tmp_path: Path,
 ) -> None:
-    """V06-6: an absent service is a refusal unless the root is a real installation.
+    """V06-6: a root nobody configured cannot reach a service at all.
 
     The state root below is a bare directory, not the `installation-state` of an
-    installation this server understands, so nothing is published for the
-    workspace and `--managed-start` is *not* invoked: starting a service against
-    a root nobody sanctioned is the failure this rule exists to prevent. The
-    refusal lands before MCP initialization -- exit 1, a payload-free sentence on
-    stderr, not one byte on stdout -- and nothing is created.
+    installation this server understands. **The refusal now lands one step
+    earlier than it used to**, and that ordering is the production rule rather
+    than an accident of this test: `_connect_managed_local` resolves the
+    dedicated principal's credential *before* it asks the shared client to reach
+    or start anything, because starting a service this process is about to
+    refuse to talk to buys a cold start for a refusal. A bare directory holds no
+    protected credential store, so there is nothing to resolve, and the
+    configuration below names no reference either -- which is what every
+    installation looked like before the installed setup path existed.
+
+    Either way the outcome is the one the rule is about: `--managed-start` is not
+    invoked against a root nobody sanctioned, the refusal is before MCP
+    initialization -- exit 1, a payload-free sentence on stderr, not one byte on
+    stdout -- and nothing is created. The *other* half, an installation that is
+    real and simply has no such workspace, is
+    `test_the_server_refuses_a_missing_workspace_and_creates_nothing`.
     """
     state = tmp_path / "somebody-elses-state"
     state.mkdir()
@@ -680,11 +740,8 @@ def test_a_purpose_outside_the_configuration_refuses_over_the_wire(
     server's own, before the client is asked for anything, and it carries no
     `structuredContent`.
     """
-    config = configuration_file(
-        tmp_path,
-        installation_state=live_service.installation_state,
-        workspace_id=live_service.workspace_id,
-        purposes=("workspace_inspection",),
+    config = live_configuration(
+        tmp_path, live_service, purposes=("workspace_inspection",)
     )
     observed = session(config)
 
@@ -728,68 +785,77 @@ CAPTURED_NOTE = "A note captured through MCP, carried in the call itself.\n"
 CAPTURE_KEY = "mcp-authoring-capture-001"
 CAPTURED_SOURCE = "mcp-authoring-note-1"
 
-AUTHORING_CALLS: list[tuple[str, dict[str, Any]]] = [
-    (
-        "evidence_capture",
-        {
-            "input": {
-                "source_native_id": CAPTURED_SOURCE,
-                "media_type": "text/markdown",
-                "text": CAPTURED_NOTE,
-            },
-            "idempotency_key": CAPTURE_KEY,
-        },
-    ),
-    (
-        "memory_create",
-        {
-            "input": {
-                "record_type": "memory.fact",
-                "domain_scope": "product.core",
-                "content": {"fact": "a fact proposed through MCP"},
-                "evidence_disposition": "available",
-                "sources": [
-                    {"kind": "direct_submission", "source_id": CAPTURED_SOURCE}
-                ],
-                "assertion": {
-                    "actor_id": PRINCIPAL_ID,
-                    "actor_kind": "agent",
-                    "actor_role": "author",
-                    # Fixed and firmly in the past: the runtime refuses a claim
-                    # asserted after the instant it settles at, and "today at
-                    # midnight UTC" is a date that is briefly in the future.
-                    "asserted_at": "2026-01-01T00:00:00Z",
-                    "evidence": [
-                        {
-                            "source": {
-                                "kind": "direct_submission",
-                                "source_id": CAPTURED_SOURCE,
-                            }
-                        }
-                    ],
+
+def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """The five calls, bound to the dedicated principal the installation issued.
+
+    A function rather than a constant because one of them names an actor, and the
+    only actor an installed session may name is the principal its bearer resolves
+    to -- which the service mints at `mcp.configure` time and nothing here can
+    know in advance.
+    """
+    return [
+        (
+            "evidence_capture",
+            {
+                "input": {
+                    "source_native_id": CAPTURED_SOURCE,
+                    "media_type": "text/markdown",
+                    "text": CAPTURED_NOTE,
                 },
+                "idempotency_key": CAPTURE_KEY,
             },
-            "idempotency_key": "mcp-authoring-memory-001",
-        },
-    ),
-    (
-        "import_start",
-        {
-            "input": {
-                "source": {
-                    "staged_source_ref": "stg-0001",
-                    "source_kind": "archive",
-                    "content_checksum": "sha256:" + "a" * 64,
-                    "content_length_bytes": 1024,
-                    "media_type": "application/zip",
-                }
+        ),
+        (
+            "memory_create",
+            {
+                "input": {
+                    "record_type": "memory.fact",
+                    "domain_scope": "product.core",
+                    "content": {"fact": "a fact proposed through MCP"},
+                    "evidence_disposition": "available",
+                    "sources": [
+                        {"kind": "direct_submission", "source_id": CAPTURED_SOURCE}
+                    ],
+                    "assertion": {
+                        "actor_id": principal_id,
+                        "actor_kind": "agent",
+                        "actor_role": "author",
+                        # Fixed and firmly in the past: the runtime refuses a claim
+                        # asserted after the instant it settles at, and "today at
+                        # midnight UTC" is a date that is briefly in the future.
+                        "asserted_at": "2026-01-01T00:00:00Z",
+                        "evidence": [
+                            {
+                                "source": {
+                                    "kind": "direct_submission",
+                                    "source_id": CAPTURED_SOURCE,
+                                }
+                            }
+                        ],
+                    },
+                },
+                "idempotency_key": "mcp-authoring-memory-001",
             },
-            "idempotency_key": "mcp-authoring-import-001",
-        },
-    ),
-    ("job_get", {"job_id": "job-not-in-this-workspace"}),
-    ("job_events", {"job_id": "job-not-in-this-workspace"}),
-]
+        ),
+        (
+            "import_start",
+            {
+                "input": {
+                    "source": {
+                        "staged_source_ref": "stg-0001",
+                        "source_kind": "archive",
+                        "content_checksum": "sha256:" + "a" * 64,
+                        "content_length_bytes": 1024,
+                        "media_type": "application/zip",
+                    }
+                },
+                "idempotency_key": "mcp-authoring-import-001",
+            },
+        ),
+        ("job_get", {"job_id": "job-not-in-this-workspace"}),
+        ("job_events", {"job_id": "job-not-in-this-workspace"}),
+    ]
 
 
 def service_error(called: dict[str, Any]) -> dict[str, Any]:
@@ -810,8 +876,9 @@ def service_error(called: dict[str, Any]) -> dict[str, Any]:
     return relayed["error"]
 
 
-async def _authoring_probe(config: Path) -> dict[str, Any]:
+async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
     """One admitted stdio session: the listing, the five calls, then the replay."""
+    wanted = authoring_calls(principal_id)
     async with (
         stdio_client(parameters(config, "--authoring")) as (read_stream, write_stream),
         ClientSession(read_stream, write_stream) as session,
@@ -820,9 +887,9 @@ async def _authoring_probe(config: Path) -> dict[str, Any]:
         listed = await session.list_tools()
         calls = {
             name: (await session.call_tool(name, arguments)).model_dump(mode="json")
-            for name, arguments in AUTHORING_CALLS
+            for name, arguments in wanted
         }
-        capture = dict(AUTHORING_CALLS[0][1])
+        capture = dict(wanted[0][1])
         replay = await session.call_tool("evidence_capture", capture)
         found = await session.call_tool("evidence_search", {"query": CAPTURED_SOURCE})
         return {
@@ -844,12 +911,8 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     tools it saw before, and `memory_create` is not merely absent from the
     listing but unresolvable at the call.
     """
-    config = configuration_file(
-        tmp_path,
-        installation_state=live_service.installation_state,
-        workspace_id=live_service.workspace_id,
-        purposes=AUTHORING_PURPOSES,
-        mutation_enabled=True,
+    config = live_configuration(
+        tmp_path, live_service, purposes=AUTHORING_PURPOSES, mutation_enabled=True
     )
     observed = session(config)
 
@@ -869,9 +932,13 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
 
-    A service of its own rather than the module's: one of these calls writes, and
-    the shared workspace is the thing every other test in this file asserts exact
-    counts against.
+    A service of its own rather than the module's, and one configured for the
+    wider profile: one of these calls writes, and the shared workspace is the
+    thing every other test in this file asserts exact counts against. The
+    installation records authoring intent for the dedicated principal it issues
+    here -- `serving(profile="authoring")` is `mcp.configure` with that intent,
+    which is the separate explicit act R004 section 9.3 requires -- and the
+    document below states the matching `mutation_enabled: true` ceiling.
 
     What each call proves, in one session:
 
@@ -895,15 +962,13 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
       invalid input in `test_mcp_server_authority`, where a transport that
       refuses to be used proves such a call never leaves this process.
     """
-    with fixture.serving() as service:
-        config = configuration_file(
-            tmp_path,
-            installation_state=service.installation_state,
-            workspace_id=service.workspace_id,
-            purposes=AUTHORING_PURPOSES,
-            mutation_enabled=True,
+    with fixture.serving(profile="authoring") as service:
+        assert service.profile == "authoring"
+        principal = service.principal_id
+        config = live_configuration(
+            tmp_path, service, purposes=AUTHORING_PURPOSES, mutation_enabled=True
         )
-        observed = anyio.run(lambda: _authoring_probe(config))
+        observed = anyio.run(lambda: _authoring_probe(config, principal))
 
     assert [tool["name"] for tool in observed["tools"]] == [
         entry.tool_name for entry in exposure_manifest("authoring")
@@ -949,6 +1014,11 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
     record = proposed["structured_content"]["record"]
     assert record["record_type"] == "memory.fact"
     assert record["content"] == {"fact": "a fact proposed through MCP"}
+    # The actor the write was recorded under is the dedicated principal this
+    # installation issued, not a name this module chose: the service refuses a
+    # claim it did not grant, so a write that landed is a write made as that
+    # principal.
+    assert record["provenance"]["assertion"]["actor_id"] == principal
     assert record["provenance"]["sources"] == [
         {"kind": "direct_submission", "source_id": CAPTURED_SOURCE}
     ]
@@ -966,11 +1036,12 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
 def test_the_authoring_calls_cover_every_tool_the_profile_adds() -> None:
     """The coverage check for the wider profile, matching the one the six have.
 
-    By set rather than by order, because `AUTHORING_CALLS` is ordered by what the
-    calls depend on -- the capture before the memory that cites it -- and not by
-    the manifest. A twelfth tool still cannot land without an end-to-end call.
+    By set rather than by order, because :func:`authoring_calls` is ordered by
+    what the calls depend on -- the capture before the memory that cites it --
+    and not by the manifest. A twelfth tool still cannot land without an
+    end-to-end call.
     """
-    assert {name for name, _ in AUTHORING_CALLS} == {
+    assert {name for name, _ in authoring_calls("mcp-coverage-principal")} == {
         entry.tool_name for entry in exposure_manifest("authoring")
     } - {entry.tool_name for entry in EXPOSURE_MANIFEST}
 
@@ -1007,7 +1078,7 @@ def test_only_the_fixture_reaches_the_runtime() -> None:
 
 
 def test_the_probe_stands_in_for_nothing_and_is_told_only_a_config_path(
-    observed: dict[str, Any],
+    observed: dict[str, Any], live_service: fixture.GovernedService
 ) -> None:
     """Every answer above came through production code, not through a double.
 
@@ -1027,7 +1098,7 @@ def test_the_probe_stands_in_for_nothing_and_is_told_only_a_config_path(
     assert "read_configuration(" in source
 
     assert structured(observed, "workspace_inspect")["workspace"]["workspace_id"] == (
-        fixture.WORKSPACE_ID
+        live_service.workspace_id
     )
 
 
@@ -1172,31 +1243,42 @@ def _main(*args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
 
 
 def test_the_server_refuses_a_missing_workspace_and_creates_nothing(
-    tmp_path: Path,
+    live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
     """R004-07 and R004-10, end to end through the console entry point.
 
-    The configuration names a real installation root -- `<home>/installation-state`,
-    which is what authorises a managed start at all -- under a home with no
-    workspace in it. Nothing is published, so `--managed-start` is invoked once,
-    and the launcher's own refusal comes back: run `omnivia init`. `main()`
-    writes it to stderr and not one byte to stdout, which is what makes the
-    failure protocol-safe, and nothing is created under the empty home.
+    **The precondition this claim needs is a real, configured installation**, and
+    it is the live one rather than an empty directory: the credential check comes
+    first now, so a root with no protected store is refused before a managed
+    start is ever considered -- which is a different rule, proved in
+    `test_a_root_nobody_configured_refuses_before_anything_is_started`. Here the
+    installation is real, the dedicated principal's bearer resolves, and the
+    workspace named is simply one this installation does not have. Nothing is
+    published for it, so `--managed-start` is invoked once and the launcher's own
+    refusal comes back: run `omnivia init`. `main()` writes it to stderr and not
+    one byte to stdout, which is what makes the failure protocol-safe.
+
+    Nothing is created, and that is checked where it could now happen: under the
+    installation state root the refused start was pointed at, which must hold
+    exactly what it held before.
     """
-    home = tmp_path / "empty-home"
-    home.mkdir()
     config = configuration_file(
         tmp_path,
-        installation_state=home / "installation-state",
+        installation_state=live_service.installation_state,
         workspace_id="ws-nothing-here",
+        credential_reference=live_service.credential_reference,
+        principal_id=live_service.principal_id,
     )
+    before = set(live_service.installation_state.rglob("*"))
     completed = _main("--config", str(config))
 
     assert completed.returncode == 1
     assert completed.stdout == "", "a failed start must write no protocol"
     assert "omnivia init" in completed.stderr
     assert "creates none" in completed.stderr
-    assert list(home.rglob("*")) == [], "a refused start created state"
+    assert set(live_service.installation_state.rglob("*")) == before, (
+        "a refused start created state"
+    )
 
 
 def test_the_entry_point_requires_an_explicit_absolute_configuration_path() -> None:

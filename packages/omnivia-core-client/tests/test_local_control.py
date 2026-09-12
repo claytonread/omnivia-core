@@ -25,13 +25,18 @@ import pytest
 from omnivia_core_client import (
     CLIENT_API_VERSION,
     LOCAL_CONTROL_VERSION,
+    AuthenticatedLocalTransport,
     CancellationToken,
+    Credential,
+    CredentialMissingError,
     Deadline,
     LocalControlRefused,
     LocalIpcTransport,
     OperationCancelledError,
     ProtocolError,
+    ServiceClient,
     TransportError,
+    authenticated_client,
     call_authenticated,
     canonical_json_bytes,
     encode_frame,
@@ -68,6 +73,7 @@ pytestmark = pytest.mark.skipif(
 WORKSPACE_ID = "ws-local-control-01"
 OPERATION = "workspace.inspect"
 SECRET = "sJ8-bearer-value-that-must-not-appear-anywhere-else"
+ROTATED_SECRET = "sJ8-the-bearer-that-replaced-it-on-the-next-call"
 CALL_TIMEOUT = 10.0
 
 SETUP: Mapping[str, object] = {
@@ -180,7 +186,9 @@ class ScriptedPeer:
     """
 
     def __init__(self, response: bytes) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="ovc-", dir=tempfile.gettempdir()))
+        self.directory = Path(
+            tempfile.mkdtemp(prefix="ovc-", dir=tempfile.gettempdir())
+        )
         self.path = self.directory / "s.sock"
         self.received = b""
         self._response = response
@@ -388,7 +396,10 @@ def test_status_and_revoke_have_no_type_a_secret_could_travel_in() -> None:
         scripted.close()
     scripted = ScriptedPeer(reply("mcp.revoke", {"setup": None}))
     try:
-        assert mcp_revoke(transport(scripted), host="codex", deadline=deadline()).setup is None
+        assert (
+            mcp_revoke(transport(scripted), host="codex", deadline=deadline()).setup
+            is None
+        )
     finally:
         scripted.close()
 
@@ -471,7 +482,9 @@ def test_a_peer_that_echoes_the_bearer_as_its_refusal_never_leaks_it() -> None:
     `from None` and are one attribute access away from anything that logs the
     exception a caller caught.
     """
-    scripted = ScriptedPeer(refusal("mcp.authoring_admission", "unauthenticated", SECRET))
+    scripted = ScriptedPeer(
+        refusal("mcp.authoring_admission", "unauthenticated", SECRET)
+    )
     try:
         with pytest.raises(LocalControlRefused) as refused:
             mcp_authoring_admission(transport(scripted), SECRET, deadline=deadline())
@@ -503,14 +516,18 @@ def test_an_unbounded_refusal_message_is_replaced_rather_than_carried() -> None:
     "response",
     [
         pytest.param(
-            encode_frame({"local_control_result": "v2", "kind": "mcp.status", "result": {}}),
+            encode_frame(
+                {"local_control_result": "v2", "kind": "mcp.status", "result": {}}
+            ),
             id="a wrapper version this build does not speak",
         ),
         pytest.param(
             reply("mcp.revoke", {"setups": []}), id="a reply for another control"
         ),
         pytest.param(
-            encode_frame({"local_control_result": LOCAL_CONTROL_VERSION, "kind": "mcp.status"}),
+            encode_frame(
+                {"local_control_result": LOCAL_CONTROL_VERSION, "kind": "mcp.status"}
+            ),
             id="a reply that is neither a result nor an error",
         ),
         pytest.param(reply("mcp.status", {"setups": "none"}), id="a non-list setups"),
@@ -583,9 +600,7 @@ def test_a_bad_admission_reply_is_refused_rather_than_read_as_admitted() -> None
 def test_an_application_error_response_is_an_answer_and_not_a_refusal() -> None:
     """The same rule `ServiceClient.call` keeps: a peer that errored has answered."""
     request = request_envelope()
-    document = codec.encode_response(
-        codec.decode_response(response_document(request))
-    )
+    document = codec.encode_response(codec.decode_response(response_document(request)))
     scripted = ScriptedPeer(reply("application.call", {"response": document}))
     try:
         response = call_authenticated(
@@ -644,3 +659,132 @@ def test_a_local_client_hands_back_its_own_transport() -> None:
 
     held = LocalIpcTransport(endpoint_uri="unix:///nonexistent/control.sock")
     assert local_control_transport(Local(held)) is held  # type: ignore[arg-type]
+
+
+# --- the authenticated transport wrapper --------------------------------------
+
+
+def local_client(held: LocalIpcTransport) -> ServiceClient:
+    """A client around one transport. Only `transport` is read by this family."""
+    return ServiceClient(
+        transport=held,
+        descriptor=None,  # type: ignore[arg-type]
+        negotiated=None,  # type: ignore[arg-type]
+    )
+
+
+def test_a_wrapped_client_presents_the_bearer_on_every_application_call() -> None:
+    """`ServiceClient.call` is unchanged above; what it reaches is authenticated."""
+    request = request_envelope()
+    scripted = ScriptedPeer(
+        reply("application.call", {"response": response_document(request)})
+    )
+    try:
+        wrapped = authenticated_client(
+            local_client(transport(scripted)), lambda: Credential(SECRET)
+        )
+        response = wrapped.call(request, deadline=deadline())
+        assert isinstance(response, SuccessResponseEnvelope)
+        sent = scripted.sent()
+        assert sent["kind"] == "application.call"
+        assert sent["credential"] == SECRET
+        assert sent["request"] == codec.encode_request(request)
+    finally:
+        scripted.close()
+
+
+def test_the_bearer_is_asked_for_once_per_call_and_never_held() -> None:
+    """Revocation and rotation land on the next call because of exactly this.
+
+    The source is a callable rather than a resolved value, so nothing the wrapper
+    holds outlives the authority behind it: the second call presents whatever the
+    source answers with then, and a source that has stopped answering fails the
+    call rather than being papered over by a cached credential.
+    """
+    request = request_envelope()
+    answers = [Credential(SECRET), Credential(ROTATED_SECRET)]
+    asked = 0
+
+    def source() -> Credential:
+        nonlocal asked
+        asked += 1
+        if not answers:
+            raise CredentialMissingError("revoked")
+        return answers.pop(0)
+
+    presented: list[object] = []
+    for _ in range(2):
+        scripted = ScriptedPeer(
+            reply("application.call", {"response": response_document(request)})
+        )
+        try:
+            wrapped = authenticated_client(local_client(transport(scripted)), source)
+            wrapped.call(request, deadline=deadline())
+            presented.append(scripted.sent()["credential"])
+        finally:
+            scripted.close()
+    assert presented == [SECRET, ROTATED_SECRET]
+    assert asked == 2
+
+    scripted = ScriptedPeer(
+        reply("application.call", {"response": response_document(request)})
+    )
+    try:
+        wrapped = authenticated_client(local_client(transport(scripted)), source)
+        with pytest.raises(CredentialMissingError):
+            wrapped.call(request, deadline=deadline())
+        assert scripted.received == b""
+    finally:
+        scripted.close()
+
+
+def test_a_probe_is_forwarded_unauthenticated() -> None:
+    """A probe is answerable before any authority exists, so it claims none."""
+    seen: list[object] = []
+
+    class Probed:
+        def probe(
+            self, request: object, *, deadline: object, cancellation: object = None
+        ) -> str:
+            seen.append((request, deadline, cancellation))
+            return "probed"
+
+    wrapper = AuthenticatedLocalTransport(
+        transport=Probed(),  # type: ignore[arg-type]
+        credential=lambda: pytest.fail("a probe must not resolve a credential"),
+    )
+    budget = deadline()
+    assert wrapper.probe("probe-request", deadline=budget) == "probed"  # type: ignore[arg-type]
+    assert seen == [("probe-request", budget, None)]
+
+
+def test_the_wrapper_renders_nothing_about_the_credential_or_its_source() -> None:
+    holder = Credential(SECRET)
+    wrapper = AuthenticatedLocalTransport(
+        transport=LocalIpcTransport(endpoint_uri="unix:///nonexistent/s.sock"),
+        credential=lambda: holder,
+    )
+    for text in (repr(wrapper), str(wrapper), f"{wrapper}", repr([wrapper])):
+        assert SECRET not in text
+        assert "<redacted>" in text
+
+
+def test_a_wrapped_client_is_still_a_local_client_for_the_administration_family() -> (
+    None
+):
+    """The wrapper *is* the local endpoint, so a control unwraps it rather than
+    refusing it -- which is what lets the authoring admission be asked over the
+    same connection the session already established."""
+    held = LocalIpcTransport(endpoint_uri="unix:///nonexistent/s.sock")
+    wrapped = authenticated_client(local_client(held), lambda: Credential(SECRET))
+    assert isinstance(wrapped.transport, AuthenticatedLocalTransport)
+    assert local_control_transport(wrapped) is held
+
+
+def test_wrapping_keeps_the_descriptor_and_the_negotiation_it_connected_with() -> None:
+    held = LocalIpcTransport(endpoint_uri="unix:///nonexistent/s.sock")
+    original = local_client(held)
+    wrapped = authenticated_client(original, lambda: Credential(SECRET))
+    assert wrapped is not original
+    assert wrapped.descriptor is original.descriptor
+    assert wrapped.negotiated is original.negotiated

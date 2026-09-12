@@ -25,7 +25,12 @@ timeout here.
 **A credential is an argument, never a field.** It is passed positionally to the
 one call that presents it and is never stored on a configuration, an endpoint
 descriptor, a result, or this module's own state; it never reaches a process
-argument, a host configuration file or a log. The one secret that travels the
+argument, a host configuration file or a log.
+:class:`AuthenticatedLocalTransport` is the one thing here that holds anything
+credential-shaped at all, and what it holds is a *callable* rather than a
+credential: it is asked once per call, immediately before the call goes on the
+wire, so what it presents is whatever the store holds at that moment and a
+revoked or rotated credential lands on the next call rather than at a restart. The one secret that travels the
 other way -- the bearer a freshly rotated `configure` mints -- arrives inside
 :class:`McpConfigureResult`, whose ``repr`` is redacted and whose value is
 reachable only through :meth:`~McpConfigureResult.reveal`, the same discipline
@@ -37,16 +42,19 @@ Standard library plus the public ``omnivia_core`` contracts only.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Final, NoReturn
 
 from omnivia_core.contracts.v1 import (
     ContractDecodeError,
     RequestEnvelope,
     ResponseEnvelope,
+    ServiceProbeRequest,
+    ServiceProbeResult,
     codec,
 )
+from omnivia_core_client.credentials import Credential
 from omnivia_core_client.deadline import CancellationToken, Deadline
 from omnivia_core_client.errors import ClientError, ProtocolError, TransportError
 from omnivia_core_client.local_ipc import LocalIpcTransport
@@ -54,12 +62,14 @@ from omnivia_core_client.service_client import ServiceClient
 
 __all__ = [
     "LOCAL_CONTROL_VERSION",
+    "AuthenticatedLocalTransport",
     "AuthoringAdmissionResult",
     "LocalControlRefused",
     "McpConfigureResult",
     "McpRevokeResult",
     "McpSetupView",
     "McpStatusResult",
+    "authenticated_client",
     "call_authenticated",
     "local_control_transport",
     "mcp_authoring_admission",
@@ -259,6 +269,94 @@ class AuthoringAdmissionResult:
     workspace_id: str
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class AuthenticatedLocalTransport:
+    """A transport that issues every application call as whoever holds a bearer.
+
+    The composition the installed MCP server needs and the only one it needs.
+    :class:`~omnivia_core_client.ServiceClient` and everything above it keep
+    calling :meth:`ServiceClient.call`; what changes underneath is that the call
+    travels :func:`call_authenticated` rather than the unauthenticated
+    application path, so the service dispatches it under the dedicated principal
+    the bearer resolves to instead of under its own.
+
+    **The credential is a callable, not a value, and that is the whole point.**
+    It is asked on every call, so the material this transport presents is
+    whatever the store holds at that moment: a credential revoked or rotated
+    between two calls fails, or succeeds as the new one, on the very next call.
+    Holding a resolved :class:`~omnivia_core_client.Credential` in a field here
+    would be a copy outliving the decision behind it, which is exactly what makes
+    revocation take a restart.
+
+    ``probe`` is forwarded unchanged. A probe is answerable before any authority
+    exists -- that is why the contract gives it its own request and result types
+    -- so presenting a bearer on one would be claiming an identity for a question
+    that has none.
+    """
+
+    transport: LocalIpcTransport
+    """The installation-local endpoint. Dialled by :func:`call_authenticated`,
+    with this module's one set of connect, deadline and framing rules."""
+
+    credential: Callable[[], Credential]
+    """Asked once per call, immediately before the call is put on the wire."""
+
+    def call(
+        self,
+        request: RequestEnvelope,
+        *,
+        deadline: Deadline,
+        cancellation: CancellationToken | None = None,
+    ) -> ResponseEnvelope:
+        """One application call, presented as the principal the bearer names."""
+        return call_authenticated(
+            self.transport,
+            self.credential().reveal(),
+            request,
+            deadline=deadline,
+            cancellation=cancellation,
+        )
+
+    def probe(
+        self,
+        request: ServiceProbeRequest,
+        *,
+        deadline: Deadline,
+        cancellation: CancellationToken | None = None,
+    ) -> ServiceProbeResult:
+        """One runtime probe, unauthenticated, exactly as the endpoint serves it."""
+        return self.transport.probe(
+            request, deadline=deadline, cancellation=cancellation
+        )
+
+    def __repr__(self) -> str:
+        """No generated ``repr``: it would render the credential callable, and a
+        bound method or closure's ``repr`` names the object it was taken from."""
+        return "AuthenticatedLocalTransport(<redacted>)"
+
+    __str__ = __repr__
+
+
+def authenticated_client(
+    client: ServiceClient, credential: Callable[[], Credential]
+) -> ServiceClient:
+    """The same connected service, calling as whoever `credential` answers with.
+
+    A replacement rather than a mutation: :class:`ServiceClient` is frozen, and
+    the descriptor and the version negotiation carried alongside are the ones
+    that connection already established -- nothing about presenting a bearer
+    re-opens either. A caller that wants both is expected to keep only this one:
+    an unauthenticated client kept beside it is a way to call as the service's
+    own principal by accident.
+    """
+    return replace(
+        client,
+        transport=AuthenticatedLocalTransport(
+            transport=local_control_transport(client), credential=credential
+        ),
+    )
+
+
 def local_control_transport(client: ServiceClient) -> LocalIpcTransport:
     """The local transport behind `client`, or a refusal if there is not one.
 
@@ -266,8 +364,15 @@ def local_control_transport(client: ServiceClient) -> LocalIpcTransport:
     HTTP-configured client is refused here rather than at the wire, because the
     honest reason is that this family has no HTTP form at all -- not that some
     request failed.
+
+    An :class:`AuthenticatedLocalTransport` is unwrapped rather than refused. It
+    *is* the installation-local endpoint, with a bearer presented on application
+    calls; the administration family below presents its own credential or none,
+    so it wants the endpoint underneath rather than that wrapping.
     """
     transport = client.transport
+    if isinstance(transport, AuthenticatedLocalTransport):
+        transport = transport.transport
     if not isinstance(transport, LocalIpcTransport):
         raise TransportError(
             "local controls travel the installation-local endpoint only"
