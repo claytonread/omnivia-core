@@ -380,9 +380,18 @@ def test_a_parent_replaced_under_a_resolve_refuses_rather_than_returning_it(
     read = installed_credentials.read_owner_private
 
     def swapping(
-        path: Path, *, maximum_bytes: int, dir_fd: int | None = None
+        path: Path,
+        *,
+        maximum_bytes: int,
+        dir_fd: int | None = None,
+        rotation_tolerant: bool = False,
     ) -> bytes | None:
-        content = read(path, maximum_bytes=maximum_bytes, dir_fd=dir_fd)
+        content = read(
+            path,
+            maximum_bytes=maximum_bytes,
+            dir_fd=dir_fd,
+            rotation_tolerant=rotation_tolerant,
+        )
         swap_the_parent(tmp_path, planted)
         return content
 
@@ -594,6 +603,70 @@ def test_replacement_is_atomic_under_a_concurrent_reader(tmp_path: Path) -> None
     assert failures == []
     assert set(seen) <= {SECRET, ROTATED}
     assert seen
+
+
+def test_more_than_three_successive_rotations_are_not_reported_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the prior false-missing path deterministically, not by luck.
+
+    Twenty isolated reruns of the threaded test above happened to pass; that
+    proved timing sensitivity, not correctness. Here five legitimate rotations
+    -- more than ``_READ_ATTEMPTS`` -- land, all of them, inside the single gap
+    between the leaf's pre-open lookup and its open, every one made through the
+    real store the way ``store`` always replaces a leaf. Before the
+    handle-snapshot fix this reproduced the false ``CredentialMissingError`` on
+    every run rather than some of them; this proves the fix the same way.
+    """
+    keeper = store(tmp_path)
+    keeper.store(REFERENCE, Credential(SECRET))
+    real_lstat = owner_private._lstat
+    rotations = {"count": 0}
+
+    def rotate_before_open(target: Path, dir_fd: int | None) -> os.stat_result | None:
+        value = real_lstat(target, dir_fd)
+        if rotations["count"] == 0:
+            for index in range(1, 6):
+                keeper.store(REFERENCE, Credential(ROTATED if index % 2 else SECRET))
+                rotations["count"] = index
+        return value
+
+    monkeypatch.setattr(owner_private, "_lstat", rotate_before_open)
+    assert keeper.resolve(REFERENCE).reveal() == ROTATED
+    assert rotations["count"] == 5
+
+
+@POSIX_ONLY
+def test_more_than_three_successive_rotations_survive_the_pathname_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same fault and the same fix, forced over the pathname walk Windows takes.
+
+    Forced here for the reason the adjacent pathname tests force it: this host
+    has ``dir_fd`` and would otherwise never take the branch that proves its
+    chain by name before and after rather than holding it open. Matched on the
+    leaf's filename rather than its full identity, because the chain proof this
+    walk also takes reads plenty of directories through the same ``_lstat`` and
+    none of them are the rotation this test means to force.
+    """
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    keeper = store(tmp_path)
+    keeper.store(REFERENCE, Credential(SECRET))
+    leaf_filename = stored_file(tmp_path).name
+    real_lstat = owner_private._lstat
+    rotations = {"count": 0}
+
+    def rotate_before_open(target: Path, dir_fd: int | None) -> os.stat_result | None:
+        value = real_lstat(target, dir_fd)
+        if target.name == leaf_filename and rotations["count"] == 0:
+            for index in range(1, 6):
+                keeper.store(REFERENCE, Credential(ROTATED if index % 2 else SECRET))
+                rotations["count"] = index
+        return value
+
+    monkeypatch.setattr(owner_private, "_lstat", rotate_before_open)
+    assert keeper.resolve(REFERENCE).reveal() == ROTATED
+    assert rotations["count"] == 5
 
 
 def test_nothing_is_left_behind_by_a_replacement(tmp_path: Path) -> None:
@@ -983,6 +1056,37 @@ def test_replacement_is_atomic_under_a_concurrent_configuration_reader(
     assert seen
 
 
+def test_more_than_three_successive_rewrites_are_not_reported_as_unusable(
+    tmp_path: Path, form: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same fault, and the same fix, for the configuration store's rewrite.
+
+    Five real, legitimate rewrites -- more than ``_READ_ATTEMPTS`` -- land, all
+    of them, inside the single gap between the leaf's pre-open lookup and its
+    open. Runs over both walks via `form`: the held-directory one this host
+    takes and the proved-by-name one Windows takes, matched on the leaf's
+    filename since the pathname form's own chain proof shares the same
+    ``_lstat`` for directories this test must leave alone.
+    """
+    keeper = configs(tmp_path)
+    assert keeper.write(HOST, DOCUMENT) is True
+    leaf_filename = keeper.path(HOST).name
+    real_lstat = owner_private._lstat
+    rotations = {"count": 0}
+
+    def rotate_before_open(target: Path, dir_fd: int | None) -> os.stat_result | None:
+        value = real_lstat(target, dir_fd)
+        if target.name == leaf_filename and rotations["count"] == 0:
+            for index in range(1, 6):
+                keeper.write(HOST, REWRITTEN if index % 2 else DOCUMENT)
+                rotations["count"] = index
+        return value
+
+    monkeypatch.setattr(owner_private, "_lstat", rotate_before_open)
+    assert keeper.read(HOST) == REWRITTEN
+    assert rotations["count"] == 5
+
+
 def test_removal_is_idempotent_and_an_absent_host_is_already_removed(
     tmp_path: Path, form: str
 ) -> None:
@@ -1268,9 +1372,18 @@ def test_a_parent_replaced_under_a_configuration_read_refuses_rather_than_answer
     read = installed_credentials.read_owner_private
 
     def swapping(
-        path: Path, *, maximum_bytes: int, dir_fd: int | None = None
+        path: Path,
+        *,
+        maximum_bytes: int,
+        dir_fd: int | None = None,
+        rotation_tolerant: bool = False,
     ) -> bytes | None:
-        content = read(path, maximum_bytes=maximum_bytes, dir_fd=dir_fd)
+        content = read(
+            path,
+            maximum_bytes=maximum_bytes,
+            dir_fd=dir_fd,
+            rotation_tolerant=rotation_tolerant,
+        )
         swap_the_parent(tmp_path, planted)
         return content
 

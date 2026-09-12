@@ -27,6 +27,15 @@ between the check and the read, or a component of it swapped underneath. The
 bytes returned came from one file, and that file is the one the path named
 throughout.
 
+**Or, for a caller that says so, the third check is skipped rather than failed
+closed.** ``rotation_tolerant=True`` is for exactly one shape of caller: a leaf
+its own writer replaces by rename, inside a directory that caller reproves
+unchanged around the whole operation. Nothing but this process can then have
+moved the name, so a name that no longer matches the descriptor says nothing
+against bytes already read from a handle nothing but this process could have
+substituted -- the open descriptor's own proof stands alone. Off, which is the
+default and every other caller, the comparison above still runs in full.
+
 **"Owner-private" is proved on both platform families.** On POSIX it is the
 descriptor's own ``st_uid`` against this process's effective uid, plus mode bits
 with nothing set for group or world. On Windows there are no mode bits to read,
@@ -740,7 +749,11 @@ def _bounded_read(descriptor: int, maximum_bytes: int) -> bytes | None:
 
 
 def read_owner_private(
-    path: Path, *, maximum_bytes: int, dir_fd: int | None = None
+    path: Path,
+    *,
+    maximum_bytes: int,
+    dir_fd: int | None = None,
+    rotation_tolerant: bool = False,
 ) -> bytes | None:
     """At most ``maximum_bytes`` from one owner-private regular file, or ``None``.
 
@@ -754,6 +767,21 @@ def read_owner_private(
     holds the directory. Without it, `path` is an absolute pathname and the
     identity re-check below is the whole of the substitution defence. The two
     differ in what they can prevent, not in what they prove about the file.
+
+    ``rotation_tolerant`` is for exactly one shape of caller:
+    :mod:`~omnivia_core_client.installed_credentials`, whose leaves are replaced
+    by their own writer's rename, inside a directory that caller reproves
+    unchanged around the whole operation. Off, the default, a pathname that no
+    longer identifies the descriptor opened -- before the open or after the
+    read -- is refused exactly like a substitution, because without an
+    independent proof of the directory the two cannot be told apart. On, that
+    comparison is dropped and the open descriptor's own proof -- real,
+    owner-private, not a reparse point, stable through the bounded read --
+    stands alone: the caller's own directory-unchanged proof already establishes
+    that nothing but this process could have moved the name, so a name that has
+    moved on says nothing against bytes already read from a handle nothing but
+    this process could have substituted. A generic caller with no such proof of
+    its own must leave this off.
     """
     if dir_fd is None:
         if not isinstance(path, Path) or not path.is_absolute():
@@ -777,7 +805,7 @@ def read_owner_private(
         opened = _fstat(descriptor)
         if (
             opened is not None
-            and same_file(before, opened)
+            and (rotation_tolerant or same_file(before, opened))
             and owner_private_file(opened, descriptor)
         ):
             content = _bounded_read(descriptor, maximum_bytes)
@@ -789,10 +817,14 @@ def read_owner_private(
             pass
     if content is None or opened is None or after_read is None:
         return None
+    if not same_file(opened, after_read):
+        return None
+    if rotation_tolerant:
+        return content
     after_path = _lstat(path, dir_fd)
     if after_path is None or not not_a_reparse_point(after_path):
         return None
-    if not same_file(opened, after_read) or not same_file(opened, after_path):
+    if not same_file(opened, after_path):
         return None
     return content
 

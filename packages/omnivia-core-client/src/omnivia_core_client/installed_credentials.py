@@ -69,9 +69,14 @@ holds the bearers.
 **Reading is the same proof the trusted configuration reader uses**,
 :func:`~omnivia_core_client.owner_private.read_owner_private`, anchored to that
 held descriptor: a regular file, not a symlink, owned by this process's user,
-unreachable by group or world, whose identity did not change under the read, read
-to a bound. Anything else is a refusal, and every refusal is a fixed sentence
-naming no path, no reference and no bytes.
+unreachable by group or world, read to a bound. Where the generic reader also
+asks that the name still identify the same file afterward, this store asks for
+less and is still exactly as safe: ``rotation_tolerant=True`` accepts a leaf
+this store's own rotation has since moved on from, because the directory it is
+held open on is reproved unchanged around the whole operation -- see
+:data:`_READ_ATTEMPTS` -- and nothing else could have moved it. Anything else
+is a refusal, and every refusal is a fixed sentence naming no path, no
+reference and no bytes.
 
 **Writing is atomic and owner-private from creation**, in that order of
 importance. The material is written to a fresh private file in the same
@@ -211,14 +216,19 @@ _FILE_MODE: Final = 0o600
 #: credential is not one, whatever else it is.
 _MAXIMUM_STORED_BYTES: Final = MAXIMUM_CREDENTIAL_CHARACTERS
 
-#: How many times a read may be retried when the file is replaced under it.
+#: How many times a read may be retried for whatever a read can still
+#: transiently refuse.
 #:
-#: The shared proof refuses a file whose pathname identity changed between the
-#: check and the open, which is the right answer for a document nobody rotates
-#: and the wrong one here: this store's whole replacement path is a rename, so a
-#: reader that happens to look in that microsecond is seeing a rotation rather
-#: than a substitution. Retrying reads the credential that landed. Bounded and
-#: small, because a read that keeps losing that race is not a race any more.
+#: Rotation itself no longer spends this budget. :func:`_read_anchored` and
+#: :func:`_read_by_path` pass ``rotation_tolerant=True`` to
+#: :func:`~omnivia_core_client.owner_private.read_owner_private`: the directory
+#: each holds open -- or reproves by chain -- around the whole operation is
+#: nothing anybody but this process's own writer could have moved, so that
+#: proof, not a retry, is what tells a legitimate rename apart from a
+#: substitution. What is left for a retry to catch is smaller and rarer: this
+#: process's own transient refusal of a leaf that is, in fact, there. Bounded
+#: and small regardless, because a read that keeps losing is not transient any
+#: more.
 _READ_ATTEMPTS: Final = 3
 
 #: How a reference becomes a filename. Sixteen bytes of BLAKE2s, hex: short
@@ -439,15 +449,20 @@ def _read_anchored(
 
     One byte more than the caller's bound is asked for and the extra byte is
     returned rather than trimmed, so a file *at* the bound is told apart from one
-    *past* it. The retry is for the store's own rename: a reader that looks in the
-    microsecond a rotation lands is seeing a replacement rather than a
-    substitution, and the shared proof refuses both.
+    *past* it. ``rotation_tolerant=True`` is what survives the store's own
+    rename: this directory is held open and reproved unchanged by
+    :meth:`_Anchor.unchanged` below, so a reader that opened the leaf a moment
+    before a rotation landed keeps those bytes rather than losing them to a name
+    that has since moved on.
     """
     content: bytes | None = None
     present = False
     for _ in range(_READ_ATTEMPTS):
         content = read_owner_private(
-            Path(leaf), maximum_bytes=maximum_bytes, dir_fd=anchor.descriptor
+            Path(leaf),
+            maximum_bytes=maximum_bytes,
+            dir_fd=anchor.descriptor,
+            rotation_tolerant=True,
         )
         if content is not None:
             present = True
@@ -570,6 +585,13 @@ def _same_chain(
 def _read_by_path(
     root: Path, names: Sequence[str], leaf: str, maximum_bytes: int
 ) -> tuple[bytes | None, bool]:
+    """The pathname form of :func:`_read_anchored`, proved by chain rather than a hold.
+
+    ``rotation_tolerant=True`` for the same reason: the chain is reproved by
+    name, before and after, against `before` -- nothing but this process's own
+    writer could have moved a leaf inside a store directory proved unchanged --
+    so a rename this store's own rotation made is not a substitution.
+    """
     before = _proved_chain(root, names, create=False)
     if before is None:
         return None, _entry_exists(root.joinpath(*names))
@@ -577,7 +599,9 @@ def _read_by_path(
     content: bytes | None = None
     present = False
     for _ in range(_READ_ATTEMPTS):
-        content = read_owner_private(path, maximum_bytes=maximum_bytes)
+        content = read_owner_private(
+            path, maximum_bytes=maximum_bytes, rotation_tolerant=True
+        )
         if content is not None:
             present = True
             break

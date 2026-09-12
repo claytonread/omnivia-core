@@ -768,6 +768,69 @@ def test_a_reparse_point_ends_a_read_even_after_the_bytes_came_back(
     assert owner_private.read_owner_private(path, maximum_bytes=64) is None
 
 
+def test_a_real_rotation_is_refused_by_default_between_the_lookup_and_the_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ``rotation_tolerant``, a name that moved on is a refusal.
+
+    A real rename -- not a fabricated stat -- lands between the pre-open lookup
+    and the open. Indistinguishable, without a caller's own proof of the
+    directory, from a substitution: refused, exactly as it always was.
+    """
+    path = tmp_path / "leaf.credential"
+    path.write_bytes(b"first")
+    path.chmod(0o600)
+    real_lstat = owner_private._lstat
+
+    def rotate_once(target: Path, dir_fd: int | None) -> os.stat_result | None:
+        value = real_lstat(target, dir_fd)
+        fresh = tmp_path / "fresh"
+        fresh.write_bytes(b"second")
+        fresh.chmod(0o600)
+        os.replace(fresh, path)
+        return value
+
+    monkeypatch.setattr(owner_private, "_lstat", rotate_once)
+    assert owner_private.read_owner_private(path, maximum_bytes=64) is None
+
+
+def test_rotation_tolerant_survives_more_than_three_successive_replacements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What ``rotation_tolerant`` is for, forced deterministically.
+
+    Five real, legitimate renames -- more than any bounded retry budget could be
+    trusted to outrun -- land between the pre-open lookup and the open, each
+    replacing the leaf with another owner-private regular file the way this
+    module's own writer would. The descriptor opened still proves owner-private
+    on its own, and that is what this flag says is enough: it does not merely
+    survive one rotation, it does not care how many landed.
+    """
+    path = tmp_path / "leaf.credential"
+    path.write_bytes(b"generation-0")
+    path.chmod(0o600)
+    real_lstat = owner_private._lstat
+    rotated = {"count": 0}
+
+    def rotate_before_open(target: Path, dir_fd: int | None) -> os.stat_result | None:
+        value = real_lstat(target, dir_fd)
+        if rotated["count"] == 0:
+            for index in range(1, 6):
+                fresh = tmp_path / f"fresh-{index}"
+                fresh.write_bytes(f"generation-{index}".encode("ascii"))
+                fresh.chmod(0o600)
+                os.replace(fresh, path)
+                rotated["count"] = index
+        return value
+
+    monkeypatch.setattr(owner_private, "_lstat", rotate_before_open)
+    content = owner_private.read_owner_private(
+        path, maximum_bytes=64, rotation_tolerant=True
+    )
+    assert content == b"generation-5"
+    assert rotated["count"] == 5
+
+
 # --- the pathname chain, which is the Windows form of the anchored walk --------
 #
 # Off Windows this exercises the POSIX half of the same policy: a real directory,
