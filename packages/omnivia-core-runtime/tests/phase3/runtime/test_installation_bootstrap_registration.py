@@ -33,6 +33,7 @@ from omnivia_core_runtime.service.workspace_init import (
 )
 from omnivia_core_runtime.storage.installation_store import (
     InstallationStore,
+    InstallationStoreError,
     McpHost,
     McpProfile,
     NewInstallationAllocation,
@@ -641,6 +642,69 @@ def test_a_successful_registration_leaves_one_consistent_ledger_chain(
         )
     finally:
         connection.close()
+
+
+def test_a_manifest_read_failure_before_verification_fails_closed_without_leaking_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`read_manifest` runs before `verify_workspace_result`, under the same
+    "any internal fault here closes on `WRITE_FAILURE`" contract the
+    verification call itself already had. A `ManifestStoreError` from it must
+    not escape `_claim_and_settle` -- and the fixed, non-interpolated
+    `_INTERNAL_FAULT` sentence must still be what callers see, never the raw
+    exception text.
+    """
+    import omnivia_core_runtime.service.installation_bootstrap as bootstrap_module
+
+    workspace_root, installation_root = _init(tmp_path)
+
+    def _boom_read_manifest(*args: object, **kwargs: object) -> object:
+        raise bootstrap_module.ManifestStoreError("simulated manifest corruption")
+
+    monkeypatch.setattr(bootstrap_module, "read_manifest", _boom_read_manifest)
+
+    result = initialise_and_register_managed_local_workspace(
+        workspace_root=workspace_root, installation_root=installation_root
+    )
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert result.reason is not None
+    assert "simulated" not in result.reason
+    assert "corruption" not in result.reason
+
+
+def test_a_failed_recovery_read_after_a_failed_settlement_fails_closed_without_leaking_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recovery path for a failed `settle_allocation_success` reads
+    `store.get_outcome` to tell a genuine concurrent settlement apart from a
+    real fault. That recovery read can itself raise `InstallationStoreError`
+    -- it is the same store, over the same connection, right after the
+    settlement it is checking up on just failed -- and must not escape either;
+    it must close on `WRITE_FAILURE` exactly like the settlement fault it was
+    trying to explain away, with no injected diagnostic text in the reason.
+    """
+    workspace_root, installation_root = _init(tmp_path)
+
+    def _boom_settle(self: InstallationStore, *args: object, **kwargs: object) -> None:
+        raise InstallationStoreError("simulated settlement corruption")
+
+    def _boom_get_outcome(self: InstallationStore, claim_id: str) -> None:
+        raise InstallationStoreError("simulated recovery-read corruption")
+
+    monkeypatch.setattr(InstallationStore, "settle_allocation_success", _boom_settle)
+    monkeypatch.setattr(InstallationStore, "get_outcome", _boom_get_outcome)
+
+    result = initialise_and_register_managed_local_workspace(
+        workspace_root=workspace_root, installation_root=installation_root
+    )
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert result.reason is not None
+    assert "simulated" not in result.reason
+    assert "corruption" not in result.reason
 
 
 def test_concurrent_registration_attempts_converge_on_one_workspace(

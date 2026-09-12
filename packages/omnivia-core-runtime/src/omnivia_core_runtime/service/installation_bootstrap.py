@@ -56,7 +56,10 @@ from omnivia_core_runtime.storage.installation_store import (
     open_installation_store,
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
-from omnivia_core_runtime.workspace.manifest_store import read_manifest
+from omnivia_core_runtime.workspace.manifest_store import (
+    ManifestStoreError,
+    read_manifest,
+)
 
 #: The audit vocabulary this registration records itself under. Distinct from
 #: `workspace.create`'s `WORKSPACE_CREATE_OPERATION`: this is not that request, it
@@ -264,7 +267,7 @@ def _claim_and_settle(
             result = verify_workspace_result(
                 allocation, expected_display_name=display_name
             )
-        except InstallationSeamFault:
+        except (ManifestStoreError, InstallationSeamFault):
             return (WorkspaceInitRefusal.WRITE_FAILURE, _INTERNAL_FAULT)
 
         canonical = to_canonical_json(result)
@@ -286,8 +289,15 @@ def _claim_and_settle(
             )
         except InstallationStoreError:
             # A concurrent registration may have settled this exact allocation
-            # between this call's claim and its own settlement.
-            if store.get_outcome(allocation.claim_id) is not None:
+            # between this call's claim and its own settlement. That recovery
+            # read can itself fail the same way the settlement just did; either
+            # way this closes on WRITE_FAILURE rather than letting the second
+            # fault escape.
+            try:
+                settled = store.get_outcome(allocation.claim_id) is not None
+            except InstallationStoreError:
+                settled = False
+            if settled:
                 return None
             return (WorkspaceInitRefusal.WRITE_FAILURE, _INTERNAL_FAULT)
         return None
