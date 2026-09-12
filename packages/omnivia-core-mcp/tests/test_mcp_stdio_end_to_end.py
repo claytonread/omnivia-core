@@ -760,8 +760,12 @@ def test_a_purpose_outside_the_configuration_refuses_over_the_wire(
 #
 # The profile is raised by the protected admission seam and by nothing else, so
 # these two tests are the same configuration file run twice: once as production
-# runs it, and once with `--authoring` standing in for the installed record Phase
-# 6 must write. Nothing about the document differs between them.
+# runs it, and once with `--authoring` standing in for the installed record the
+# setup path writes. Nothing about the document differs between them, which is
+# the property being shown. The installed record itself is real now, and
+# `test_mcp_standalone_authoring_acceptance` runs that path end to end -- the
+# real `omnivia mcp configure`, then the production entry point with no injected
+# seam at all.
 
 #: One call per tool the authoring profile adds, in the order one session makes
 #: them, plus the replay.
