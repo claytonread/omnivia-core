@@ -1,32 +1,26 @@
 # OmniVia Core Organisational Model Phase 1 Acceptance Handoff
 
 Date: 2026-09-12
-Status: Conditional GO for review and merge acceptance
+Status: **GO — accepted and merged**
 Specification authority: `SPEC-CORE-SEM-001`, version 0.2, dated 2026-09-11
 Approved implementation scope: Phase 1 — Manual Semantic Registry
 Implementation branch: `codex/core-organisational-model-v02`
 Implementation commit: `dd72159` (`feat(core): implement phase 1 semantic registry`)
 Base commit: `5797d52`
+Accepted integrated tip: `943b4111d86396ff924cd295d995c3c1f2de7008`
+Pull request: `https://github.com/claytonread/omnivia-core/pull/105`
+Merge commit: `b030dfbd7b8eb45889190d8aeae62a18b9a7f27e`
 
 Primary repository: `/Users/claytonread/Projects/omnivia-core`
 Acceptance worktree: `/Users/claytonread/Projects/worktree-omnivia-core-organisational-model-v02`
 
-## 1. Acceptance decision requested
+## 1. Acceptance decision
 
-Review and accept commit `dd72159` as the implementation of the approved Phase 1
-Manual Semantic Registry scope in `SPEC-CORE-SEM-001` v0.2.
-
-The implementation is locally complete and its focused and repository-wide
-executable test evidence is green. Merge acceptance is conditional on one of the
-following outcomes for each inherited repository hygiene failure recorded in
-section 7:
-
-1. correct the stale Phase 0 public-export baseline and the unrelated Ruff import
-   ordering finding in separately reviewed work; or
-2. document an authorised, time-bounded acceptance exception.
-
-A hosted `Core acceptance` run is still required before treating the change as
-merged or released. This handoff does not authorise Phase 2 or any later phase.
+The product owner approved a formal Phase 1 `GO`, together with architecture,
+runtime/storage and security/privacy acceptance, for integrated tip `943b411`
+on 2026-09-12. Pull request #105 passed the required hosted checks and merged to
+`main` as `b030dfb`. Commit `dd72159` remains the independently identifiable
+Phase 1 implementation commit within that accepted lineage.
 
 ## 2. Scope boundary
 
@@ -210,51 +204,27 @@ properties:
 8. **Failure atomicity:** rejected, stale or incompatible publication attempts
    leave no partial version, activation or outbox rows.
 
-## 7. Known acceptance blockers outside this change
+## 7. Resolved acceptance conditions
 
-### 7.1 Frozen Phase 0 export inventory drift
+- The inherited Phase 0 export inventory and Ruff findings were corrected in
+  the integrated lineage.
+- The semantic migrations were reconciled with current `main` and allocated as
+  the consecutive range `0037`–`0040`.
+- `./scripts/preflight` passed at exact tip `943b411`, including 24,423 tests in
+  the full repository suite, Ruff and strict mypy.
+- Hosted `Core acceptance` run
+  `https://github.com/claytonread/omnivia-core/actions/runs/34678950410`
+  passed on the same exact tip.
 
-`./scripts/preflight` reaches the Phase 0 baseline check and reports that
-`ControlPlaneRegistry.project_redacted_otel_observability` exists in the source
-surface but not in `baseline/inventories/public-exports.json`.
+## 8. Completed acceptance procedure
 
-This method is already present in base commit `5797d52`. Commit `dd72159` does not
-modify either:
-
-- `services/omnivia-memory/src/omnivia_memory/control_plane/registry.py`; or
-- `baseline/inventories/public-exports.json`.
-
-The owner of that control-plane change must either update the frozen inventory
-with an accepted review note or revert the unaccepted public export. The semantic
-registry change must not silently recapture that baseline.
-
-### 7.2 Existing Ruff import-order finding
-
-A repository-wide `ruff check` reports an import-order finding in:
-
-`tests/canonical_migration/test_control_plane_barrel.py:17`
-
-That file is unchanged by `dd72159`. Focused Ruff over every new semantic-registry
-source and test file passes.
-
-### 7.3 Hosted acceptance evidence
-
-No branch was pushed and no hosted `Core acceptance` job was run as part of this
-implementation task. Local verification is evidence for review, not a substitute
-for the required protected-branch check.
-
-## 8. Acceptance procedure
-
-1. Review commit `dd72159` against `SPEC-CORE-SEM-001` v0.2 Phase 1 only.
-2. Resolve or formally waive both inherited issues in section 7.
-3. Rebase or merge the resulting baseline correction into the implementation
-   branch without rewriting the semantic-registry commit.
-4. Run `./scripts/preflight` from a clean Python 3.11 environment with `npm ci`
-   completed.
-5. Push the branch and require a green hosted `Core acceptance` check.
-6. Record one of the decisions in section 10.
-7. Merge only after the accepted commit range, migration ordering and hosted
-   evidence are all identified in the review record.
+1. Phase 1 and the integrated Phase 2 lineage were reviewed against
+   `SPEC-CORE-SEM-001` v0.2.
+2. Inherited repository hygiene issues and migration allocation conflicts were
+   resolved without rewriting the Phase 1 implementation commit.
+3. Local preflight and all required hosted checks passed at `943b411`.
+4. The accountable owner recorded all required approvals.
+5. Pull request #105 merged to `main` as `b030dfb`.
 
 ## 9. Rollback and recovery
 
@@ -269,25 +239,21 @@ preserves existing rows and digests.
 
 ## 10. Acceptance record
 
-Complete this section in the pull request or accepted review note.
-
 | Field | Value |
 |---|---|
-| Decision | `GO`, `CONDITIONAL GO` or `NO-GO` |
-| Accepted commit/range | |
-| Hosted `Core acceptance` run | |
-| Architecture reviewer | |
-| Runtime/storage reviewer | |
-| Security/privacy reviewer | |
-| Product owner | |
-| Accepted exceptions and expiry | |
-| Follow-up tasks | |
+| Decision | `GO` |
+| Accepted commit/range | Integrated tip `943b4111d86396ff924cd295d995c3c1f2de7008`; Phase 1 commit `dd72159` |
+| Hosted `Core acceptance` run | `34678950410` — PASS |
+| Architecture reviewer | `claytonread`, approved 2026-09-12 |
+| Runtime/storage reviewer | `claytonread`, approved 2026-09-12 |
+| Security/privacy reviewer | `claytonread`, approved 2026-09-12 |
+| Product owner | `claytonread`, approved 2026-09-12 |
+| Accepted exceptions and expiry | None |
+| Follow-up tasks | Phase 2 delivered in the same accepted PR; external optional workers remain separately gated |
 
-## 11. Phase 2 gate
+## 11. Phase 2 gate outcome
 
-Phase 2 may begin only after this Phase 1 checkpoint is accepted and the later
-phase is explicitly authorised. Before treating Phase 2 governed knowledge as
-production-ready, WP-SEM-06 must provide:
+The Phase 2 gate was satisfied in the same accepted lineage. WP-SEM-06 provides:
 
 - the evidence and observation ledger;
 - governed-assertion stated and evidence-attested temporal bounds;
@@ -299,6 +265,6 @@ production-ready, WP-SEM-06 must provide:
 - deterministic normalisation, deduplication, aggregation and suppression; and
 - candidate-to-change-set conversion through the existing human governance path.
 
-External extraction and suggestion workers are not prerequisites for beginning
-Phase 2. They remain removable capabilities and receive no canonical database,
-approval, publication or activation authority.
+External extraction and suggestion workers remain separately gated removable
+capabilities and receive no canonical database, approval, publication or
+activation authority.

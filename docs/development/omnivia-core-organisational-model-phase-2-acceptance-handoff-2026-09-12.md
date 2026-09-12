@@ -5,35 +5,37 @@ Specification authority: `SPEC-CORE-SEM-001`, version 0.2, dated 2026-09-11
 Implementation plan: `omnivia-core-organisational-model-phase-1-closeout-and-phase-2-implementation-plan-2026-09-12.md`
 Branch: `codex/core-organisational-model-v02`
 Local implementation status: complete and preflight-clean
-Acceptance status: **REVIEW REQUIRED — not a release or merge GO**
+Acceptance status: **GO — accepted and merged**
+Accepted integrated tip: `943b4111d86396ff924cd295d995c3c1f2de7008`
+Pull request: `https://github.com/claytonread/omnivia-core/pull/105`
+Merge commit: `b030dfbd7b8eb45889190d8aeae62a18b9a7f27e`
 
-## 1. Decision requested
+## 1. Acceptance decision
 
-Review the Phase 2 implementation range and decide whether it is acceptable for
-hosted `Core acceptance` and formal architecture, runtime/storage,
-security/privacy and product-owner review.
-
-This handoff does not claim those external decisions, does not open or merge a
-pull request, and does not authorise optional workers or automatic publication.
+The product owner approved Phase 1 `GO` and the architecture, runtime/storage,
+security/privacy and product-owner gates for integrated tip `943b411` on
+2026-09-12. All required hosted checks passed on that exact tip and pull request
+#105 merged to `main` as `b030dfb`. Optional workers and automatic publication
+remain outside the accepted scope.
 
 ## 2. Exact review range
 
-Phase 2 implementation commits:
+Original Phase 2 implementation commits:
 
 ```text
 3c7024b..5a7833a
 ```
 
-Phase 2 base:
+Integrated pull-request base:
 
 ```text
-fda9bcf  fix(core): close phase 1 acceptance hygiene
+190a7742393aa7b259630de89871566b188bc2f5
 ```
 
-Reviewed implementation tip:
+Accepted integrated tip:
 
 ```text
-5a7833ac3849700988bfa3a116e4c45890142e97
+943b4111d86396ff924cd295d995c3c1f2de7008
 ```
 
 Commit sequence:
@@ -52,6 +54,8 @@ cce3d3d feat(core): add deterministic aggregation and suppression
 ```
 
 The Phase 1 implementation remains independently identifiable at `dd72159`.
+Integration with current `main`, migration allocation and exact-tip acceptance
+are recorded by `90841d1`, `9db48a8`, `a5294a3` and `943b411`.
 
 ## 3. Delivered scope
 
@@ -139,10 +143,11 @@ The Phase 1 implementation remains independently identifiable at `dd72159`.
 0037_semantic_registry.sql                 Phase 1 semantic registry
 0038_semantic_evidence_observations.sql    Phase 2 evidence and governance
 0039_semantic_retention_recovery.sql       Phase 2 retention and recovery
+0040_semantic_temporal_source_metadata.sql Phase 2 temporal source metadata
 ```
 
-`0038` and `0039` are the Phase 2 additions. Migration order and checksums are
-owned by the existing migration ledger.
+`0038`–`0040` are the Phase 2 additions. Migration order, allocation and
+checksums are owned by the existing migration ledger.
 
 ## 5. Local acceptance evidence
 
@@ -152,19 +157,18 @@ Final command:
 ./scripts/preflight
 ```
 
-Final result at implementation tip `5a7833a`: **PASS**.
+Final result at accepted integrated tip `943b411`: **PASS**.
 
 Key evidence from the final run:
 
 ```text
-Package-boundary tests:                  51 passed
-Application-contract tests:          9,255 passed, 19 skipped
+Package-boundary tests:                  53 passed
 Canonical migration/compatibility:   1,686 passed, 2 skipped
 Phase 0 baseline:                       749 passed
-Full repository suite:               21,209 passed, 32 skipped
-Benchmark suite:                         30 passed
+Full repository suite:               24,423 passed, 35 skipped
+Benchmark suite:                         23 passed
 Ruff:                                  passed
-Strict mypy:                           273 source files passed
+Strict mypy:                           310 source files passed
 Distribution build/install checks:       5 distributions passed
 macOS status-menu companion:             48 tests passed
 ```
@@ -231,8 +235,11 @@ it emitted no test, build, lint or type-check failure.
   IDs, content digests and Phase 1 change-set deduplication; transport adapters
   must not bypass the existing mutation seam when these commands are exposed.
 
-The final three notes require explicit reviewer disposition before an
-unconditional specification-conformance `GO` is recorded.
+The accountable owner accepted these dispositions on 2026-09-12: the dotted
+event-kind representation is the approved wire convention; migration `0040`
+provides dedicated temporal source-text/timezone persistence; and transport
+adapters must continue to compose through the existing mutation/idempotency
+seam.
 
 ## 9. Rollback procedure
 
@@ -254,27 +261,25 @@ unconditional specification-conformance `GO` is recorded.
 There is intentionally no destructive down-migration that rewrites Phase 2
 history into Phase 1 tables.
 
-## 10. Outstanding external gates
+## 10. Completed external gates
 
-- [ ] Architecture sign-off on the frozen Phase 2 decisions and review notes.
-- [ ] Runtime/storage sign-off on migrations `0038` and `0039`, fencing and
-      rollback.
-- [ ] Security/privacy sign-off on content separation, permission checks,
+- [x] Architecture sign-off on the frozen Phase 2 decisions and review notes.
+- [x] Runtime/storage sign-off on migrations `0038`–`0040`, fencing and rollback.
+- [x] Security/privacy sign-off on content separation, permission checks,
       events and retention.
-- [ ] Product-owner approval of the bounded Phase 2 behavior.
-- [ ] Green hosted `Core acceptance` for the exact reviewed range.
-- [ ] Pull-request and merge approval.
-
-Until those boxes are completed, the correct decision is **local implementation
-complete; formal acceptance pending**.
+- [x] Product-owner approval of the bounded Phase 2 behavior.
+- [x] Green hosted `Core acceptance` for exact tip `943b411`.
+- [x] Green hosted Phase 2 platform qualification on Ubuntu, macOS and Windows.
+- [x] Pull request #105 merged as `b030dfb`.
 
 ## 11. Reviewer record
 
 | Review | Decision | Reviewer | Date | Notes |
 |---|---|---|---|---|
-| Architecture | Pending |  |  |  |
-| Runtime/storage | Pending |  |  |  |
-| Security/privacy | Pending |  |  |  |
-| Product owner | Pending |  |  |  |
-| Hosted Core acceptance | Pending |  |  |  |
-| Merge | Pending |  |  |  |
+| Architecture | GO | `claytonread` | 2026-09-12 | Approved for `943b411` |
+| Runtime/storage | GO | `claytonread` | 2026-09-12 | Migrations `0037`–`0040`, fencing, recovery and rollback approved |
+| Security/privacy | GO | `claytonread` | 2026-09-12 | Content separation, temporal source text, access paths and retention approved |
+| Product owner | GO | `claytonread` | 2026-09-12 | Bounded Phase 1/2 behavior approved |
+| Hosted Core acceptance | PASS | GitHub Actions | 2026-09-12 | Run `34678950410`, exact tip `943b411` |
+| Hosted Phase 2 platform | PASS | GitHub Actions | 2026-09-12 | Run `34678950355`, Ubuntu/macOS/Windows |
+| Merge | MERGED | `claytonread` | 2026-09-12 | PR #105; merge commit `b030dfb` |
