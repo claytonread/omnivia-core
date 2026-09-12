@@ -31,7 +31,7 @@ import os
 import re
 import socket
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -639,6 +639,29 @@ class LocalSocketServer:
     router: DocumentRouter | None = None
     authenticated: AuthenticatedDispatch | None = None
     mcp_administration: McpAdministration | None = None
+    #: Bounded service work to run on this thread, before a request is served and
+    #: again after its response is written.
+    #:
+    #: **Why here and not on a thread of its own.** The service owns one writable
+    #: SQLite connection, and the only two things that touch it are this serving
+    #: thread and the main loop's lease renewal -- which the runner already tolerates
+    #: losing a race against for exactly this reason. Work driven from here therefore
+    #: introduces no second writer and no new class of contention; a worker thread
+    #: would introduce both, and a worker connection would be a second writer on a
+    #: workspace whose whole ownership model says there is one.
+    #:
+    #: **Why twice.** After, because work a request enqueued has to run whether or not
+    #: another request ever arrives, and running it after the response is written is
+    #: what keeps the enqueuing operation asynchronous. Before, because the first
+    #: request after a restart must not be answered from state that startup recovery
+    #: requeued and nothing has yet resumed.
+    #:
+    #: Bounded by whatever is passed: this is the sole accept loop, so a pass that ran
+    #: to exhaustion would be a pass that stops answering.
+    #:
+    #: Whatever it returns is discarded -- a pass reports what it did to its own
+    #: caller's tests, and this loop has nothing to do with the answer.
+    service_work: Callable[[], object] | None = None
     path: Path | None = None
     endpoint: LocalEndpoint | None = None
     timeout: float = DEFAULT_TIMEOUT_SECONDS
@@ -818,6 +841,7 @@ class LocalSocketServer:
                 channel.close()
                 break
             self._active_channel = channel
+            self._run_service_work()
             try:
                 self._handle(channel)
             except Exception:  # noqa: BLE001, S112 - see below
@@ -842,6 +866,27 @@ class LocalSocketServer:
             finally:
                 channel.close()
                 self._active_channel = None
+            if not self._stop.is_set():
+                # Not after a stop was requested. `stop()` waits a bounded moment for
+                # this thread and then stops waiting, so a pass started here would run
+                # on a connection the resource stack is about to close -- contained,
+                # but pointless work standing between a signal and a released lease.
+                self._run_service_work()
+
+    def _run_service_work(self) -> None:
+        """Run one bounded pass of service work, contained like a bad client.
+
+        Contained for the same reason `_handle` is, and it is the same property rather
+        than a second one: this is the sole accept loop, so nothing driven from it may
+        end it. A unit of work that fails is the workspace's problem to record durably
+        -- which is where it is recorded -- not a reason for the service to go deaf.
+        """
+        if self.service_work is None:
+            return
+        try:
+            self.service_work()
+        except Exception:  # noqa: BLE001 - see above
+            return
 
     def _handle(self, channel: _Channel) -> None:
         raw = channel.read_frame()
