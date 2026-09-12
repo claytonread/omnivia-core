@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import anyio
 import mcp_types as types
 import pytest
+from mcp import Client
 from omnivia_core_client import (
     CancellationToken,
     Credential,
@@ -42,7 +44,11 @@ from omnivia_core_client import (
 )
 from omnivia_core_mcp import server
 from omnivia_core_mcp.configuration import McpConfiguration, parse_configuration
-from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST
+from omnivia_core_mcp.manifest import (
+    ADMITTED_MUTATIONS,
+    EXPOSURE_MANIFEST,
+    exposure_manifest,
+)
 
 from omnivia_core.contracts.v1 import (
     ApiError,
@@ -69,6 +75,72 @@ ENDPOINT = "https://core.example.com"
 REFERENCE = "core-api"
 
 ALL_PURPOSES = ["workspace_inspection", "knowledge_retrieval"]
+
+#: What an authoring installation additionally allows. Three more purposes, each
+#: the service's own for the operations the wider profile adds, so a refusal
+#: below is about the profile or the payload and never about a purpose nobody
+#: granted.
+AUTHORING_PURPOSES = [
+    *ALL_PURPOSES,
+    "memory_authoring",
+    "content_ingestion",
+    "job_observation",
+]
+
+#: The smallest call each tool the authoring profile adds actually accepts.
+#:
+#: *Smallest* is now decided by the canonical contract rather than by the
+#: advertised key list: the adapter decodes an authoring input through
+#: `omnivia_core.contracts.v1`'s own decoder before it sends anything, so a
+#: payload that merely names declared keys no longer reaches a transport at all.
+#: Every entry here is a document that decoder accepts -- checked by
+#: `test_every_admitted_call_is_one_the_canonical_contract_accepts`, so this
+#: table cannot quietly drift into being shape-only again -- and the values stay
+#: as small and as obviously synthetic as that allows, because what the tests
+#: below read is the envelope, not the content.
+AUTHORING_CALLS: dict[str, dict[str, Any]] = {
+    "memory_create": {
+        "input": {
+            "record_type": "memory.fact",
+            "domain_scope": "product.core",
+            "content": {"statement": "a fact proposed through MCP"},
+            "evidence_disposition": "available",
+            "sources": [{"kind": "document", "source_id": "note-1"}],
+            "assertion": {
+                "actor_id": PRINCIPAL,
+                "actor_kind": "agent",
+                "actor_role": "author",
+                "asserted_at": "2026-01-01T00:00:00Z",
+                "evidence": [
+                    {"source": {"kind": "document", "source_id": "note-1"}}
+                ],
+            },
+        },
+        "idempotency_key": "k-1",
+    },
+    "evidence_capture": {
+        "input": {
+            "source_native_id": "note-1",
+            "media_type": "text/markdown",
+            "text": "one captured line\n",
+        },
+        "idempotency_key": "k-2",
+    },
+    "import_start": {
+        "input": {
+            "source": {
+                "staged_source_ref": "stg-0001",
+                "source_kind": "archive",
+                "content_checksum": "sha256:" + "a" * 64,
+                "content_length_bytes": 1024,
+                "media_type": "application/zip",
+            }
+        },
+        "idempotency_key": "k-3",
+    },
+    "job_get": {"job_id": "job-1"},
+    "job_events": {"job_id": "job-1"},
+}
 
 
 # --- the trusted configuration, as a document -----------------------------------
@@ -225,6 +297,7 @@ def session(
     *,
     config: McpConfiguration | None = None,
     credentials: CredentialCache | None = None,
+    profile: str = "restricted",
 ) -> server.ConnectedSession:
     return server.ConnectedSession(
         configuration=config if config is not None else configuration(),
@@ -232,6 +305,27 @@ def session(
         workspace_id=WORKSPACE,
         status="attached",
         credentials=credentials,
+        profile=profile,
+    )
+
+
+def authoring_session(
+    transport: Any | None = None, *, config: McpConfiguration | None = None
+) -> server.ConnectedSession:
+    """A session with the profile `connect` would have frozen on an admitted one.
+
+    Built directly rather than through `connect` because the seam is the profile,
+    not the dial: `test_connect_freezes_the_profile_it_was_admitted` covers the
+    other half, and everything here is about what an authoring session then does.
+    """
+    return session(
+        transport,
+        config=config
+        if config is not None
+        else configuration(
+            mutation_enabled=True, allowed_purposes=list(AUTHORING_PURPOSES)
+        ),
+        profile="authoring",
     )
 
 
@@ -455,23 +549,608 @@ def test_a_result_that_is_not_a_json_object_is_refused_not_substituted(
 # --- tools/list is not filtered by authority ------------------------------------
 
 
+def listed(connected: server.ConnectedSession) -> list[str]:
+    """What `tools/list` advertises for one session, over the official client."""
+
+    async def ask() -> list[str]:
+        async with Client(server.build_server(session=connected)) as attached:
+            return [tool.name for tool in (await attached.list_tools()).tools]
+
+    return anyio.run(ask)
+
+
 def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
     """R004-06 determinism: one package version, one listing, whatever is granted.
 
     A listing filtered by authority would differ between two hosts running the
     same build, and a model would have no way to tell a tool it may not call from
     a tool that does not exist. The purpose is enforced on call instead.
-    """
-    from omnivia_core_mcp.manifest import tools
 
-    narrow = server.build_server(
-        session=session(config=configuration(allowed_purposes=["workspace_inspection"]))
+    Asserted over three configurations that differ only in `allowed_purposes`,
+    including one that allows nothing either profile claims: the six names come
+    back unchanged every time, so the listing is the profile's and the purposes
+    are a per-call check that never reaches it.
+    """
+    for purposes in (["workspace_inspection"], ["audit_export"], list(ALL_PURPOSES)):
+        assert listed(
+            session(config=configuration(allowed_purposes=purposes))
+        ) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
+    assert listed(
+        authoring_session(config=configuration(mutation_enabled=True))
+    ) == [entry.tool_name for entry in exposure_manifest("authoring")]
+
+
+# --- the profile: settled once, and the only thing that widens the surface -------
+
+
+def test_the_default_session_profile_is_restricted() -> None:
+    """A session built without naming a profile advertises the read-only six.
+
+    The failure mode this default should have: code that predates profiles, or a
+    future constructor that forgets to pass one, gets the narrow inventory rather
+    than the wide one.
+    """
+    assert session().profile == "restricted"
+    assert listed(session()) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
+
+
+@dataclass
+class AdmissionRecorder:
+    """A protected admission that records every call, in order, with its client.
+
+    Standing in for what Phase 6 must write, and shaped like it: a real one reads
+    a durable record through the connected client it is handed. This one only
+    remembers being handed it, which is enough to prove the two facts the seam's
+    contract turns on -- *when* it is asked, and *what* it is asked with.
+    """
+
+    answer: Any = True
+    seen: list[tuple[Any, str, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.seen is None:
+            self.seen = []
+
+    def __call__(self, client: Any, principal_id: str, workspace_id: str) -> Any:
+        self.seen.append((client, principal_id, workspace_id))
+        return self.answer
+
+
+@pytest.mark.parametrize(
+    ("mutation_enabled", "answer", "inject", "profile"),
+    [
+        (False, None, False, "restricted"),
+        (False, True, True, "restricted"),
+        (True, None, False, "restricted"),
+        (True, False, True, "restricted"),
+        (True, True, True, "authoring"),
+    ],
+    ids=["closed", "closed-admitted", "ceiling-only", "denied", "admitted"],
+)
+def test_connect_freezes_the_profile_it_was_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation_enabled: bool,
+    answer: Any,
+    inject: bool,
+    profile: str,
+) -> None:
+    """The profile is decided at startup, from the configuration and the seam.
+
+    `mutation_enabled: true` with no injected admission is the production case
+    and is restricted: the console entry point injects none, so editing that
+    field in a configuration file widens nothing. It is also frozen with the rest
+    of the session, so nothing serving it can raise it afterwards.
+    """
+    monkeypatch.setattr(
+        server.ServiceClient,
+        "connect",
+        classmethod(lambda _cls, _config, **_kw: client(RecordingTransport())),
     )
-    wide = server.build_server(session=session())
-    assert narrow is not wide
-    assert [tool.name for tool in tools()] == [
-        entry.tool_name for entry in EXPOSURE_MANIFEST
+    admission = AdmissionRecorder(answer=answer) if inject else None
+    connected = server.connect(
+        configuration(
+            mutation_enabled=mutation_enabled,
+            allowed_purposes=list(AUTHORING_PURPOSES),
+        ),
+        authoring_admission=admission,
+    )
+    assert connected.profile == profile
+    with pytest.raises(AttributeError):
+        connected.profile = "authoring"  # type: ignore[misc]
+
+
+def test_the_admission_is_asked_with_the_connected_client_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam receives the *live* client, the configured principal, this
+    workspace -- and receives them only once.
+
+    The client identity is the whole point of the argument: Phase 6's record
+    lives behind the same authenticated Core service this session has just
+    reached and agreed a workspace with, so an implementation reads it through
+    this object. Handing over two identifiers instead would leave it opening the
+    installation database itself or dialling a second connection, which is a way
+    around authority that has already been established.
+    """
+    connected_client = client(RecordingTransport())
+    monkeypatch.setattr(
+        server.ServiceClient,
+        "connect",
+        classmethod(lambda _cls, _config, **_kw: connected_client),
+    )
+    admission = AdmissionRecorder()
+
+    connected = server.connect(
+        configuration(
+            mutation_enabled=True, allowed_purposes=list(AUTHORING_PURPOSES)
+        ),
+        authoring_admission=admission,
+    )
+
+    assert connected.profile == "authoring"
+    (asked,) = admission.seen
+    assert asked[0] is connected_client, "the seam was handed a different client"
+    assert asked[0] is connected.client
+    assert asked[1:] == (PRINCIPAL, WORKSPACE)
+    assert asked[0].descriptor.workspace_id == WORKSPACE
+
+
+@pytest.mark.parametrize("failure", ["unreachable", "wrong_workspace"])
+def test_the_admission_is_never_asked_without_a_matching_connection(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Nothing to admit until there is a service, and the right one.
+
+    Both of these used to be decided *after* the profile had already been
+    settled, which is a seam being asked about a connection that does not exist
+    -- and a Phase 6 implementation handed no client would have had to go around
+    Core to answer at all. Now the order is connect, agree the workspace, then
+    ask; a failure at either of the first two raises before the question, so the
+    session that never existed is restricted in the only way that means anything.
+    """
+
+    def connect(_cls: Any, _config: Any, **_kwargs: Any) -> ServiceClient:
+        if failure == "unreachable":
+            raise TransportError("the endpoint could not be reached")
+        return client(RecordingTransport(), OTHER_WORKSPACE)
+
+    monkeypatch.setattr(server.ServiceClient, "connect", classmethod(connect))
+    admission = AdmissionRecorder()
+
+    with pytest.raises((server.StartupError, TransportError)):
+        server.connect(
+            configuration(
+                mutation_enabled=True, allowed_purposes=list(AUTHORING_PURPOSES)
+            ),
+            authoring_admission=admission,
+        )
+    assert admission.seen == []
+
+
+def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """There is no one workspace to be admitted for, so there is no question."""
+    monkeypatch.setattr(
+        server.ServiceClient,
+        "connect",
+        classmethod(lambda _cls, _config, **_kw: client(RecordingTransport())),
+    )
+    admission = AdmissionRecorder()
+    with pytest.raises(server.StartupError, match="unambiguous"):
+        server.connect(
+            configuration(
+                allowed_workspace_ids=[WORKSPACE, OTHER_WORKSPACE],
+                mutation_enabled=True,
+            ),
+            authoring_admission=admission,
+        )
+    assert admission.seen == []
+
+
+def test_the_two_inventories_are_the_frozen_six_and_eleven() -> None:
+    """What each profile advertises *and* what each can dispatch, as one fact.
+
+    The listing and the lookup are the same allow-list, so a restricted server
+    does not merely omit the five authoring tools: it cannot resolve their names
+    at all, which is what makes the refusal below a policy rather than a message.
+    """
+    restricted, authoring = session(), authoring_session()
+    assert len(listed(restricted)) == 6
+    assert len(listed(authoring)) == 11
+    assert listed(authoring)[:6] == listed(restricted)
+    assert listed(authoring)[6:] == [
+        "memory_create",
+        "evidence_capture",
+        "import_start",
+        "job_get",
+        "job_events",
     ]
+
+
+@pytest.mark.parametrize("tool_name", sorted(AUTHORING_CALLS))
+def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) -> None:
+    """Including on one whose configuration says `mutation_enabled: true`.
+
+    The refusing transport is the point: the ceiling alone admits nothing, and
+    the refusal costs no dial. A restricted server with every authoring purpose
+    allowed still cannot reach a tool its profile does not expose -- so the
+    purpose check is not what is holding the line here.
+    """
+    permissive = session(
+        config=configuration(
+            mutation_enabled=True, allowed_purposes=list(AUTHORING_PURPOSES)
+        )
+    )
+    result = call(tool_name, AUTHORING_CALLS[tool_name], connected=permissive)
+    assert result.is_error is True
+    assert result.structured_content is None
+    assert "is not a tool this server exposes" in result.content[0].text
+    # And the refusal offers what *is* available, which is the six and only six.
+    offered = result.content[0].text.split("Available: ", 1)[1]
+    available = offered.rstrip(".").split(", ")
+    assert available == [entry.tool_name for entry in EXPOSURE_MANIFEST]
+
+
+# --- what an authoring call carries ----------------------------------------------
+
+
+@pytest.mark.parametrize("tool_name", sorted(ADMITTED_MUTATIONS))
+def test_a_mutation_dispatches_the_nested_input_and_the_key_in_the_metadata(
+    tool_name: str,
+) -> None:
+    """The wrapper is a call shape, not a payload: it is unwrapped here.
+
+    `input` becomes the request's input unchanged -- no outer key survives into
+    it -- and `idempotency_key` becomes `RequestMetadata.idempotency_key`, which
+    is where the contract puts it and where the service's durable mutation
+    coordinator looks. A key left in the payload would be an undeclared field the
+    operation contract refuses; a key dropped would make every submission a new
+    one.
+    """
+    name = tool_name.replace(".", "_")
+    transport = RecordingTransport()
+    arguments = AUTHORING_CALLS[name]
+    result = call(name, arguments, connected=authoring_session(transport))
+    assert result.is_error is False, result.content[0].text
+
+    (request,) = transport.calls
+    assert request.operation == tool_name
+    assert request.input == arguments["input"]
+    assert "idempotency_key" not in request.input
+    assert request.metadata.idempotency_key == arguments["idempotency_key"]
+
+
+@pytest.mark.parametrize("tool_name", ["job_get", "job_events"])
+def test_a_read_dispatches_its_canonical_input_with_no_key(tool_name: str) -> None:
+    """The two job observations are reads and are shaped like every other read:
+    the canonical operation input directly, and no idempotency key, because a
+    read has no settled outcome to replay."""
+    transport = RecordingTransport()
+    call(tool_name, AUTHORING_CALLS[tool_name], connected=authoring_session(transport))
+    (request,) = transport.calls
+    assert request.input == AUTHORING_CALLS[tool_name]
+    assert request.metadata.idempotency_key is None
+
+
+def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability() -> (
+    None
+):
+    """Read off the frozen catalogue entry and the manifest, never transcribed --
+    for the five wider tools as much as for the six reads.
+
+    The purposes are the service's own (`memory_authoring`, `content_ingestion`,
+    `job_observation`), so a request states the claim the grant is checked
+    against rather than one this package invented.
+    """
+    from omnivia_core.contracts.v1 import get_operation_metadata
+
+    for entry in exposure_manifest("authoring"):
+        arguments = AUTHORING_CALLS.get(entry.tool_name, {})
+        transport = RecordingTransport()
+        call(entry.tool_name, arguments, connected=authoring_session(transport))
+        (request,) = transport.calls
+        catalogue = get_operation_metadata(entry.operation)
+
+        assert request.operation == entry.operation
+        assert request.metadata.purpose == entry.purpose
+        assert request.metadata.scopes == tuple(catalogue.scope.required_scopes)
+        (required,) = request.metadata.required_capabilities
+        assert required.id == catalogue.required_capability.id
+        assert required.minimum_version == catalogue.required_capability.minimum_version
+        assert required.required == catalogue.required_capability.required
+        assert request.metadata.workspace_id == WORKSPACE
+        assert request.metadata.principal_claim is not None
+        assert request.metadata.principal_claim.claimed_principal_id == PRINCIPAL
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"input": {"source_native_id": "note-1"}},
+        {"idempotency_key": "k-1"},
+        {"input": {}, "idempotency_key": "k-1", "workspace_id": WORKSPACE},
+        {"input": {}, "idempotency_key": "k-1", "purpose": "content_ingestion"},
+        {"input": {}, "idempotency_key": "k-1", "source_native_id": "note-1"},
+        {"input": "not-an-object", "idempotency_key": "k-1"},
+        {"input": {}, "idempotency_key": 17},
+        {"input": {}, "idempotency_key": None},
+    ],
+    ids=[
+        "neither",
+        "no-key",
+        "no-input",
+        "outer-workspace",
+        "outer-purpose",
+        "operation-field-outside-input",
+        "input-not-an-object",
+        "key-not-a-string",
+        "key-null",
+    ],
+)
+def test_a_mutation_wrapper_that_is_not_the_advertised_shape_is_refused(
+    arguments: dict[str, Any],
+) -> None:
+    """The advertised wrapper is enforced, not described, and before the client.
+
+    Two of these are the ones that matter: an outer `workspace_id` or `purpose`
+    is a caller restating authority the configuration fixes, and an operation
+    field left *outside* `input` is a caller who has understood the shape only
+    half way -- accepting it would silently drop a field the contract requires.
+    """
+    result = call("evidence_capture", arguments, connected=authoring_session())
+    assert result.is_error is True
+    assert result.structured_content is None
+
+
+@pytest.mark.parametrize("reserved", ["workspace_id", "principal_id", "purpose"])
+def test_a_reserved_name_is_refused_inside_a_mutations_nested_input_too(
+    reserved: str,
+) -> None:
+    """Unwrapping is not a way in.
+
+    The outer object is closed, so an authority-shaped key there is refused as an
+    unrecognised property; nesting it inside `input` gets it past that check and
+    into the payload, which is why the reserved-name refusal runs again on what
+    the wrapper unwrapped to.
+    """
+    result = call(
+        "evidence_capture",
+        {
+            "input": {"source_native_id": "note-1", reserved: "attacker"},
+            "idempotency_key": "k-1",
+        },
+        connected=authoring_session(),
+    )
+    assert result.is_error is True
+    assert reserved in result.content[0].text
+    assert "trusted configuration" in result.content[0].text
+
+
+def test_an_unadvertised_key_inside_a_mutations_input_is_refused() -> None:
+    """The nested payload is checked against the operation's own advertised
+    properties -- the ones under `input` in the wrapper -- rather than against
+    the wrapper's two."""
+    result = call(
+        "evidence_capture",
+        {
+            "input": {"source_native_id": "note-1", "parser": "markdown"},
+            "idempotency_key": "k-1",
+        },
+        connected=authoring_session(),
+    )
+    assert result.is_error is True
+    assert "accepts no argument named 'parser'" in result.content[0].text
+
+
+# --- the canonical contract, checked before the call ------------------------------
+
+
+def test_every_admitted_call_is_one_the_canonical_contract_accepts() -> None:
+    """The guard on :data:`AUTHORING_CALLS` itself.
+
+    Every test above reads an envelope a transport recorded, which it can only do
+    if the call got past the contract decode. Asserting that directly keeps this
+    table from drifting back into shape-only payloads that would then silently
+    turn every one of those tests into an assertion about a refusal.
+    """
+    for entry in exposure_manifest("authoring"):
+        arguments = AUTHORING_CALLS.get(entry.tool_name)
+        if arguments is None:
+            continue
+        payload = arguments.get("input", arguments)
+        server._CANONICAL_INPUT[entry.operation](payload)
+
+
+#: One way each authoring operation's input can be wrong without being the wrong
+#: *shape*: a required field missing, and a declared field carrying a value the
+#: contract does not admit. Both are keys the advertised schema declares, so
+#: neither is caught by the closed-property check -- only the contract's own
+#: decoder sees them.
+UNCANONICAL_INPUTS: list[tuple[str, str, dict[str, Any]]] = [
+    ("memory_create", "missing", {"record_type": "memory.fact"}),
+    (
+        "memory_create",
+        "bad-value",
+        {**AUTHORING_CALLS["memory_create"]["input"], "record_type": ""},
+    ),
+    ("evidence_capture", "missing", {"source_native_id": "note-1"}),
+    (
+        "evidence_capture",
+        "bad-value",
+        {
+            **AUTHORING_CALLS["evidence_capture"]["input"],
+            "media_type": "application/x-sh",
+        },
+    ),
+    ("import_start", "missing", {"source": {"staged_source_ref": "stg-0001"}}),
+    (
+        "import_start",
+        "bad-value",
+        {
+            "source": {
+                **AUTHORING_CALLS["import_start"]["input"]["source"],
+                "content_checksum": "not-a-digest",
+            }
+        },
+    ),
+    ("job_get", "missing", {}),
+    ("job_get", "bad-value", {"job_id": ""}),
+    ("job_events", "missing", {}),
+    ("job_events", "bad-value", {"job_id": "job-1", "limit": 0}),
+]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "payload"),
+    [(name, payload) for name, _, payload in UNCANONICAL_INPUTS],
+    ids=[f"{name}-{kind}" for name, kind, _ in UNCANONICAL_INPUTS],
+)
+def test_an_input_the_contract_refuses_never_reaches_the_client(
+    tool_name: str, payload: dict[str, Any]
+) -> None:
+    """v1.3 5.1: the adapter validates the canonical input, not only the wrapper.
+
+    The advertised schema is a key list at this seam -- the closed-property check
+    reads `properties` and nothing else -- so a missing required field or an
+    inadmissible value passes it and would previously have become a round trip
+    whose only possible outcome was the service's own refusal. Every payload here
+    names declared keys, and every one is refused on this side of the transport:
+    the refusing transport is what proves the second half.
+    """
+    arguments: dict[str, Any] = (
+        {"input": payload, "idempotency_key": "k-1"}
+        if tool_name in {"memory_create", "evidence_capture", "import_start"}
+        else payload
+    )
+    result = call(tool_name, arguments, connected=authoring_session())
+    assert result.is_error is True
+    assert result.structured_content is None
+    assert "is not a valid document for" in result.content[0].text
+
+
+#: The secret each mutation carries in a *declared* field below, so the refusal
+#: that follows is the contract's rather than the closed-property check's.
+SECRET = "eyJzZWNyZXQiOiJkby1ub3QtZWNobyJ9"
+
+CARRIES_SECRET: dict[str, dict[str, Any]] = {
+    "memory_create": {"record_type": SECRET},
+    "evidence_capture": {"source_native_id": SECRET},
+    "import_start": {"source": {"staged_source_ref": SECRET}},
+}
+
+
+@pytest.mark.parametrize("tool_name", sorted(CARRIES_SECRET))
+def test_a_contract_refusal_repeats_nothing_of_what_was_sent(tool_name: str) -> None:
+    """Fixed text, like every other refusal this server writes.
+
+    A contract error names the path it failed at and often the value, and this
+    answer goes to a model over a channel the caller does not own. The advertised
+    input schema already carries every constraint, so a caller reading it has
+    what it needs without the server quoting the payload back.
+    """
+    result = call(
+        tool_name,
+        {"input": CARRIES_SECRET[tool_name], "idempotency_key": "k-1"},
+        connected=authoring_session(),
+    )
+    assert result.is_error is True
+    message = result.content[0].text
+    assert SECRET not in message
+    assert "is not a valid document for" in message
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", " ", "k 1", "k/../1", "\n", "a" * 129, "key\u0000"],
+    ids=["empty", "space", "inner-space", "path-ish", "newline", "too-long", "nul"],
+)
+def test_an_idempotency_key_the_envelope_refuses_never_reaches_the_client(
+    key: str,
+) -> None:
+    """The key is checked against the envelope's own predicate before dispatch.
+
+    `is_idempotency_key` is asked rather than a pattern restated here, so the
+    advertised wrapper, the request envelope and this check are one definition.
+    A key the envelope would refuse used to travel as far as `RequestMetadata`,
+    where it is an exception out of a handler rather than an answer -- and for a
+    write, a key that cannot settle a replay is the one thing worth refusing
+    before the write happens rather than after.
+    """
+    arguments = dict(AUTHORING_CALLS["evidence_capture"], idempotency_key=key)
+    result = call("evidence_capture", arguments, connected=authoring_session())
+    assert result.is_error is True
+    assert result.structured_content is None
+    assert "idempotency_key" in result.content[0].text
+
+
+def test_a_read_the_contract_accepts_still_carries_its_input_unchanged() -> None:
+    """The check decides whether to send, never what to send.
+
+    A decoded input is thrown away: what travels is the caller's own document, so
+    a contract that tolerates a spelling this adapter does not know about keeps
+    deciding that for itself.
+    """
+    transport = RecordingTransport()
+    call(
+        "job_events",
+        {"job_id": "job-1", "limit": 25},
+        connected=authoring_session(transport),
+    )
+    (request,) = transport.calls
+    assert request.input == {"job_id": "job-1", "limit": 25}
+
+
+def test_a_purpose_outside_the_configuration_refuses_an_authoring_tool() -> None:
+    """The per-call check is unchanged by the profile: a wider inventory is not a
+    wider grant, and an installation that never allowed `content_ingestion` sees
+    `evidence_capture` and cannot call it."""
+    narrow = authoring_session(config=configuration(mutation_enabled=True))
+    assert "content_ingestion" not in narrow.configuration.allowed_purposes
+    result = call(
+        "evidence_capture", AUTHORING_CALLS["evidence_capture"], connected=narrow
+    )
+    assert result.is_error is True
+    assert "purpose" in result.content[0].text
+
+
+def test_a_same_key_replay_is_a_real_call_every_time() -> None:
+    """No result cache here, and no automatic retry either.
+
+    Two identical submissions are two requests on the wire, each with a fresh
+    correlation identifier, because settling a repeat against a stored outcome --
+    and re-checking the authority behind it -- is the service's decision and this
+    adapter must not pre-empt either. A failed mutation is likewise sent once: a
+    second attempt under a new key would be a second write.
+    """
+    transport = RecordingTransport()
+    connected = authoring_session(transport)
+    arguments = AUTHORING_CALLS["evidence_capture"]
+    call("evidence_capture", arguments, connected=connected)
+    call("evidence_capture", arguments, connected=connected)
+
+    first, second = transport.calls
+    assert first.input == second.input
+    assert first.metadata.idempotency_key == second.metadata.idempotency_key
+    assert first.metadata.request_id != second.metadata.request_id
+
+    def refuse(request: RequestEnvelope) -> ResponseEnvelope:
+        return ErrorResponseEnvelope(
+            metadata=response_metadata(request),
+            error=ApiError(
+                code="service_unavailable",
+                message="not now",
+                retry_class="retryable_after_delay",
+            ),
+        )
+
+    failing = RecordingTransport(answer=refuse)
+    result = call(
+        "evidence_capture", arguments, connected=authoring_session(failing)
+    )
+    assert result.is_error is True
+    assert len(failing.calls) == 1, "a mutation was retried on this server's initiative"
 
 
 # --- startup: the workspace must be unambiguous and must be the one served -------

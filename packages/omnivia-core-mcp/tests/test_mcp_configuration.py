@@ -18,6 +18,7 @@ from omnivia_core_mcp.configuration import (
     MAXIMUM_CONFIGURATION_BYTES,
     McpConfiguration,
     McpConfigurationError,
+    effective_profile,
     parse_configuration,
     read_configuration,
 )
@@ -197,6 +198,128 @@ def test_configuration_repr_redacts_private_values() -> None:
     assert rendered == "McpConfiguration(<redacted>)"
     assert "core.example" not in rendered
     assert "core.default" not in rendered
+
+
+# --- the effective exposure profile ---------------------------------------------
+#
+# Two conditions, both required and neither sufficient: `mutation_enabled` is the
+# ceiling the public document sets, and the injected admission is the floor only
+# protected state can raise. The seam has no implementation in this repository --
+# it is what Phase 6's installed setup path must supply -- so every test here
+# injects one, and the *absence* of an injection is itself a case below because
+# that is what production is.
+
+WORKSPACE = "workspace-alpha"
+PRINCIPAL = "local-user"
+
+#: Stands in for the connected `ServiceClient` `server.connect` hands the seam.
+#:
+#: A bare sentinel because this module's whole interest in it is that it arrives
+#: unchanged: nothing in `effective_profile` reads it, dials it or unwraps it, and
+#: a real client here would let an implementation that started touching it pass.
+#: The authority suite is where the connection itself is under test.
+CLIENT: Any = object()
+
+
+def admits(answer: object) -> Any:
+    """A protected admission that records what it was asked, and about whom."""
+
+    def admission(client: Any, principal_id: str, workspace_id: str) -> Any:
+        asked.append((client, principal_id, workspace_id))
+        return answer
+
+    asked: list[tuple[Any, str, str]] = []
+    admission.asked = asked  # type: ignore[attr-defined]
+    return admission
+
+
+def test_mutation_enabled_false_or_absent_is_restricted_whatever_admission_says() -> (
+    None
+):
+    """The ceiling is checked first and is never negotiated.
+
+    A protected record of authoring intent does not widen a configuration that
+    does not permit authoring, and an absent field is the same as a false one --
+    which is what makes every existing installed configuration restricted
+    without being rewritten. The admission is not even consulted: there is no
+    question to ask once the ceiling has answered.
+    """
+    document = managed_document()
+    del document["mutation_enabled"]
+    for config in (
+        parse_configuration(document),
+        parse_configuration(managed_document()),
+    ):
+        admission = admits(True)
+        assert (
+            effective_profile(config, CLIENT, WORKSPACE, authoring_admission=admission)
+            == "restricted"
+        )
+        assert admission.asked == []
+
+
+def test_mutation_enabled_true_alone_is_still_restricted() -> None:
+    """The upgrade rule, and the one that matters most: editing the public
+    configuration file is not evidence of anything.
+
+    This is also the production default. `server.main` injects no admission, so a
+    legacy or hand-written `mutation_enabled: true` raises a ceiling over an empty
+    room and the installed server advertises the read-only six.
+    """
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    assert config.mutation_enabled is True
+    assert effective_profile(config, CLIENT, WORKSPACE) == "restricted"
+
+
+def test_authoring_needs_the_ceiling_and_the_protected_admission_together() -> None:
+    """Both, and the admission is asked with exactly three things: the connected
+    client, this principal and this workspace -- not a name from a tool call,
+    which is why the profile is settled at startup where no such name exists.
+
+    The client goes first and arrives untouched. That is what lets Phase 6 read
+    its protected record through the authority this session already established,
+    instead of opening the installation database or dialling again."""
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    admission = admits(True)
+    assert (
+        effective_profile(config, CLIENT, WORKSPACE, authoring_admission=admission)
+        == "authoring"
+    )
+    assert admission.asked == [(CLIENT, PRINCIPAL, WORKSPACE)]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [False, None, "true", 1, ["authoring"]],
+    ids=["denied", "no-answer", "truthy-string", "truthy-int", "truthy-list"],
+)
+def test_anything_but_a_true_admission_is_a_denial(answer: object) -> None:
+    """`is True`, not truthiness. A seam that answered with a record, a reason or
+    a status code has not said yes, and reading a non-empty value as consent is
+    how a protected boundary becomes an accident."""
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    assert (
+        effective_profile(config, CLIENT, WORKSPACE, authoring_admission=admits(answer))
+        == "restricted"
+    )
+
+
+def test_an_admission_that_raises_fails_closed() -> None:
+    """A protected authority that could not be consulted has confirmed nothing.
+
+    Widening the surface because a lookup broke would widen it for exactly the
+    reason it should not, so the refusal is silent here and loud nowhere: the
+    server simply advertises the narrow inventory.
+    """
+
+    def broken(_client: Any, _principal_id: str, _workspace_id: str) -> bool:
+        raise RuntimeError("/private/installation-state/mcp-principals.sqlite")
+
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    assert (
+        effective_profile(config, CLIENT, WORKSPACE, authoring_admission=broken)
+        == "restricted"
+    )
 
 
 def test_a_private_regular_file_is_read_by_explicit_absolute_path(

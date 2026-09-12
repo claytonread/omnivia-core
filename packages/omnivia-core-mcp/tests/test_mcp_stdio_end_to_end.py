@@ -59,7 +59,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, tools
+from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, exposure_manifest, tools
 
 PROBE = Path(__file__).parent / "_mcp_stdio_probe.py"
 
@@ -120,6 +120,16 @@ NEVER_A_TOOL: tuple[tuple[str, str], ...] = (
 ALL_PURPOSES = ("workspace_inspection", "knowledge_retrieval")
 
 
+#: What an authoring installation allows: the two read purposes plus the three
+#: the wider profile's tools claim. Every one is the service's own.
+AUTHORING_PURPOSES = (
+    *ALL_PURPOSES,
+    "memory_authoring",
+    "content_ingestion",
+    "job_observation",
+)
+
+
 def configuration_file(
     directory: Path,
     *,
@@ -127,27 +137,31 @@ def configuration_file(
     workspace_id: str,
     purposes: tuple[str, ...] = ALL_PURPOSES,
     name: str = "omnivia-mcp.json",
+    mutation_enabled: bool = False,
 ) -> Path:
     """One trusted `omnivia.mcp-config.v1` file, written owner-private.
 
     The mode matters: the reader proves owner-only from the open descriptor and
     refuses anything else, so a fixture that wrote 0644 would be testing the
     refusal rather than the server.
+
+    `mutation_enabled` is written only when it is true, so the default file is
+    the one an existing installation already has -- the field absent entirely --
+    rather than a file that states the safe value and would pass a check the
+    upgrade rule is about.
     """
+    document: dict[str, Any] = {
+        "format": "omnivia.mcp-config.v1",
+        "principal_id": PRINCIPAL_ID,
+        "allowed_workspace_ids": [workspace_id],
+        "allowed_purposes": list(purposes),
+        "service_mode": "managed_local",
+        "installation_state": str(installation_state),
+    }
+    if mutation_enabled:
+        document["mutation_enabled"] = True
     path = directory / name
-    path.write_text(
-        json.dumps(
-            {
-                "format": "omnivia.mcp-config.v1",
-                "principal_id": PRINCIPAL_ID,
-                "allowed_workspace_ids": [workspace_id],
-                "allowed_purposes": list(purposes),
-                "service_mode": "managed_local",
-                "installation_state": str(installation_state),
-            }
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(document), encoding="utf-8")
     path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return path
 
@@ -683,6 +697,289 @@ def test_a_purpose_outside_the_configuration_refuses_over_the_wire(
         assert refusal["is_error"] is True, name
         assert refusal["structured_content"] is None, name
         assert "purpose" in refusal["content"][0]["text"], name
+
+
+# --- the authoring profile, over the same real stdio --------------------------
+#
+# The profile is raised by the protected admission seam and by nothing else, so
+# these two tests are the same configuration file run twice: once as production
+# runs it, and once with `--authoring` standing in for the installed record Phase
+# 6 must write. Nothing about the document differs between them.
+
+#: One call per tool the authoring profile adds, in the order one session makes
+#: them, plus the replay.
+#:
+#: **Every input here is one the canonical contract accepts**, because the
+#: adapter now decodes an authoring input through `omnivia_core.contracts.v1`'s
+#: own decoder before it sends anything: a payload that is merely key-shaped is
+#: refused on this side and never becomes evidence about Core at all. So the two
+#: writes are real writes -- `evidence_capture` first, then the `memory_create`
+#: that cites the artifact it just wrote -- and what the other three prove is the
+#: relay: a valid request, a workspace that has nothing matching it, and Core's
+#: own domain answer coming back. `import_start` names a staged source that is
+#: well-formed and absent; the two job reads name a job this workspace has never
+#: run.
+#:
+#: The order is this list's, not the manifest's: `memory_create` resolves its
+#: declared source against a captured evidence artifact, so the capture has to
+#: have happened. `test_the_authoring_calls_cover_every_tool_the_profile_adds`
+#: is what keeps the set complete while the order is free.
+CAPTURED_NOTE = "A note captured through MCP, carried in the call itself.\n"
+CAPTURE_KEY = "mcp-authoring-capture-001"
+CAPTURED_SOURCE = "mcp-authoring-note-1"
+
+AUTHORING_CALLS: list[tuple[str, dict[str, Any]]] = [
+    (
+        "evidence_capture",
+        {
+            "input": {
+                "source_native_id": CAPTURED_SOURCE,
+                "media_type": "text/markdown",
+                "text": CAPTURED_NOTE,
+            },
+            "idempotency_key": CAPTURE_KEY,
+        },
+    ),
+    (
+        "memory_create",
+        {
+            "input": {
+                "record_type": "memory.fact",
+                "domain_scope": "product.core",
+                "content": {"fact": "a fact proposed through MCP"},
+                "evidence_disposition": "available",
+                "sources": [
+                    {"kind": "direct_submission", "source_id": CAPTURED_SOURCE}
+                ],
+                "assertion": {
+                    "actor_id": PRINCIPAL_ID,
+                    "actor_kind": "agent",
+                    "actor_role": "author",
+                    # Fixed and firmly in the past: the runtime refuses a claim
+                    # asserted after the instant it settles at, and "today at
+                    # midnight UTC" is a date that is briefly in the future.
+                    "asserted_at": "2026-01-01T00:00:00Z",
+                    "evidence": [
+                        {
+                            "source": {
+                                "kind": "direct_submission",
+                                "source_id": CAPTURED_SOURCE,
+                            }
+                        }
+                    ],
+                },
+            },
+            "idempotency_key": "mcp-authoring-memory-001",
+        },
+    ),
+    (
+        "import_start",
+        {
+            "input": {
+                "source": {
+                    "staged_source_ref": "stg-0001",
+                    "source_kind": "archive",
+                    "content_checksum": "sha256:" + "a" * 64,
+                    "content_length_bytes": 1024,
+                    "media_type": "application/zip",
+                }
+            },
+            "idempotency_key": "mcp-authoring-import-001",
+        },
+    ),
+    ("job_get", {"job_id": "job-not-in-this-workspace"}),
+    ("job_events", {"job_id": "job-not-in-this-workspace"}),
+]
+
+
+def service_error(called: dict[str, Any]) -> dict[str, Any]:
+    """The service's own error document out of one relayed refusal.
+
+    Refuses anything that is not one: an MCP-side refusal -- a name that does not
+    resolve, a purpose that is not allowed, a wrapper that is the wrong shape --
+    never reaches the service and carries no error envelope, so reading one here
+    is what distinguishes "Core decided" from "this adapter decided".
+    """
+    assert called["is_error"] is True, called
+    assert called["structured_content"] is None
+    message = called["content"][0]["text"]
+    assert "was refused by the service" in message, message
+    relayed: dict[str, Any] = json.loads(
+        message.split("was refused by the service: ", 1)[1]
+    )
+    return relayed["error"]
+
+
+async def _authoring_probe(config: Path) -> dict[str, Any]:
+    """One admitted stdio session: the listing, the five calls, then the replay."""
+    async with (
+        stdio_client(parameters(config, "--authoring")) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        listed = await session.list_tools()
+        calls = {
+            name: (await session.call_tool(name, arguments)).model_dump(mode="json")
+            for name, arguments in AUTHORING_CALLS
+        }
+        capture = dict(AUTHORING_CALLS[0][1])
+        replay = await session.call_tool("evidence_capture", capture)
+        found = await session.call_tool("evidence_search", {"query": CAPTURED_SOURCE})
+        return {
+            "tools": [tool.model_dump(mode="json") for tool in listed.tools],
+            "calls": calls,
+            "replay": replay.model_dump(mode="json"),
+            "found": found.model_dump(mode="json"),
+        }
+
+
+def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
+    live_service: fixture.GovernedService, tmp_path: Path
+) -> None:
+    """`mutation_enabled: true` in the trusted file, and still six read tools.
+
+    This is the upgrade rule and the security property together: the public
+    configuration is a ceiling, not a switch, and the probe here is started the
+    way production starts one -- no admission injected. A model sees the same six
+    tools it saw before, and `memory_create` is not merely absent from the
+    listing but unresolvable at the call.
+    """
+    config = configuration_file(
+        tmp_path,
+        installation_state=live_service.installation_state,
+        workspace_id=live_service.workspace_id,
+        purposes=AUTHORING_PURPOSES,
+        mutation_enabled=True,
+    )
+    observed = session(config)
+
+    assert observed["tools"] == [tool.model_dump(mode="json") for tool in tools()]
+    assert [tool["name"] for tool in observed["tools"]] == [
+        entry.tool_name for entry in EXPOSURE_MANIFEST
+    ]
+    for name in ARGUMENTS:
+        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+    refusal = observed["refusals"]["memory_create"]
+    assert refusal["is_error"] is True
+    assert "is not a tool this server exposes" in refusal["content"][0]["text"]
+
+
+def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
+    tmp_path: Path,
+) -> None:
+    """The whole authoring surface, over real pipes, against a real service.
+
+    A service of its own rather than the module's: one of these calls writes, and
+    the shared workspace is the thing every other test in this file asserts exact
+    counts against.
+
+    What each call proves, in one session:
+
+    * the listing is the eleven, in manifest order, and the three mutations
+      advertise the closed wrapper with the read hints inverted;
+    * `evidence_capture` writes -- the content travels in the call, with no path,
+      URL or credential anywhere in it -- and the artifact is then findable
+      through `evidence_search`, which is the same synchronous guarantee the
+      runtime lane proves from the inside;
+    * replaying that call with the same key and the same input answers from the
+      settled outcome: the same evidence id, not a second artifact;
+    * `memory_create` writes too, and cites the artifact the call before it
+      captured -- so the wider profile's two writing tools compose into the thing
+      an agent would actually do, rather than each being proved alone;
+    * `import_start`, `job_get` and `job_events` carry valid canonical requests
+      this workspace has no answer for, and come back with *Core's* typed domain
+      refusal rather than this adapter's. That is what shows the wrapper was
+      unwrapped, the envelope built, and the decision left where it belongs:
+      nothing matching that staged source, and no such job. The adapter's own
+      contract check is not what produced either -- it is exercised against
+      invalid input in `test_mcp_server_authority`, where a transport that
+      refuses to be used proves such a call never leaves this process.
+    """
+    with fixture.serving() as service:
+        config = configuration_file(
+            tmp_path,
+            installation_state=service.installation_state,
+            workspace_id=service.workspace_id,
+            purposes=AUTHORING_PURPOSES,
+            mutation_enabled=True,
+        )
+        observed = anyio.run(lambda: _authoring_probe(config))
+
+    assert [tool["name"] for tool in observed["tools"]] == [
+        entry.tool_name for entry in exposure_manifest("authoring")
+    ]
+    assert observed["tools"] == [
+        tool.model_dump(mode="json") for tool in tools("authoring")
+    ]
+    for name in ("memory_create", "evidence_capture", "import_start"):
+        advertised = next(tool for tool in observed["tools"] if tool["name"] == name)
+        assert set(advertised["input_schema"]["properties"]) == {
+            "input",
+            "idempotency_key",
+        }
+        assert advertised["input_schema"]["additionalProperties"] is False
+        assert advertised["annotations"]["read_only_hint"] is False
+        assert advertised["annotations"]["destructive_hint"] is False
+        assert advertised["annotations"]["idempotent_hint"] is False
+
+    captured = observed["calls"]["evidence_capture"]
+    assert captured["is_error"] is False, captured
+    written = captured["structured_content"]
+    assert written["capture_disposition"] == "created"
+    assert written["media_type"] == "text/markdown"
+    assert written["content_length_bytes"] == len(CAPTURED_NOTE.encode("utf-8"))
+    assert written["source"] == {
+        "kind": "direct_submission",
+        "source_id": CAPTURED_SOURCE,
+    }
+    Draft202012Validator(
+        advertised_for(observed, "evidence_capture")["output_schema"]
+    ).validate(written)
+
+    replayed = observed["replay"]
+    assert replayed["is_error"] is False, replayed
+    assert replayed["structured_content"] == written, "a same-key replay wrote again"
+
+    (found,) = observed["found"]["structured_content"]["evidence"]
+    assert found["evidence_id"] == written["evidence_id"]
+    assert found["source"]["kind"] == "direct_submission"
+
+    proposed = observed["calls"]["memory_create"]
+    assert proposed["is_error"] is False, proposed
+    record = proposed["structured_content"]["record"]
+    assert record["record_type"] == "memory.fact"
+    assert record["content"] == {"fact": "a fact proposed through MCP"}
+    assert record["provenance"]["sources"] == [
+        {"kind": "direct_submission", "source_id": CAPTURED_SOURCE}
+    ]
+    Draft202012Validator(
+        advertised_for(observed, "memory_create")["output_schema"]
+    ).validate(proposed["structured_content"])
+
+    assert service_error(observed["calls"]["job_get"])["code"] == "not_found"
+    assert service_error(observed["calls"]["job_events"])["code"] == "not_found"
+    assert service_error(observed["calls"]["import_start"])["code"] == (
+        "dependency_unavailable"
+    )
+
+
+def test_the_authoring_calls_cover_every_tool_the_profile_adds() -> None:
+    """The coverage check for the wider profile, matching the one the six have.
+
+    By set rather than by order, because `AUTHORING_CALLS` is ordered by what the
+    calls depend on -- the capture before the memory that cites it -- and not by
+    the manifest. A twelfth tool still cannot land without an end-to-end call.
+    """
+    assert {name for name, _ in AUTHORING_CALLS} == {
+        entry.tool_name for entry in exposure_manifest("authoring")
+    } - {entry.tool_name for entry in EXPOSURE_MANIFEST}
+
+
+def advertised_for(observed: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    for tool in observed["tools"]:
+        if tool["name"] == tool_name:
+            return tool
+    raise AssertionError(f"{tool_name} was not advertised")
 
 
 # --- the boundary this suite is arranged to prove -----------------------------
