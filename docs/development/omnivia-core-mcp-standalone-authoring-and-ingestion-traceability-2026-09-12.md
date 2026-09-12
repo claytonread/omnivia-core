@@ -14,7 +14,7 @@ not yet evidenced. The feature is not declared finished by this document.
 
 **Branch:** `codex/core-mcp-completion-integration`
 
-**Traced at:** `58ec1627c960076f00be07d3a8d741fbe2d9b05f`
+**Traced at:** `c5f212d36d47e0aec1a0d6a813f1bb06debde9b0`
 
 **Specification baseline:** `990b0f980c633840922170976c73b8f966361eab`
 
