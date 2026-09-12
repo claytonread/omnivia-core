@@ -68,6 +68,9 @@ from omnivia_core_runtime.service.http_transport import (
     parse_http_endpoint,
 )
 from omnivia_core_runtime.service.import_execution import ImportJobExecutor
+from omnivia_core_runtime.service.installation_bootstrap import (
+    initialise_and_register_managed_local_workspace,
+)
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
 )
@@ -98,10 +101,7 @@ from omnivia_core_runtime.service.transport import (
     LocalSocketServer,
     parse_endpoint,
 )
-from omnivia_core_runtime.service.workspace_init import (
-    WorkspaceInitStatus,
-    initialise_workspace,
-)
+from omnivia_core_runtime.service.workspace_init import WorkspaceInitStatus
 from omnivia_core_runtime.service.workspace_init import (
     render_result as render_init_result,
 )
@@ -544,7 +544,7 @@ def _init(args: argparse.Namespace) -> int:
     only checks the exit code learns whether it has a startable workspace, and one
     that reads the status line learns which of the two happened.
     """
-    result = initialise_workspace(
+    result = initialise_and_register_managed_local_workspace(
         workspace_root=args.workspace,
         installation_root=args.installation_state,
         core_version=args.core_version,

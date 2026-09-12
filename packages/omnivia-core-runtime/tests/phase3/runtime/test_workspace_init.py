@@ -1250,7 +1250,7 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
         "reason",
         "workspace",
     }
-    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.1"
+    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.2"
     workspace = document["workspace"]
     assert isinstance(workspace, dict)
     assert set(workspace) == {
@@ -1310,6 +1310,21 @@ WORKSPACE_INIT_WIRE_1_1 = {
     },
 }
 
+#: The whole wire vocabulary of `workspace_init_version` 1.2, on the same terms.
+#:
+#: One code more than 1.1 and not one character different anywhere else.
+#: `workspace_registration_conflict` is the state 1.1 had no name for: `--init` now
+#: registers its bootstrapped workspace in the installation catalogue
+#: (`installation_bootstrap.py`), and a workspace id already registered there under
+#: a different path is refused rather than silently re-pointed.
+WORKSPACE_INIT_WIRE_1_2 = {
+    "status": dict(WORKSPACE_INIT_WIRE_1_1["status"]),
+    "refusal": {
+        **WORKSPACE_INIT_WIRE_1_1["refusal"],
+        "WORKSPACE_REGISTRATION_CONFLICT": "workspace_registration_conflict",
+    },
+}
+
 
 def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     """The 1.0 -> 1.1 compatibility claim, as an assertion rather than a comment.
@@ -1323,7 +1338,6 @@ def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     unknown `refusal` as fatal is the case this bump exists to warn, and the bump is
     a minor one because the codes it already understands are untouched.
     """
-    assert WORKSPACE_INIT_VERSION == "1.1"
     assert WORKSPACE_INIT_WIRE_1_1["status"] == WORKSPACE_INIT_WIRE_1_0["status"]
     for name, wire in WORKSPACE_INIT_WIRE_1_0["refusal"].items():
         assert WORKSPACE_INIT_WIRE_1_1["refusal"][name] == wire, (
@@ -1335,8 +1349,28 @@ def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     assert added == {"UNQUALIFIED_FILESYSTEM"}
 
 
+def test_the_published_vocabulary_widened_additively_from_1_1() -> None:
+    """The 1.1 -> 1.2 compatibility claim, on the same terms as the 1.0 -> 1.1 one.
+
+    Kept beside it rather than in place of it: 1.1's fixture is frozen now the same
+    way 1.0's was, so a later packet that renames one of its seven codes or moves a
+    case between them fails here even though the 1.2 fixture beside it would have
+    been edited to agree.
+    """
+    assert WORKSPACE_INIT_VERSION == "1.2"
+    assert WORKSPACE_INIT_WIRE_1_2["status"] == WORKSPACE_INIT_WIRE_1_1["status"]
+    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
+        assert WORKSPACE_INIT_WIRE_1_2["refusal"][name] == wire, (
+            f"{name} changed its wire value; that is a break, not a widening"
+        )
+    added = set(WORKSPACE_INIT_WIRE_1_2["refusal"]) - set(
+        WORKSPACE_INIT_WIRE_1_1["refusal"]
+    )
+    assert added == {"WORKSPACE_REGISTRATION_CONFLICT"}
+
+
 def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
-    """R006-07: the published vocabulary of 1.1, by exact serialised value.
+    """R006-07: the published vocabulary of 1.2, by exact serialised value.
 
     Two hops are checked, because a value can be right in the enum and wrong on
     the wire. First the enums against the fixture above, by dict equality in both
@@ -1350,17 +1384,17 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
     code compared it to `WorkspaceInitRefusal.X.value` and to `WORKSPACE_INIT_VERSION`,
     both of which move with the mutation.
 
-    `1.1` is asserted as a literal for the same reason.
+    `1.2` is asserted as a literal for the same reason.
     """
-    assert WORKSPACE_INIT_VERSION == "1.1"
+    assert WORKSPACE_INIT_VERSION == "1.2"
     assert {
         member.name: member.value for member in WorkspaceInitStatus
-    } == WORKSPACE_INIT_WIRE_1_1["status"]
+    } == WORKSPACE_INIT_WIRE_1_2["status"]
     assert {
         member.name: member.value for member in WorkspaceInitRefusal
-    } == WORKSPACE_INIT_WIRE_1_1["refusal"]
+    } == WORKSPACE_INIT_WIRE_1_2["refusal"]
 
-    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
+    for name, wire in WORKSPACE_INIT_WIRE_1_2["refusal"].items():
         document = WorkspaceInitResult(
             status=WorkspaceInitStatus.REFUSED,
             reason="pinning the wire value",
@@ -1368,7 +1402,7 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
         ).to_dict()
         assert document["refusal"] == wire
         assert document["status"] == "refused"
-        assert document["workspace_init_version"] == "1.1"
+        assert document["workspace_init_version"] == "1.2"
 
 
 def test_a_refusal_code_never_depends_on_its_declaration_position() -> None:

@@ -760,6 +760,31 @@ class InstallationStore:
             )
             return tuple(str(row[0]) for row in rows)
 
+    def get_registered_workspace_path(self, workspace_id: str) -> Path | None:
+        """The path this installation currently authorises for `workspace_id`.
+
+        `None` if this installation has no active registration for it. A plain
+        read against `omnivia_installation_workspaces`, taken under this store's
+        own exclusive lifetime lock rather than a fresh claim: no other owner can
+        hold this catalogue concurrently, so this is already race-safe, and it
+        lets a caller decide whether the target it is about to claim is a
+        workspace already authorised here -- under whichever operation or
+        idempotency key originally authorised it -- before minting a new claim
+        that a same-workspace-id INSERT could only ever reject with an opaque
+        integrity error.
+        """
+        with self._mutex:
+            row = (
+                self._require_connection()
+                .execute(
+                    "SELECT workspace_path FROM omnivia_installation_workspaces "
+                    "WHERE installation_id = ? AND workspace_id = ?",
+                    (self._authority.installation_id, workspace_id),
+                )
+                .fetchone()
+            )
+            return None if row is None else Path(str(row[0]))
+
     def list_workspace_outcomes(
         self,
     ) -> tuple[tuple[str, InstallationOutcome], ...]:
