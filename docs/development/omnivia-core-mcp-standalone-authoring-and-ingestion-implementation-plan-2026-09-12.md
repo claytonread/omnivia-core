@@ -85,11 +85,13 @@ generated projections rather than in an MCP-private registry.
 - `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/migration_files/0036_workflow_control_cancellation_lineage.sql`
 - `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/installation_migration_files/0001_installation_authority.sql`
 
-The next workspace migration is expected to be `0037`, but its number must be
-rechecked after rebasing immediately before implementation. The current source
-identity index is not unique. The current full-text projection lifecycle is
-maintenance/startup-oriented and therefore needs an explicit design decision
-before synchronous capture can promise lexical search visibility.
+The planning baseline expected the next workspace migration to be `0037` and
+required that number to be rechecked after rebasing. The final rebase found
+`0037`-`0040` allocated to the Semantic Registry, so the evidence source
+identity migration is `0041`. The prior source identity index was not unique.
+The prior full-text projection lifecycle was maintenance/startup-oriented and
+therefore required an explicit design decision before synchronous capture could
+promise lexical search visibility.
 
 ### 3.3 MCP, CLI, client, and packaging
 

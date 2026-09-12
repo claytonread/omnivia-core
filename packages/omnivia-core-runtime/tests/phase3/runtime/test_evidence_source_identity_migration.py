@@ -1,6 +1,6 @@
-"""Acceptance for migration 0037's canonical evidence source identity.
+"""Acceptance for migration 0041's canonical evidence source identity.
 
-What 0037 is: one named UNIQUE index over
+What 0041 is: one named UNIQUE index over
 `(workspace_id, source_kind, source_native_id, source_locator, source_retrieved_at_us)`
 and nothing else -- no table, no column, no trigger, no DML. 0008 left that tuple
 non-unique, which was tolerable while capture was the one writer and read before it
@@ -17,11 +17,11 @@ any value 0008's own CHECKs admit for it, and the tests below insist both that a
 is refused and that a genuinely different locator or retrieval time is still allowed.
 
 *It fails closed on legacy collisions.* A workspace already holding two artifacts under
-one identity does not migrate. It stays at 0036 with both rows intact and the refusal
+one identity does not migrate. It stays at 0040 with both rows intact and the refusal
 recorded, because deciding which of two conflicting captures was the real one is not
 something a schema change may do silently.
 
-*It is immutable once applied.* Pinned by content here, and an edited 0037 is refused by
+*It is immutable once applied.* Pinned by content here, and an edited 0041 is refused by
 the migrator rather than re-applied.
 """
 
@@ -52,9 +52,9 @@ from omnivia_core_runtime.storage.migrations import (
     read_workspace_state,
 )
 
-MIGRATION_VERSION = 37
-PREDECESSOR_VERSION = 36
-MIGRATION_NAME = "0037_evidence_source_identity.sql"
+MIGRATION_VERSION = 41
+PREDECESSOR_VERSION = 40
+MIGRATION_NAME = "0041_evidence_source_identity.sql"
 
 #: Pinned by content. An edit to the accepted SQL is a defect this file reports rather
 #: than something a later reader has to notice in a diff.
@@ -115,7 +115,7 @@ def submission(**overrides: object) -> dict[str, object]:
 
 
 def unguarded() -> sqlite3.Connection:
-    """An empty evidence table with 0037's index and none of 0008's triggers before it.
+    """An empty evidence table with 0041's index and none of 0008's triggers before it.
 
     In a real workspace the INSERT guard is consulted first, so a claim about what the
     index refuses would never reach the index. Here it is the only thing standing. Only
@@ -147,8 +147,8 @@ def add(connection: sqlite3.Connection, evidence_id: str, **identity: object) ->
 # --- the migration itself -----------------------------------------------------------
 
 
-def test_0037_applies_cleanly_as_the_consecutive_head(migrated: Path) -> None:
-    """A pristine catalogue reaches 37, records it, and stays internally consistent."""
+def test_0041_applies_cleanly_as_the_consecutive_head(migrated: Path) -> None:
+    """A pristine catalogue reaches 41, records it, and stays internally consistent."""
     versions = [m.version for m in load_migrations()]
     assert versions == list(range(1, MIGRATION_VERSION + 1))
     assert MIGRATION.name == MIGRATION_NAME
@@ -170,7 +170,7 @@ def test_0037_applies_cleanly_as_the_consecutive_head(migrated: Path) -> None:
         connection.close()
 
 
-def test_0037_adds_one_index_and_touches_nothing_else() -> None:
+def test_0041_adds_one_index_and_touches_nothing_else() -> None:
     """One statement, one new object, and no DML anywhere in what executes."""
     assert len(MIGRATION_STATEMENTS) == 1
     statement = " ".join(MIGRATION_STATEMENTS[0].split())
@@ -204,7 +204,7 @@ def test_0037_adds_one_index_and_touches_nothing_else() -> None:
         with_37.close()
 
 
-def test_0037_index_key_is_the_whole_source_identity_tuple(migrated: Path) -> None:
+def test_0041_index_key_is_the_whole_source_identity_tuple(migrated: Path) -> None:
     """Five key members, in the declared order, unique and unconditional."""
     connection = open_database(migrated, OpenMode.READ_ONLY)
     try:
@@ -247,7 +247,7 @@ def test_0037_index_key_is_the_whole_source_identity_tuple(migrated: Path) -> No
 # --- what the index refuses, and what it must not refuse ----------------------------
 
 
-def test_0037_refuses_a_repeated_identity_whose_nullable_members_are_null() -> None:
+def test_0041_refuses_a_repeated_identity_whose_nullable_members_are_null() -> None:
     """`(workspace, 'direct_submission', native_id, NULL, NULL)` occurs at most once."""
     connection = unguarded()
     try:
@@ -268,7 +268,7 @@ def test_0037_refuses_a_repeated_identity_whose_nullable_members_are_null() -> N
         connection.close()
 
 
-def test_0037_keeps_genuinely_different_identities_apart() -> None:
+def test_0041_keeps_genuinely_different_identities_apart() -> None:
     """Every member of the tuple distinguishes on its own, and the full tuple repeats."""
     connection = unguarded()
     try:
@@ -304,7 +304,7 @@ def test_0037_keeps_genuinely_different_identities_apart() -> None:
         connection.close()
 
 
-def test_0037_refuses_the_repeat_in_a_live_guarded_workspace(migrated: Path) -> None:
+def test_0041_refuses_the_repeat_in_a_live_guarded_workspace(migrated: Path) -> None:
     """The same refusal reaches a real fenced writer, and leaves the first row alone."""
     holder = m2.take_ownership(migrated)
     try:
@@ -328,8 +328,8 @@ def test_0037_refuses_the_repeat_in_a_live_guarded_workspace(migrated: Path) -> 
 # --- applying it to a workspace that already collides -------------------------------
 
 
-def test_0037_refuses_to_apply_over_colliding_legacy_rows(tmp_path: Path) -> None:
-    """Fail closed: the workspace stays at 0036 with both artifacts untouched."""
+def test_0041_refuses_to_apply_over_colliding_legacy_rows(tmp_path: Path) -> None:
+    """Fail closed: the workspace stays at 0040 with both artifacts untouched."""
     path = tmp_path / "workspace.sqlite"
     materialise_phase0_baseline(path)
     with m1.migration_catalogue_through(PREDECESSOR_VERSION):
@@ -337,7 +337,7 @@ def test_0037_refuses_to_apply_over_colliding_legacy_rows(tmp_path: Path) -> Non
         holder = m2.take_ownership(path)
         try:
             m2.seed_chain(holder)
-            # Legal at 0036, and exactly what 0037 exists to forbid.
+            # Legal at 0040, and exactly what 0041 exists to forbid.
             m2.write(holder, EVIDENCE, evidence_id="evd-legacy-a", **submission())
             m2.write(holder, EVIDENCE, evidence_id="evd-legacy-b", **submission())
         finally:
@@ -389,7 +389,7 @@ def test_0037_refuses_to_apply_over_colliding_legacy_rows(tmp_path: Path) -> Non
 # --- immutability and repeatability -------------------------------------------------
 
 
-def test_0037_is_pinned_by_content_and_never_applied_twice(migrated: Path) -> None:
+def test_0041_is_pinned_by_content_and_never_applied_twice(migrated: Path) -> None:
     """The accepted text, applied once; a second pass is a no-op and an edit is refused."""
     assert MIGRATION.checksum == MIGRATION_CHECKSUM
 
@@ -409,7 +409,7 @@ def test_0037_is_pinned_by_content_and_never_applied_twice(migrated: Path) -> No
         connection.close()
 
 
-def test_0037_cannot_be_edited_after_it_has_been_applied(
+def test_0041_cannot_be_edited_after_it_has_been_applied(
     migrated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A changed 0037 is detected, not silently accepted as already done."""
