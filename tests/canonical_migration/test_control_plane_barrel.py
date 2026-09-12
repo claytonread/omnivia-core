@@ -19,11 +19,11 @@ import __future__
 
 import ast
 import importlib
-from types import ModuleType
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
