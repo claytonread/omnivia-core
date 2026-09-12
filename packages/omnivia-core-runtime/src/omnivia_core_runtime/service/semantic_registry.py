@@ -278,7 +278,9 @@ def _alias_collision_findings(
             continue
         key = (
             unicodedata.normalize("NFC", element.value),
-            None if element.locale is None else unicodedata.normalize("NFC", element.locale),
+            None
+            if element.locale is None
+            else unicodedata.normalize("NFC", element.locale),
             element.scope,
         )
         groups.setdefault(key, []).append(element)
@@ -358,7 +360,9 @@ def _reference_kind_findings(
     """
     findings: list[ValidationFinding] = []
 
-    def require_concept(owner: SemanticElement, target_id: str | None, field_name: str) -> None:
+    def require_concept(
+        owner: SemanticElement, target_id: str | None, field_name: str
+    ) -> None:
         if target_id is None:
             return
         target = elements.get(target_id)
@@ -444,7 +448,10 @@ def apply_operations(
                 )
             )
             continue
-        if operation.base_payload_digest is not None and operation.base_payload_digest != content_digest(element):
+        if (
+            operation.base_payload_digest is not None
+            and operation.base_payload_digest != content_digest(element)
+        ):
             findings.append(
                 _finding(
                     index,
@@ -612,7 +619,9 @@ def _consumer_impacts(
     for consumer in consumers:
         if impact is VersionImpact.MAJOR:
             classification = CompatibilityClassification.BREAKING
-            reason = "the candidate is a breaking change to a model this consumer declares"
+            reason = (
+                "the candidate is a breaking change to a model this consumer declares"
+            )
         elif sequence < consumer.min_sequence or (
             consumer.max_sequence is not None and sequence > consumer.max_sequence
         ):
@@ -735,12 +744,8 @@ class SemanticRegistryService:
         """Register a model, and open its pointer at generation zero with it."""
         now_us = self.clock()
         with self._writer() as writer:
-            writer.create_model(
-                model_id=model_id, model_kind=model_kind, now_us=now_us
-            )
-        return ModelRow(
-            model_id=model_id, model_kind=model_kind, created_at_us=now_us
-        )
+            writer.create_model(model_id=model_id, model_kind=model_kind, now_us=now_us)
+        return ModelRow(model_id=model_id, model_kind=model_kind, created_at_us=now_us)
 
     def read_model(self, model_id: str) -> ModelRow | None:
         return read_model(
@@ -760,7 +765,11 @@ class SemanticRegistryService:
     # --- proposals ------------------------------------------------------------
 
     def propose(
-        self, model_id: str, operations: Sequence[ChangeOperation]
+        self,
+        model_id: str,
+        operations: Sequence[ChangeOperation],
+        *,
+        before_write: Callable[[], None] | None = None,
     ) -> Proposal:
         """Record one proposal against the model's current version.
 
@@ -796,6 +805,8 @@ class SemanticRegistryService:
         digest = change_set_digest(base_version_id or _NO_BASE, base_digest, ordered)
 
         with self._writer() as writer:
+            if before_write is not None:
+                before_write()
             existing = find_change_set(
                 self.connection,
                 workspace_id=self.workspace_id,
@@ -1113,9 +1124,7 @@ class SemanticRegistryService:
             replayed=False,
         )
 
-    def _replay(
-        self, idempotency_key: str, request_digest: str
-    ) -> Publication | None:
+    def _replay(self, idempotency_key: str, request_digest: str) -> Publication | None:
         """The outcome this key already produced, if it produced one.
 
         One key means one outcome: the same request answers with the original

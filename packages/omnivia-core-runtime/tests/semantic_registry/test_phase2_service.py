@@ -14,14 +14,18 @@ from omnivia_core_runtime.service.semantic_phase2 import (
     ASSERTION_HISTORY_READ,
     CANDIDATE_AGGREGATE,
     CANDIDATE_CONVERT,
+    CANDIDATE_CREATED_EVENT,
     CANDIDATE_READ,
     CANDIDATE_RECONSIDER,
+    CANDIDATE_RECONSIDERED_EVENT,
     CANDIDATE_REJECT,
+    CANDIDATE_SUPPRESSED_EVENT,
     EVIDENCE_CONTENT_READ,
     EVIDENCE_METADATA_READ,
     EVIDENCE_REGISTER,
     OBSERVATION_CREATE_MANUAL,
     OBSERVATION_CREATE_RULE,
+    OBSERVATION_RECORDED_EVENT,
     SEMANTIC_EVIDENCE_RESTRICTED,
     SEMANTIC_PERMISSION_DENIED,
     SEMANTIC_WORKSPACE_MISMATCH,
@@ -29,11 +33,16 @@ from omnivia_core_runtime.service.semantic_phase2 import (
     SemanticAuthority,
     SemanticPhase2Service,
     SemanticServiceError,
+    read_phase2_events,
 )
+from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
-from omnivia_core_runtime.storage.semantic_evidence import read_evidence_item
+from omnivia_core_runtime.storage.semantic_evidence import (
+    read_evidence_item,
+    semantic_evidence_writer,
+)
 from omnivia_core_runtime.storage.semantic_governance import semantic_governance_writer
-from omnivia_core_runtime.storage.semantic_registry import read_review
+from omnivia_core_runtime.storage.semantic_registry import read_outbox, read_review
 from test_application_audit_idempotency_migration import (  # type: ignore[import-not-found]
     Owned,
     bootstrap_and_migrate,
@@ -99,14 +108,17 @@ def service(
             holder.identity,
             workspace_id=WORKSPACE_ID,
             fencing_generation=holder.generation,
-            authorizer=authorizer or (lambda current, capability: capability in current.capabilities),
+            authorizer=authorizer
+            or (lambda current, capability: capability in current.capabilities),
             content_resolver=resolver,
         ),
         context,
     )
 
 
-def test_metadata_and_sensitive_content_permissions_are_independent(owned: Owned) -> None:
+def test_metadata_and_sensitive_content_permissions_are_independent(
+    owned: Owned,
+) -> None:
     register_evidence(owned)
     resolved: list[str] = []
 
@@ -133,11 +145,16 @@ def test_metadata_and_sensitive_content_permissions_are_independent(owned: Owned
     with pytest.raises(SemanticServiceError) as metadata_denied:
         content_service.evidence_metadata(content_context, "ev-1")
     assert metadata_denied.value.code == SEMANTIC_PERMISSION_DENIED
-    assert content_service.sensitive_evidence(content_context, "ev-1").content == b"protected"
+    assert (
+        content_service.sensitive_evidence(content_context, "ev-1").content
+        == b"protected"
+    )
     assert resolved == ["blob://ev-1"]
 
 
-def test_write_authority_is_rechecked_inside_transaction_and_rolls_back(owned: Owned) -> None:
+def test_write_authority_is_rechecked_inside_transaction_and_rolls_back(
+    owned: Owned,
+) -> None:
     calls = 0
 
     def revoke_after_precheck(_context: SemanticAuthority, capability: str) -> bool:
@@ -172,6 +189,65 @@ def test_write_authority_is_rechecked_inside_transaction_and_rolls_back(owned: O
     assert denied.value.code == SEMANTIC_PERMISSION_DENIED
     assert calls == 2
     assert read_evidence_item(owned.connection, WORKSPACE_ID, "ev-revoked") is None
+    assert (
+        read_outbox(
+            owned.connection, workspace_id=WORKSPACE_ID, aggregate_id="ev-revoked"
+        )
+        == ()
+    )
+
+
+def test_phase2_event_reader_validates_version_workspace_and_generation(
+    owned: Owned,
+) -> None:
+    with semantic_evidence_writer(
+        owned.connection,
+        owned.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=owned.generation,
+    ) as write:
+        write.append_outbox(
+            outbox_id="outbox-supported",
+            aggregate_id="obs-supported",
+            event_kind=OBSERVATION_RECORDED_EVENT,
+            payload={
+                "workspace_id": WORKSPACE_ID,
+                "fencing_generation": owned.generation,
+                "observation_id": "obs-supported",
+            },
+            now_us=1_700_000_000_000_000,
+        )
+    events = read_phase2_events(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        aggregate_id="obs-supported",
+        expected_generation=owned.generation,
+    )
+    assert len(events) == 1
+
+    with semantic_evidence_writer(
+        owned.connection,
+        owned.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=owned.generation,
+    ) as write:
+        write.append_outbox(
+            outbox_id="outbox-unsupported",
+            aggregate_id="unsupported-1",
+            event_kind="semantic.observation.recorded.v2",
+            payload={
+                "workspace_id": WORKSPACE_ID,
+                "fencing_generation": owned.generation,
+                "observation_id": "unsupported-1",
+            },
+            now_us=1_700_000_000_000_000,
+        )
+    with pytest.raises(StorageError, match="unsupported"):
+        read_phase2_events(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            aggregate_id="unsupported-1",
+        )
 
 
 def test_transport_workspace_and_actor_claims_cannot_be_forged(owned: Owned) -> None:
@@ -179,7 +255,9 @@ def test_transport_workspace_and_actor_claims_cannot_be_forged(owned: Owned) -> 
     checked, context = service(owned, capabilities=(EVIDENCE_REGISTER,))
     stored = read_evidence_item(owned.connection, WORKSPACE_ID, "ev-1")
     assert stored is not None
-    foreign = replace(stored, evidence_id="ev-foreign", workspace_id="another-workspace")
+    foreign = replace(
+        stored, evidence_id="ev-foreign", workspace_id="another-workspace"
+    )
     with pytest.raises(SemanticServiceError) as mismatch:
         checked.register_evidence(context, foreign, actor_id="principal-1")
     assert mismatch.value.code == SEMANTIC_WORKSPACE_MISMATCH
@@ -220,6 +298,15 @@ def test_manual_and_rule_observation_capabilities_are_separate(owned: Owned) -> 
         ),
     )
     manual_service.create_observation(manual_context, manual, actor_id="principal-1")
+    events = read_outbox(
+        owned.connection, workspace_id=WORKSPACE_ID, aggregate_id="obs-manual"
+    )
+    assert [event.event_kind for event in events] == [OBSERVATION_RECORDED_EVENT]
+    assert set(events[0].payload) == {
+        "workspace_id",
+        "fencing_generation",
+        "observation_id",
+    }
     rule = replace(
         manual,
         observation=replace(
@@ -228,9 +315,7 @@ def test_manual_and_rule_observation_capabilities_are_separate(owned: Owned) -> 
             generation=ObservationGeneration.DETERMINISTIC_RULE,
             rule_version="rule-v1",
         ),
-        evidence_links=(
-            replace(manual.evidence_links[0], observation_id="obs-rule"),
-        ),
+        evidence_links=(replace(manual.evidence_links[0], observation_id="obs-rule"),),
     )
     with pytest.raises(SemanticServiceError) as denied:
         manual_service.create_observation(manual_context, rule, actor_id="principal-1")
@@ -254,24 +339,82 @@ def test_candidate_aggregation_inspection_and_conversion_stay_human_governed(
         context,
         target_model_id="model-a",
         candidate_kind="ontology change",
-        proposed_operation=add_concept("op-service", "concept-service", {"label": "Service"}),
+        proposed_operation=add_concept(
+            "op-service", "concept-service", {"label": "Service"}
+        ),
         observation_ids=("obs-1",),
         created_at=instant(4),
         actor_id="principal-1",
         candidate_id="cand-service",
     )
     assert aggregated.candidate.base_version_id == "v1"
+    assert (
+        read_outbox(
+            owned.connection, workspace_id=WORKSPACE_ID, aggregate_id="cand-service"
+        )[0].event_kind
+        == CANDIDATE_CREATED_EVENT
+    )
     view = checked.inspect_candidate(context, "cand-service")
     assert view.record.candidate == aggregated.candidate
     assert view.model_version_id == "v1"
-    proposal = checked.convert_candidate(context, "cand-service", actor_id="principal-1")
+    proposal = checked.convert_candidate(
+        context, "cand-service", actor_id="principal-1"
+    )
     assert proposal.base_version_id == "v1"
     assert proposal.decision is None
-    assert read_review(
-        owned.connection,
-        workspace_id=WORKSPACE_ID,
-        change_set_id=proposal.change_set_id,
-    ) is None
+    assert (
+        read_review(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            change_set_id=proposal.change_set_id,
+        )
+        is None
+    )
+
+
+def test_candidate_conversion_rechecks_authority_inside_phase1_write(
+    owned: Owned,
+) -> None:
+    seed_model(owned)
+    register_evidence(owned)
+    register_observation(owned)
+    aggregate, aggregate_context = service(owned, capabilities=(CANDIDATE_AGGREGATE,))
+    aggregate.aggregate_candidate(
+        aggregate_context,
+        target_model_id="model-a",
+        candidate_kind="ontology change",
+        proposed_operation=add_concept(
+            "op-revoked", "concept-revoked", {"label": "Revoked"}
+        ),
+        observation_ids=("obs-1",),
+        created_at=instant(4),
+        actor_id="principal-1",
+        candidate_id="cand-revoked",
+    )
+    calls = 0
+
+    def revoke_inside_write(_context: SemanticAuthority, capability: str) -> bool:
+        nonlocal calls
+        assert capability == CANDIDATE_CONVERT
+        calls += 1
+        return calls < 3
+
+    guarded, context = service(
+        owned,
+        capabilities=(CANDIDATE_CONVERT,),
+        authorizer=revoke_inside_write,
+    )
+    with pytest.raises(SemanticServiceError) as denied:
+        guarded.convert_candidate(context, "cand-revoked", actor_id="principal-1")
+    assert denied.value.code == SEMANTIC_PERMISSION_DENIED
+    assert calls == 3
+    assert (
+        owned.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_semantic_change_sets WHERE workspace_id=?",
+            (WORKSPACE_ID,),
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_candidate_rejection_and_reconsideration_require_separate_capabilities(
@@ -288,7 +431,9 @@ def test_candidate_rejection_and_reconsideration_require_separate_capabilities(
         context,
         target_model_id="model-a",
         candidate_kind="ontology change",
-        proposed_operation=add_concept("op-reject", "concept-reject", {"label": "Reject"}),
+        proposed_operation=add_concept(
+            "op-reject", "concept-reject", {"label": "Reject"}
+        ),
         observation_ids=("obs-1",),
         created_at=instant(4),
         actor_id="principal-1",
@@ -301,6 +446,13 @@ def test_candidate_rejection_and_reconsideration_require_separate_capabilities(
         created_at=instant(5),
         suppression_id="sup-reject",
     )
+    candidate_events = read_outbox(
+        owned.connection, workspace_id=WORKSPACE_ID, aggregate_id="cand-reject"
+    )
+    assert [event.event_kind for event in candidate_events] == [
+        CANDIDATE_CREATED_EVENT,
+        CANDIDATE_SUPPRESSED_EVENT,
+    ]
     receipt = checked.reconsider_candidate(
         context,
         suppression,
@@ -311,6 +463,12 @@ def test_candidate_rejection_and_reconsideration_require_separate_capabilities(
         reconsideration_id="rec-reject",
     )
     assert receipt.reason is ReconsiderationReason.NEW_EVIDENCE
+    assert (
+        read_outbox(
+            owned.connection, workspace_id=WORKSPACE_ID, aggregate_id="sup-reject"
+        )[0].event_kind
+        == CANDIDATE_RECONSIDERED_EVENT
+    )
 
     reject_only, reject_context = service(owned, capabilities=(CANDIDATE_REJECT,))
     with pytest.raises(SemanticServiceError) as denied:

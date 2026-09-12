@@ -37,6 +37,7 @@ from omnivia_core.semantic_registry import (
     build_candidate,
     build_reconsideration,
     candidate_equivalence_signature,
+    content_digest,
     effective_classification,
     suppression_active,
 )
@@ -63,12 +64,24 @@ from omnivia_core_runtime.storage.semantic_governance import (
     semantic_governance_writer,
 )
 from omnivia_core_runtime.storage.semantic_registry import (
+    OutboxRow,
+    read_outbox,
     read_pointer,
     read_version,
     version_of,
 )
 
 RESPONSE_SCHEMA_VERSION: Final = "1.0.0"
+OBSERVATION_RECORDED_EVENT: Final = "semantic.observation.recorded.v1"
+CANDIDATE_CREATED_EVENT: Final = "semantic.candidate.created.v1"
+CANDIDATE_SUPPRESSED_EVENT: Final = "semantic.candidate.suppressed.v1"
+CANDIDATE_RECONSIDERED_EVENT: Final = "semantic.candidate.reconsidered.v1"
+_PHASE2_EVENT_ID_KEYS: Final = {
+    OBSERVATION_RECORDED_EVENT: "observation_id",
+    CANDIDATE_CREATED_EVENT: "candidate_id",
+    CANDIDATE_SUPPRESSED_EVENT: "suppression_id",
+    CANDIDATE_RECONSIDERED_EVENT: "reconsideration_id",
+}
 
 EVIDENCE_REGISTER: Final = "evidence.register"
 EVIDENCE_METADATA_READ: Final = "evidence.metadata.read"
@@ -94,7 +107,9 @@ SEMANTIC_TEMPORAL_BOUNDARY_INVALID: Final = "SEMANTIC_TEMPORAL_BOUNDARY_INVALID"
 _MESSAGE_NOT_FOUND: Final = "the requested semantic record is unavailable"
 _MESSAGE_DENIED: Final = "the requested semantic operation is not authorised"
 _MESSAGE_RESTRICTED: Final = "protected evidence is not authorised"
-_MESSAGE_WORKSPACE: Final = "the request authority does not match the claimed workspace or actor"
+_MESSAGE_WORKSPACE: Final = (
+    "the request authority does not match the claimed workspace or actor"
+)
 _MESSAGE_BASE: Final = "the candidate base is no longer current"
 _MESSAGE_FENCE: Final = "the canonical writer lease is stale"
 _MESSAGE_TEMPORAL: Final = "the requested temporal boundary is invalid"
@@ -108,6 +123,35 @@ class SemanticServiceError(Exception):
         self.message = message
         self.retryable = retryable
         super().__init__(f"[{code}] {message}")
+
+
+def read_phase2_events(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    aggregate_id: str,
+    expected_generation: int | None = None,
+) -> tuple[OutboxRow, ...]:
+    """Read a Phase 2 stream and reject unknown versions or malformed envelopes."""
+    rows = read_outbox(connection, workspace_id=workspace_id, aggregate_id=aggregate_id)
+    for row in rows:
+        id_key = _PHASE2_EVENT_ID_KEYS.get(row.event_kind)
+        if id_key is None:
+            raise StorageError("unsupported Phase 2 semantic event version")
+        expected_keys = {"workspace_id", "fencing_generation", id_key}
+        generation = row.payload.get("fencing_generation")
+        if (
+            set(row.payload) != expected_keys
+            or row.payload.get("workspace_id") != workspace_id
+            or row.payload.get(id_key) != aggregate_id
+            or not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation <= 0
+            or (expected_generation is not None and generation != expected_generation)
+            or content_digest(row.payload) != row.payload_digest
+        ):
+            raise StorageError("invalid Phase 2 semantic event envelope")
+    return rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,13 +276,21 @@ class SemanticPhase2Service:
     ) -> None:
         if (
             context.workspace_id != self.workspace_id
-            or (claimed_workspace_id is not None and claimed_workspace_id != context.workspace_id)
-            or (claimed_actor_id is not None and claimed_actor_id != context.principal_id)
+            or (
+                claimed_workspace_id is not None
+                and claimed_workspace_id != context.workspace_id
+            )
+            or (
+                claimed_actor_id is not None
+                and claimed_actor_id != context.principal_id
+            )
         ):
             raise SemanticServiceError(SEMANTIC_WORKSPACE_MISMATCH, _MESSAGE_WORKSPACE)
         if not self.authorizer(context, capability):
             if sensitive:
-                raise SemanticServiceError(SEMANTIC_EVIDENCE_RESTRICTED, _MESSAGE_RESTRICTED)
+                raise SemanticServiceError(
+                    SEMANTIC_EVIDENCE_RESTRICTED, _MESSAGE_RESTRICTED
+                )
             raise SemanticServiceError(SEMANTIC_PERMISSION_DENIED, _MESSAGE_DENIED)
 
     def _not_found(self) -> SemanticServiceError:
@@ -253,6 +305,8 @@ class SemanticPhase2Service:
             claimed_workspace_id=item.workspace_id,
             claimed_actor_id=actor_id,
         )
+        result = item
+        failure: SemanticServiceError | None = None
         try:
             with semantic_evidence_writer(
                 self.connection,
@@ -261,9 +315,12 @@ class SemanticPhase2Service:
                 fencing_generation=self.fencing_generation,
             ) as writer:
                 self._check(context, EVIDENCE_REGISTER, claimed_actor_id=actor_id)
-                return writer.register_evidence(item)
+                result = writer.register_evidence(item)
         except StaleGeneration:
-            raise SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE) from None
+            failure = SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE)
+        if failure is not None:
+            raise failure from None
+        return result
 
     def evidence_metadata(
         self, context: SemanticAuthority, evidence_id: str
@@ -325,6 +382,7 @@ class SemanticPhase2Service:
             claimed_workspace_id=bundle.observation.workspace_id,
             claimed_actor_id=actor_id,
         )
+        failure: SemanticServiceError | None = None
         try:
             with semantic_evidence_writer(
                 self.connection,
@@ -334,8 +392,21 @@ class SemanticPhase2Service:
             ) as writer:
                 self._check(context, capability, claimed_actor_id=actor_id)
                 writer.append_observation(bundle)
+                writer.append_outbox(
+                    outbox_id=self._id("ob"),
+                    aggregate_id=bundle.observation.observation_id,
+                    event_kind=OBSERVATION_RECORDED_EVENT,
+                    payload={
+                        "workspace_id": self.workspace_id,
+                        "fencing_generation": self.fencing_generation,
+                        "observation_id": bundle.observation.observation_id,
+                    },
+                    now_us=self.clock(),
+                )
         except StaleGeneration:
-            raise SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE) from None
+            failure = SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE)
+        if failure is not None:
+            raise failure from None
         return bundle
 
     def aggregate_candidate(
@@ -395,6 +466,7 @@ class SemanticPhase2Service:
             aggregation_version=aggregation_version,
             normalization_version=normalization_version,
         )
+        failure: SemanticServiceError | None = None
         try:
             with semantic_governance_writer(
                 self.connection,
@@ -403,11 +475,26 @@ class SemanticPhase2Service:
                 fencing_generation=self.fencing_generation,
             ) as writer:
                 self._check(context, CANDIDATE_AGGREGATE, claimed_actor_id=actor_id)
-                writer.append_candidate(aggregation.candidate, aggregation.contributions)
+                writer.append_candidate(
+                    aggregation.candidate, aggregation.contributions
+                )
+                writer.append_outbox(
+                    outbox_id=self._id("ob"),
+                    aggregate_id=aggregation.candidate.candidate_id,
+                    event_kind=CANDIDATE_CREATED_EVENT,
+                    payload={
+                        "workspace_id": self.workspace_id,
+                        "fencing_generation": self.fencing_generation,
+                        "candidate_id": aggregation.candidate.candidate_id,
+                    },
+                    now_us=self.clock(),
+                )
         except StaleGeneration:
-            raise SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE) from None
+            failure = SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE)
         except StorageError:
-            raise SemanticServiceError(SEMANTIC_BASE_CONFLICT, _MESSAGE_BASE) from None
+            failure = SemanticServiceError(SEMANTIC_BASE_CONFLICT, _MESSAGE_BASE)
+        if failure is not None:
+            raise failure from None
         return aggregation
 
     def inspect_candidate(
@@ -473,6 +560,7 @@ class SemanticPhase2Service:
             aggregation_version=candidate.aggregation_version,
             expires_at=expires_at,
         )
+        failure: SemanticServiceError | None = None
         try:
             with semantic_governance_writer(
                 self.connection,
@@ -482,8 +570,22 @@ class SemanticPhase2Service:
             ) as writer:
                 self._check(context, CANDIDATE_REJECT, claimed_actor_id=actor_id)
                 writer.append_suppression(value)
+                writer.append_outbox(
+                    outbox_id=self._id("ob"),
+                    aggregate_id=value.rejection_ref,
+                    event_kind=CANDIDATE_SUPPRESSED_EVENT,
+                    payload={
+                        "workspace_id": self.workspace_id,
+                        "fencing_generation": self.fencing_generation,
+                        "candidate_id": value.rejection_ref,
+                        "suppression_id": value.suppression_id,
+                    },
+                    now_us=self.clock(),
+                )
         except StaleGeneration:
-            raise SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE) from None
+            failure = SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE)
+        if failure is not None:
+            raise failure from None
         return value
 
     def reconsider_candidate(
@@ -514,7 +616,9 @@ class SemanticPhase2Service:
                 actor_principal_id=actor_id,
             )
         else:
-            next_evidence = evidence_snapshot_digest or suppression.evidence_snapshot_digest
+            next_evidence = (
+                evidence_snapshot_digest or suppression.evidence_snapshot_digest
+            )
             next_version = aggregation_version or suppression.aggregation_version
             activity = suppression_active(
                 suppression, recorded_at, next_evidence, next_version
@@ -533,6 +637,7 @@ class SemanticPhase2Service:
                 evidence_snapshot_digest=next_evidence,
                 aggregation_version=next_version,
             )
+        failure: SemanticServiceError | None = None
         try:
             with semantic_governance_writer(
                 self.connection,
@@ -542,8 +647,22 @@ class SemanticPhase2Service:
             ) as writer:
                 self._check(context, CANDIDATE_RECONSIDER, claimed_actor_id=actor_id)
                 writer.append_reconsideration(value)
+                writer.append_outbox(
+                    outbox_id=self._id("ob"),
+                    aggregate_id=value.suppression_id,
+                    event_kind=CANDIDATE_RECONSIDERED_EVENT,
+                    payload={
+                        "workspace_id": self.workspace_id,
+                        "fencing_generation": self.fencing_generation,
+                        "suppression_id": value.suppression_id,
+                        "reconsideration_id": value.reconsideration_id,
+                    },
+                    now_us=self.clock(),
+                )
         except StaleGeneration:
-            raise SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE) from None
+            failure = SemanticServiceError(SEMANTIC_FENCE_STALE, _MESSAGE_FENCE)
+        if failure is not None:
+            raise failure from None
         return value
 
     def convert_candidate(
@@ -572,11 +691,15 @@ class SemanticPhase2Service:
             clock=self.clock,
             allocator=self.allocator,
         )
-        return registry.propose(candidate.target_model_id, (candidate.proposed_operation,))
+        return registry.propose(
+            candidate.target_model_id,
+            (candidate.proposed_operation,),
+            before_write=lambda: self._check(
+                context, CANDIDATE_CONVERT, claimed_actor_id=actor_id
+            ),
+        )
 
-    def assertion_history(
-        self, context: SemanticAuthority
-    ) -> AssertionHistoryView:
+    def assertion_history(self, context: SemanticAuthority) -> AssertionHistoryView:
         self._check(context, ASSERTION_HISTORY_READ)
         ids = self.connection.execute(
             "SELECT assertion_id FROM omnivia_semantic_assertions "
@@ -586,7 +709,11 @@ class SemanticPhase2Service:
         records = tuple(
             record
             for row in ids
-            if (record := read_assertion(self.connection, self.workspace_id, str(row[0])))
+            if (
+                record := read_assertion(
+                    self.connection, self.workspace_id, str(row[0])
+                )
+            )
             is not None
         )
         return AssertionHistoryView(
@@ -607,6 +734,7 @@ class SemanticPhase2Service:
         valid_at: TemporalInstant,
     ) -> TemporalQueryView:
         self._check(context, TEMPORAL_QUERY)
+        failure: SemanticServiceError | None = None
         try:
             records = query_assertions(
                 self.connection,
@@ -615,9 +743,11 @@ class SemanticPhase2Service:
                 valid_at=valid_at,
             )
         except (ValueError, TypeError):
-            raise SemanticServiceError(
+            failure = SemanticServiceError(
                 SEMANTIC_TEMPORAL_BOUNDARY_INVALID, _MESSAGE_TEMPORAL
-            ) from None
+            )
+        if failure is not None:
+            raise failure from None
         return TemporalQueryView(
             response_schema_version=RESPONSE_SCHEMA_VERSION,
             resolved_workspace_id=self.workspace_id,
@@ -634,14 +764,18 @@ __all__ = [
     "ASSERTION_HISTORY_READ",
     "CANDIDATE_AGGREGATE",
     "CANDIDATE_CONVERT",
+    "CANDIDATE_CREATED_EVENT",
     "CANDIDATE_READ",
     "CANDIDATE_RECONSIDER",
+    "CANDIDATE_RECONSIDERED_EVENT",
     "CANDIDATE_REJECT",
+    "CANDIDATE_SUPPRESSED_EVENT",
     "EVIDENCE_CONTENT_READ",
     "EVIDENCE_METADATA_READ",
     "EVIDENCE_REGISTER",
     "OBSERVATION_CREATE_MANUAL",
     "OBSERVATION_CREATE_RULE",
+    "OBSERVATION_RECORDED_EVENT",
     "TEMPORAL_QUERY",
     "AssertionHistoryView",
     "CandidateView",
@@ -652,4 +786,5 @@ __all__ = [
     "SensitiveEvidenceView",
     "TemporalQueryView",
     "authority_grants",
+    "read_phase2_events",
 ]

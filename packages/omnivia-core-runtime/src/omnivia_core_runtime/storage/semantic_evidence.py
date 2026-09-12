@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
@@ -43,18 +43,17 @@ from omnivia_core.semantic_registry import (
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError
-from omnivia_core_runtime.storage.semantic_registry import canonical_text
+from omnivia_core_runtime.storage.semantic_registry import (
+    SemanticRegistryWriter,
+    canonical_text,
+)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _to_us(instant: TemporalInstant) -> int:
     delta = instant.value - _EPOCH
-    return (
-        delta.days * 86_400_000_000
-        + delta.seconds * 1_000_000
-        + delta.microseconds
-    )
+    return delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
 
 
 def _from_us(value: int, precision: str, provenance: str) -> TemporalInstant:
@@ -176,7 +175,11 @@ def read_evidence_by_digest(
         "WHERE workspace_id = ? AND content_digest = ?",
         (workspace_id, digest),
     ).fetchone()
-    return None if row is None else read_evidence_item(connection, workspace_id, str(row[0]))
+    return (
+        None
+        if row is None
+        else read_evidence_item(connection, workspace_id, str(row[0]))
+    )
 
 
 def read_evidence_extraction(
@@ -279,7 +282,9 @@ def read_observation_bundle(
         )
         for feature in feature_rows
     )
-    return ObservationBundle(observation=observation, evidence_links=links, features=features)
+    return ObservationBundle(
+        observation=observation, evidence_links=links, features=features
+    )
 
 
 class EvidenceObservationWriter:
@@ -288,6 +293,24 @@ class EvidenceObservationWriter:
     def __init__(self, connection: sqlite3.Connection, workspace_id: str) -> None:
         self._connection = connection
         self._workspace_id = workspace_id
+
+    def append_outbox(
+        self,
+        *,
+        outbox_id: str,
+        aggregate_id: str,
+        event_kind: str,
+        payload: Mapping[str, object],
+        now_us: int,
+    ) -> None:
+        """Append an IDs-only event inside this writer's current transaction."""
+        SemanticRegistryWriter(self._connection, self._workspace_id).append_outbox(
+            outbox_id=outbox_id,
+            aggregate_id=aggregate_id,
+            event_kind=event_kind,
+            payload=payload,
+            now_us=now_us,
+        )
 
     def register_evidence(self, item: EvidenceItem) -> EvidenceItem:
         if item.workspace_id != self._workspace_id:
@@ -299,7 +322,7 @@ class EvidenceObservationWriter:
             return duplicate
         self._connection.execute(
             "INSERT OR IGNORE INTO omnivia_semantic_evidence_sources "
-            "(workspace_id,source_id,source_kind,locator_scheme,locator,source_version," 
+            "(workspace_id,source_id,source_kind,locator_scheme,locator,source_version,"
             "classification,created_at_us) VALUES (?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
@@ -316,13 +339,15 @@ class EvidenceObservationWriter:
             self._connection, self._workspace_id, item.source.source_id
         )
         if stored_source != item.source:
-            raise StorageError("evidence source identity conflicts with stored metadata")
+            raise StorageError(
+                "evidence source identity conflicts with stored metadata"
+            )
         source_time = item.source_time
         self._connection.execute(
             "INSERT INTO omnivia_semantic_evidence_items "
-            "(workspace_id,evidence_id,source_id,content_ref,content_digest,integrity_digest," 
-            "mime_type,classification,retention_class,captured_at_us," 
-            "captured_at_precision,captured_at_provenance,source_time_us," 
+            "(workspace_id,evidence_id,source_id,content_ref,content_digest,integrity_digest,"
+            "mime_type,classification,retention_class,captured_at_us,"
+            "captured_at_precision,captured_at_provenance,source_time_us,"
             "source_time_precision,source_time_provenance,schema_version,record_digest) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -348,7 +373,7 @@ class EvidenceObservationWriter:
         if item.span is not None:
             self._connection.execute(
                 "INSERT INTO omnivia_semantic_evidence_spans "
-                "(workspace_id,evidence_id,span_id,start_offset,end_offset,page_number," 
+                "(workspace_id,evidence_id,span_id,start_offset,end_offset,page_number,"
                 "section_ref,span_digest) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     self._workspace_id,
@@ -370,8 +395,8 @@ class EvidenceObservationWriter:
             raise StorageError("extraction workspace does not match writer workspace")
         self._connection.execute(
             "INSERT INTO omnivia_semantic_evidence_extractions "
-            "(workspace_id,extraction_id,evidence_id,worker_version,model_version," 
-            "template_version,input_digest,output_digest,raw_completion_ref," 
+            "(workspace_id,extraction_id,evidence_id,worker_version,model_version,"
+            "template_version,input_digest,output_digest,raw_completion_ref,"
             "confidence_ppm,schema_version,created_at_us,extraction_digest) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -398,10 +423,10 @@ class EvidenceObservationWriter:
         source_time = observation.source_time
         self._connection.execute(
             "INSERT INTO omnivia_semantic_observations "
-            "(workspace_id,observation_id,observation_kind,value_kind,original_form_ref," 
-            "normalized_form,proposed_semantic_role,classification,generation,status," 
-            "source_time_us,source_time_precision,source_time_provenance,recorded_at_us," 
-            "recorded_at_precision,recorded_at_provenance,supersedes_observation_id," 
+            "(workspace_id,observation_id,observation_kind,value_kind,original_form_ref,"
+            "normalized_form,proposed_semantic_role,classification,generation,status,"
+            "source_time_us,source_time_precision,source_time_provenance,recorded_at_us,"
+            "recorded_at_precision,recorded_at_provenance,supersedes_observation_id,"
             "rule_version,normalization_version,schema_version,observation_digest) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -430,11 +455,15 @@ class EvidenceObservationWriter:
         )
         for link in sorted(
             bundle.evidence_links,
-            key=lambda value: (value.evidence_id, value.span_id or "", value.role.value),
+            key=lambda value: (
+                value.evidence_id,
+                value.span_id or "",
+                value.role.value,
+            ),
         ):
             self._connection.execute(
                 "INSERT INTO omnivia_semantic_observation_evidence "
-                "(workspace_id,observation_id,evidence_id,span_id,support_role," 
+                "(workspace_id,observation_id,evidence_id,span_id,support_role,"
                 "confidence_ppm,link_digest) VALUES (?,?,?,?,?,?,?)",
                 (
                     self._workspace_id,
@@ -449,7 +478,7 @@ class EvidenceObservationWriter:
         for feature in sorted(bundle.features, key=lambda value: value.feature_name):
             self._connection.execute(
                 "INSERT INTO omnivia_semantic_observation_features "
-                "(workspace_id,observation_id,feature_name,feature_json,policy_version," 
+                "(workspace_id,observation_id,feature_name,feature_json,policy_version,"
                 "calculation_version,feature_digest) VALUES (?,?,?,?,?,?,?)",
                 (
                     self._workspace_id,
@@ -502,7 +531,10 @@ def verify_evidence_observation_digests(
     ).fetchall()
     for extraction_id, stored_digest in extraction_rows:
         extraction = read_evidence_extraction(connection, workspace_id, extraction_id)
-        if extraction is None or evidence_extraction_digest(extraction) != stored_digest:
+        if (
+            extraction is None
+            or evidence_extraction_digest(extraction) != stored_digest
+        ):
             raise StorageError("stored evidence-extraction digest verification failed")
     observation_rows: Sequence[tuple[str, str]] = connection.execute(
         "SELECT observation_id, observation_digest FROM omnivia_semantic_observations "
@@ -534,8 +566,12 @@ def verify_evidence_observation_digests(
             ).fetchall()
         )
         for feature in bundle.features:
-            if feature_digests.get(feature.feature_name) != observation_feature_digest(feature):
-                raise StorageError("stored observation-feature digest verification failed")
+            if feature_digests.get(feature.feature_name) != observation_feature_digest(
+                feature
+            ):
+                raise StorageError(
+                    "stored observation-feature digest verification failed"
+                )
 
 
 __all__ = [

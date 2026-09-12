@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -52,7 +52,10 @@ from omnivia_core_runtime.storage.semantic_evidence import (
     _optional_instant,
     _to_us,
 )
-from omnivia_core_runtime.storage.semantic_registry import canonical_text
+from omnivia_core_runtime.storage.semantic_registry import (
+    SemanticRegistryWriter,
+    canonical_text,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,13 +83,13 @@ def read_assertion(
     connection: sqlite3.Connection, workspace_id: str, assertion_id: str
 ) -> AssertionRecord | None:
     row = connection.execute(
-        "SELECT subject_id,predicate_element_id,model_version_id,object_kind,object_id," 
-        "literal_json,confidence_ppm,classification,valid_from_us,valid_from_precision," 
-        "valid_from_provenance,valid_to_state,valid_to_us,valid_to_precision," 
-        "valid_to_provenance,attested_from_us,attested_from_precision," 
-        "attested_from_provenance,attested_to_us,attested_to_precision," 
-        "attested_to_provenance,recorded_at_us,recorded_at_precision," 
-        "recorded_at_provenance,recorded_until_us,recorded_until_precision," 
+        "SELECT subject_id,predicate_element_id,model_version_id,object_kind,object_id,"
+        "literal_json,confidence_ppm,classification,valid_from_us,valid_from_precision,"
+        "valid_from_provenance,valid_to_state,valid_to_us,valid_to_precision,"
+        "valid_to_provenance,attested_from_us,attested_from_precision,"
+        "attested_from_provenance,attested_to_us,attested_to_precision,"
+        "attested_to_provenance,recorded_at_us,recorded_at_precision,"
+        "recorded_at_provenance,recorded_until_us,recorded_until_precision,"
         "recorded_until_provenance FROM omnivia_semantic_assertions "
         "WHERE workspace_id=? AND assertion_id=?",
         (workspace_id, assertion_id),
@@ -153,7 +156,7 @@ def read_assertion_supersessions(
     connection: sqlite3.Connection, workspace_id: str
 ) -> tuple[AssertionSupersession, ...]:
     rows = connection.execute(
-        "SELECT supersession_id,prior_assertion_id,successor_assertion_id,reason_code," 
+        "SELECT supersession_id,prior_assertion_id,successor_assertion_id,reason_code,"
         "decision_id,recorded_at_us,recorded_at_precision,recorded_at_provenance "
         "FROM omnivia_semantic_assertion_supersessions WHERE workspace_id=? "
         "ORDER BY recorded_at_us,supersession_id",
@@ -177,7 +180,7 @@ def read_assertion_retractions(
     connection: sqlite3.Connection, workspace_id: str
 ) -> tuple[AssertionRetraction, ...]:
     rows = connection.execute(
-        "SELECT retraction_id,assertion_id,retracted_at_us,retracted_at_precision," 
+        "SELECT retraction_id,assertion_id,retracted_at_us,retracted_at_precision,"
         "retracted_at_provenance,reason_code,policy_version,actor_principal_id "
         "FROM omnivia_semantic_assertion_retractions WHERE workspace_id=? "
         "ORDER BY retracted_at_us,retraction_id",
@@ -258,9 +261,9 @@ def read_candidate(
     connection: sqlite3.Connection, workspace_id: str, candidate_id: str
 ) -> CandidateRecord | None:
     row = connection.execute(
-        "SELECT candidate_kind,target_model_id,proposed_operation_json,support_band," 
-        "novelty_band,risk_band,candidate_state,aggregation_version," 
-        "normalization_version,base_version_id,evidence_snapshot_digest," 
+        "SELECT candidate_kind,target_model_id,proposed_operation_json,support_band,"
+        "novelty_band,risk_band,candidate_state,aggregation_version,"
+        "normalization_version,base_version_id,evidence_snapshot_digest,"
         "created_at_us,created_at_precision,created_at_provenance,rejection_signature "
         "FROM omnivia_semantic_candidates WHERE workspace_id=? AND candidate_id=?",
         (workspace_id, candidate_id),
@@ -308,8 +311,8 @@ def read_suppressions(
     connection: sqlite3.Connection, workspace_id: str, equivalence_signature: str
 ) -> tuple[CandidateSuppression, ...]:
     rows = connection.execute(
-        "SELECT suppression_id,rejection_ref,suppression_rule_version,created_at_us," 
-        "created_at_precision,created_at_provenance,evidence_snapshot_digest," 
+        "SELECT suppression_id,rejection_ref,suppression_rule_version,created_at_us,"
+        "created_at_precision,created_at_provenance,evidence_snapshot_digest,"
         "aggregation_version,expires_at_us,expires_at_precision,expires_at_provenance "
         "FROM omnivia_semantic_candidate_suppressions "
         "WHERE workspace_id=? AND equivalence_signature=? "
@@ -360,6 +363,24 @@ class SemanticGovernanceWriter:
         self._connection = connection
         self._workspace_id = workspace_id
 
+    def append_outbox(
+        self,
+        *,
+        outbox_id: str,
+        aggregate_id: str,
+        event_kind: str,
+        payload: Mapping[str, object],
+        now_us: int,
+    ) -> None:
+        """Append an IDs-only event inside this writer's current transaction."""
+        SemanticRegistryWriter(self._connection, self._workspace_id).append_outbox(
+            outbox_id=outbox_id,
+            aggregate_id=aggregate_id,
+            event_kind=event_kind,
+            payload=payload,
+            now_us=now_us,
+        )
+
     def _workspace(self, value: str, record: str) -> None:
         if value != self._workspace_id:
             raise StorageError(f"{record} workspace does not match writer workspace")
@@ -374,14 +395,14 @@ class SemanticGovernanceWriter:
         recorded_until = assertion.recorded_until
         self._connection.execute(
             "INSERT INTO omnivia_semantic_assertions "
-            "(workspace_id,assertion_id,subject_id,predicate_element_id,model_version_id," 
-            "object_kind,object_id,literal_json,confidence_ppm,classification,valid_from_us," 
-            "valid_from_precision,valid_from_provenance,valid_to_state,valid_to_us," 
-            "valid_to_precision,valid_to_provenance,attested_from_us," 
-            "attested_from_precision,attested_from_provenance,attested_to_us," 
-            "attested_to_precision,attested_to_provenance,recorded_at_us," 
-            "recorded_at_precision,recorded_at_provenance,recorded_until_us," 
-            "recorded_until_precision,recorded_until_provenance,schema_version," 
+            "(workspace_id,assertion_id,subject_id,predicate_element_id,model_version_id,"
+            "object_kind,object_id,literal_json,confidence_ppm,classification,valid_from_us,"
+            "valid_from_precision,valid_from_provenance,valid_to_state,valid_to_us,"
+            "valid_to_precision,valid_to_provenance,attested_from_us,"
+            "attested_from_precision,attested_from_provenance,attested_to_us,"
+            "attested_to_precision,attested_to_provenance,recorded_at_us,"
+            "recorded_at_precision,recorded_at_provenance,recorded_until_us,"
+            "recorded_until_precision,recorded_until_provenance,schema_version,"
             "assertion_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
@@ -391,7 +412,9 @@ class SemanticGovernanceWriter:
                 assertion.model_version_id,
                 assertion.object_kind.value,
                 assertion.object_id,
-                None if assertion.literal_value is None else canonical_text(assertion.literal_value),
+                None
+                if assertion.literal_value is None
+                else canonical_text(assertion.literal_value),
                 _confidence_to_ppm(assertion.confidence),
                 assertion.classification.value,
                 None if valid_from is None else _to_us(valid_from),
@@ -417,13 +440,15 @@ class SemanticGovernanceWriter:
                 assertion_digest(assertion),
             ),
         )
-        for link in sorted(evidence, key=lambda value: (value.evidence_id, value.role.value)):
+        for link in sorted(
+            evidence, key=lambda value: (value.evidence_id, value.role.value)
+        ):
             self._workspace(link.workspace_id, "assertion evidence")
             if link.assertion_id != assertion.assertion_id:
                 raise StorageError("assertion evidence references another assertion")
             self._connection.execute(
                 "INSERT INTO omnivia_semantic_assertion_evidence "
-                "(workspace_id,assertion_id,evidence_id,span_id,support_role," 
+                "(workspace_id,assertion_id,evidence_id,span_id,support_role,"
                 "confidence_ppm,evidence_digest) VALUES (?,?,?,?,?,?,?)",
                 (
                     self._workspace_id,
@@ -440,8 +465,8 @@ class SemanticGovernanceWriter:
         self._workspace(value.workspace_id, "assertion supersession")
         self._connection.execute(
             "INSERT INTO omnivia_semantic_assertion_supersessions "
-            "(workspace_id,supersession_id,prior_assertion_id,successor_assertion_id," 
-            "reason_code,decision_id,recorded_at_us,recorded_at_precision," 
+            "(workspace_id,supersession_id,prior_assertion_id,successor_assertion_id,"
+            "reason_code,decision_id,recorded_at_us,recorded_at_precision,"
             "recorded_at_provenance,supersession_digest) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
@@ -461,8 +486,8 @@ class SemanticGovernanceWriter:
         self._workspace(value.workspace_id, "assertion retraction")
         self._connection.execute(
             "INSERT INTO omnivia_semantic_assertion_retractions "
-            "(workspace_id,retraction_id,assertion_id,retracted_at_us," 
-            "retracted_at_precision,retracted_at_provenance,reason_code,policy_version," 
+            "(workspace_id,retraction_id,assertion_id,retracted_at_us,"
+            "retracted_at_precision,retracted_at_provenance,reason_code,policy_version,"
             "actor_principal_id,retraction_digest) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
@@ -479,7 +504,9 @@ class SemanticGovernanceWriter:
         )
 
     def append_candidate(
-        self, candidate: SemanticCandidate, contributions: Sequence[CandidateContribution]
+        self,
+        candidate: SemanticCandidate,
+        contributions: Sequence[CandidateContribution],
     ) -> None:
         self._workspace(candidate.workspace_id, "candidate")
         pointer = self._connection.execute(
@@ -499,11 +526,11 @@ class SemanticGovernanceWriter:
         )
         self._connection.execute(
             "INSERT INTO omnivia_semantic_candidates "
-            "(workspace_id,candidate_id,candidate_kind,target_model_id," 
-            "proposed_operation_json,support_band,novelty_band,risk_band,candidate_state," 
-            "aggregation_version,normalization_version,base_version_id," 
-            "evidence_snapshot_digest,equivalence_signature,rejection_signature," 
-            "schema_version,candidate_digest,created_at_us,created_at_precision," 
+            "(workspace_id,candidate_id,candidate_kind,target_model_id,"
+            "proposed_operation_json,support_band,novelty_band,risk_band,candidate_state,"
+            "aggregation_version,normalization_version,base_version_id,"
+            "evidence_snapshot_digest,equivalence_signature,rejection_signature,"
+            "schema_version,candidate_digest,created_at_us,created_at_precision,"
             "created_at_provenance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
@@ -528,13 +555,17 @@ class SemanticGovernanceWriter:
                 candidate.created_at.provenance.value,
             ),
         )
-        for contribution in sorted(contributions, key=lambda value: value.observation_id):
+        for contribution in sorted(
+            contributions, key=lambda value: value.observation_id
+        ):
             self._workspace(contribution.workspace_id, "candidate contribution")
             if contribution.candidate_id != candidate.candidate_id:
-                raise StorageError("candidate contribution references another candidate")
+                raise StorageError(
+                    "candidate contribution references another candidate"
+                )
             self._connection.execute(
                 "INSERT INTO omnivia_semantic_candidate_contributions "
-                "(workspace_id,candidate_id,observation_id,contribution_role,weight," 
+                "(workspace_id,candidate_id,observation_id,contribution_role,weight,"
                 "observation_digest,contribution_digest) VALUES (?,?,?,?,?,?,?)",
                 (
                     self._workspace_id,
@@ -552,9 +583,9 @@ class SemanticGovernanceWriter:
         expires = value.expires_at
         self._connection.execute(
             "INSERT INTO omnivia_semantic_candidate_suppressions "
-            "(workspace_id,suppression_id,equivalence_signature,rejection_ref," 
-            "suppression_rule_version,evidence_snapshot_digest,aggregation_version," 
-            "created_at_us,created_at_precision,created_at_provenance,expires_at_us," 
+            "(workspace_id,suppression_id,equivalence_signature,rejection_ref,"
+            "suppression_rule_version,evidence_snapshot_digest,aggregation_version,"
+            "created_at_us,created_at_precision,created_at_provenance,expires_at_us,"
             "expires_at_precision,expires_at_provenance,suppression_digest) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -579,9 +610,9 @@ class SemanticGovernanceWriter:
         self._workspace(value.workspace_id, "candidate reconsideration")
         self._connection.execute(
             "INSERT INTO omnivia_semantic_candidate_reconsiderations "
-            "(workspace_id,reconsideration_id,suppression_id,reason," 
-            "previous_evidence_digest,new_evidence_digest,previous_rule_version," 
-            "new_rule_version,actor_principal_id,recorded_at_us,recorded_at_precision," 
+            "(workspace_id,reconsideration_id,suppression_id,reason,"
+            "previous_evidence_digest,new_evidence_digest,previous_rule_version,"
+            "new_rule_version,actor_principal_id,recorded_at_us,recorded_at_precision,"
             "recorded_at_provenance,reconsideration_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
@@ -627,7 +658,10 @@ def verify_governance_digests(
         (workspace_id,),
     ).fetchall():
         assertion_record = read_assertion(connection, workspace_id, str(assertion_id))
-        if assertion_record is None or assertion_digest(assertion_record.assertion) != stored:
+        if (
+            assertion_record is None
+            or assertion_digest(assertion_record.assertion) != stored
+        ):
             raise StorageError("stored assertion digest verification failed")
     for candidate_id, stored in connection.execute(
         "SELECT candidate_id,candidate_digest FROM omnivia_semantic_candidates "
@@ -635,7 +669,10 @@ def verify_governance_digests(
         (workspace_id,),
     ).fetchall():
         candidate_record = read_candidate(connection, workspace_id, str(candidate_id))
-        if candidate_record is None or candidate_digest(candidate_record.candidate) != stored:
+        if (
+            candidate_record is None
+            or candidate_digest(candidate_record.candidate) != stored
+        ):
             raise StorageError("stored candidate digest verification failed")
     for suppression in connection.execute(
         "SELECT equivalence_signature FROM omnivia_semantic_candidate_suppressions "
