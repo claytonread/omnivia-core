@@ -12,12 +12,14 @@ from omnivia_core_runtime.service.source_capture import (
     MAX_SOURCE_BYTES,
     SourceCaptureRefused,
     capture_local_source,
+    publish_blob,
 )
 from omnivia_core_runtime.service.versions import SERVER_VERSION
 from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitStatus,
     initialise_workspace,
 )
+from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -141,6 +143,23 @@ def test_capture_refuses_nonregular_and_oversized_sources(tmp_path: Path) -> Non
         handle.truncate(MAX_SOURCE_BYTES + 1)
     with pytest.raises(SourceCaptureRefused, match="capture size limit"):
         _capture(workspace, installation, oversized)
+
+
+def test_legacy_publish_blob_facade_raises_source_capture_refused(
+    tmp_path: Path,
+) -> None:
+    """The legacy facade wraps the provider-neutral primitive, it does not subclass it:
+    a `BlobPublicationRefused` reaching this module's `publish_blob` must still be
+    catchable as `SourceCaptureRefused`, so it is translated rather than inherited."""
+    blobs_root = tmp_path / "blobs"
+    blobs_root.mkdir()
+    content = b"legacy facade bytes\n"
+    mismatched_digest = "sha256:" + "a" * 64
+
+    with pytest.raises(SourceCaptureRefused, match="does not match"):
+        publish_blob(blobs_root, mismatched_digest, content)
+
+    assert not issubclass(SourceCaptureRefused, BlobPublicationRefused)
 
 
 def test_capture_refuses_while_live_service_owns_workspace(tmp_path: Path) -> None:
