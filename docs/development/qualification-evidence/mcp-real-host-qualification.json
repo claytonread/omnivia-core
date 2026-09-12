@@ -1,0 +1,606 @@
+{
+  "cases": [
+    {
+      "case_id": "inventory_eleven_tools",
+      "count": 11,
+      "disposition": "observed",
+      "host": "claude-code",
+      "tools": [
+        "context_pack_build",
+        "evidence_capture",
+        "evidence_search",
+        "graph_traverse",
+        "import_start",
+        "job_events",
+        "job_get",
+        "knowledge_search",
+        "memory_create",
+        "memory_search",
+        "workspace_inspect"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "inventory_excluded_absent",
+      "disposition": "absent",
+      "host": "claude-code",
+      "tools": [
+        "job_cancel",
+        "job_retry",
+        "workspace_create",
+        "grant_issue"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_created",
+      "disposition": "created",
+      "host": "claude-code",
+      "identity_digest": "d3616cba936cf580",
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_searchable",
+      "count": 1,
+      "disposition": "observed",
+      "host": "claude-code",
+      "identity_digest": "d3616cba936cf580",
+      "tools": [
+        "evidence_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_proposed_only",
+      "disposition": "proposed",
+      "host": "claude-code",
+      "identity_digest": "cf976bfda7fbc86d",
+      "tools": [
+        "memory_create"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_default_view_hidden",
+      "count": 0,
+      "disposition": "absent",
+      "host": "claude-code",
+      "tools": [
+        "memory_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_candidate_view_visible",
+      "count": 1,
+      "disposition": "candidate",
+      "host": "claude-code",
+      "identity_digest": "cf976bfda7fbc86d",
+      "tools": [
+        "memory_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_replay_stable",
+      "count": 1,
+      "disposition": "stable_replay",
+      "host": "claude-code",
+      "matches_identity_digest": "d3616cba936cf580",
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_replay_stable",
+      "count": 1,
+      "disposition": "stable_replay",
+      "host": "claude-code",
+      "matches_identity_digest": "cf976bfda7fbc86d",
+      "tools": [
+        "memory_create"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_changed_input_conflict",
+      "disposition": "idempotency_conflict",
+      "host": "claude-code",
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_changed_input_conflict",
+      "disposition": "idempotency_conflict",
+      "host": "claude-code",
+      "tools": [
+        "memory_create"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "service_healthy_after_session",
+      "disposition": "healthy",
+      "host": "claude-code",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_started_one_job",
+      "disposition": "created",
+      "host": "claude-code",
+      "identity_digest": "84741aff8c8dad4f",
+      "tools": [
+        "import_start"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_replay_same_job",
+      "disposition": "stable_replay",
+      "host": "claude-code",
+      "matches_identity_digest": "84741aff8c8dad4f",
+      "tools": [
+        "import_start"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_changed_input_conflict",
+      "disposition": "idempotency_conflict",
+      "host": "claude-code",
+      "tools": [
+        "import_start"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "job_get_terminal",
+      "disposition": "succeeded",
+      "host": "claude-code",
+      "identity_digest": "84741aff8c8dad4f",
+      "tools": [
+        "job_get"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "job_events_paginated_stable",
+      "disposition": "observed",
+      "host": "claude-code",
+      "pages": 2,
+      "tools": [
+        "job_events"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_evidence_retrievable",
+      "count": 1,
+      "disposition": "observed",
+      "host": "claude-code",
+      "tools": [
+        "evidence_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "excluded_undispatchable",
+      "disposition": "refused",
+      "host": "claude-code",
+      "tools": [
+        "job_cancel",
+        "job_retry"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "stdout_protocol_only",
+      "disposition": "observed",
+      "host": "claude-code",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "ambiguous_capture_recovered",
+      "count": 1,
+      "disposition": "recovered",
+      "host": "claude-code",
+      "identity_digest": "56229a9fd960ead1",
+      "relayed": true,
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "restart_read_observation",
+      "disposition": "observed",
+      "host": "claude-code",
+      "identity_digest": "84741aff8c8dad4f",
+      "tools": [
+        "job_get"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "revocation_blocks_host",
+      "disposition": "failed_closed",
+      "host": "claude-code",
+      "tools": [
+        "job_get"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "revocation_preserves_committed_job",
+      "disposition": "succeeded",
+      "host": "claude-code",
+      "identity_digest": "84741aff8c8dad4f",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "owner_cli_observes_job",
+      "disposition": "observed",
+      "host": "claude-code",
+      "identity_digest": "84741aff8c8dad4f",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "inventory_eleven_tools",
+      "count": 11,
+      "disposition": "observed",
+      "host": "codex",
+      "tools": [
+        "context_pack_build",
+        "evidence_capture",
+        "evidence_search",
+        "graph_traverse",
+        "import_start",
+        "job_events",
+        "job_get",
+        "knowledge_search",
+        "memory_create",
+        "memory_search",
+        "workspace_inspect"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "inventory_excluded_absent",
+      "disposition": "absent",
+      "host": "codex",
+      "tools": [
+        "job_cancel",
+        "job_retry",
+        "workspace_create",
+        "grant_issue"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_created",
+      "disposition": "created",
+      "host": "codex",
+      "identity_digest": "e87c5433566f5e38",
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_searchable",
+      "count": 1,
+      "disposition": "observed",
+      "host": "codex",
+      "identity_digest": "e87c5433566f5e38",
+      "tools": [
+        "evidence_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_proposed_only",
+      "disposition": "proposed",
+      "host": "codex",
+      "identity_digest": "99978cf0403c0186",
+      "tools": [
+        "memory_create"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_default_view_hidden",
+      "count": 0,
+      "disposition": "absent",
+      "host": "codex",
+      "tools": [
+        "memory_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_candidate_view_visible",
+      "count": 1,
+      "disposition": "candidate",
+      "host": "codex",
+      "identity_digest": "99978cf0403c0186",
+      "tools": [
+        "memory_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_replay_stable",
+      "count": 1,
+      "disposition": "stable_replay",
+      "host": "codex",
+      "matches_identity_digest": "e87c5433566f5e38",
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_replay_stable",
+      "count": 1,
+      "disposition": "stable_replay",
+      "host": "codex",
+      "matches_identity_digest": "99978cf0403c0186",
+      "tools": [
+        "memory_create"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "capture_changed_input_conflict",
+      "disposition": "idempotency_conflict",
+      "host": "codex",
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "memory_changed_input_conflict",
+      "disposition": "idempotency_conflict",
+      "host": "codex",
+      "tools": [
+        "memory_create"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "service_healthy_after_session",
+      "disposition": "healthy",
+      "host": "codex",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_started_one_job",
+      "disposition": "created",
+      "host": "codex",
+      "identity_digest": "00027731a81d4a45",
+      "tools": [
+        "import_start"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_replay_same_job",
+      "disposition": "stable_replay",
+      "host": "codex",
+      "matches_identity_digest": "00027731a81d4a45",
+      "tools": [
+        "import_start"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_changed_input_conflict",
+      "disposition": "idempotency_conflict",
+      "host": "codex",
+      "tools": [
+        "import_start"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "job_get_terminal",
+      "disposition": "succeeded",
+      "host": "codex",
+      "identity_digest": "00027731a81d4a45",
+      "tools": [
+        "job_get"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "job_events_paginated_stable",
+      "disposition": "observed",
+      "host": "codex",
+      "pages": 2,
+      "tools": [
+        "job_events"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "import_evidence_retrievable",
+      "count": 1,
+      "disposition": "observed",
+      "host": "codex",
+      "tools": [
+        "evidence_search"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "excluded_undispatchable",
+      "disposition": "refused",
+      "host": "codex",
+      "tools": [
+        "job_cancel",
+        "job_retry"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "stdout_protocol_only",
+      "disposition": "observed",
+      "host": "codex",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "ambiguous_capture_recovered",
+      "count": 1,
+      "disposition": "recovered",
+      "host": "codex",
+      "identity_digest": "3dd93731f856ab52",
+      "relayed": true,
+      "tools": [
+        "evidence_capture"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "restart_read_observation",
+      "disposition": "observed",
+      "host": "codex",
+      "identity_digest": "00027731a81d4a45",
+      "tools": [
+        "job_get"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "revocation_blocks_host",
+      "disposition": "failed_closed",
+      "host": "codex",
+      "tools": [
+        "job_get"
+      ],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "revocation_preserves_committed_job",
+      "disposition": "succeeded",
+      "host": "codex",
+      "identity_digest": "00027731a81d4a45",
+      "tools": [],
+      "verdict": "pass"
+    },
+    {
+      "case_id": "owner_cli_observes_job",
+      "disposition": "observed",
+      "host": "codex",
+      "identity_digest": "00027731a81d4a45",
+      "tools": [],
+      "verdict": "pass"
+    }
+  ],
+  "commit": "44b8cd5729578f5a4e2d858f99f816f5613f3458",
+  "environment": {
+    "approved": false,
+    "arch": "arm64",
+    "os_build": "25F84",
+    "os_product": "macOS",
+    "os_version": "26.5.2"
+  },
+  "format": "omnivia.mcp-real-host-qualification.v1",
+  "hosts": {
+    "claude-code": {
+      "approved": false,
+      "executed": true,
+      "required_version": "2.1.269",
+      "version": "2.1.269"
+    },
+    "codex": {
+      "approved": false,
+      "executed": true,
+      "required_version": "0.146.0",
+      "version": "0.146.0"
+    }
+  },
+  "installation": {
+    "distributions": {
+      "omnivia-core": "0.1.0",
+      "omnivia-core-cli": "0.1.0",
+      "omnivia-core-client": "0.1.0",
+      "omnivia-core-mcp": "0.1.0",
+      "omnivia-core-runtime": "0.1.0"
+    },
+    "index_used_during_install": false,
+    "installed_not_source": true,
+    "mode": "wheelhouse_no_index",
+    "protocol_version": "2025-06-18",
+    "sdk_pins": {
+      "mcp": "2.0.0",
+      "mcp-types": "2.0.0"
+    },
+    "wheelhouse": {
+      "digest": "86b0f7fe28941d36",
+      "wheel_count": 33
+    }
+  },
+  "inventories": {
+    "claude-code": {
+      "count": 11,
+      "observation": "host_init_event",
+      "profile": "authoring",
+      "tools": [
+        "context_pack_build",
+        "evidence_capture",
+        "evidence_search",
+        "graph_traverse",
+        "import_start",
+        "job_events",
+        "job_get",
+        "knowledge_search",
+        "memory_create",
+        "memory_search",
+        "workspace_inspect"
+      ]
+    },
+    "codex": {
+      "count": 11,
+      "observation": "relay_observed_tools_list",
+      "profile": "authoring",
+      "tools": [
+        "context_pack_build",
+        "evidence_capture",
+        "evidence_search",
+        "graph_traverse",
+        "import_start",
+        "job_events",
+        "job_get",
+        "knowledge_search",
+        "memory_create",
+        "memory_search",
+        "workspace_inspect"
+      ]
+    }
+  },
+  "recorded_at": "2026-09-12T16:27:29Z",
+  "specification": {
+    "requirements": "R004-v1.3",
+    "sections": [
+      "10",
+      "13.B",
+      "13.D",
+      "13.F",
+      "13.I"
+    ]
+  },
+  "verdict": "pass"
+}

@@ -30,8 +30,12 @@ product behind them works.
 from __future__ import annotations
 
 import ast
+import importlib.util
+import json
 import re
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -43,6 +47,14 @@ DOCUMENT_PATH = (
     / "omnivia-core-mcp-standalone-authoring-and-ingestion-traceability-2026-09-12.md"
 )
 DOCUMENT = DOCUMENT_PATH.read_text(encoding="utf-8")
+HOST_RECORD_PATH = (
+    REPO_ROOT
+    / "docs"
+    / "development"
+    / "qualification-evidence"
+    / "mcp-real-host-qualification.json"
+)
+HOST_HARNESS_PATH = REPO_ROOT / "scripts" / "run-host-qualification.py"
 
 REQUIREMENT_IDS = tuple(f"R{ordinal}" for ordinal in range(1, 8))
 ACCEPTANCE_SECTIONS = tuple(f"13.{letter}" for letter in "ABCDEFGHI")
@@ -100,7 +112,7 @@ NEGATIONS = frozenset(
 
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 _FENCED_BLOCK = re.compile(r"^```[a-z]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
-_TRAILING_PUNCTUATION = '.,;:)"\''
+_TRAILING_PUNCTUATION = ".,;:)\"'"
 
 
 def _tokens() -> set[str]:
@@ -135,7 +147,8 @@ PATH_TOKENS = sorted(token for token in TOKENS if _is_repository_path(token))
 NODE_TOKENS = sorted(
     token
     for token in TOKENS
-    if "::" in token and token.split("::", 1)[0].split("/", 1)[0] in TOP_LEVEL_DIRECTORIES
+    if "::" in token
+    and token.split("::", 1)[0].split("/", 1)[0] in TOP_LEVEL_DIRECTORIES
 )
 
 
@@ -182,7 +195,9 @@ def test_the_record_names_the_specification_and_the_plan_it_answers() -> None:
 @pytest.mark.parametrize("requirement_id", REQUIREMENT_IDS)
 def test_every_requirement_id_leads_a_row_of_its_own(requirement_id: str) -> None:
     """R1-R7 are Appendix E's rules; each has to be the first cell of a row."""
-    assert re.search(rf"^\|\s*{requirement_id}\s*\|", DOCUMENT, re.MULTILINE), requirement_id
+    assert re.search(rf"^\|\s*{requirement_id}\s*\|", DOCUMENT, re.MULTILINE), (
+        requirement_id
+    )
 
 
 @pytest.mark.parametrize("section", ACCEPTANCE_SECTIONS)
@@ -267,7 +282,11 @@ def test_every_pytest_node_the_record_names_resolves_to_a_real_test() -> None:
         scope = _scope(ast.parse(source, filename=str(module)).body)
         for segment in path[:-1]:
             assert segment in scope, node_id
-            scope = _scope(scope[segment].body)  # type: ignore[union-attr]
+            owner = scope[segment]
+            assert isinstance(
+                owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+            scope = _scope(owner.body)
         leaf, _, parameter = path[-1].partition("[")
         assert leaf in scope, node_id
         if parameter:
@@ -312,16 +331,50 @@ def test_no_row_short_of_its_evidence_uses_completion_language() -> None:
             assert not _completion_claims(row), row
 
 
-def test_no_row_claims_a_real_host_pass_this_repository_does_not_hold() -> None:
+def _host_harness() -> Any:
+    specification = importlib.util.spec_from_file_location(
+        "_traceability_host_qualification", HOST_HARNESS_PATH
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
+
+
+def test_every_green_host_row_is_backed_by_the_guarded_record() -> None:
     """``HOST`` is an installed Claude Code or Codex binary driving the server.
 
-    Nothing in this tree is one: the journeys drive a real child process with
-    the official SDK's ``stdio_client``, which is a client, not a host. So a
-    ``HOST`` row may not be green until a recorded qualification exists, and
-    this is the guard that keeps an SDK simulation from being relabelled.
+    The source-tree journeys drive the official SDK and remain ``AUTO``. A
+    ``HOST`` row may be green only while the compact real-host record exists and
+    passes the same closed-schema, completeness, commit and redaction guard that
+    admitted it. This keeps an SDK simulation from being relabelled while also
+    allowing Phase 8's actual host evidence to close the rows.
     """
+    green_host_rows = [
+        row
+        for status, evidence_types, row in STATED_ROWS
+        if "HOST" in evidence_types and status == GREEN
+    ]
+    if not green_host_rows:
+        return
+    assert HOST_RECORD_PATH.is_file(), "a green HOST row has no retained record"
+    document = json.loads(HOST_RECORD_PATH.read_text(encoding="utf-8"))
+    harness = _host_harness()
+    assert harness.verify_record(document, commit=document.get("commit")) == [], (
+        "a green HOST row is backed by a record that fails its own guard"
+    )
+    assert all(
+        "docs/development/qualification-evidence/mcp-real-host-qualification.json"
+        in row
+        or "retained record" in row
+        for row in green_host_rows
+    ), "a green HOST row does not identify the retained qualification evidence"
+
+
+def test_no_unevidenced_host_row_is_green() -> None:
     for status, evidence_types, row in STATED_ROWS:
-        if "HOST" in evidence_types:
+        if "HOST" in evidence_types and not HOST_RECORD_PATH.is_file():
             assert status != GREEN, row
 
 

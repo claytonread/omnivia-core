@@ -2,8 +2,10 @@
 
 **Date:** 2026-09-12
 
-**Status:** Phase 7 record. Sections 13.A-13.G are mapped; 13.H is split; 13.I is
-not yet evidenced. The feature is not declared finished by this document.
+**Status:** Phase 8 qualification record. Sections 13.A-13.I are mapped and the
+installed-wheel, real-host evidence is retained in this repository. Final
+repository review and integration remain release-process gates, not missing
+product acceptance evidence.
 
 **Specification:**
 `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12-v1.3.md`
@@ -14,7 +16,7 @@ not yet evidenced. The feature is not declared finished by this document.
 
 **Branch:** `codex/core-mcp-completion-integration`
 
-**Traced at:** `c5f212d36d47e0aec1a0d6a813f1bb06debde9b0`
+**Qualified implementation:** `44b8cd5729578f5a4e2d858f99f816f5613f3458`
 
 **Specification baseline:** `990b0f980c633840922170976c73b8f966361eab`
 
@@ -29,10 +31,9 @@ a traceability table keyed on the v1.3 section and rule identifiers rather than
 on phase-level test names. Every row names the file that implements the rule and
 the pytest node, repository script or recorded qualification that evidences it.
 
-It is not a release sign-off. Section 17 of the specification says no product
-claim may state that standalone authoring is available until every acceptance
-gate in section 13 passes in the release environment, and section 13.I has not
-been exercised. That statement stands unchanged.
+It is not a release publication or a substitute for required CI and merge
+review. It does, however, retain the section 13.I evidence that was deliberately
+absent from the Phase 7 version of this document.
 
 The machine check named above parses this file and fails if a requirement id or
 acceptance subsection is missing, if a repository path named here does not
@@ -50,7 +51,7 @@ these four prove different things, and the fourth is a human reading code.
 |---|---|---|
 | `AUTO` | An automated test in this source tree, run by `pytest` against the working copy and the developer virtual environment. | Nothing about the built wheels, the pinned SDK, or an installed host. |
 | `WHEEL` | Offline installed-wheel qualification: `scripts/check-package-builds.sh` installs each distribution into an isolated environment with `--no-index --only-binary=:all: --find-links`, from a wheelhouse staged at the reviewed pins in `scripts/mcp-wheelhouse-constraints.txt`. | It is not an offline *acquisition* proof. That script's Phase 1 reaches the configured package index on purpose and says so in its own header; only Phase 2, the installation, is index-free. |
-| `HOST` | A recorded session in which an installed host binary -- Claude Code 2.1.269 or Codex CLI 0.146.0 -- launched the server and drove it. | Nothing in this repository is one. See section 4. |
+| `HOST` | A recorded session in which an installed host binary -- Claude Code 2.1.269 or Codex CLI 0.146.0 -- launched the server and drove it. | It proves only the pinned macOS qualification baseline and the exact cases in the retained record. |
 | `REVIEW` | A human read of named source, recorded in section 8 of this document. | It is not a test and does not re-run. |
 
 ---
@@ -61,7 +62,7 @@ these four prove different things, and the fourth is a human reading code.
 |---|---|
 | `green` | The cited evidence exists in this tree and covers the rule directly. |
 | `partial` | Evidence exists but is indirect, at a different layer, or covers part of the rule. The row names the shortfall. |
-| `pending-phase-8` | No evidence of the stated type exists yet. Phase 8 of the implementation plan owns it. |
+| `pending-phase-8` | No evidence of the stated type exists yet. No row remains in this state after the Phase 8 qualification. |
 
 ---
 
@@ -78,14 +79,16 @@ are recorded once so no row has to restate them.
    every `AUTO` row is evidence about 2.2.0 behaviour, which section 10 of the
    specification explicitly refuses to accept as evidence about the pin.
 
-2. **An SDK client is not a host.** The end-to-end journeys spawn the real
+2. **An SDK client is not a host.** The source-tree end-to-end journeys spawn the real
    server as a real subprocess over real pipes -- `sys.executable -m
    omnivia_core_mcp.server --config <path>` -- and drive it with the official
    Python SDK's own `stdio_client` and `ClientSession`. That is the transport a
    host uses, driven by a client that is not a host: the wire identity is
    `omnivia-core-acceptance`. The token `claude-code` appears in those modules
-   only as the value of the installed command's `--host` flag. No third-party
-   host binary is launched anywhere in this tree.
+   only as the value of the installed command's `--host` flag. Those tests stay
+   `AUTO`, not `HOST`. Separately, `scripts/run-host-qualification.py` launches
+   the actual Claude Code and Codex binaries against offline-installed wheels;
+   only its guarded record is `HOST` evidence.
 
 3. **The MCP journeys are POSIX-only.** `test_mcp_stdio_end_to_end.py`,
    `test_mcp_standalone_authoring_acceptance.py`,
@@ -123,7 +126,7 @@ Each group is one command. `python` below is the repository's `.venv/bin/python`
 | G8 this record | the traceability machine check | `.venv/bin/python -m pytest tests/service_conformance/test_mcp_authoring_traceability.py -q` |
 | G9 packaging | pinned offline wheelhouse install -- Phase 8 | `PYTHON=.venv/bin/python scripts/check-package-builds.sh` |
 | G10 repository gate | everything the required check runs | `./scripts/preflight` |
-| G11 real host | Phase 8 -- no command exists in this repository yet | see section 9 |
+| G11 real host | installed Claude Code and Codex qualification | `.venv/bin/python scripts/run-host-qualification.py --wheelhouse <prepared-wheelhouse>` |
 
 ---
 
@@ -178,13 +181,12 @@ step is decided.
 | B-9 Repeat both mutations with the same key; stable results and no duplicate business rows | lines 295-296, 494-510 | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace` | AUTO | green |
 | B-10 Repeat with changed input and prove `idempotency_conflict` | lines 312-325, 512-515 | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace` | AUTO | green |
 | B-11 Close the MCP session and prove the independently owned Core service stays healthy | lines 411-412, 419-420 | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace` | AUTO | green |
-| B-12 Retain only a redacted qualification record | lines 162-170 assert the retained host snippet is a command line plus a `--config` path and nothing else; line 401-404 read only the non-secret `principal_id` | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace`, `packages/omnivia-core-mcp/tests/test_mcp_installed_verification.py::test_no_refusal_quotes_the_path_the_workspace_or_the_bearer` | AUTO | partial |
+| B-12 Retain only a redacted qualification record | `scripts/run-host-qualification.py` uses a closed JSON Schema plus an independent forbidden-key/value scan and deletes its temporary host state and transcripts | `docs/development/qualification-evidence/mcp-real-host-qualification.json`, `tests/service_conformance/test_mcp_real_host_qualification.py::test_the_evidence_schema_is_closed_and_admits_no_free_text`, `tests/service_conformance/test_mcp_real_host_qualification.py::test_any_committed_record_passes_its_own_guard` | HOST | green |
 
-B-12 is `partial` because the source-tree journey writes no persisted
-qualification artefact for a reviewer to inspect; what it asserts is that the
-one thing it does retain -- the printed host snippet -- carries no secret. The
-retained-record half of this bullet belongs to the Phase 8 host record and has
-no evidence here.
+B-12's source-tree journey still writes no qualification artefact. Its retained
+record is instead the Phase 8 host record cited above, produced only after the
+closed schema, redaction scan, complete case register and commit binding all
+passed.
 
 **No pre-seeding.** The journey opens `fixture.serving(seed=False,
 configure=False)`; the fixture documents `seed=False` as returning the workspace
@@ -391,9 +393,9 @@ What closed the five rows that were `partial` here:
   that grows is `replayed`, and it is meant to -- an honest replay runs no domain
   code but does durably spend the fresh grant it was re-authorized with.
 
-What these three rows do **not** carry: a host. The client is the official SDK
-driving a real server subprocess, which is fact 2 of section 4, so I-6 stays
-`pending-phase-8` and none of this may be read as a real-host record.
+What these three source-tree rows do **not** carry is a host. The separate I-6
+row below carries the installed-host evidence; the SDK recovery suite remains
+`AUTO` and is not relabelled.
 
 ### 13.G Setup, upgrade, and revocation
 
@@ -423,26 +425,29 @@ configuration tests hold.
 | H-2 Client, CLI and MCP conformance | `contracts/application/v1/fixtures/application-wire-adapter-conformance-v1.json`, `src/omnivia_core/contracts/v1/conformance.py` | `tests/contracts/test_adapter_conformance.py::test_every_operation_has_a_primary_success_case`, `tests/contracts/test_adapter_conformance.py::test_every_mutation_has_a_replay_and_a_conflict_case`, `packages/omnivia-core-cli/tests/test_v06_6_dispatch.py::test_each_command_dispatches_its_exact_catalogue_claims[evidence/capture]` | AUTO | green |
 | H-3 Runtime migrations | `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/migration_files/0037_evidence_source_identity.sql`, `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/installation_migration_files/0003_mcp_role_grants.sql` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_source_identity_migration.py::test_0037_applies_cleanly_as_the_consecutive_head`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_installed_mcp_authority_migration.py::test_fresh_catalogue_materialises_the_whole_pinned_chain`, `tests/test_migration_allocations.py` | AUTO | green |
 | H-4 Generated schema projection is reproducible and clean after regeneration | `scripts/generate-mcp-exposure-schemas.py`, `packages/omnivia-core-mcp/src/omnivia_core_mcp/generated_schema_projection.py` | `packages/omnivia-core-mcp/tests/test_mcp_exposure_manifest.py::test_the_committed_projection_is_exactly_what_the_generator_emits`, `packages/omnivia-core-mcp/tests/test_mcp_exposure_manifest.py::test_the_generator_check_mode_reports_success_without_writing` | AUTO | green |
-| H-5 Wheelhouse installation and offline packaging | `scripts/check-package-builds.sh`, `scripts/mcp-wheelhouse-constraints.txt` | none recorded for this branch | WHEEL | pending-phase-8 |
-| H-6 Installed service smoke tests over the authoring inventory | `scripts/run-standard-journey.py`, `docs/distribution/mcp-host-interoperability.md` | none recorded; the journey script and that document still state the restricted six-tool manifest and were not revised on this branch | WHEEL | pending-phase-8 |
-| H-7 The release artifact uses `mcp==2.0.0` and `mcp-types==2.0.0`, not whichever versions happen to be in a developer venv | `scripts/mcp-wheelhouse-constraints.txt` holds the reviewed pins | none recorded; every `AUTO` row above ran under SDK 2.2.0, which section 4 fact 1 states is not evidence about the pin | WHEEL | pending-phase-8 |
+| H-5 Wheelhouse installation and offline packaging | `scripts/check-package-builds.sh`, `scripts/mcp-wheelhouse-constraints.txt`, `scripts/run-host-qualification.py` | `docs/development/qualification-evidence/mcp-real-host-qualification.json` records `wheelhouse_no_index`, a wheel count and digest, installed console scripts, and no source-tree import | WHEEL | green |
+| H-6 Installed service smoke tests over the authoring inventory | `scripts/run-host-qualification.py`, `docs/distribution/mcp-host-interoperability.md` | both real hosts observed exactly eleven authoring tools and completed capture, memory, import, job, recovery and revocation cases in `docs/development/qualification-evidence/mcp-real-host-qualification.json` | HOST | green |
+| H-7 The release artifact uses `mcp==2.0.0` and `mcp-types==2.0.0`, not whichever versions happen to be in a developer venv | `scripts/mcp-wheelhouse-constraints.txt`, `scripts/run-host-qualification.py` | the retained record reports both exact 2.0.0 distribution versions from the isolated installed environment; its guard rejects any other value | WHEEL | green |
 
 ### 13.I Real-host qualification
 
-No row here is green, and none may become green from anything in this tree. Fact
-2 of section 4 is the reason: the journeys drive a real server subprocess with
-the official SDK's own client, which is not an installed host.
+Every row here is backed by the compact record produced from the qualified
+implementation commit. The harness ran from a private temporary directory,
+installed all five OmniVia distributions from the prepared wheelhouse with
+`--no-index --only-binary=:all:`, proved every operational import resolved below
+that environment rather than this checkout, and invoked the actual host
+binaries. The source-tree SDK journeys remain supplemental `AUTO` evidence.
 
 | Bullet | Implementation | Evidence | Type | Status |
 |---|---|---|---|---|
-| I-1 Install Core from the release artifact on a clean supported macOS account | `scripts/check-package-builds.sh`, `scripts/build-standard-candidate.py` | none recorded | HOST | pending-phase-8 |
-| I-2 Configure each profile using documented host settings, for Claude Code and Codex CLI | `packages/omnivia-core-cli/src/omnivia_core_cli/mcp_admin.py` emits the host snippet; `docs/distribution/mcp-host-interoperability.md` records the accepted configuration shapes | none recorded | HOST | pending-phase-8 |
-| I-3 Verify initialize and tool discovery under the installed host | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py` | none recorded | HOST | pending-phase-8 |
-| I-4 Execute the empty-workspace journey under the installed host | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py` is the source-tree analogue only | none recorded | HOST | pending-phase-8 |
-| I-5 Execute the import journey under the installed host | `packages/omnivia-core-mcp/tests/test_mcp_import_job_acceptance.py` is the source-tree analogue only | none recorded | HOST | pending-phase-8 |
-| I-6 Exercise same-key recovery after an intentionally interrupted response | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | none recorded under a host; the source-tree analogue is `packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py::test_an_interrupted_capture_is_recovered_by_the_same_key_after_a_restart` | HOST | pending-phase-8 |
-| I-7 Verify stdout remains valid protocol traffic, restart the host and the Core service, and repeat observation | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py` | none recorded under a host; the source-tree analogue is `packages/omnivia-core-mcp/tests/test_mcp_stdio_end_to_end.py::test_every_byte_the_server_writes_to_stdout_is_valid_protocol` | HOST | pending-phase-8 |
-| I-8 Revoke authoring and prove mutation tools disappear or fail closed according to the documented restart model | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/installed_mcp.py` | none recorded under a host | HOST | pending-phase-8 |
+| I-1 Install Core from the release artifact on a clean supported macOS account | `scripts/run-host-qualification.py::install` | isolated wheelhouse installation, installed-origin probe, exact macOS 26.5.2 arm64 baseline and exact host versions in `docs/development/qualification-evidence/mcp-real-host-qualification.json` | HOST | green |
+| I-2 Configure each profile using documented host settings, for Claude Code and Codex CLI | `packages/omnivia-core-cli/src/omnivia_core_cli/mcp_admin.py`, `scripts/run-host-qualification.py::ClaudeCode`, `scripts/run-host-qualification.py::Codex` | both installed hosts executed with isolated explicit configuration; normal configuration hashes were unchanged; see retained record | HOST | green |
+| I-3 Verify initialize and tool discovery under the installed host | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py`, `scripts/run-host-qualification.py::inventory_for` | each host observed the exact eleven authoring tools; excluded operations were absent and undispatchable; see retained record | HOST | green |
+| I-4 Execute the empty-workspace journey under the installed host | `scripts/run-host-qualification.py::journey` | both hosts passed capture/search, proposed-memory visibility, replay/conflict and service-health cases in the retained record | HOST | green |
+| I-5 Execute the import journey under the installed host | `scripts/run-host-qualification.py::journey` | both hosts passed one-job creation, replay/conflict, terminal observation, stable pagination, evidence retrieval and owner observation; see retained record | HOST | green |
+| I-6 Exercise same-key recovery after an intentionally interrupted response | `scripts/run-host-qualification.py::_ambiguous`, `packages/omnivia-core-mcp/tests/_mcp_interrupted_relay.py` | both hosts recovered the one committed artifact by the original key after the relay withheld the answer and Core restarted; relay use is explicitly recorded in the retained record | HOST | green |
+| I-7 Verify stdout remains valid protocol traffic, restart the host and the Core service, and repeat observation | `scripts/run-host-qualification.py::stdout_is_protocol_only`, `scripts/run-host-qualification.py::journey` | both hosts passed protocol-only stdout and post-restart job observation; see retained record | HOST | green |
+| I-8 Revoke authoring and prove mutation tools disappear or fail closed according to the documented restart model | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/installed_mcp.py`, `scripts/run-host-qualification.py::journey` | both hosts were blocked after revoke while the committed job remained succeeded and owner-observable; see retained record | HOST | green |
 
 ---
 
@@ -478,27 +483,20 @@ What closed the two review rows that were `partial`:
 
 ---
 
-## 9. What Phase 8 still owns
+## 9. Phase 8 qualification evidence
 
-Everything in this list is `pending-phase-8` above. Nothing here has been
-exercised on this branch, and no row of this document should be read as saying
-otherwise.
+`docs/development/qualification-evidence/mcp-real-host-qualification.json` was
+produced from `44b8cd5729578f5a4e2d858f99f816f5613f3458`. It contains no prompt,
+transcript, path, endpoint, credential, grant, process identifier, account,
+workspace identifier, job identifier, record identifier, content or free-form
+diagnostic. It retains only closed-vocabulary facts, versions, counts, boolean
+verdicts and truncated identity digests.
 
-1. Build against the reviewed pins and install from the wheelhouse:
-   `PYTHON=.venv/bin/python scripts/check-package-builds.sh`. Record that its
-   Phase 1 acquisition reaches the index and only its Phase 2 installation is
-   index-free. (H-5, H-7)
-2. Extend `scripts/run-standard-journey.py` and
-   `docs/distribution/mcp-host-interoperability.md` past the restricted six-tool
-   manifest, so the installed smoke covers the authoring inventory. (H-6)
-3. Run the empty-workspace and import journeys against installed Claude Code
-   2.1.269 and Codex CLI 0.146.0 on the macOS 26.5.2 arm64 baseline, or the
-   approved release replacements recorded with the results, and retain a
-   redacted record of discovery, capture and search, proposed-memory creation,
-   import observation, restart and revocation. (I-1 through I-8, and B-12)
+The passing run used Claude Code 2.1.269 and Codex CLI 0.146.0 on macOS 26.5.2
+build 25F84 arm64. Each host passed all 25 registered cases. Both inventories
+contained exactly the eleven authoring tools. Installation was index-free from
+the prepared wheelhouse and enforced `mcp==2.0.0` plus `mcp-types==2.0.0`.
 
-The three source-tree recovery shortfalls this list used to name -- a real
-service restart between commit and replay (F-2), a transport loss after dispatch
-(F-6), a same-key replay from a second session (F-8) -- are no longer among them;
-`packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py` runs all three.
-Under an installed host they are still I-6's, and I-6 is still `pending-phase-8`.
+This closes Phase 8's implementation and qualification work. Repository-wide
+preflight, fresh independent review, CI and merge remain integration gates; they
+do not alter or expand the qualified product surface.
