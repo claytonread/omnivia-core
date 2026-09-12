@@ -163,6 +163,7 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "errors.py",
         "framing.py",
         "http_transport.py",
+        "local_control.py",
         "local_ipc.py",
         "managed_local.py",
         "service_client.py",
