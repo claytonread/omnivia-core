@@ -314,15 +314,15 @@ What closed the two rows above:
 | Bullet | Implementation | Evidence | Type | Status |
 |---|---|---|---|---|
 | F-1 Inject failure at every durable step for each mutation and assert the documented all-or-nothing boundary | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py`, `packages/omnivia-core-runtime/src/omnivia_core_runtime/workspace/blob_publication.py` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_acceptance.py::test_a_fault_at_each_durable_capture_step_lands_on_its_documented_boundary[blob_publication]`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_acceptance.py::test_a_fault_at_each_durable_capture_step_lands_on_its_documented_boundary[business_commit]`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_acceptance.py::test_a_fault_at_each_durable_capture_step_lands_on_its_documented_boundary[settlement]`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_acceptance.py::test_a_fault_at_each_durable_capture_step_lands_on_its_documented_boundary[projection_barrier]`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_v06_5_s2_memory_family.py::test_v06_5_s2_create_atomic_audit_and_rollback`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_v06_5_s2_memory_family.py::test_v06_5_s2_settlement_context_precedes_governed_fk_without_partial_state`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_import_job_execution.py::test_an_unanticipated_failure_becomes_one_durable_failed_attempt`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_import_job_execution.py::test_a_crash_after_the_evidence_commit_is_completed_by_the_recovered_attempt`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_blob_publication.py::test_a_fault_leaves_no_temporary_file_behind`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_installed_mcp_authority.py::test_a_fault_at_a_write_boundary_persists_nothing` | AUTO | green |
-| F-2 Terminate the service after commit but before the MCP response, restart, replay the same key, assert the same canonical result | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_vertical.py::test_a_projection_failure_refuses_and_the_same_key_repairs_it` | AUTO | partial |
+| F-2 Terminate the service after commit but before the MCP response, restart, replay the same key, assert the same canonical result | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | `packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py::test_an_interrupted_capture_is_recovered_by_the_same_key_after_a_restart`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_vertical.py::test_a_projection_failure_refuses_and_the_same_key_repairs_it` | AUTO | green |
 | F-3 For capture, assert projection recovery and exactly one searchable artifact | `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/fts.py` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_vertical.py::test_a_projection_failure_refuses_and_the_same_key_repairs_it`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l4_an_interruption_at_any_phase_converges_on_the_next_build[_append_documents]`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l5_an_interruption_mid_append_resumes_from_the_last_checkpoint` | AUTO | green |
 | F-4 For import, assert exactly one job and one execution chain | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/import_execution.py` | `packages/omnivia-core-mcp/tests/test_mcp_import_job_acceptance.py::test_a_staged_import_is_executed_observed_and_survives_revocation`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_import_job_execution.py` | AUTO | green |
 | F-5 Concurrent identical calls | `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/migration_files/0037_evidence_source_identity.sql`, `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/transport.py` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_acceptance.py::test_two_concurrent_identical_captures_produce_one_durable_effect`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_capture_vertical.py::test_a_fenced_write_outside_the_handler_cannot_forge_a_second_source`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_source_identity_migration.py::test_0037_refuses_the_repeat_in_a_live_guarded_workspace` | AUTO | green |
-| F-6 Timeout or connection loss after possible dispatch | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py` -- no automatic retry, no new key | `packages/omnivia-core-mcp/tests/test_mcp_server_authority.py::test_a_same_key_replay_is_a_real_call_every_time`, `packages/omnivia-core-mcp/tests/test_mcp_server_authority.py::test_a_client_failure_becomes_a_readable_tool_error` | AUTO | partial |
+| F-6 Timeout or connection loss after possible dispatch | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py` -- no automatic retry, no new key | `packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py::test_an_interrupted_capture_is_recovered_by_the_same_key_after_a_restart`, `packages/omnivia-core-mcp/tests/test_mcp_server_authority.py::test_a_same_key_replay_is_a_real_call_every_time`, `packages/omnivia-core-mcp/tests/test_mcp_server_authority.py::test_a_client_failure_becomes_a_readable_tool_error` | AUTO | green |
 | F-7 Deliberate response-correlation mismatch after commit | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py`, `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/local_control.py` | `packages/omnivia-core-mcp/tests/test_mcp_server_authority.py::test_an_answer_that_does_not_correlate_is_not_published`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_installed_mcp_local_control.py::test_an_answer_that_does_not_correlate_to_its_request_never_reaches_a_caller` | AUTO | green |
-| F-8 Same-key recovery from a new MCP session | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_installed_mcp_local_control.py::test_revocation_blocks_the_next_call_and_the_same_key_replay` | AUTO | partial |
+| F-8 Same-key recovery from a new MCP session | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | `packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py::test_a_second_mcp_session_replays_the_key_the_first_one_settled`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_installed_mcp_local_control.py::test_revocation_blocks_the_next_call_and_the_same_key_replay` | AUTO | green |
 
-What closed two of the five rows that were `partial` here:
+What closed the five rows that were `partial` here:
 
 - **F-1** now enumerates the four durable steps a capture consists of -- blob
   publication, the evidence and provenance business write, the coordinator's
@@ -344,18 +344,56 @@ What closed two of the five rows that were `partial` here:
   whichever call the accept loop takes first. The index-level and live-guarded-
   writer neighbours stay cited, because they hold the database's own half.
 
-Shortfalls named by the three rows still `partial`. These are the weakest part of
-the Phase 7 evidence and the honest place to say so:
+- **F-2 and F-6** are one journey, because in this build they are one event.
+  `packages/omnivia-core-mcp/tests/_mcp_interrupted_relay.py` forwards every byte
+  between a real SDK client and an unmodified
+  `python -m omnivia_core_mcp.server --config <path>` child, and withholds
+  exactly one message: the reply to the `evidence_capture` call. The withholding
+  is triggered by that reply arriving, not by a timer, so the interruption is
+  deterministic and provably after dispatch -- there was an answer to withhold.
+  The client is then left with a closed stream and no result, no refusal and no
+  identifier, which is the whole of why the host has no basis to mint a second
+  key. The service is then really stopped -- `SIGTERM`, waited for -- and really
+  started again, and the new process publishes a later `fencing_generation`,
+  which is how the record can say restart rather than reconnect. A second MCP
+  session on the production entry point searches *before* it writes anything and
+  finds the artifact already there, byte-exact and under the source tuple the
+  lost call declared; the same key then answers with that same canonical result
+  and leaves one artifact, while the same key with a changed payload is refused
+  as an idempotency conflict. Every answer that session receives, that refusal
+  included, is searched for the submission's own bytes, the trusted document's
+  path, the service endpoint and the opaque credential reference, and carries
+  none of them. For that key the coordinator's ledger holds one claim, one
+  outcome, one M1 audit event and one execution of the domain code, with the
+  replay recorded as a replay.
 
-- **F-2** shows the shape the specification asks for -- commit stands, the call
-  refuses, the same key repairs it and returns the settled result -- but inside
-  one process against one router. The service is never terminated and reopened.
-- **F-6** shows that the adapter never retries with a new key and that a client
-  failure surfaces as a tool error. A transport loss injected after dispatch but
-  before the response is not simulated.
-- **F-8** shows that a same-key replay is re-authorized and blocked after
-  revocation across calls. No test opens a second MCP session and replays a key
-  minted in the first.
+  What guessing would have cost is then measured rather than argued. The key a
+  host would have had to invent is sent with byte-identical input: it answers
+  `already_captured` rather than the `created` the lost call settled, so a host
+  that guessed would have recorded a different canonical result for its own
+  write, and it lands a second claim, outcome, M1 audit event and execution for
+  one effect. The artifact itself is not duplicated, because capture identity is
+  content-addressed rather than key-addressed -- which is the honest shape of
+  this hazard and the reason the specification asks for the original effect to
+  be found rather than for zero writes. The adapter's own half -- that it never
+  chooses a key and never retries a mutation on its own initiative, even when
+  the service reports the failure as retryable -- stays cited from
+  `test_mcp_server_authority.py`, which drives a transport that invites both.
+- **F-8** now opens two MCP sessions that never overlap against one service that
+  is never replaced. Session A captures and proposes and settles both, then
+  closes its streams; session B is a new server process with its own pinned
+  2025-06-18 handshake, holding none of session A's state, and replays both keys
+  with byte-identical input. Both canonical results come back unchanged, and the
+  duplicate a bad replay would leave is looked for in both places it could be:
+  through the tools, where it would be a second artifact, a second candidate or a
+  proposal that reached the default view, and in the coordinator's ledger, where
+  it would be a second claim, outcome, audit event or execution. The one count
+  that grows is `replayed`, and it is meant to -- an honest replay runs no domain
+  code but does durably spend the fresh grant it was re-authorized with.
+
+What these three rows do **not** carry: a host. The client is the official SDK
+driving a real server subprocess, which is fact 2 of section 4, so I-6 stays
+`pending-phase-8` and none of this may be read as a real-host record.
 
 ### 13.G Setup, upgrade, and revocation
 
@@ -402,7 +440,7 @@ the official SDK's own client, which is not an installed host.
 | I-3 Verify initialize and tool discovery under the installed host | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py` | none recorded | HOST | pending-phase-8 |
 | I-4 Execute the empty-workspace journey under the installed host | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py` is the source-tree analogue only | none recorded | HOST | pending-phase-8 |
 | I-5 Execute the import journey under the installed host | `packages/omnivia-core-mcp/tests/test_mcp_import_job_acceptance.py` is the source-tree analogue only | none recorded | HOST | pending-phase-8 |
-| I-6 Exercise same-key recovery after an intentionally interrupted response | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | none recorded; see also F-2 and F-8, which are short of this in the source tree too | HOST | pending-phase-8 |
+| I-6 Exercise same-key recovery after an intentionally interrupted response | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/mutation.py` | none recorded under a host; the source-tree analogue is `packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py::test_an_interrupted_capture_is_recovered_by_the_same_key_after_a_restart` | HOST | pending-phase-8 |
 | I-7 Verify stdout remains valid protocol traffic, restart the host and the Core service, and repeat observation | `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py` | none recorded under a host; the source-tree analogue is `packages/omnivia-core-mcp/tests/test_mcp_stdio_end_to_end.py::test_every_byte_the_server_writes_to_stdout_is_valid_protocol` | HOST | pending-phase-8 |
 | I-8 Revoke authoring and prove mutation tools disappear or fail closed according to the documented restart model | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/installed_mcp.py` | none recorded under a host | HOST | pending-phase-8 |
 
@@ -458,9 +496,9 @@ otherwise.
    approved release replacements recorded with the results, and retain a
    redacted record of discovery, capture and search, proposed-memory creation,
    import observation, restart and revocation. (I-1 through I-8, and B-12)
-4. Close the three source-tree recovery shortfalls this record still names -- a
-   real service restart between commit and replay (F-2), a transport loss after
-   dispatch (F-6), a same-key replay from a second session (F-8) -- or record a
-   decision that the host journey is where they are exercised instead. All three
-   are transport or process-lifetime ambiguities rather than storage ones, which
-   is why they outlived the rest of 13.F.
+
+The three source-tree recovery shortfalls this list used to name -- a real
+service restart between commit and replay (F-2), a transport loss after dispatch
+(F-6), a same-key replay from a second session (F-8) -- are no longer among them;
+`packages/omnivia-core-mcp/tests/test_mcp_recovery_acceptance.py` runs all three.
+Under an installed host they are still I-6's, and I-6 is still `pending-phase-8`.

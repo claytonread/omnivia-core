@@ -21,7 +21,12 @@ is the MCP surface under test. `test_mcp_import_job_acceptance` runs section
 13.D's import journey on that same empty workspace plus exactly one thing MCP
 cannot make for itself -- `serving(seed=False, stage=True, configure=False)`
 adds the verified staged source R004 section 8.3 requires an import to name, and
-nothing else.
+nothing else. `test_mcp_recovery_acceptance` runs section 13.F's recovery cases
+on that same empty workspace and needs two more things from this file:
+:meth:`GovernedService.restart`, which really stops the service and really
+starts it again so a commit has to survive a process lifetime; and
+:func:`settlement`, a read-only count of the coordinator's own ledger, which is
+the one durable fact about a replay that no exposed tool can answer.
 
 **The workspace is registered, not invented.** It is created by dispatching the
 canonical `workspace.create` request through a real
@@ -82,7 +87,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -1140,7 +1145,52 @@ def build(root: Path, *, seed: bool = True, stage: bool = False) -> GovernedWork
 # --- the service that owns it --------------------------------------------------
 
 
-@dataclass(frozen=True)
+def _spawn(argv: tuple[str, ...], log_path: Path) -> subprocess.Popen[bytes]:
+    """Start one service process with its whole output appended to `log_path`.
+
+    Appended rather than truncated: a workspace served twice -- stopped after a
+    commit and started again, which is what R004 section 13.F's recovery case
+    asks for -- has two services' diagnostics to account for, and the first
+    one's is the half that says why the second had work to recover.
+
+    A file, not two pipes, and for the same two reasons `managed_start._spawn`
+    gives its own child one. Nothing here reads a pipe: the service outlives
+    every call in the module, so a `PIPE` nobody drains is a write that blocks
+    the whole process once the kernel buffer fills -- and a blocked service
+    still holds the workspace lease and the storage lock, so a later `connect`
+    cannot start a replacement either and spends its entire
+    `MANAGED_START_TIMEOUT_SECONDS` budget failing to. `process.wait()` in
+    :func:`_stop` is the same hazard at teardown, where the standard library
+    documents it. The second reason is the one that made this failure unreadable
+    in CI: the service's own diagnostic -- the sentence it writes when it stops
+    -- went into a pipe that was closed unread, so a hosted run could say a call
+    had failed and never say why.
+    """
+    with log_path.open("ab") as log:
+        return subprocess.Popen(list(argv), stdout=log, stderr=subprocess.STDOUT)
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Ask one service to stop, and make sure it has, before returning.
+
+    The ladder every caller here wants: nothing if it has already exited,
+    `SIGTERM` and a bounded wait otherwise, and a kill if that wait runs out --
+    followed by re-raising, because a service that had to be killed released its
+    lease uncleanly and a caller about to read that lease, or to start a
+    successor on the same workspace, must not be told it stopped normally.
+    """
+    if process.poll() is not None:
+        return
+    process.send_signal(signal.SIGTERM)
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+        process.kill()
+        process.wait(timeout=10)
+        raise
+
+
+@dataclass
 class GovernedService:
     """A running `omnivia-core-service` and the facts a caller needs to reach it.
 
@@ -1163,6 +1213,13 @@ class GovernedService:
     "the service this module started is no longer answering anyone" are the same
     observation over the wire, and only the two fields below can tell them apart.
 
+    **`process` is the one field that moves, which is why this is not frozen.**
+    :meth:`restart` stops the service and serves the same workspace from a new
+    process -- the real stop and start R004 section 13.F's recovery case asks
+    for, not a reconnection -- and `argv` is the command line it starts again
+    from. Everything else here is settled when the workspace is created and is
+    the same service's whichever process is currently serving it.
+
     `credential_reference`, `principal_id` and `profile` are the redacted half of
     the setup this service issued for :data:`MCP_HOST` -- the three facts a
     trusted `omnivia.mcp-config.v1` document is built from. **The bearer is not
@@ -1179,6 +1236,8 @@ class GovernedService:
     endpoint_uri: str
     workspace_id: str
     installation_state: Path
+    #: The command line this service is served from, and started again from.
+    argv: tuple[str, ...]
     process: subprocess.Popen[bytes]
     log: Path
     database: Path
@@ -1208,6 +1267,48 @@ class GovernedService:
         assert found is not None, f"no published descriptor: {self.diagnosis()}"
         return found
 
+    def await_ready(self) -> ServiceEndpointDescriptor:
+        """Block until the current process publishes a ready descriptor.
+
+        Polled rather than awaited on an event: readiness is a fact about
+        another process, published as a file, and there is no handle this side
+        could wait on. A service that exits instead fails here immediately with
+        what it wrote, rather than at the end of the budget.
+        """
+        deadline = time.monotonic() + 60
+        found = None
+        while time.monotonic() < deadline:
+            assert self.process.poll() is None, (
+                f"the service exited instead of serving: {self.diagnosis()}"
+            )
+            found = discover(
+                InstallationLayout(root=self.installation_state).runtime_for(
+                    self.workspace_id
+                )
+            )
+            if found is not None and found.ready:
+                return found
+            time.sleep(0.05)
+        raise AssertionError(f"the service never became ready: {self.diagnosis()}")
+
+    def stop(self) -> None:
+        """Stop the service, if it is running, and wait for it to be gone."""
+        _stop(self.process)
+
+    def restart(self) -> ServiceEndpointDescriptor:
+        """Stop this service and serve the same workspace from a new process.
+
+        A real stop and a real start, in that order and with the first waited
+        for: the workspace's lease and storage lock are released by a process
+        that exits, so a successor that overlapped it could not acquire them.
+        What comes back is the new process's own published descriptor, whose
+        `fencing_generation` is the acquisition after the one that stopped --
+        which is how a caller can tell this from a reconnection.
+        """
+        self.stop()
+        self.process = _spawn(self.argv, self.log)
+        return self.await_ready()
+
     def stop_and_read_lease(self) -> LeaseRecord:
         """Stop the service, then read the lease row it leaves behind.
 
@@ -1217,17 +1318,7 @@ class GovernedService:
         -- the holder's instance, process evidence and fencing generation, which
         `acquire_lease` bumps on every acquisition.
         """
-        if self.process.poll() is None:
-            self.process.send_signal(signal.SIGTERM)
-            try:
-                self.process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                # A hung service must not outlive the test: kill and reap it, then
-                # fail with the original timeout rather than read a lease it never
-                # released cleanly.
-                self.process.kill()
-                self.process.wait(timeout=10)
-                raise
+        self.stop()
         connection = open_database(self.database, OpenMode.READ_ONLY)
         try:
             lease = read_lease(connection)
@@ -1246,22 +1337,13 @@ class GovernedService:
         both here is what makes a hosted failure diagnosable from the log
         instead of only reproducible.
         """
-        return _diagnosis(self.process, self.log)
-
-
-def _diagnosis(process: subprocess.Popen[bytes], log: Path) -> str:
-    """:meth:`GovernedService.diagnosis`, before there is one to ask.
-
-    The readiness wait and the provisioning call both happen before the yielded
-    value exists, and both want the same sentence when they fail.
-    """
-    state = (
-        "still running"
-        if process.poll() is None
-        else f"exited with {process.returncode}"
-    )
-    said = log.read_text(encoding="utf-8", errors="replace")
-    return f"the service is {state}; it wrote {said!r}"
+        state = (
+            "still running"
+            if self.process.poll() is None
+            else f"exited with {self.process.returncode}"
+        )
+        said = self.log.read_text(encoding="utf-8", errors="replace")
+        return f"the service is {state}; it wrote {said!r}"
 
 
 #: The read operations the HTTP embedder's session grants: the six the MCP
@@ -1340,6 +1422,66 @@ def installed_cli(
         timeout=_CLI_TIMEOUT_SECONDS,
         check=False,
     )
+
+
+#: How one idempotency key's durable settlement is counted, as five independent
+#: `SELECT COUNT(*)`s. The claim is the only row that stores the caller's key
+#: (`0007` indexes `(workspace_id, principal_id, operation, idempotency_key)`
+#: uniquely); everything else is reached from it by `claim_id` or `audit_ref`.
+#: Written out rather than expressed as one join so a count that is wrong names
+#: which table it is wrong in.
+_CLAIMS = "SELECT claim_id FROM omnivia_idempotency_claims WHERE idempotency_key = ?"
+_SETTLEMENT_COUNTS = {
+    "claims": f"SELECT COUNT(*) FROM ({_CLAIMS})",
+    "outcomes": (
+        "SELECT COUNT(*) FROM omnivia_idempotency_outcomes "
+        f"WHERE claim_id IN ({_CLAIMS})"
+    ),
+    "audit_events": (
+        "SELECT COUNT(*) FROM omnivia_application_audit_events WHERE audit_ref IN ("
+        "SELECT audit_ref FROM omnivia_idempotency_claims WHERE idempotency_key = ?)"
+    ),
+    "executed": (
+        "SELECT COUNT(*) FROM omnivia_mutation_executions "
+        f"WHERE execution_kind = 'executed' AND claim_id IN ({_CLAIMS})"
+    ),
+    "replayed": (
+        "SELECT COUNT(*) FROM omnivia_mutation_executions "
+        f"WHERE execution_kind = 'replayed' AND claim_id IN ({_CLAIMS})"
+    ),
+}
+
+
+def settlement(database: Path, idempotency_key: str) -> dict[str, int]:
+    """How many durable settlement rows one idempotency key has. Read-only.
+
+    The half of "no duplicate settlement" that no tool can answer. MCP exposes
+    the business effect -- an artifact, a candidate record -- so a duplicate
+    *there* is visible through `evidence_search` and `memory_search` and is
+    asserted that way. The coordinator's own ledger is deliberately not exposed
+    to any principal, so a test that has to say a replay settled nothing new has
+    to read it, and this is the one place in the suite allowed to.
+
+    **Read-only, and only while the service is stopped.** The database is opened
+    `READ_ONLY` and nothing here writes; and the service holds it in exclusive
+    locking mode for its whole life, so a caller must stop it first -- the same
+    precondition :meth:`GovernedService.stop_and_read_lease` has.
+
+    What the five counts mean, per `0007` and `0013`: one `claims` row and one
+    `outcomes` row are the settled mutation; one `audit_events` row is its M1
+    audit; one `executed` row is the single run of the domain code. `replayed`
+    is expected to *grow*, once per same-key repeat, because an honest replay
+    runs no domain code but does durably spend the fresh grant it presented --
+    so it is reported rather than required to stay at zero.
+    """
+    connection = open_database(database, OpenMode.READ_ONLY)
+    try:
+        return {
+            name: int(connection.execute(sql, (idempotency_key,)).fetchone()[0])
+            for name, sql in _SETTLEMENT_COUNTS.items()
+        }
+    finally:
+        connection.close()
 
 
 def _free_loopback_port() -> int:
@@ -1478,71 +1620,38 @@ def serving(
             ",".join(_HTTP_GRANTED_OPERATIONS),
         ]
 
-    # A file, not two pipes, and for the same two reasons `managed_start._spawn`
-    # gives its own child one. Nothing here reads a pipe: the service outlives
-    # every call in the module, so a `PIPE` nobody drains is a write that blocks
-    # the whole process once the kernel buffer fills -- and a blocked service
-    # still holds the workspace lease and the storage lock, so a later
-    # `connect` cannot start a replacement either and spends its entire
-    # `MANAGED_START_TIMEOUT_SECONDS` budget failing to. `process.wait()` below
-    # is the same hazard at teardown, where the standard library documents it.
-    # The second reason is the one that made this failure unreadable in CI: the
-    # service's own diagnostic -- the sentence it writes when it stops -- went
-    # into a pipe that was closed unread, so a hosted run could say a call had
-    # failed and never say why.
     log_path = root / "service.log"
-    with log_path.open("wb") as log:
-        process = subprocess.Popen(
-            [*command, *service_argv],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
+    argv = (*command, *service_argv)
+    service = GovernedService(
+        endpoint_uri=endpoint.url,
+        workspace_id=built.workspace_id,
+        installation_state=built.installation.root,
+        argv=argv,
+        process=_spawn(argv, log_path),
+        log=log_path,
+        database=built.workspace.database_path,
+        created_at=built.created_at,
+        created_at_canonical=built.created_at_canonical,
+        http_endpoint=http_endpoint,
+    )
     try:
-        deadline = time.monotonic() + 60
-        found = None
-        while time.monotonic() < deadline:
-            assert process.poll() is None, (
-                "the service exited instead of serving: "
-                f"{_diagnosis(process, log_path)}"
-            )
-            found = discover(built.installation.runtime_for(built.workspace_id))
-            if found is not None and found.ready:
-                break
-            time.sleep(0.05)
-        assert found is not None and found.ready, (
-            f"the service never became ready: {_diagnosis(process, log_path)}"
-        )
+        service.await_ready()
         # After readiness, because only the live service can mint authority, and
         # before the yield, because every managed-local configuration below names
         # the reference this returns.
-        setup = (
-            _provision_mcp_principal(
+        if configure:
+            setup = _provision_mcp_principal(
                 built.installation.root, built.workspace_id, profile
             )
-            if configure
-            else None
-        )
-        yield GovernedService(
-            endpoint_uri=endpoint.url,
-            workspace_id=built.workspace_id,
-            installation_state=built.installation.root,
-            process=process,
-            log=log_path,
-            database=built.workspace.database_path,
-            created_at=built.created_at,
-            created_at_canonical=built.created_at_canonical,
-            credential_reference=None if setup is None else setup.credential_reference,
-            principal_id=None if setup is None else setup.principal_id,
-            profile=None if setup is None else setup.profile,
-            http_endpoint=http_endpoint,
-        )
+            service.credential_reference = setup.credential_reference
+            service.principal_id = setup.principal_id
+            service.profile = setup.profile
+        yield service
     finally:
-        if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
-            try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
-                process.kill()
-                process.wait(timeout=10)
+        # `service.process`, never the one started above: a caller may have
+        # restarted the service, and the process to stop is whichever one is
+        # serving now.
+        with suppress(subprocess.TimeoutExpired):  # pragma: no cover - on a hang
+            service.stop()
         shutil.rmtree(socket_directory, ignore_errors=True)
         shutil.rmtree(root, ignore_errors=True)
