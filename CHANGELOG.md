@@ -113,11 +113,15 @@ merges; delete it if it does not.
   runtime flag. `omnivia mcp revoke` removes the authority again, idempotently,
   without touching workspace data, audits, committed mutations or running jobs.
 
-  Residual: no real MCP host application has been qualified against the shipped
-  artifacts. The Standard journey drives the server with the official Python SDK
-  and still covers the restricted six; R004 section 13.I's installed Claude Code
-  and Codex CLI gate has no checked-in record. Do not read this entry as saying
-  a host has passed.
+  Real-host qualification now has a checked-in, schema-validated record for
+  Claude Code 2.1.269 and Codex CLI 0.146.0 on the pinned macOS baseline. Both
+  hosts launched the server from isolated installed wheels and passed the 25
+  registered section 13.I cases; the retained record intentionally contains no
+  prompts, transcripts, endpoints, credentials, grants or raw identifiers.
+  This qualifies only the recorded host versions, platform and cases; it is not
+  a general claim about other hosts or environments. See
+  `docs/development/qualification-evidence/mcp-real-host-qualification.json` and
+  the standalone authoring traceability document for the exact scope.
 
 ### v0.6 development — accepted lanes
 

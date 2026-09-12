@@ -496,9 +496,20 @@ _FORBIDDEN_VALUE_PATTERNS = (
     re.compile(r"\\"),
     re.compile(r"@"),
     re.compile(r"\s"),
-    re.compile(r"(?i)bearer|token|secret|credential|passwd|key="),
+    re.compile(r"(?i)bearer|token|secret|credential|grant|passwd|key="),
     re.compile(r"(?i)unix:|pipe:|https?:"),
 )
+
+
+def _is_known_safe_tool_name(value: str, trail: str) -> bool:
+    """Admit fixed inventory literals without weakening the generic leak scan."""
+    parts = trail.rsplit("/", 2)
+    return (
+        len(parts) == 3
+        and parts[-2] == "tools"
+        and parts[-1].isdigit()
+        and value in EXCLUDED_TOOLS
+    )
 _FORBIDDEN_KEYS = frozenset(
     {
         "prompt",
@@ -538,6 +549,8 @@ def _redaction_findings(document: Any, trail: str = "") -> list[str]:
         for index, value in enumerate(document):
             findings.extend(_redaction_findings(value, f"{trail}/{index}"))
     elif isinstance(document, str):
+        if _is_known_safe_tool_name(document, trail):
+            return findings
         for pattern in _FORBIDDEN_VALUE_PATTERNS:
             if pattern.search(document):
                 findings.append(f"record carries an unredacted value at {trail}")
