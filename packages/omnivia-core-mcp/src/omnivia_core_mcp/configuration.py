@@ -358,12 +358,13 @@ def parse_configuration(document: object) -> McpConfiguration:
 #: authority the session already established, and both of them a boundary this
 #: package must not invite anyone across.
 #:
-#: **No implementation of this exists yet**, which is the honest state of Gate B:
-#: `omnivia mcp configure` and the installed principal/grant store are Phase 6's
-#: work.  Until one is injected, `authoring` is unreachable in production: the
-#: console entry point passes nothing, so every installed server is `restricted`
-#: whatever its configuration says.  Only a test or a trusted embedding host
-#: supplies one today.
+#: **The installed implementation is
+#: :func:`omnivia_core_mcp.server._installed_admission`**, which the console entry
+#: point injects for a managed-local configuration that names a credential
+#: reference, and which asks the protected authority through the shared client's
+#: `mcp.authoring_admission` control.  It is still an argument and not a default:
+#: a configuration with no reference, a remote configuration, a test, or an
+#: embedding host each supply their own answer or none, and none is `restricted`.
 AuthoringAdmission = Callable[[ServiceClient, str, str], bool]
 
 
@@ -387,8 +388,8 @@ def effective_profile(
 
     So a legacy or hand-edited `mutation_enabled: true` cannot silently activate
     authoring, which is the upgrade rule stated as code rather than as migration
-    prose, and the production default is `restricted` because production injects
-    no resolver yet.
+    prose: production does inject a resolver, and it answers from a protected
+    record only `omnivia mcp configure --profile authoring` can write.
 
     `client` is connected and already proved to serve `workspace_id`; the caller
     is :func:`~omnivia_core_mcp.server.connect`, which is what guarantees both.

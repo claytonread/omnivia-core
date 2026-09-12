@@ -380,8 +380,9 @@ def connect(
 
     `authoring_admission` is injected on exactly the same terms and for the same
     reason: the protected seam described on
-    :data:`~omnivia_core_mcp.configuration.AuthoringAdmission`, which Phase 6
-    must implement and nothing in this repository implements yet.
+    :data:`~omnivia_core_mcp.configuration.AuthoringAdmission`. :func:`main`
+    builds the installed one with :func:`_installed_admission`; a caller that
+    supplies none gets `restricted`.
 
     **The profile is settled last, and that ordering is the seam's contract.**
     The admission is asked only after the service is connected *and* after its

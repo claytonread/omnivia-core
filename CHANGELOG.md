@@ -78,6 +78,47 @@ names its four intended consumers in order, its boundary rules, and its removal
 trigger at the V06-3 closeout. It implements the `PM ADR-037` startup sequence.
 Read section 1 for the normative text; it is not reproduced here.
 
+### On a branch, not yet merged
+
+An entry here is not an accepted lane. This section exists because one change in
+flight expands what an AI host may do with a workspace, and a release record
+that first mentioned that at merge would be mentioning it too late. Move the
+entry down to the accepted lanes, with its pull request and commit, when it
+merges; delete it if it does not.
+
+- **MCP authoring profile — an opt-in authority expansion.** `omnivia-core-mcp`
+  gains a second exposure profile. `restricted` is the existing six read tools
+  and stays the default, the fallback and the whole of what an upgrade can
+  reach. `authoring` adds exactly five: three mutations (`memory_create`,
+  `evidence_capture`, `import_start`) and two job reads (`job_get`,
+  `job_events`). Exposure manifest `1.1` → `2.0`.
+
+  **This is an expansion of authority, not a feature behind a flag**, and the
+  only way to it is a human owner or administrator running
+  `omnivia mcp configure --profile authoring`. Two independent conditions are
+  both required at every startup: `mutation_enabled` in the trusted
+  configuration is a ceiling, and a protected durable record of that explicit
+  intent for exactly this principal and this workspace is the floor. Absent,
+  `false` and legacy `true` values are all `restricted`, so no installation and
+  no upgrade acquires write access by standing still. Every failure direction —
+  no admission, an admission that answers anything else, an admission that
+  raises — is `restricted` too.
+
+  What it grants is bounded: one workspace, one dedicated principal minted by
+  the service under a database-enforced `mcp-` prefix, least-privilege rights,
+  and no governance, approval, publication, cancellation, staging or
+  administrative operation anywhere on the surface. `memory_create` produces
+  proposed records only. `import_start` names a descriptor an installed trusted
+  path already staged and accepts no path, URL, credential, parser choice or
+  runtime flag. `omnivia mcp revoke` removes the authority again, idempotently,
+  without touching workspace data, audits, committed mutations or running jobs.
+
+  Residual: no real MCP host application has been qualified against the shipped
+  artifacts. The Standard journey drives the server with the official Python SDK
+  and still covers the restricted six; R004 section 13.I's installed Claude Code
+  and Codex CLI gate has no checked-in record. Do not read this entry as saying
+  a host has passed.
+
 ### v0.6 development — accepted lanes
 
 Scope wording is taken from the baseline pointer's `acceptedIntegrations`
