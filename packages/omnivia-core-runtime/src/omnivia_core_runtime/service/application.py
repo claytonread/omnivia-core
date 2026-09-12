@@ -310,9 +310,25 @@ def _narrow_session(
     configured: AuthenticatedSession,
     caller: AuthenticatedSession,
 ) -> AuthenticatedSession:
-    """Intersect caller authority with the endpoint's configured maximum."""
-    if configured.principal_id != caller.principal_id:
-        return AuthenticatedSession(principal_id=caller.principal_id)
+    """Intersect caller authority with the endpoint's configured maximum.
+
+    The configured session is a **policy ceiling**, not an identity. It states the
+    most this endpoint will ever execute -- which workspace, which operations,
+    which scopes, purposes, roles and capability versions -- and every dimension of
+    the caller's own authority is intersected with it, so the result can never
+    exceed either side. The caller's principal is preserved, because the principal
+    is who the request ran as and the audit record has to say so.
+
+    It used to compare the two principal ids first and hand back an empty session
+    when they differed. That read as a safety check and was in fact a fail-closed
+    bug: a dedicated installed-MCP principal is *never* the configured local owner
+    -- `local-user` against a minted `mcp-<host>-<hex>` -- so every authenticated
+    MCP call was narrowed to nothing and refused `workspace_not_granted` before any
+    handler saw it. The check it was standing in for lives where it belongs: the
+    endpoint's own grant, intersected below, and `ServiceBinding`, which refuses a
+    request naming a workspace this endpoint does not serve even if a grant were
+    ever widened.
+    """
     configured_capabilities = {ref.id: ref.version for ref in configured.capabilities}
     capabilities = tuple(
         CapabilityRef(

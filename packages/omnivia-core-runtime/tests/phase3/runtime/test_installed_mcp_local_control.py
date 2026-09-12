@@ -53,7 +53,11 @@ from omnivia_core_runtime.service.mcp_control import (
     ProxiedInstalledMcp,
     setup_view,
 )
-from omnivia_core_runtime.service.mutation import INSTALLATION_ADMINISTRATOR_ROLE
+from omnivia_core_runtime.service.mutation import (
+    INSTALLATION_ADMINISTRATOR_ROLE,
+    KNOWLEDGE_REVIEWER_ROLE,
+    WORKSPACE_CONTRIBUTOR_ROLE,
+)
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS, success
 from omnivia_core_runtime.service.ovc1 import HEADER_BYTES, decode_frame, encode_frame
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ProbeRouter, ServiceFacts
@@ -378,8 +382,8 @@ def test_a_presented_bearer_dispatches_under_the_authority_it_resolves_to(
         assert session.principal_id.startswith("mcp-claude-code-")
         assert session.workspaces == frozenset({"ws-one"})
         assert "evidence.search" in session.operations
-        # The dedicated principal holds no role and no installation authority, so
-        # nothing it presents could reach the administration family.
+        # A restricted principal holds no role at all, and no principal here holds
+        # installation authority, so nothing it presents reaches administration.
         assert session.roles == frozenset()
         assert session.installations == frozenset()
 
@@ -721,6 +725,11 @@ def test_a_follower_reaches_the_owner_and_never_the_database(tmp_path: Path) -> 
     connection. Everything it answers came back from the owning process, which is
     the property that makes a revocation take effect for followers at the same
     instant it takes effect for the owner.
+
+    The authoring role crosses with the rest of the resolution: a follower that
+    dropped it would hold `evidence.capture` and be refused for want of the role
+    that operation requires, which is authority lost in transit rather than
+    withheld on purpose.
     """
     with served(tmp_path) as harness:
         secret = harness.secret(profile=McpProfile.AUTHORING)
@@ -728,8 +737,15 @@ def test_a_follower_reaches_the_owner_and_never_the_database(tmp_path: Path) -> 
 
         session = follower.authenticate(secret)
         assert session.workspaces == frozenset({"ws-one"})
-        assert session.roles == frozenset()
+        assert session.roles == frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
+        assert session.installations == frozenset()
         assert "evidence.capture" in session.operations
+
+        # The same round trip for a restricted setup carries no role, because the
+        # profile it resolves to holds none: what crosses is the resolution.
+        restricted = harness.secret(profile=McpProfile.RESTRICTED)
+        assert follower.authenticate(restricted).roles == frozenset()
+        secret = harness.secret(profile=McpProfile.AUTHORING)
 
         status = follower.administer(_control(LocalControlKind.MCP_STATUS, arguments={}))  # type: ignore[arg-type]
         setups = status["setups"]
@@ -765,6 +781,7 @@ SESSION_VIEW: Mapping[str, object] = {
     "operations": ["workspace.create"],
     "scopes": [],
     "purposes": [],
+    "roles": [],
     "capabilities": [],
 }
 
@@ -793,33 +810,63 @@ def following(exchange_fn: ControlExchange) -> ProxiedInstalledMcp:
     )
 
 
-def test_a_forwarded_session_can_never_come_back_holding_a_role() -> None:
-    """An owner impersonator could answer anything; it still cannot grant a role.
+def test_a_forwarded_session_comes_back_holding_at_most_the_one_bounded_role() -> None:
+    """An owner impersonator could answer anything; the widest it reaches is one role.
 
-    `roles` and `installations` are not on this wire and cannot be put on it: the
-    admitted key set is exact, so a reply naming either is refused outright. That
-    is stronger than reading and discarding them -- a field that is merely ignored
-    is a field the wrong peer still succeeded in placing on this wire, and the
-    next build to read it inherits the hole.
+    `installations` is still not on this wire and cannot be put on it: the
+    admitted key set is exact, so a reply naming it is refused outright. That is
+    stronger than reading and discarding it -- a field that is merely ignored is a
+    field the wrong peer still succeeded in placing on this wire, and the next
+    build to read it inherits the hole.
     """
-    follower = following(
-        answering(
-            {
-                **SESSION_VIEW,
-                "roles": [INSTALLATION_ADMINISTRATOR_ROLE],
-                "installations": [INSTALLATION_ID],
-            }
-        )
-    )
+    with pytest.raises(LocalControlRefusal) as refused:
+        following(
+            answering({**SESSION_VIEW, "installations": [INSTALLATION_ID]})
+        ).authenticate("anything")
+    assert refused.value.code is LocalControlError.UNAVAILABLE
+
+    # The one admitted role is admitted, and nothing else comes with it.
+    session = following(
+        answering({**SESSION_VIEW, "roles": [WORKSPACE_CONTRIBUTOR_ROLE]})
+    ).authenticate("anything")
+    assert session.roles == frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
+    assert session.installations == frozenset()
+    assert session.workspaces == frozenset({"ws-one"})
+
+    # An answer holding no role is admitted holding none: nothing is defaulted in.
+    assert following(answering(SESSION_VIEW)).authenticate("anything").roles == frozenset()
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [
+        pytest.param([INSTALLATION_ADMINISTRATOR_ROLE], id="the installation administrator"),
+        pytest.param([KNOWLEDGE_REVIEWER_ROLE], id="the knowledge reviewer"),
+        pytest.param(
+            [WORKSPACE_CONTRIBUTOR_ROLE, INSTALLATION_ADMINISTRATOR_ROLE],
+            id="the admitted role with one smuggled beside it",
+        ),
+        pytest.param(["workspace_contributor "], id="a role that only looks like the one"),
+        pytest.param(["root"], id="a role this build has never heard of"),
+        pytest.param(
+            [WORKSPACE_CONTRIBUTOR_ROLE, WORKSPACE_CONTRIBUTOR_ROLE],
+            id="the admitted role twice, which the owner cannot send",
+        ),
+        pytest.param([WORKSPACE_CONTRIBUTOR_ROLE] * 5000, id="past the wire item bound"),
+        pytest.param(["r" * 400], id="past the bound an identifier has"),
+        pytest.param(WORKSPACE_CONTRIBUTOR_ROLE, id="a bare string where a list belongs"),
+        pytest.param([None], id="a member that is not text at all"),
+        pytest.param({"roles": [WORKSPACE_CONTRIBUTOR_ROLE]}, id="a mapping"),
+    ],
+)
+def test_a_forged_role_on_the_wire_is_unavailable(roles: object) -> None:
+    """Nothing off this wire is filtered down: a role list this build cannot admit
+    refuses the whole resolution rather than yielding the part of it that was legal.
+    """
+    follower = following(answering({**SESSION_VIEW, "roles": roles}))
     with pytest.raises(LocalControlRefusal) as refused:
         follower.authenticate("anything")
     assert refused.value.code is LocalControlError.UNAVAILABLE
-
-    # And the same answer without them is admitted, holding neither.
-    session = following(answering(SESSION_VIEW)).authenticate("anything")
-    assert session.roles == frozenset()
-    assert session.installations == frozenset()
-    assert session.workspaces == frozenset({"ws-one"})
 
 
 @pytest.mark.parametrize(
@@ -842,6 +889,11 @@ def test_a_forwarded_session_can_never_come_back_holding_a_role() -> None:
             {key: value for key, value in SESSION_VIEW.items() if key != "scopes"},
             {},
             id="a member this build requires and the peer omitted",
+        ),
+        pytest.param(
+            {key: value for key, value in SESSION_VIEW.items() if key != "roles"},
+            {},
+            id="roles omitted, which is now a member and not an absence",
         ),
     ],
 )
@@ -1158,7 +1210,11 @@ def test_a_taken_over_seam_administers_and_authenticates_from_its_own_catalogue(
         assert isinstance(secret, str) and secret
         session = second.authenticate(secret)
         assert session.workspaces == frozenset({"ws-one"})
-        assert session.roles == frozenset()
+        # The new owner resolves the stored rights, which for an authoring setup
+        # include the one bounded role R004 section 9.1 requires -- and nothing a
+        # role could be widened to.
+        assert session.roles == frozenset({"workspace_contributor"})
+        assert session.installations == frozenset()
     finally:
         first.close()
         second.close()

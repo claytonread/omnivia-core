@@ -30,6 +30,15 @@ system's owner-private proof, and the :class:`AuthenticatedSession` presented to
 the same ``INSTALLATION_ADMINISTRATOR_ROLE`` the installation service already
 requires to create a workspace. There is no field in the wrapper a caller could
 put a role in.
+
+**The one role that does travel is bounded to one word.** A forwarded
+`mcp.authenticate` reply carries `roles`, because an authoring profile resolves
+to exactly one durable role and a follower that dropped it would refuse the
+authoring calls the owner had just authorised. The admitted set is
+:data:`_ADMITTED_ROLES` -- `workspace_contributor` and nothing else -- so a peer
+squatting the owner's endpoint can at most say what a real authoring setup says,
+and never `INSTALLATION_ADMINISTRATOR_ROLE`, `knowledge_reviewer`, or a role this
+build has never heard of. `installations` remains off this wire entirely.
 """
 
 from __future__ import annotations
@@ -58,6 +67,7 @@ from omnivia_core_runtime.service.local_control import (
     LocalControlRefusal,
     LocalControlRequest,
 )
+from omnivia_core_runtime.service.mutation import WORKSPACE_CONTRIBUTOR_ROLE
 from omnivia_core_runtime.service.transport import (
     LocalEndpoint,
     LocalSocketTransport,
@@ -99,8 +109,10 @@ _ANSWER_ERROR: Final = frozenset({LOCAL_CONTROL_RESULT_FIELD, "kind", "error"})
 _ERROR_MEMBERS: Final = frozenset({"code", "message"})
 
 #: The exact members of a forwarded session, and of one capability inside it.
-#: `roles` and `installations` are absent from both, so a reply carrying either
-#: is refused rather than read-and-ignored -- the difference matters, because an
+#: `roles` is a member because an authoring profile reconstructs one durable
+#: role and a follower that dropped it would lose the authoring authority the
+#: owner resolved. `installations` is still absent, so a reply naming it is
+#: refused rather than read-and-ignored -- the difference matters, because an
 #: ignored field is one a wrong peer still succeeded in putting on this wire.
 _SESSION_MEMBERS: Final = frozenset(
     {
@@ -110,9 +122,19 @@ _SESSION_MEMBERS: Final = frozenset(
         "scopes",
         "purposes",
         "capabilities",
+        "roles",
     }
 )
 _CAPABILITY_MEMBERS: Final = frozenset({"id", "version"})
+
+#: Every role this wire may carry, and there is exactly one. An installed MCP
+#: profile grants `workspace_contributor` to authoring and no role at all to
+#: restricted, so the admitted set is that one role -- imported rather than
+#: spelled, so a rename moves with it. `INSTALLATION_ADMINISTRATOR_ROLE`,
+#: `knowledge_reviewer` and anything unrecognised are not members, and a reply
+#: naming one is refused outright rather than filtered down to what is allowed:
+#: a peer that can widen this session is a peer that has already won.
+_ADMITTED_ROLES: Final = frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
 
 #: How a follower reaches the owner. A function rather than a held connection,
 #: so the endpoint is dialled at the moment of the call and an owner that
@@ -384,6 +406,7 @@ def _session_view(session: AuthenticatedSession) -> dict[str, object]:
         "operations": sorted(session.operations),
         "scopes": sorted(session.scopes),
         "purposes": sorted(session.purposes),
+        "roles": sorted(session.roles),
         "capabilities": [
             {"id": capability.id, "version": capability.version}
             for capability in session.capabilities
@@ -394,12 +417,19 @@ def _session_view(session: AuthenticatedSession) -> dict[str, object]:
 def _session_from_view(answer: Mapping[str, object]) -> AuthenticatedSession:
     """Rebuild the owner's answer, refusing anything that is not one.
 
-    `roles` and `installations` are not on this wire and cannot be put on it: the
-    admitted key set is exact, so a reply naming either is refused outright
-    rather than read and discarded. A dedicated MCP principal holds neither, and
-    a follower that could be *told* it holds a role would be a follower an owner
-    impersonator could make an administrator. They are empty here because there
-    is no admitted reply in which they are anything else.
+    `roles` crosses this wire, because an authoring profile resolves to exactly
+    one durable role and a follower that dropped it would fail closed on the
+    authoring calls the owner had just authorised. What crosses is bounded to
+    that one role by :data:`_ADMITTED_ROLES`: an owner impersonator that answers
+    `installation_administrator`, `knowledge_reviewer`, an unknown word, a
+    duplicate or anything that is not a bounded list of them gets ``unavailable``
+    rather than a narrower session, so the widest thing this seam can be talked
+    into is the workspace-contributor authority a real authoring setup holds.
+
+    `installations` is still not on this wire and cannot be put on it: the
+    admitted key set is exact, so a reply naming it is refused outright rather
+    than read and discarded. A dedicated MCP principal holds none, and it is
+    empty here because there is no admitted reply in which it is anything else.
     """
     if frozenset(answer) != _SESSION_MEMBERS:
         raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
@@ -421,6 +451,7 @@ def _session_from_view(answer: Mapping[str, object]) -> AuthenticatedSession:
         operations=frozenset(_texts(answer.get("operations"))),
         scopes=frozenset(_texts(answer.get("scopes"))),
         purposes=frozenset(_texts(answer.get("purposes"))),
+        roles=_roles(answer.get("roles")),
         capabilities=tuple(capabilities),
     )
 
@@ -469,3 +500,17 @@ def _texts(value: object) -> list[str]:
     if not isinstance(value, list) or len(value) > _MAXIMUM_WIRE_ITEMS:
         raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
     return [_text(entry) for entry in value]
+
+
+def _roles(value: object) -> frozenset[str]:
+    """The bounded roles a forwarded session may hold, which is at most one.
+
+    A duplicate is refused with the rest: `_session_view` sorts a set, so a
+    repeated role is not a frame the owner can produce, and admitting one would
+    mean this build reads a frame only a peer inventing frames could send.
+    """
+    roles = _texts(value)
+    admitted = frozenset(roles)
+    if len(admitted) != len(roles) or not admitted <= _ADMITTED_ROLES:
+        raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
+    return admitted
