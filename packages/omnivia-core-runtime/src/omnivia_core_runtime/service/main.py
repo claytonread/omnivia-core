@@ -2,7 +2,7 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 27-operation catalogue, composed from
+application surface is the exact frozen 28-operation catalogue, composed from
 seven separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 

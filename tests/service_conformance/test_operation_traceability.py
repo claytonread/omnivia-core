@@ -15,7 +15,7 @@ exposure manifest allow-lists, each with its tool name, and every other
 catalogue operation as an intentional omission with its reason. The CLI
 mapping is still not decided, and neither surface's evidence is evaluated
 here. This module proves that split holds and stays in step with the frozen
-twenty-seven-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
+twenty-eight-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
 recorded mapping to ``omnivia_core_mcp.manifest`` itself, which this module
 may not import.
 
@@ -28,7 +28,7 @@ Two things this module deliberately does *not* do:
   facts are correct was decided by
   ``omnivia_core.contracts.v1.generated.OPERATION_CATALOGUE`` and is checked
   again here only for *equality* with that source, never re-derived.
-* It copies no case from the accepted 86-case adapter-wire-conformance corpus.
+* It copies no case from the accepted 89-case adapter-wire-conformance corpus.
   It proves that corpus exists and is referenced by name, and nothing more.
 
 Standard library and ``omnivia_core.contracts.v1`` only. Nothing here may
@@ -108,7 +108,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 TRACEABILITY = _load_json(FIXTURE_PATH)
 CATALOGUE_BY_NAME = {entry.name: entry for entry in OPERATION_CATALOGUE}
 #: ``(operation name, fixture entry)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of twenty-seven.
+#: failure names the operation rather than an index into a list of twenty-eight.
 FIXTURE_OPERATIONS: list[dict[str, Any]] = TRACEABILITY["operations"]
 FIXTURE_NAMES = [op["contract"]["name"] for op in FIXTURE_OPERATIONS]
 FIXTURE_CASES = list(zip(FIXTURE_NAMES, FIXTURE_OPERATIONS))
@@ -139,10 +139,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 27
+    assert len(OPERATION_CATALOGUE) == 28
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 27
-    assert len(set(FIXTURE_NAMES)) == 27
+    assert len(FIXTURE_NAMES) == 28
+    assert len(set(FIXTURE_NAMES)) == 28
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -199,7 +199,7 @@ def test_every_operation_reports_pending_candidate_for_every_service_adapter_cla
 ) -> None:
     """No live product adapter may be marked passing until a committed candidate
     is independently exercised, and this slice has no candidate at all -- so
-    every one of the 27 x 3 service-adapter evidence states must read exactly
+    every one of the 28 x 3 service-adapter evidence states must read exactly
     ``pending_candidate``, never a value that could be mistaken for a result.
     """
     for adapter_class in ADAPTER_CLASSES:
@@ -270,7 +270,7 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
     assert len(exposed) == 6
-    assert len(omitted) == 21
+    assert len(omitted) == 22
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -307,7 +307,7 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
 
 
 # --------------------------------------------------------------------------
-# The referenced 86-case adapter-wire-conformance corpus
+# The referenced 89-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 
@@ -318,16 +318,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 86
+    assert reference["case_count"] == 89
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_86_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_89_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 86
-    assert len(set(case_ids)) == 86
+    assert len(case_ids) == 89
+    assert len(set(case_ids)) == 89
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:
