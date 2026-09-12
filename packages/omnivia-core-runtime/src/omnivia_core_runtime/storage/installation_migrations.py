@@ -38,6 +38,9 @@ PINNED_INSTALLATION_MIGRATIONS: dict[str, str] = {
     "0002_mcp_principals_and_authoring_intent.sql": (
         "3cb8651338ff5f978ec49a503f3fc625993cf9acff5278cb98eaecc9e107c64f"
     ),
+    "0003_mcp_role_grants.sql": (
+        "29b4c237e3b5534b577cf21bcf3ac8d1d44e1850c8781477bf9aa8eadcafb878"
+    ),
 }
 
 
@@ -108,13 +111,15 @@ def canonical_installation_schema_fingerprint(
     catalogue that is legitimately behind the head can still be held to an exact
     schema rather than to no schema at all. The default is the whole chain.
 
-    A partially or manually applied migration is what this makes detectable. Every
-    statement in these artifacts is `IF NOT EXISTS`, so replaying one over a
+    A partially or manually applied migration is what this makes detectable. Almost
+    every statement in these artifacts is `IF NOT EXISTS`, so replaying one over a
     catalogue where somebody has already created its tables by hand succeeds
     silently and the result fingerprints as a clean head -- drift accepted rather
     than refused. Comparing the *pre-migration* fingerprint against the prefix the
     ledger claims closes that: an object that exists without a ledger row is a
-    mismatch before anything is applied.
+    mismatch before anything is applied. `0003` rebuilds a table and so is not
+    replayable at all, which fails loudly rather than silently and is the same
+    answer arrived at more directly.
     """
     migrations = load_installation_migrations()
     if applied_versions is not None:

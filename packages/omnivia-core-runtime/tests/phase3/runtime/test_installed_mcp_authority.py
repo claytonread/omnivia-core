@@ -154,11 +154,19 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         ("graph.read", "1.0"),
         ("context_pack.build", "1.0"),
     }
+    # No role at all. A restricted principal holds no operation a role admits, and
+    # the one this file's authoring profile grants is what lets a mutation through.
+    assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == set()
 
 
 def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
+    # R004 section 9.1's "workspace contributor authority sufficient for
+    # `memory:write`", and exactly that: never the reviewer role that admits
+    # governed transitions, never the administrator role that administers this
+    # installation.
+    assert kinds(added, McpGrantKind.ROLE) == {"workspace_contributor"}
     assert kinds(added, McpGrantKind.OPERATION) == {
         "memory.create",
         "evidence.capture",
@@ -474,9 +482,12 @@ def test_authentication_yields_exactly_the_durable_policy(tmp_path: Path) -> Non
             for grant in AUTHORING_POLICY
             if grant.kind is McpGrantKind.CAPABILITY
         }
-        # No roles and no installation authority: a dedicated MCP principal
-        # administers nothing and reaches no installation-scoped operation.
-        assert session.roles == frozenset()
+        # Exactly the stored role rows, which for authoring is the one bounded
+        # contributor role, and no installation authority at all: a dedicated MCP
+        # principal administers nothing and reaches no installation-scoped
+        # operation.
+        assert session.roles == kinds(AUTHORING_POLICY, McpGrantKind.ROLE)
+        assert session.roles == frozenset({"workspace_contributor"})
         assert session.installations == frozenset()
 
 
@@ -528,10 +539,56 @@ def test_a_restricted_principal_reads_but_is_not_admitted_to_authoring(
         principal = authority.authenticate(provisioning.secret.reveal())
         assert "memory.search" in principal.session.operations
         assert "memory.create" not in principal.session.operations
+        # And no role, so the mutation coordinator refuses it a second way: there
+        # is no stored row a contributor grant could be reconstructed from.
+        assert principal.session.roles == frozenset()
         assert (
             authority.admits_authoring(provisioning.setup.principal_id, "ws-one")
             is False
         )
+
+
+def test_a_role_survives_exactly_as_long_as_the_grant_that_states_it(
+    tmp_path: Path,
+) -> None:
+    """Rotation and revocation drop the role with every other right, immediately.
+
+    Three resolutions of three credentials against one setup. The role is not a
+    property of the principal, of the host or of anything the caller keeps; it is
+    the generation's stored rows, so narrowing the profile takes it away and
+    revoking takes the whole session away.
+    """
+    with installation(tmp_path) as (_, authority):
+        authoring = authority.configure(
+            administrator(),
+            host=McpHost.CLAUDE_CODE,
+            workspace_id="ws-one",
+            profile=McpProfile.AUTHORING,
+            authoring_intent=True,
+        )
+        assert authoring.secret is not None
+        assert authority.authenticate(authoring.secret.reveal()).session.roles == (
+            frozenset({"workspace_contributor"})
+        )
+
+        narrowed = authority.configure(
+            administrator(),
+            host=McpHost.CLAUDE_CODE,
+            workspace_id="ws-one",
+            profile=McpProfile.RESTRICTED,
+            authoring_intent=False,
+        )
+        assert narrowed.secret is not None
+        assert authority.authenticate(narrowed.secret.reveal()).session.roles == (
+            frozenset()
+        )
+        # The credential the role was issued against no longer resolves at all.
+        with pytest.raises(InstalledMcpAuthenticationError):
+            authority.authenticate(authoring.secret.reveal())
+
+        authority.revoke(administrator(), host=McpHost.CLAUDE_CODE)
+        with pytest.raises(InstalledMcpAuthenticationError):
+            authority.authenticate(narrowed.secret.reveal())
 
 
 def test_authoring_admission_requires_this_principal_and_this_workspace(

@@ -153,12 +153,22 @@ class McpSetupStatus(str, Enum):
 
 
 class McpGrantKind(str, Enum):
-    """Which kind of right one grant row states."""
+    """Which kind of right one grant row states.
+
+    `ROLE` is the one kind that is not derivable from the frozen operation
+    catalogue: R004 section 9.1 requires an authoring setup to hold "workspace
+    contributor authority sufficient for `memory:write`", and the mutation
+    coordinator asks for that as a role rather than as a scope. Storing it as a
+    grant row is what makes it durable least-privilege state the service derives
+    -- revoked with every other right when the generation advances -- rather than
+    something a configuration file or a caller could assert about itself.
+    """
 
     OPERATION = "operation"
     SCOPE = "scope"
     PURPOSE = "purpose"
     CAPABILITY = "capability"
+    ROLE = "role"
 
 
 @dataclass(frozen=True, order=True)

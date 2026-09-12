@@ -472,6 +472,12 @@ def issue_mutation_grant(
     contract function's own value for this request, which is what the grant is bound to.
     Request metadata reaches none of these.
 
+    The two are a ceiling and a caller, not one identity stated twice. `session` bounds
+    what this endpoint will ever issue -- its operations, its roles, its scopes -- and
+    `context` is the authenticated caller the grant is issued *for*, which for an
+    installed-MCP request is a dedicated principal the endpoint does not share an id
+    with. Both are checked, so a grant exists only where the two agree.
+
     The required role is not an argument. It is read from :data:`MUTATION_ROLES` by
     operation, exactly as the purpose is read from :data:`MUTATION_PURPOSES`, so neither
     a caller nor a future handler can name the role its own mutation is checked against.
@@ -493,8 +499,15 @@ def issue_mutation_grant(
     if context.purpose != declared:
         raise MutationDenied(_MESSAGE_PURPOSE_NOT_DECLARED)
 
-    if context.principal_id != session.principal_id:
-        raise MutationDenied(_MESSAGE_NO_GRANT)
+    # The grant is issued *for the authenticated caller*, bounded by `session`, which is
+    # this endpoint's configured ceiling rather than an identity it requires callers to
+    # share. `context.principal_id` is the principal authentication resolved to -- a
+    # claimed one that differs is already refused by the seam -- and it is what every
+    # later check compares against: `execute_mutation` asks the grant to cover
+    # `context.principal_id`, so a grant naming anyone else could not be used at all.
+    # This used to require the two to be equal, which was a fail-closed bug rather than a
+    # check: a dedicated installed-MCP principal is never the endpoint's configured one,
+    # so every authoring mutation was refused here before its role was ever read.
     if operation not in session.operations:
         raise MutationDenied(_MESSAGE_OPERATION_NOT_GRANTED)
     # The role check the whole read-only posture rests on today. `local_owner_session`
@@ -531,7 +544,7 @@ def issue_mutation_grant(
     if (
         scope.operation != operation
         or scope.workspace_id != workspace_id
-        or scope.principal_id != session.principal_id
+        or scope.principal_id != context.principal_id
         or scope.idempotency_key != key
     ):
         raise MutationDenied(_MESSAGE_EQUIVALENCE_MISMATCH)
@@ -547,9 +560,11 @@ def issue_mutation_grant(
     grant = MutationGrant(_SERVER_ISSUER_MARK)
     issued_fields: Mapping[str, object] = {
         "grant_id": f"mgr-{uuid.uuid4()}",
-        # The session's principal, never the claim's -- the same rule the seam applies
-        # one layer up, restated here because this value outlives the request.
-        "principal_id": session.principal_id,
+        # The authenticated principal, never the claim's -- the same rule the seam
+        # applies one layer up, restated here because this value outlives the request.
+        # It is who the mutation ran as, which is what the audit record has to say and
+        # what `execute_mutation` re-checks the grant against.
+        "principal_id": context.principal_id,
         "workspace_id": workspace_id,
         "required_role": required_role,
         # Intersected, never copied. The context's scopes are already a subset of the

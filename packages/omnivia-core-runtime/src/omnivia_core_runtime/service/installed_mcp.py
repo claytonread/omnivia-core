@@ -19,8 +19,22 @@ the day the catalogue moves, and no copy of it can go stale in between.
 stored one row per right and read back the same way; there is no pattern, no
 prefix, no "all of namespace x", and the schema refuses a `*` or a `?` in a
 granted value outright. A `restricted` principal holds six operations, three
-scopes, six capabilities and two purposes, and an `authoring` one holds those
-plus exactly five operations, two scopes, four capabilities and three purposes.
+scopes, six capabilities, two purposes and no role at all, and an `authoring` one
+holds those plus exactly five operations, two scopes, four capabilities, three
+purposes and one role.
+
+**The one role is a grant, not an inference.** R004 section 9.1 requires an
+authoring setup to hold "workspace contributor authority sufficient for
+`memory:write`", and the mutation coordinator asks for that by role name, so
+without it an authoring principal authenticates holding every mutation operation
+its profile implies and is refused every one of them. It is therefore stored --
+one `McpGrantKind.ROLE` row, `workspace_contributor` and nothing else -- rather
+than derived at authentication time from the profile, from the public MCP
+configuration file or from anything a caller says about itself. That makes it
+durable state this service wrote under an administrator, revoked with every other
+right the moment the setup generation advances, and it is why `restricted`
+carries no role row and why no path here can produce `knowledge_reviewer` or
+`installation_administrator`.
 
 **Nothing a caller says is authority.** Configure mints the principal, the
 credential reference and the secret itself, inside the write transaction, after
@@ -52,7 +66,10 @@ from omnivia_core.contracts.v1 import (
     get_operation_metadata,
 )
 from omnivia_core_runtime.service.authorization import AuthenticatedSession
-from omnivia_core_runtime.service.mutation import INSTALLATION_ADMINISTRATOR_ROLE
+from omnivia_core_runtime.service.mutation import (
+    INSTALLATION_ADMINISTRATOR_ROLE,
+    WORKSPACE_CONTRIBUTOR_ROLE,
+)
 from omnivia_core_runtime.storage.installation_store import (
     InstallationStore,
     InstalledMcpSetup,
@@ -171,18 +188,47 @@ def _derive_policy(entries: tuple[tuple[str, str], ...]) -> tuple[McpGrant, ...]
     return tuple(sorted(operations | scopes | purposes | capabilities))
 
 
+#: The one role an authoring setup holds, and the only role any profile here may
+#: grant. R004 section 9.1 asks for "workspace contributor authority sufficient for
+#: `memory:write`" and for nothing above it, so this is the mutation coordinator's
+#: own `workspace_contributor` -- imported rather than spelled, so a rename moves
+#: the grant with the requirement -- and never `knowledge_reviewer`, which admits
+#: governed transitions no MCP tool exposes, nor
+#: `INSTALLATION_ADMINISTRATOR_ROLE`, which administers this catalogue.
+_AUTHORING_ROLE: Final = McpGrant(McpGrantKind.ROLE, WORKSPACE_CONTRIBUTOR_ROLE)
+
 #: The read-only grant: exactly the manifest's restricted six and what they need.
+#: No role, because a restricted principal holds no operation a role would admit.
 RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = _derive_policy(_RESTRICTED_OPERATIONS)
 
-#: The authoring grant: the restricted rights plus exactly the five additions.
-AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = _derive_policy(
-    _RESTRICTED_OPERATIONS + _AUTHORING_ADDITIONS
+#: The authoring grant: the restricted rights, exactly the five additions, and the
+#: one role those additions need. The role is added here rather than inside
+#: `_derive_policy` because it is the one right the frozen operation catalogue does
+#: not state -- deriving it would mean inventing a rule the catalogue has no field
+#: for, and a reviewer would have no line to read it off.
+AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
+    sorted(
+        set(_derive_policy(_RESTRICTED_OPERATIONS + _AUTHORING_ADDITIONS))
+        | {_AUTHORING_ROLE}
+    )
 )
 
 if not set(RESTRICTED_POLICY) < set(AUTHORING_POLICY):  # pragma: no cover
     raise ValueError(
         "the authoring profile must be the restricted profile plus additions; "
         "the two have drifted"
+    )
+
+def _roles(policy: tuple[McpGrant, ...]) -> set[McpGrant]:
+    return {grant for grant in policy if grant.kind is McpGrantKind.ROLE}
+
+
+if _roles(RESTRICTED_POLICY) or _roles(AUTHORING_POLICY) != {
+    _AUTHORING_ROLE
+}:  # pragma: no cover
+    raise ValueError(
+        "an installed MCP profile grants the one workspace-contributor role to "
+        "authoring and no role at all to restricted; the two have drifted"
     )
 
 _POLICIES: Final[dict[McpProfile, tuple[McpGrant, ...]]] = {
@@ -370,10 +416,19 @@ class InstalledMcpAuthority:
         does differently between them.
 
         The resulting session grants exactly the durable rows: one workspace, the
-        stored operations, scopes, purposes and capabilities, no roles and no
+        stored operations, scopes, purposes, capabilities and roles, and no
         installation authority at all. A restricted principal authenticates
         perfectly well and simply cannot reach a mutation, because no mutation is
-        among its operations.
+        among its operations and no role row is among its rights.
+
+        **Roles come from rows and from nowhere else.** There is no branch here
+        that reads the profile, the authoring intent, the MCP configuration file or
+        anything a caller presented beyond the bearer itself; a setup whose stored
+        rights contain no `ROLE` row authenticates with no role, whatever else it
+        says about itself. So a revocation or a rotation drops the role in the same
+        statement that drops every other right -- the previous generation's rows
+        stop being anybody's policy -- and a role can only ever have got here by
+        `configure` writing one profile's frozen policy under an administrator.
         """
         resolved = self._store.resolve_mcp_credential(credential)
         if resolved is None:
@@ -382,6 +437,7 @@ class InstalledMcpAuthority:
         operations: set[str] = set()
         scopes: set[str] = set()
         purposes: set[str] = set()
+        roles: set[str] = set()
         capabilities: list[CapabilityRef] = []
         for grant in resolved.grants:
             if grant.kind is McpGrantKind.OPERATION:
@@ -390,13 +446,15 @@ class InstalledMcpAuthority:
                 scopes.add(grant.value)
             elif grant.kind is McpGrantKind.PURPOSE:
                 purposes.add(grant.value)
+            elif grant.kind is McpGrantKind.ROLE:
+                roles.add(grant.value)
             elif grant.version is not None:
                 capabilities.append(
                     CapabilityRef(id=grant.value, version=grant.version)
                 )
         session = AuthenticatedSession(
             principal_id=setup.principal_id,
-            roles=frozenset(),
+            roles=frozenset(roles),
             installations=frozenset(),
             workspaces=frozenset({setup.workspace_id}),
             operations=frozenset(operations),
