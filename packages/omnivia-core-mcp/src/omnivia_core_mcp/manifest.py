@@ -1,29 +1,47 @@
-"""The curated MCP exposure manifest (R004-06).
+"""The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds twenty operations. This module names six of them. A newly registered Core
-operation is absent from MCP until somebody adds it here and tests it, which is
-the whole difference between an application capability catalogue and an
-agent-facing security decision: the catalogue says what Core *can* do, and this
-says what a model may *ask* it to do.
+holds twenty-eight operations. This module names six of them in the
+``restricted`` profile and eleven in the ``authoring`` profile. A newly
+registered Core operation is absent from MCP until somebody adds it here and
+tests it, which is the whole difference between an application capability
+catalogue and an agent-facing security decision: the catalogue says what Core
+*can* do, and this says what a model may *ask* it to do.
 
 **What is deliberately not here**, and stays not here: service start, stop,
-health, readiness, status and discovery; bootstrap and workspace initialisation;
-unrestricted filesystem path selection; administrative configuration; and every
-destructive or persistent mutation. None of those is a tool a model calls.
+health, readiness, status and discovery; bootstrap, workspace creation,
+selection and enumeration; grant administration; governance decisions;
+``job.cancel`` and ``job.retry``; chat, workflow and connector mutation;
+unrestricted filesystem path selection; and administrative configuration. None
+of those is a tool a model calls.
 
-**The six.** ``workspace.inspect`` is the attached workspace's own descriptor.
-The other five are V06-3's retrieval and context-pack reads --
+**The restricted six.** ``workspace.inspect`` is the attached workspace's own
+descriptor. The other five are V06-3's retrieval and context-pack reads --
 ``evidence.search``, ``knowledge.search``, ``memory.search``, ``graph.traverse``
-and ``context_pack.build`` -- which have landed, classify themselves
-``side_effect="none"`` and ``audit_category="read"``, and are the operations an
-agent needs to answer a question from a governed workspace. Every identifier
-below is the catalogue's own; none is invented here.
+and ``context_pack.build`` -- which classify themselves ``side_effect="none"``
+and ``audit_category="read"``, and are the operations an agent needs to answer a
+question from a governed workspace. Every identifier below is the catalogue's
+own; none is invented here.
+
+**The authoring eleven** are those six plus exactly three mutations --
+``memory.create``, ``evidence.capture`` and ``import.start`` -- and the two job
+observations, ``job.get`` and ``job.events``, that make an asynchronous import
+followable. The three mutations are the *only* side-effecting operations this
+module can admit, and they are named as a literal set rather than inferred from
+any catalogue property: a fourth mutation cannot arrive by a contract gaining a
+field or an operation changing its audit category.
+
+**Which profile a server advertises is decided once, at startup, by
+:mod:`omnivia_core_mcp.configuration`** -- never by a prompt or by a tool call's
+arguments. Every function here takes the profile as an argument and defaults it
+to ``restricted``, so a caller that has not been taught about profiles gets the
+read-only surface rather than the wider one.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
-any entry whose catalogue metadata is not ``side_effect="none"`` and
-``audit_category="read"``. A future editor who adds ``memory.create`` here does
-not ship a mutation tool with a wrong comment; the package fails to import.
+any entry that is neither a catalogue read (``side_effect="none"`` *and*
+``audit_category="read"``) nor one of the three named mutations. A future editor
+who adds ``record.supersede`` here does not ship a destructive tool with a wrong
+comment; the package fails to import.
 
 **Projection, not redefinition.** A tool's input and output schemas come from
 the canonical Application Contract v1 documents, reached through the catalogue
@@ -35,6 +53,13 @@ reads the packaged canonical schemas: they are force-included into the
 ``omnivia-core`` *wheel* and absent from an editable install, so reading them
 would make `tools/list` depend on how Core was installed. The generated module
 is present and identical in both.
+
+A mutation tool's advertised input is the one shape this module *composes*
+rather than projects: the closed outer object ``{"input": ..., "idempotency_key":
+...}``. Both halves are still generated -- ``input`` is the operation's own
+canonical input document and the key is the canonical
+``common.schema.json#/$defs/IdempotencyKey`` -- so the wrapper adds a shape and
+transcribes no constraint.
 """
 
 from __future__ import annotations
@@ -48,10 +73,18 @@ from omnivia_core.contracts.v1 import OperationMetadata, get_operation_metadata
 from omnivia_core_mcp.generated_schema_projection import SCHEMAS
 
 __all__ = [
+    "ADMITTED_MUTATIONS",
+    "AUTHORING_MANIFEST",
+    "AUTHORING_PROFILE",
     "EXPOSURE_MANIFEST",
+    "IDEMPOTENCY_KEY_SCHEMA_REF",
     "MANIFEST_VERSION",
+    "PROFILES",
+    "RESTRICTED_MANIFEST",
+    "RESTRICTED_PROFILE",
     "ExposedOperation",
     "exposed_by_tool_name",
+    "exposure_manifest",
     "input_schema",
     "output_schema",
     "tools",
@@ -62,13 +95,45 @@ __all__ = [
 #: cached a tool listing can tell that it is stale. R004-06 requires the listing
 #: to be deterministic *for a given package version*; this is the narrower fact
 #: that actually changed when it is not. ``1.0`` advertised ``workspace.inspect``
-#: alone with no output schema; ``1.1`` is the six-operation surface below.
-MANIFEST_VERSION: Final = "1.1"
+#: alone with no output schema; ``1.1`` was the six-operation read surface;
+#: ``2.0`` is the major bump that adds a second, wider profile and the mutation
+#: wrapper -- a host that cached an ``1.1`` listing has cached the whole surface.
+MANIFEST_VERSION: Final = "2.0"
 
-#: The side effect and audit category an operation must declare to be exposable
-#: at all. Read from the catalogue entry, never from an opinion held here.
+#: The two profiles, named exactly as the configuration document names them. A
+#: profile selects a whole fixed inventory; it never filters one.
+RESTRICTED_PROFILE: Final = "restricted"
+AUTHORING_PROFILE: Final = "authoring"
+PROFILES: Final[tuple[str, ...]] = (RESTRICTED_PROFILE, AUTHORING_PROFILE)
+
+#: The side effect and audit category a *read* must declare to be exposable.
+#: Read from the catalogue entry, never from an opinion held here.
 _ADMITTED_SIDE_EFFECT: Final = "none"
 _ADMITTED_AUDIT_CATEGORY: Final = "read"
+
+#: The only side-effecting operations this manifest may admit, as a literal set.
+#:
+#: A set of names rather than a rule over catalogue metadata, because a rule
+#: would admit the next operation that happened to satisfy it. Widening the
+#: mutation surface therefore means editing this line, which is the point: there
+#: are twelve other mutations in the catalogue and none of them is reachable by
+#: an agent through any profile this module defines.
+ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
+    {"memory.create", "evidence.capture", "import.start"}
+)
+
+#: The canonical constraint an MCP mutation wrapper's ``idempotency_key`` carries.
+#:
+#: The request envelope's own key definition, reached by reference and projected
+#: by the generator like every other advertised schema. Named here rather than
+#: transcribed so the advertised pattern, length bounds and description are the
+#: envelope's and stay the envelope's.
+IDEMPOTENCY_KEY_SCHEMA_REF: Final = (
+    "https://contracts.omnivia.dev/application/v1/common.schema.json"
+    "#/$defs/IdempotencyKey"
+)
+
+_JSON_SCHEMA_DIALECT: Final = "https://json-schema.org/draft/2020-12/schema"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,9 +165,10 @@ class ExposedOperation:
     description: str
 
 
-#: The allow-list. Adding a line here is the whole act of exposing an operation,
-#: and it is the only one: nothing enumerates the catalogue.
-EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
+#: The read-only allow-list, and the surface every profile starts from. Adding a
+#: line here is the whole act of exposing an operation, and it is the only one:
+#: nothing enumerates the catalogue.
+RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
     ExposedOperation(
         tool_name="workspace_inspect",
         operation="workspace.inspect",
@@ -179,24 +245,122 @@ EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
     ),
 )
 
+#: What the `authoring` profile adds, and all it adds: three mutations and the
+#: two observations that make an asynchronous one followable.
+#:
+#: The purposes are the service's own -- `memory_authoring` for memory,
+#: `content_ingestion` for both ways content enters a workspace, and
+#: `job_observation` for watching what that produced. A purpose invented here
+#: would be refused at the first call rather than caught by review.
+_AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
+    ExposedOperation(
+        tool_name="memory_create",
+        operation="memory.create",
+        purpose="memory_authoring",
+        title="Create a governed memory record",
+        description=(
+            "Record one new governed memory in the workspace, with its assertion "
+            "and the sources that support it. Writes. The call takes an outer "
+            "object with the operation input under `input` and a caller-chosen "
+            "`idempotency_key`; replaying the same key with the same input "
+            "answers from the settled outcome instead of writing twice."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="evidence_capture",
+        operation="evidence.capture",
+        purpose="content_ingestion",
+        title="Capture one evidence artifact",
+        description=(
+            "Capture one submitted document as an L0 evidence artifact with its "
+            "provenance, so it can be searched and cited. The content is carried "
+            "in the call: no filesystem path, URL or credential is accepted. "
+            "Writes. Takes an outer object with the operation input under "
+            "`input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="import_start",
+        operation="import.start",
+        purpose="content_ingestion",
+        title="Start an import",
+        description=(
+            "Start an import of submitted content into the workspace. Always "
+            "answers with a job rather than the finished result: follow it with "
+            "`job_get` and `job_events`. Writes. Takes an outer object with the "
+            "operation input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="job_get",
+        operation="job.get",
+        purpose="job_observation",
+        title="Get a job's current state",
+        description=(
+            "Return the current state of one job the workspace is running or has "
+            "run, by its identifier. Read-only, and an observation rather than a "
+            "subscription: call it again to see a later state."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="job_events",
+        operation="job.events",
+        purpose="job_observation",
+        title="Read a job's events",
+        description=(
+            "Read one page of a job's ordered event history, oldest first, "
+            "continuing from the page metadata the previous response returned. "
+            "Snapshot-stable and bounded by the catalogue's page maximum. "
+            "Read-only, and not a transport stream."
+        ),
+    ),
+)
+
+#: The `authoring` profile: the restricted surface, in its order, then the five.
+#: Concatenated rather than restated so the two profiles cannot drift in the
+#: operations they share.
+AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
+    RESTRICTED_MANIFEST + _AUTHORING_ADDITIONS
+)
+
+#: The safe default, and what every caller that names no profile gets.
+#:
+#: Kept under its original name because it is what `omnivia_core_mcp.server` and
+#: the operation-traceability ledger already reach for: a caller written before
+#: profiles existed advertises the read-only six, which is the failure mode this
+#: name should have.
+EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = RESTRICTED_MANIFEST
+
+_MANIFESTS: Final[dict[str, tuple[ExposedOperation, ...]]] = {
+    RESTRICTED_PROFILE: RESTRICTED_MANIFEST,
+    AUTHORING_PROFILE: AUTHORING_MANIFEST,
+}
+
 
 def _admit(exposed: ExposedOperation) -> OperationMetadata:
     """The catalogue entry for one allow-listed operation, or a refusal.
 
-    Three ways to fail, and each is a mistake this module exists to make
-    impossible rather than to document: an operation that is not in the landed
-    catalogue at all, one that mutates, and one that is not audited as a read.
+    An operation is admissible on exactly two grounds: the catalogue calls it a
+    read -- ``side_effect="none"`` *and* ``audit_category="read"``, both, so an
+    operation that mutates under a read's audit category or audits as a mutation
+    while claiming no side effect is refused either way -- or it is one of the
+    three mutations :data:`ADMITTED_MUTATIONS` names.
+
+    Each refusal is a mistake this module exists to make impossible rather than
+    to document: an operation that is not in the landed catalogue at all, and a
+    side-effecting operation nobody reviewed.
     """
     entry = get_operation_metadata(exposed.operation)  # raises on an unknown name
-    if entry.scope.side_effect != _ADMITTED_SIDE_EFFECT:
+    read = (
+        entry.scope.side_effect == _ADMITTED_SIDE_EFFECT
+        and entry.audit.audit_category == _ADMITTED_AUDIT_CATEGORY
+    )
+    if not read and exposed.operation not in ADMITTED_MUTATIONS:
         raise ValueError(
-            f"{exposed.operation}: side_effect={entry.scope.side_effect!r}; the MCP "
-            f"exposure manifest admits {_ADMITTED_SIDE_EFFECT!r} only"
-        )
-    if entry.audit.audit_category != _ADMITTED_AUDIT_CATEGORY:
-        raise ValueError(
-            f"{exposed.operation}: audit_category={entry.audit.audit_category!r}; the "
-            f"MCP exposure manifest admits {_ADMITTED_AUDIT_CATEGORY!r} only"
+            f"{exposed.operation}: side_effect={entry.scope.side_effect!r} "
+            f"audit_category={entry.audit.audit_category!r}; the MCP exposure "
+            f"manifest admits catalogue reads and "
+            f"{sorted(ADMITTED_MUTATIONS)} only"
         )
     return entry
 
@@ -219,13 +383,62 @@ def _projected(schema_ref: str) -> dict[str, Any]:
     return projected
 
 
+def _mutation_input_schema(entry: OperationMetadata) -> dict[str, Any]:
+    """The closed ``{input, idempotency_key}`` wrapper one mutation advertises.
+
+    Composed from two generated documents and nothing else. The operation's own
+    input goes under ``input`` verbatim, minus two keys that may not survive the
+    move: its ``$schema``, because a dialect declaration is a resource-root fact
+    and this document is no longer a root, and its ``$defs``, which is hoisted to
+    the wrapper's root so the ``#/$defs/...`` references inside it keep resolving
+    -- a local reference is resolved against the document root, not against the
+    subschema it appears in, so leaving the closure nested would silently
+    unresolve every one of them. The wrapper declares no ``$defs`` of its own and
+    the key schema holds no references, so the hoist cannot collide.
+
+    ``additionalProperties: false`` and both properties required, because the
+    outer shape is exactly two fields: an unrecognised outer key is a caller
+    trying to say something this seam does not accept -- an authority field, a
+    workspace, a purpose -- and is refused rather than ignored.
+    """
+    inner = dict(_projected(entry.input_schema_ref))
+    inner.pop("$schema", None)
+    definitions = inner.pop("$defs", None)
+    key = dict(_projected(IDEMPOTENCY_KEY_SCHEMA_REF))
+    key.pop("$schema", None)
+
+    wrapper: dict[str, Any] = {
+        "$schema": _JSON_SCHEMA_DIALECT,
+        "type": "object",
+        "description": (
+            f"MCP call wrapper for `{entry.name}`: the canonical operation input "
+            "under `input`, and the caller-chosen idempotency key that makes a "
+            "repeated submission answer from the settled outcome. No other "
+            "property is accepted."
+        ),
+        "properties": {"input": inner, "idempotency_key": key},
+        "required": ["input", "idempotency_key"],
+        "additionalProperties": False,
+    }
+    if definitions is not None:
+        wrapper["$defs"] = definitions
+    return wrapper
+
+
 def input_schema(entry: OperationMetadata) -> dict[str, Any]:
     """The advertised input schema for one operation.
+
+    A read advertises its canonical operation input directly. A mutation
+    advertises the closed wrapper, because the idempotency key belongs in the
+    request envelope rather than in the operation input and there is nowhere else
+    for a caller to put it.
 
     Public because :mod:`omnivia_core_mcp.server` enforces the document this
     returns at call time. What `tools/list` advertises and what `_request` accepts
     have to be one projection, not two that agree by inspection.
     """
+    if entry.name in ADMITTED_MUTATIONS:
+        return _mutation_input_schema(entry)
     return _projected(entry.input_schema_ref)
 
 
@@ -251,10 +464,18 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
         output_schema=output_schema(entry),
         annotations=types.ToolAnnotations(
             title=exposed.title,
-            # Read off the catalogue, not asserted here. `_admit` has already
-            # refused anything these would have to lie about.
-            read_only_hint=True,
+            # Read off the catalogue, not asserted here: a tool is read-only
+            # exactly when its operation declares no side effect, which is the
+            # same fact `_admit` checked rather than a second opinion about it.
+            read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
+            # None of the eleven deletes or overwrites: the three mutations
+            # create, and supersession and cancellation are not exposed at all.
             destructive_hint=False,
+            # Only where the catalogue proves it. The three mutations declare
+            # `safe_to_retry=False` -- a repeat is settled by the idempotency
+            # key, which is not the same claim as an idempotent call -- so this
+            # is false for them and true for the reads, without a line here
+            # deciding either.
             idempotent_hint=entry.idempotency.safe_to_retry,
             # One local workspace this server is already attached to.
             open_world_hint=False,
@@ -270,36 +491,68 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
     )
 
 
-#: The advertised tools, built once at import in manifest order.
+#: The advertised tools per profile, built once at import in manifest order.
 #:
 #: Built once because R004-06 requires `tools/list` to be deterministic for a
-#: given package version: one tuple, one order, no per-request construction and
-#: nothing read from the environment. Built at *import* because every refusal
-#: above is then a failure to start rather than a tool that misdescribes itself.
-_TOOLS: Final[tuple[types.Tool, ...]] = tuple(
-    _tool(exposed) for exposed in EXPOSURE_MANIFEST
-)
-
-_BY_TOOL_NAME: Final[dict[str, ExposedOperation]] = {
-    exposed.tool_name: exposed for exposed in EXPOSURE_MANIFEST
+#: given package version: one tuple per profile, one order, no per-request
+#: construction and nothing read from the environment. Built at *import* because
+#: every refusal above is then a failure to start rather than a tool that
+#: misdescribes itself -- and both profiles are built whichever one is selected,
+#: so a broken authoring binding cannot hide behind a restricted install.
+_TOOLS: Final[dict[str, tuple[types.Tool, ...]]] = {
+    profile: tuple(_tool(exposed) for exposed in entries)
+    for profile, entries in _MANIFESTS.items()
 }
 
-if len(_BY_TOOL_NAME) != len(EXPOSURE_MANIFEST):  # pragma: no cover - import-time guard
-    raise ValueError("the MCP exposure manifest declares a tool name twice")
+_BY_TOOL_NAME: Final[dict[str, dict[str, ExposedOperation]]] = {
+    profile: {exposed.tool_name: exposed for exposed in entries}
+    for profile, entries in _MANIFESTS.items()
+}
+
+for _profile, _index in _BY_TOOL_NAME.items():  # pragma: no cover - import-time guard
+    if len(_index) != len(_MANIFESTS[_profile]):
+        raise ValueError(f"the {_profile!r} MCP exposure manifest names a tool twice")
 
 
-def tools() -> tuple[types.Tool, ...]:
-    """Every advertised tool, in manifest order, identical on every call."""
-    return _TOOLS
+def _profiled(profile: str) -> str:
+    """`profile`, or a refusal naming the two that exist.
+
+    A refusal rather than a fallback to ``restricted``: an unrecognised profile
+    is a configuration this module cannot serve, and quietly serving the narrow
+    surface instead would hide it until somebody wondered why a tool was missing.
+    """
+    if profile not in _MANIFESTS:
+        raise ValueError(
+            f"{profile!r} is not an MCP exposure profile; the profiles are "
+            f"{list(PROFILES)}"
+        )
+    return profile
 
 
-def exposed_by_tool_name(tool_name: str) -> ExposedOperation | None:
+def exposure_manifest(
+    profile: str = RESTRICTED_PROFILE,
+) -> tuple[ExposedOperation, ...]:
+    """The allow-list one profile exposes, in its order."""
+    return _MANIFESTS[_profiled(profile)]
+
+
+def tools(profile: str = RESTRICTED_PROFILE) -> tuple[types.Tool, ...]:
+    """Every tool one profile advertises, in manifest order, identical on every
+    call. Defaults to ``restricted``: a caller that names no profile gets the
+    read-only surface."""
+    return _TOOLS[_profiled(profile)]
+
+
+def exposed_by_tool_name(
+    tool_name: str, profile: str = RESTRICTED_PROFILE
+) -> ExposedOperation | None:
     """The allow-listed operation one MCP tool name maps to, or ``None``.
 
-    ``None`` is the answer for every Core operation that is not on the
-    allow-list, and it is the only lookup the call path has: there is no
-    fallback that resolves a tool name to an operation some other way, so an
-    operation absent from this manifest is not callable rather than merely
-    unadvertised.
+    ``None`` is the answer for every Core operation that this profile does not
+    expose, and it is the only lookup the call path has: there is no fallback
+    that resolves a tool name to an operation some other way, so an operation
+    absent from the running profile's manifest is not callable rather than merely
+    unadvertised. A restricted server therefore refuses `memory_create` at the
+    call as well as omitting it from the listing.
     """
-    return _BY_TOOL_NAME.get(tool_name)
+    return _BY_TOOL_NAME[_profiled(profile)].get(tool_name)

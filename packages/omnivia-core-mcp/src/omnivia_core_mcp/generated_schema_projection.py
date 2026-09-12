@@ -26,6 +26,15 @@ __all__ = ["SCHEMAS"]
 
 #: Canonical schema reference -> the self-contained document advertised for it.
 SCHEMAS: Final[dict[str, dict[str, Any]]] = {
+    "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/IdempotencyKey": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "IdempotencyKey",
+        "description": "Caller-assigned key making a mutation safe to retry. Equal keys with different inputs are an `idempotency_conflict`.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+    },
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBuildInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "ContextPackBuildInput",
@@ -1541,6 +1550,203 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EvidenceCaptureInput",
+        "description": "Input for `evidence.capture`: one caller-supplied UTF-8 text or Markdown artifact to record synchronously as immutable L0 evidence in the selected workspace, for small direct submissions such as notes, excerpts, and model-visible source material. Workspace-scoped: the workspace is the request envelope's selected workspace; this payload never carries a second, independent workspace identifier, nor any path, URL, credential, principal, grant, parser, layer, governance, or storage option. Carries exactly one of `text`/`content_base64`; enforcing that exclusivity, the strict base64/UTF-8 decode, and the decoded-byte bound is a semantic-validation concern, not a wire-shape one.",
+        "type": "object",
+        "properties": {
+            "source_native_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Caller-chosen opaque identifier of this submission within the existing source-identity domain.",
+            },
+            "media_type": {
+                "$ref": "#/$defs/evidence__MediaType",
+                "description": "Media type of the submitted content. Restricted to `text/plain` or `text/markdown`; parameters such as `charset=` are forbidden -- enforcing that allowlist is a semantic-validation concern, not a wire-shape one.",
+            },
+            "text": {
+                "type": "string",
+                "description": "UTF-8 text form of the content. Exactly one of `text`/`content_base64` is required.",
+            },
+            "content_base64": {
+                "type": "string",
+                "description": "Strict RFC 4648 base64 of UTF-8 bytes. Exactly one of `text`/`content_base64` is required.",
+            },
+            "source_version": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Optional provenance claim in the existing identifier domain. Does not permit overwrite or create a second identity version.",
+            },
+            "event_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "Optional canonical event-time claim. When `observed_at` is also present, `event_at` must not be later -- a semantic-validation concern, not a wire-shape one.",
+            },
+            "observed_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "Optional canonical observation-time claim.",
+            },
+        },
+        "required": [
+            "source_native_id",
+            "media_type",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "evidence__MediaType": {
+                "title": "MediaType",
+                "description": "An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EvidenceCaptureResult",
+        "description": "Result of `evidence.capture`: the stored evidence artifact's identity and stable source. `capture_disposition` is `created` for the first committed capture and `already_captured` for a same-source, identical-claims capture resolved under the existing collision rules; a replay of the original idempotency key returns this stored canonical result and never rewrites it.",
+        "type": "object",
+        "properties": {
+            "evidence_id": {
+                "$ref": "#/$defs/evidence__EvidenceId",
+                "description": "Stable identifier of the stored evidence artifact.",
+            },
+            "source": {
+                "$ref": "#/$defs/records__SourceReference",
+                "description": "The persisted source reference. `kind` is always `direct_submission` for this operation -- enforcing that is a semantic-validation concern, not a wire-shape one.",
+            },
+            "media_type": {
+                "$ref": "#/$defs/evidence__MediaType",
+                "description": "Media type of the stored content.",
+            },
+            "content_checksum": {
+                "$ref": "#/$defs/evidence__EvidenceChecksum",
+                "description": "Checksum of the decoded content, computed over the decoded bytes before persistence. The digest is always lowercase hexadecimal -- enforcing that is a semantic-validation concern, not a wire-shape one.",
+            },
+            "content_length_bytes": {
+                "type": "integer",
+                "description": "Length of the decoded content in bytes.",
+                "minimum": 1,
+                "maximum": 1048576,
+            },
+            "capture_disposition": {
+                "$ref": "#/$defs/common__OpenCode",
+                "description": "Whether this call created a new evidence artifact (`created`) or resolved to an existing one under the collision rules (`already_captured`) -- enforcing that closed vocabulary is a semantic-validation concern, not a wire-shape one.",
+            },
+        },
+        "required": [
+            "evidence_id",
+            "source",
+            "media_type",
+            "content_checksum",
+            "content_length_bytes",
+            "capture_disposition",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "evidence__EvidenceChecksum": {
+                "title": "EvidenceChecksum",
+                "description": "A content checksum, spelled `algorithm:hex-digest` (such as `sha256:9f86d0...`) so the digest is never ambiguous about which algorithm produced it. Provider-neutral: this contract does not mandate a specific algorithm.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 256,
+                "pattern": "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$(?![\\s\\S])",
+            },
+            "evidence__EvidenceId": {
+                "title": "EvidenceId",
+                "description": "Stable identifier of one L0 evidence artifact, constant across its append-only provenance history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "evidence__MediaType": {
+                "title": "MediaType",
+                "description": "An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])",
+            },
+            "records__SourceKind": {
+                "title": "SourceKind",
+                "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__SourceReference": {
+                "title": "SourceReference",
+                "description": "A pointer to the external or internal thing a record's claim came from.",
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "$ref": "#/$defs/records__SourceKind",
+                        "description": "What kind of thing this reference points at.",
+                    },
+                    "source_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the source within its own system of record.",
+                    },
+                    "locator": {
+                        "type": "string",
+                        "description": "Optional locator within the source, such as a path, offset, or message id.",
+                        "maxLength": 2048,
+                    },
+                    "retrieved_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the source was read to produce the record it supports.",
+                    },
+                },
+                "required": [
+                    "kind",
+                    "source_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceSearchInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "EvidenceSearchInput",
@@ -2943,6 +3149,1099 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportStartInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ImportStartInput",
+        "description": "Input for `import.start`. Carries exactly one thing: the immutable descriptor of an already-staged source. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier, and it accepts no path, URL, inline archive, credential, parser implementation name, or runtime/storage option.",
+        "type": "object",
+        "properties": {
+            "source": {
+                "$ref": "#/$defs/jobs__ImportSourceDescriptor",
+                "description": "The immutable staged source this import reads.",
+            },
+        },
+        "required": [
+            "source",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "evidence__MediaType": {
+                "title": "MediaType",
+                "description": "An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "jobs__ImportSourceDescriptor": {
+                "title": "ImportSourceDescriptor",
+                "description": "The immutable description of one already-staged import source. Provider-neutral by construction: it names a server-issued staging handle and the content facts that handle resolves to, and nothing about how the content got there or how it will be read. It carries no filesystem path, URL, inline archive, credential, connector configuration, parser implementation name, or runtime/storage option, so an import cannot be steered from the wire into reading something the server did not already stage. Immutable: the descriptor accepted by `import.start` is the exact descriptor the resulting `ImportCompletionResult` reports back, so what was imported is never in question after the fact.",
+                "type": "object",
+                "properties": {
+                    "staged_source_ref": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Server-issued, immutable handle naming the already-staged content. Clients round-trip it verbatim and never parse it; it is the only locator this contract accepts.",
+                    },
+                    "source_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming what kind of source was staged, such as `archive` or `document`. Descriptive only: it never selects a parser implementation.",
+                    },
+                    "content_checksum": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Digest of the staged content, so the import and the caller can prove they are talking about the same bytes.",
+                    },
+                    "content_length_bytes": {
+                        "type": "integer",
+                        "description": "Length of the staged content in bytes. Zero is valid: empty staged content is a legitimate, checksummable import source.",
+                        "minimum": 0,
+                    },
+                    "media_type": {
+                        "$ref": "#/$defs/evidence__MediaType",
+                        "description": "Media type of the staged content. The same `MediaType` the resulting L0 evidence carries, so one type describes one concept wherever it is reached from.",
+                    },
+                    "source_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Caller-meaningful version of the staged source, when the source has one. Never an authorization input and never a locator.",
+                    },
+                },
+                "required": [
+                    "staged_source_ref",
+                    "source_kind",
+                    "content_checksum",
+                    "content_length_bytes",
+                    "media_type",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportStartResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ImportStartResult",
+        "description": "Result of `import.start`. Carries exactly one thing: the handle for the durable job that was started. `import.start` always returns a job and never a synchronous import outcome, so there is nothing else honest to return here. The response envelope's `ResponseMetadata.job` names the same job as this handle: one operation started one job, and the two statements of that fact must agree.",
+        "type": "object",
+        "properties": {
+            "job": {
+                "$ref": "#/$defs/jobs__JobHandle",
+                "description": "Handle for the durable import job this call started.",
+            },
+        },
+        "required": [
+            "job",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__AuditReference": {
+                "title": "AuditReference",
+                "description": "Bounded, non-empty server-issued reference to the audit record for a completed operation.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__DurationMs": {
+                "title": "DurationMs",
+                "description": "A bounded non-negative duration in milliseconds.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400000,
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "envelopes__OperationName": {
+                "title": "OperationName",
+                "description": "Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states; what each name binds to -- its input and result schemas, and its scope, capability, completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture -- is published per operation by `operations.schema.json`'s `x-omnivia-operation-catalogue`. The pattern admits any well-formed name, including ones no catalogue entry defines: whether a name is a v1 application operation is a semantic question (see `omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$(?![\\s\\S])",
+            },
+            "errors__ApiError": {
+                "title": "ApiError",
+                "description": "A single typed failure. The code and retry class are the contract; the message is not.",
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "$ref": "#/$defs/errors__ErrorCode",
+                        "description": "Stable failure code.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable explanation. Never parse it and never branch on it.",
+                        "maxLength": 2048,
+                    },
+                    "retry_class": {
+                        "$ref": "#/$defs/errors__RetryClass",
+                        "description": "Retry semantics for this failure. Unknown values are treated as non-retryable.",
+                    },
+                    "retry_after_ms": {
+                        "$ref": "#/$defs/common__DurationMs",
+                        "description": "Minimum backoff before a retry is worth attempting, when the server can state one.",
+                    },
+                    "details": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Optional structured detail. Must never carry credentials.",
+                    },
+                },
+                "required": [
+                    "code",
+                    "message",
+                    "retry_class",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "errors__ErrorCode": {
+                "title": "ErrorCode",
+                "description": "Stable machine-readable failure code. OPEN by design: this is a patterned string, not an enum, so compatible minor releases can add codes. Decoders must preserve unknown codes and must not map them onto a known code.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+            },
+            "errors__RetryClass": {
+                "title": "RetryClass",
+                "description": "How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized retry class MUST fail safe as non-retryable: never infer that an unknown class is retryable.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+            },
+            "jobs__JobAttempt": {
+                "title": "JobAttempt",
+                "description": "One execution attempt of a job. A job that is retried has more than one attempt. An attempt exists because execution started, so `queued` is not an attempt state: waiting to run is a state of the *job*, not of an execution of it, and an attempt numbered against a job that never ran would make the attempt history unreadable. Within one job's history attempts are numbered `1..N` contiguously, never overlap, and only a `failed` or `cancelled` attempt may be followed by another one -- a `succeeded` attempt is final.",
+                "type": "object",
+                "properties": {
+                    "attempt_number": {
+                        "type": "integer",
+                        "description": "1-based ordinal of this attempt.",
+                        "minimum": 1,
+                    },
+                    "started_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this attempt started.",
+                    },
+                    "finished_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this attempt finished, when it has.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "State this attempt reached.",
+                    },
+                    "error": {
+                        "$ref": "#/$defs/errors__ApiError",
+                        "description": "The failure this attempt ended with, when it failed.",
+                    },
+                },
+                "required": [
+                    "attempt_number",
+                    "started_at",
+                    "state",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobCancellationAvailability": {
+                "title": "JobCancellationAvailability",
+                "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right now and where an already-requested cancellation stands, with four known values: `cancellable` (a `job.cancel` would be accepted), `cancellation_pending` (a cancellation is already requested and has not yet taken effect), `cancelled` (the job is already cancelled), and `not_cancellable` (a `job.cancel` would be refused). This is an availability statement about the job as observed, not the outcome of a control call: what a particular `job.cancel` did is reported by `JobCancellationDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation is permitted, and carries no scheduler, worker, lease, or persistence detail.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobControl": {
+                "title": "JobControl",
+                "description": "The control actions a caller may take on a job right now: cancellation and recovery. There are exactly two, because there are exactly two control operations -- `job.cancel` and `job.retry`. There is deliberately no `resume` member and no `job.resume` operation: retrying a failed job and resuming a cancelled resumable one are two readings of the same single recovery operation, chosen from server state rather than selected by the caller, so a separate resume disposition would have offered a control the contract does not have. Deliberately exposes only these caller-facing availabilities, never scheduler, worker, lease, checkpoint, or persistence detail.",
+                "type": "object",
+                "properties": {
+                    "cancellation": {
+                        "$ref": "#/$defs/jobs__JobCancellationAvailability",
+                        "description": "Whether this job may be cancelled and where an already-requested cancellation stands.",
+                    },
+                    "recovery": {
+                        "$ref": "#/$defs/jobs__JobRecoveryAvailability",
+                        "description": "Whether this job may be recovered by `job.retry`, and which recovery that would be.",
+                    },
+                },
+                "required": [
+                    "cancellation",
+                    "recovery",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobHandle": {
+                "title": "JobHandle",
+                "description": "What a caller holds to track a job over time: its identity, current state, latest known progress and attempt, and which control actions are available. `latest_attempt` is the job's attempt *N*, not a history: a `running` job reports the running attempt it executes under, a `succeeded` or `failed` job reports the finished attempt that produced that outcome, and a `queued` job either has never executed (no attempt at all) or reports the finished `failed`/`cancelled` attempt retained after an accepted `job.retry` scheduled recovery -- never a succeeded, running, queued, or unfinished one, since none of those describes a job waiting to start.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/jobs__JobIdentity",
+                        "description": "Identity of this job.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "Current state of this job.",
+                    },
+                    "created_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this job was created.",
+                    },
+                    "updated_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this job's state was last observed to change.",
+                    },
+                    "control": {
+                        "$ref": "#/$defs/jobs__JobControl",
+                        "description": "Which control actions a caller may take on this job right now.",
+                    },
+                    "progress": {
+                        "$ref": "#/$defs/jobs__JobProgress",
+                        "description": "Latest known progress, while running.",
+                    },
+                    "latest_attempt": {
+                        "$ref": "#/$defs/jobs__JobAttempt",
+                        "description": "Most recent execution attempt.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "state",
+                    "created_at",
+                    "updated_at",
+                    "control",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobIdentity": {
+                "title": "JobIdentity",
+                "description": "The identity of one asynchronous job: what it is, which application operation started it, its immutable audit linkage, and, when applicable, which workspace it runs against.",
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque, server-issued identifier of this job.",
+                    },
+                    "job_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the kind of work this job performs, such as `ingestion.import`.",
+                    },
+                    "originating_operation": {
+                        "$ref": "#/$defs/envelopes__OperationName",
+                        "description": "The application operation whose invocation started this job.",
+                    },
+                    "audit_reference": {
+                        "$ref": "#/$defs/common__AuditReference",
+                        "description": "Immutable reference to the audit record for the operation invocation that started this job.",
+                    },
+                    "workspace_id": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "Workspace this job runs against, when the job is workspace-scoped.",
+                    },
+                },
+                "required": [
+                    "job_id",
+                    "job_kind",
+                    "originating_operation",
+                    "audit_reference",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobProgress": {
+                "title": "JobProgress",
+                "description": "A point-in-time progress statement for a running job.",
+                "type": "object",
+                "properties": {
+                    "unit": {
+                        "$ref": "#/$defs/jobs__JobProgressUnit",
+                        "description": "What `completed_units`/`total_units` count, so the counters are interpretable without job-kind-specific knowledge.",
+                    },
+                    "completed_units": {
+                        "type": "integer",
+                        "description": "Units of work completed so far, counted in `unit`.",
+                        "minimum": 0,
+                    },
+                    "total_units": {
+                        "type": "integer",
+                        "description": "Total units of work expected, when known in advance, counted in `unit`.",
+                        "minimum": 0,
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable progress note. Not a stable interface.",
+                        "maxLength": 2048,
+                    },
+                },
+                "required": [
+                    "unit",
+                    "completed_units",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobProgressUnit": {
+                "title": "JobProgressUnit",
+                "description": "Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such as `item` or `byte` or `document`. Open by design so a compatible minor release can add units without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobRecoveryAvailability": {
+                "title": "JobRecoveryAvailability",
+                "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right now, with three known values: `retryable` (a failed job that `job.retry` would run again), `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and `not_retryable` (a `job.retry` would be refused). `job.retry` is the single recovery operation and carries no action selector, so this code reports which recovery server state would choose rather than offering the caller a choice; what a particular `job.retry` did is reported by `JobRecoveryDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies recovery is permitted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobState": {
+                "title": "JobState",
+                "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobEventsInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "JobEventsInput",
+        "description": "Input for `job.events`: a bounded, snapshot-stable read of one job's ordered event stream. A request carrying no `page` starts a new pagination session and captures the job's current event count as that session's snapshot; a request carrying one continues the session that token names and can never widen it. Transport-level streaming is out of scope: this is a paged read, not a subscription. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+        "type": "object",
+        "properties": {
+            "job_id": {
+                "$ref": "#/$defs/common__OpaqueToken",
+                "description": "Opaque identifier of the job whose events to read.",
+            },
+            "limit": {
+                "$ref": "#/$defs/common__PageLimit",
+                "description": "Bounded maximum number of events to return in this page.",
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "Continuation position from a prior page of the same pagination session. Absent means start a new session at the first page.",
+            },
+        },
+        "required": [
+            "job_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageLimit": {
+                "title": "PageLimit",
+                "description": "A bounded positive page size a caller requests for a paginated read.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobEventsResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "JobEventsResult",
+        "description": "Result of `job.events`: one page of a snapshot-stable event read. `snapshot_event_count` is the event count captured when this pagination session began, so the session's sequences are exactly `0 .. snapshot_event_count - 1` and events recorded after the snapshot never appear in it; the same count is repeated on every page of the session and never changes within one. A fresh tokenless request captures a new snapshot and may see more. Page events are strictly increasing, duplicate-free, and contiguous from the position the request continued from. `page` is always present: a continuation token means more of the snapshot remains, and no token means the snapshot is exhausted.",
+        "type": "object",
+        "properties": {
+            "job_id": {
+                "$ref": "#/$defs/common__OpaqueToken",
+                "description": "Opaque identifier of the job these events belong to. Echoes the request.",
+            },
+            "events": {
+                "type": "array",
+                "description": "Events in this page, in ascending sequence order.",
+                "items": {
+                    "$ref": "#/$defs/jobs__JobEvent",
+                },
+                "maxItems": 1000,
+            },
+            "snapshot_event_count": {
+                "type": "integer",
+                "description": "Number of events captured when this pagination session began. Constant across every page of one session.",
+                "minimum": 0,
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "Position within this pagination session: a continuation token when more of the captured snapshot remains, and no token when it is exhausted.",
+            },
+        },
+        "required": [
+            "job_id",
+            "events",
+            "snapshot_event_count",
+            "page",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "jobs__JobEvent": {
+                "title": "JobEvent",
+                "description": "One entry in a job's ordered event stream.",
+                "type": "object",
+                "properties": {
+                    "sequence": {
+                        "type": "integer",
+                        "description": "Monotonically increasing ordinal of this event within the job.",
+                        "minimum": 0,
+                    },
+                    "occurred_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this event occurred.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "State the job was in when this event was recorded.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable event note. Not a stable interface.",
+                        "maxLength": 2048,
+                    },
+                    "details": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Optional structured detail.",
+                    },
+                },
+                "required": [
+                    "sequence",
+                    "occurred_at",
+                    "state",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobState": {
+                "title": "JobState",
+                "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobGetInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "JobGetInput",
+        "description": "Input for `job.get`. Names one job. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+        "type": "object",
+        "properties": {
+            "job_id": {
+                "$ref": "#/$defs/common__OpaqueToken",
+                "description": "Opaque identifier of the job to read.",
+            },
+        },
+        "required": [
+            "job_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobGetResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "JobGetResult",
+        "description": "Result of `job.get`: the current handle, plus the terminal result when the job has one. `terminal_result` is present exactly when `job.state` is a known terminal state, and it is closed against the handle it accompanies: identity and state match exactly, every attempt instant in the terminal history falls inside the handle's own `created_at`/`updated_at` lifetime, and the handle's `latest_attempt` is exactly the final attempt of that history (and is absent exactly when the history is). One read describes one job, never two disagreeing statements about it. An unknown state is preserved but implies nothing: a handle in a state this build has never seen carries no `terminal_result`, because this build cannot know whether that state is terminal.",
+        "type": "object",
+        "properties": {
+            "job": {
+                "$ref": "#/$defs/jobs__JobHandle",
+                "description": "Current handle for this job.",
+            },
+            "terminal_result": {
+                "$ref": "#/$defs/jobs__JobTerminalResult",
+                "description": "The job's final outcome and complete attempt history, present exactly when the handle is in a known terminal state.",
+            },
+        },
+        "required": [
+            "job",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__AuditReference": {
+                "title": "AuditReference",
+                "description": "Bounded, non-empty server-issued reference to the audit record for a completed operation.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__DurationMs": {
+                "title": "DurationMs",
+                "description": "A bounded non-negative duration in milliseconds.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400000,
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "envelopes__OperationName": {
+                "title": "OperationName",
+                "description": "Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states; what each name binds to -- its input and result schemas, and its scope, capability, completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture -- is published per operation by `operations.schema.json`'s `x-omnivia-operation-catalogue`. The pattern admits any well-formed name, including ones no catalogue entry defines: whether a name is a v1 application operation is a semantic question (see `omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$(?![\\s\\S])",
+            },
+            "errors__ApiError": {
+                "title": "ApiError",
+                "description": "A single typed failure. The code and retry class are the contract; the message is not.",
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "$ref": "#/$defs/errors__ErrorCode",
+                        "description": "Stable failure code.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable explanation. Never parse it and never branch on it.",
+                        "maxLength": 2048,
+                    },
+                    "retry_class": {
+                        "$ref": "#/$defs/errors__RetryClass",
+                        "description": "Retry semantics for this failure. Unknown values are treated as non-retryable.",
+                    },
+                    "retry_after_ms": {
+                        "$ref": "#/$defs/common__DurationMs",
+                        "description": "Minimum backoff before a retry is worth attempting, when the server can state one.",
+                    },
+                    "details": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Optional structured detail. Must never carry credentials.",
+                    },
+                },
+                "required": [
+                    "code",
+                    "message",
+                    "retry_class",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "errors__ErrorCode": {
+                "title": "ErrorCode",
+                "description": "Stable machine-readable failure code. OPEN by design: this is a patterned string, not an enum, so compatible minor releases can add codes. Decoders must preserve unknown codes and must not map them onto a known code.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+            },
+            "errors__RetryClass": {
+                "title": "RetryClass",
+                "description": "How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized retry class MUST fail safe as non-retryable: never infer that an unknown class is retryable.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+            },
+            "jobs__JobAttempt": {
+                "title": "JobAttempt",
+                "description": "One execution attempt of a job. A job that is retried has more than one attempt. An attempt exists because execution started, so `queued` is not an attempt state: waiting to run is a state of the *job*, not of an execution of it, and an attempt numbered against a job that never ran would make the attempt history unreadable. Within one job's history attempts are numbered `1..N` contiguously, never overlap, and only a `failed` or `cancelled` attempt may be followed by another one -- a `succeeded` attempt is final.",
+                "type": "object",
+                "properties": {
+                    "attempt_number": {
+                        "type": "integer",
+                        "description": "1-based ordinal of this attempt.",
+                        "minimum": 1,
+                    },
+                    "started_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this attempt started.",
+                    },
+                    "finished_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this attempt finished, when it has.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "State this attempt reached.",
+                    },
+                    "error": {
+                        "$ref": "#/$defs/errors__ApiError",
+                        "description": "The failure this attempt ended with, when it failed.",
+                    },
+                },
+                "required": [
+                    "attempt_number",
+                    "started_at",
+                    "state",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobCancellationAvailability": {
+                "title": "JobCancellationAvailability",
+                "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right now and where an already-requested cancellation stands, with four known values: `cancellable` (a `job.cancel` would be accepted), `cancellation_pending` (a cancellation is already requested and has not yet taken effect), `cancelled` (the job is already cancelled), and `not_cancellable` (a `job.cancel` would be refused). This is an availability statement about the job as observed, not the outcome of a control call: what a particular `job.cancel` did is reported by `JobCancellationDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation is permitted, and carries no scheduler, worker, lease, or persistence detail.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobCancellationOutcome": {
+                "title": "JobCancellationOutcome",
+                "description": "The explicit outcome recorded when a job's terminal state is cancellation, distinguishing it from an ordinary success or failure.",
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming why the job was cancelled, such as `caller_requested` or `deadline_exceeded`.",
+                    },
+                },
+                "required": [
+                    "reason",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobControl": {
+                "title": "JobControl",
+                "description": "The control actions a caller may take on a job right now: cancellation and recovery. There are exactly two, because there are exactly two control operations -- `job.cancel` and `job.retry`. There is deliberately no `resume` member and no `job.resume` operation: retrying a failed job and resuming a cancelled resumable one are two readings of the same single recovery operation, chosen from server state rather than selected by the caller, so a separate resume disposition would have offered a control the contract does not have. Deliberately exposes only these caller-facing availabilities, never scheduler, worker, lease, checkpoint, or persistence detail.",
+                "type": "object",
+                "properties": {
+                    "cancellation": {
+                        "$ref": "#/$defs/jobs__JobCancellationAvailability",
+                        "description": "Whether this job may be cancelled and where an already-requested cancellation stands.",
+                    },
+                    "recovery": {
+                        "$ref": "#/$defs/jobs__JobRecoveryAvailability",
+                        "description": "Whether this job may be recovered by `job.retry`, and which recovery that would be.",
+                    },
+                },
+                "required": [
+                    "cancellation",
+                    "recovery",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobHandle": {
+                "title": "JobHandle",
+                "description": "What a caller holds to track a job over time: its identity, current state, latest known progress and attempt, and which control actions are available. `latest_attempt` is the job's attempt *N*, not a history: a `running` job reports the running attempt it executes under, a `succeeded` or `failed` job reports the finished attempt that produced that outcome, and a `queued` job either has never executed (no attempt at all) or reports the finished `failed`/`cancelled` attempt retained after an accepted `job.retry` scheduled recovery -- never a succeeded, running, queued, or unfinished one, since none of those describes a job waiting to start.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/jobs__JobIdentity",
+                        "description": "Identity of this job.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "Current state of this job.",
+                    },
+                    "created_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this job was created.",
+                    },
+                    "updated_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this job's state was last observed to change.",
+                    },
+                    "control": {
+                        "$ref": "#/$defs/jobs__JobControl",
+                        "description": "Which control actions a caller may take on this job right now.",
+                    },
+                    "progress": {
+                        "$ref": "#/$defs/jobs__JobProgress",
+                        "description": "Latest known progress, while running.",
+                    },
+                    "latest_attempt": {
+                        "$ref": "#/$defs/jobs__JobAttempt",
+                        "description": "Most recent execution attempt.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "state",
+                    "created_at",
+                    "updated_at",
+                    "control",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobIdentity": {
+                "title": "JobIdentity",
+                "description": "The identity of one asynchronous job: what it is, which application operation started it, its immutable audit linkage, and, when applicable, which workspace it runs against.",
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque, server-issued identifier of this job.",
+                    },
+                    "job_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the kind of work this job performs, such as `ingestion.import`.",
+                    },
+                    "originating_operation": {
+                        "$ref": "#/$defs/envelopes__OperationName",
+                        "description": "The application operation whose invocation started this job.",
+                    },
+                    "audit_reference": {
+                        "$ref": "#/$defs/common__AuditReference",
+                        "description": "Immutable reference to the audit record for the operation invocation that started this job.",
+                    },
+                    "workspace_id": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "Workspace this job runs against, when the job is workspace-scoped.",
+                    },
+                },
+                "required": [
+                    "job_id",
+                    "job_kind",
+                    "originating_operation",
+                    "audit_reference",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobProgress": {
+                "title": "JobProgress",
+                "description": "A point-in-time progress statement for a running job.",
+                "type": "object",
+                "properties": {
+                    "unit": {
+                        "$ref": "#/$defs/jobs__JobProgressUnit",
+                        "description": "What `completed_units`/`total_units` count, so the counters are interpretable without job-kind-specific knowledge.",
+                    },
+                    "completed_units": {
+                        "type": "integer",
+                        "description": "Units of work completed so far, counted in `unit`.",
+                        "minimum": 0,
+                    },
+                    "total_units": {
+                        "type": "integer",
+                        "description": "Total units of work expected, when known in advance, counted in `unit`.",
+                        "minimum": 0,
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable progress note. Not a stable interface.",
+                        "maxLength": 2048,
+                    },
+                },
+                "required": [
+                    "unit",
+                    "completed_units",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobProgressUnit": {
+                "title": "JobProgressUnit",
+                "description": "Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such as `item` or `byte` or `document`. Open by design so a compatible minor release can add units without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobRecoveryAvailability": {
+                "title": "JobRecoveryAvailability",
+                "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right now, with three known values: `retryable` (a failed job that `job.retry` would run again), `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and `not_retryable` (a `job.retry` would be refused). `job.retry` is the single recovery operation and carries no action selector, so this code reports which recovery server state would choose rather than offering the caller a choice; what a particular `job.retry` did is reported by `JobRecoveryDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies recovery is permitted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobState": {
+                "title": "JobState",
+                "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobTerminalCancellation": {
+                "title": "JobTerminalCancellation",
+                "description": "The final outcome of a job that was cancelled. Carries `cancellation` and never `result` or `error`. `attempts` may be empty, and only here: a job cancelled while still queued never executed, so it has no attempt to report. When it does carry attempts, the final one is the `cancelled` attempt that ended it and finished when the job did.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/jobs__JobIdentity",
+                        "description": "Identity of this job.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "Terminal state the job reached, such as `cancelled`.",
+                    },
+                    "finished_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the job reached its terminal state.",
+                    },
+                    "attempts": {
+                        "type": "array",
+                        "description": "Every execution attempt this job made, in order.",
+                        "items": {
+                            "$ref": "#/$defs/jobs__JobAttempt",
+                        },
+                        "maxItems": 256,
+                    },
+                    "cancellation": {
+                        "$ref": "#/$defs/jobs__JobCancellationOutcome",
+                        "description": "The explicit cancellation outcome.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "state",
+                    "finished_at",
+                    "attempts",
+                    "cancellation",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobTerminalFailure": {
+                "title": "JobTerminalFailure",
+                "description": "The final outcome of a job that failed. Carries `error` and never `result` or `cancellation`. `attempts` is non-empty -- a job cannot fail without having executed -- and `error` is exactly the final attempt's own `error`: the failure that ended the last attempt is the failure that ended the job, and two spellings of it that could disagree would leave a caller unable to say which one is the outcome.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/jobs__JobIdentity",
+                        "description": "Identity of this job.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "Terminal state the job reached, such as `failed`.",
+                    },
+                    "finished_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the job reached its terminal state.",
+                    },
+                    "attempts": {
+                        "type": "array",
+                        "description": "Every execution attempt this job made, in order.",
+                        "items": {
+                            "$ref": "#/$defs/jobs__JobAttempt",
+                        },
+                        "maxItems": 256,
+                    },
+                    "error": {
+                        "$ref": "#/$defs/errors__ApiError",
+                        "description": "The terminal failure.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "state",
+                    "finished_at",
+                    "attempts",
+                    "error",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobTerminalResult": {
+                "title": "JobTerminalResult",
+                "description": "The final outcome of a job once it has reached a terminal state, with the complete attempt history that led there. Exactly one of a success, a failure, or a cancellation, never a mix: each branch closes its property set and carries a unique required discriminator (`result`, `error`, or `cancellation`), so a payload combining or omitting all three matches no branch.",
+                "oneOf": [
+                    {
+                        "$ref": "#/$defs/jobs__JobTerminalSuccess",
+                    },
+                    {
+                        "$ref": "#/$defs/jobs__JobTerminalFailure",
+                    },
+                    {
+                        "$ref": "#/$defs/jobs__JobTerminalCancellation",
+                    },
+                ],
+            },
+            "jobs__JobTerminalSuccess": {
+                "title": "JobTerminalSuccess",
+                "description": "The final outcome of a job that succeeded. Carries `result` and never `error` or `cancellation`. Terminal success is typed rather than opaque: `result_kind` names which frozen result shape `result` carries, so a caller reads a success payload by matching a declared kind instead of guessing from the job kind. `result` stays an opaque JSON object in this document because JSON Schema cannot bind it to a per-kind shape within the subset the generator supports; `result_kind` and `semantics_jobs` (`omnivia_core.contracts.v1.semantics_jobs`) still validate the frozen result-kind mapping. The operation catalogue additionally binds a job-starting operation to its terminal result schema through `OperationJobMetadata.terminal_result_schema_ref`. The one kind frozen in v1 is `import_completion`: `import.start` binds it to `ImportCompletionResult`.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/jobs__JobIdentity",
+                        "description": "Identity of this job.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "Terminal state the job reached, such as `succeeded`.",
+                    },
+                    "finished_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the job reached its terminal state.",
+                    },
+                    "attempts": {
+                        "type": "array",
+                        "description": "Every execution attempt this job made, in order.",
+                        "items": {
+                            "$ref": "#/$defs/jobs__JobAttempt",
+                        },
+                        "maxItems": 256,
+                    },
+                    "result_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming which frozen result shape `result` carries, such as `import_completion`. Open by design; an unrecognized kind decodes and is preserved, but a caller must not interpret `result` under a kind it does not know.",
+                    },
+                    "result": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "The success payload, in the shape `result_kind` names. Opaque only in this document: a `result_kind` of `import_completion` makes it exactly an `ImportCompletionResult`.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "state",
+                    "finished_at",
+                    "attempts",
+                    "result_kind",
+                    "result",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeSearchInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "KnowledgeSearchInput",
@@ -3118,6 +4417,836 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 },
                 "required": [],
                 "unevaluatedProperties": False,
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "memory__GovernedRecord": {
+                "title": "GovernedRecord",
+                "description": "A provider-neutral governed record: which workspace it belongs to, what kind of record it is, its domain scope and authority level, its full L0-L4 governance, temporal, evidence, and provenance envelope, and its opaque JSON content. Carries no reference to, and is not a substitute for, any repo-local `Memory`, `MemoryFact`, or `SourceRef` domain class.",
+                "type": "object",
+                "properties": {
+                    "workspace_id": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "Workspace this record belongs to.",
+                    },
+                    "record_type": {
+                        "$ref": "#/$defs/memory__GovernedRecordType",
+                        "description": "What kind of governed record this is.",
+                    },
+                    "domain_scope": {
+                        "$ref": "#/$defs/memory__RecordDomainScope",
+                        "description": "Non-empty domain/record classification this record is filed under. Every governed record carries exactly one; a caller may propose one through `memory.create`, but the server is always the final authority on what is actually stored here. Distinct from caller-authorization `Scope`.",
+                    },
+                    "authority_level": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the authority level this record's governance decision currently carries, such as `proposed` or `reviewed` or `canonical`. Server-owned: no `memory.create` input field lets a caller assert this directly.",
+                    },
+                    "reviewer": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the reviewer or policy that produced this record's current governance decision, when one has been recorded. Absent when no reviewer/policy decision applies yet, such as a freshly proposed record.",
+                    },
+                    "provenance": {
+                        "$ref": "#/$defs/records__RecordProvenance",
+                        "description": "Identity, governance layer/state/currentness, temporal metadata, history, and evidence for this record version.",
+                    },
+                    "content": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Opaque governed content this record carries.",
+                    },
+                },
+                "required": [
+                    "workspace_id",
+                    "record_type",
+                    "domain_scope",
+                    "authority_level",
+                    "provenance",
+                    "content",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "memory__GovernedRecordType": {
+                "title": "GovernedRecordType",
+                "description": "Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact` or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add record types without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "memory__RecordDomainScope": {
+                "title": "RecordDomainScope",
+                "description": "Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the caller-authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or checks a permission, it only classifies what the record is about. Open by design so a compatible minor release can add classifications without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__CandidateAssertion": {
+                "title": "CandidateAssertion",
+                "description": "Who is asserting a governed record's claim, when, and on what evidence, plus the validity window they propose for it. This is caller-supplied provenance for the claim -- carried into `memory.create` and `record.supersede` inputs, and preserved on the resulting record's `RecordProvenance` -- not the server-owned governance decision: it never carries authority level, reviewer/policy identity, or any other field a least-authority-escalating mutation input is forbidden from carrying. Defined here rather than in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json` depending on a document that already depends on it.",
+                "type": "object",
+                "properties": {
+                    "actor_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Principal or system asserting this candidate.",
+                    },
+                    "actor_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`.",
+                    },
+                    "actor_role": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the role the actor asserted this candidate under.",
+                    },
+                    "asserted_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the actor asserted this candidate.",
+                    },
+                    "proposed_valid_from": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "Start of the validity window the caller proposes for this candidate, when known. The server remains the final authority on the validity window actually stored.",
+                    },
+                    "proposed_valid_until": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "End of the validity window the caller proposes for this candidate, when bounded. The server remains the final authority on the validity window actually stored.",
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "description": "Concrete evidence substantiating this assertion. May be empty only when the enclosing input's `evidence_disposition` explicitly excuses it; enforcing that agreement is a semantic-validation concern, not a wire-shape one.",
+                        "items": {
+                            "$ref": "#/$defs/records__EvidenceReference",
+                        },
+                        "maxItems": 256,
+                    },
+                },
+                "required": [
+                    "actor_id",
+                    "actor_kind",
+                    "actor_role",
+                    "asserted_at",
+                    "evidence",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__CandidateExtractionMetadata": {
+                "title": "CandidateExtractionMetadata",
+                "description": "Optional provenance about the automated extractor that produced a governed record's claim, when one did. Absent entirely for a claim a human asserted directly. Defined here rather than in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json` depending on a document that already depends on it.",
+                "type": "object",
+                "properties": {
+                    "extractor_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the extractor that produced this candidate.",
+                    },
+                    "extractor_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Version of the extractor that produced this candidate, when known.",
+                    },
+                    "model_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Version of the model the extractor used, when known.",
+                    },
+                    "prompt_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Version of the prompt the extractor used, when known.",
+                    },
+                    "extracted_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the extractor produced this candidate.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "reconciliation_state": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming this candidate's reconciliation/deduplication state against prior extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined one. Open by design; an unrecognized value must be preserved, not coerced to a known one, and must never widen this candidate's authority.",
+                    },
+                },
+                "required": [
+                    "extractor_id",
+                    "extracted_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__EvidenceDisposition": {
+                "title": "EvidenceDisposition",
+                "description": "Open, dot-namespaced code stating whether concrete evidence is actually available for a record, such as `available` or `unavailable` or `redacted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__EvidenceReference": {
+                "title": "EvidenceReference",
+                "description": "A concrete piece of evidence supporting one claim in a record.",
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "$ref": "#/$defs/records__SourceReference",
+                        "description": "The source this evidence was drawn from.",
+                    },
+                    "span": {
+                        "$ref": "#/$defs/records__SourceSpan",
+                        "description": "Addressable position within the source this evidence was drawn from, when known.",
+                    },
+                    "excerpt": {
+                        "type": "string",
+                        "description": "Optional short excerpt from the source substantiating the claim. Not a stable interface.",
+                        "maxLength": 4096,
+                    },
+                },
+                "required": [
+                    "source",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__GovernanceLayer": {
+                "title": "GovernanceLayer",
+                "description": "Open, dot-namespaced code naming the knowledge-governance layer a record belongs to: `l0` (raw evidence), `l1` (candidate observations), `l2` (governed records / canonical knowledge), `l3` (context models), or `l4` (organisational model). Distinct from workspace scope, which is a caller-facing tenancy boundary, not a knowledge-governance layer. Open by design so a compatible minor release can add layers without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__GovernanceState": {
+                "title": "GovernanceState",
+                "description": "Open, dot-namespaced code naming a record's position in its own governance workflow, such as `proposed` or `candidate` or `accepted` or `rejected`. Distinct from `GovernanceLayer` (which namespace a record belongs to) and `RecordCurrentness` (whether this version is the active one): a record can be `accepted` and still later superseded, or `proposed` and never adopted. Open by design so a compatible minor release can add states without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__ProvenanceEntry": {
+                "title": "ProvenanceEntry",
+                "description": "One step in a record's history: who or what did what, when, and -- for a governance transition -- the explicit rationale it was taken under.",
+                "type": "object",
+                "properties": {
+                    "actor_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Principal or system that performed this action.",
+                    },
+                    "actor_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`.",
+                    },
+                    "action": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming what happened, such as `created` or `modified` or `superseded`.",
+                    },
+                    "occurred_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this action occurred.",
+                    },
+                    "reason_code": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming why this action was taken, carried over verbatim from the `GovernanceRationale.reason_code` the transition was requested under. Absent on ordinary non-governance history, which never carries a rationale; a governance-transition event must carry it, and requiring that is a semantic-validation concern, not a wire-shape one.",
+                    },
+                    "reason_comment": {
+                        "type": "string",
+                        "description": "Bounded human-readable elaboration, carried over verbatim from the requesting `GovernanceRationale.comment`. Absent exactly when that comment was absent. Not a stable interface.",
+                        "maxLength": 2048,
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "description": "Evidence supporting this action, when applicable. Bounded at the same 256 items `CandidateAssertion.evidence` is, and deliberately so: a `record.supersede` transition appends exactly one event whose evidence must equal the replacement claim's complete assertion evidence, so a lower bound here would make an otherwise valid replacement impossible to record.",
+                        "items": {
+                            "$ref": "#/$defs/records__EvidenceReference",
+                        },
+                        "maxItems": 256,
+                    },
+                },
+                "required": [
+                    "actor_id",
+                    "actor_kind",
+                    "action",
+                    "occurred_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__RecordCurrentness": {
+                "title": "RecordCurrentness",
+                "description": "Open, dot-namespaced code naming whether a record version is the active one, such as `current` or `superseded` or `retracted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__RecordId": {
+                "title": "RecordId",
+                "description": "Stable identifier of a governed record, constant across every version of that record.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "records__RecordIdentity": {
+                "title": "RecordIdentity",
+                "description": "The identity, version, governance layer, governance state, and currentness of one record version.",
+                "type": "object",
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/records__RecordId",
+                        "description": "Identifier stable across every version of this record.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/records__RecordVersion",
+                        "description": "Opaque version of this specific revision.",
+                    },
+                    "layer": {
+                        "$ref": "#/$defs/records__GovernanceLayer",
+                        "description": "Governance layer this record belongs to.",
+                    },
+                    "governance_state": {
+                        "$ref": "#/$defs/records__GovernanceState",
+                        "description": "This record version's position in its own governance workflow, independent of `layer` and `currentness`.",
+                    },
+                    "currentness": {
+                        "$ref": "#/$defs/records__RecordCurrentness",
+                        "description": "Whether this version is the active one.",
+                    },
+                    "supersedes": {
+                        "$ref": "#/$defs/records__SupersessionReference",
+                        "description": "The earlier record version this version replaces, when this version is itself the newer one.",
+                    },
+                    "superseded_by": {
+                        "$ref": "#/$defs/records__SupersessionReference",
+                        "description": "The newer record version that replaced this one, present when `currentness` marks this version as superseded.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                    "version",
+                    "layer",
+                    "governance_state",
+                    "currentness",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__RecordProvenance": {
+                "title": "RecordProvenance",
+                "description": "The full provenance envelope for one record version: identity, temporal metadata, its authoring history, the sources it draws on, and the caller-supplied assertion/extraction lineage the claim in this version came from. `assertion`/`extraction` are structurally optional so a record written before they existed still decodes, but a governance transition that replaces or carries forward a claim must bind them; enforcing that is a semantic-validation concern, not a wire-shape one.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/records__RecordIdentity",
+                        "description": "Identity, version, governance layer, and currentness of this record.",
+                    },
+                    "temporal": {
+                        "$ref": "#/$defs/records__RecordTemporalMetadata",
+                        "description": "Observed, ingested, recorded, and valid time for this record.",
+                    },
+                    "history": {
+                        "type": "array",
+                        "description": "Ordered, append-only history of actions that produced this record version. Deliberately carries no `maxItems`: history is never erased or rewritten, and every governance transition appends exactly one event, so any finite inline cap would eventually make a previously valid record impossible to transition -- and raising the cap only postpones that contradiction. Bounding a response's size is a transport/operation concern, handled outside this inline provenance invariant, never by dropping, compacting, or summarising audit history.",
+                        "items": {
+                            "$ref": "#/$defs/records__ProvenanceEntry",
+                        },
+                    },
+                    "evidence_disposition": {
+                        "$ref": "#/$defs/records__EvidenceDisposition",
+                        "description": "Whether concrete evidence is actually available for this record. `sources` may be empty only when this disposition explicitly states evidence is unavailable; enforcing that agreement is a semantic-validation concern, not a wire-shape one.",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "description": "Sources this record draws on, independent of any single history entry's evidence. May be empty only when `evidence_disposition` explicitly states evidence is unavailable.",
+                        "items": {
+                            "$ref": "#/$defs/records__SourceReference",
+                        },
+                        "maxItems": 256,
+                    },
+                    "assertion": {
+                        "$ref": "#/$defs/records__CandidateAssertion",
+                        "description": "Who asserted the claim this version carries, when, on what evidence, and the validity window they proposed. Preserved verbatim from the `memory.create` or `record.supersede` input that supplied the claim, so candidate/replacement lineage survives every governance transition.",
+                    },
+                    "extraction": {
+                        "$ref": "#/$defs/records__CandidateExtractionMetadata",
+                        "description": "Provenance of the automated extractor that produced the claim this version carries, when one did. Absent for a claim a human asserted directly.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "temporal",
+                    "history",
+                    "evidence_disposition",
+                    "sources",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__RecordTemporalMetadata": {
+                "title": "RecordTemporalMetadata",
+                "description": "The distinct instants a governed record's lifecycle turns on: when the underlying fact occurred in the world, when it was observed, when the system ingested it, when this version was persisted, the window it is asserted valid for, and when it was superseded.",
+                "type": "object",
+                "properties": {
+                    "event_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the underlying fact occurred in the world (source/event time), when distinguishable from `observed_at`.",
+                    },
+                    "observed_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the underlying fact was observed to be true in the world, when known.",
+                    },
+                    "ingested_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the system first ingested the fact behind this record.",
+                    },
+                    "recorded_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this specific version was persisted.",
+                    },
+                    "valid_from": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "Start of the window this record is asserted valid for, when bounded.",
+                    },
+                    "valid_until": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "End of the window this record is asserted valid for, when bounded.",
+                    },
+                    "superseded_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this record version was superseded by a newer version, present only once superseded.",
+                    },
+                },
+                "required": [
+                    "ingested_at",
+                    "recorded_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__RecordVersion": {
+                "title": "RecordVersion",
+                "description": "Opaque, server-issued version marker of one specific revision of a record. Clients must round-trip it verbatim and must never parse it.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "records__SourceKind": {
+                "title": "SourceKind",
+                "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__SourceReference": {
+                "title": "SourceReference",
+                "description": "A pointer to the external or internal thing a record's claim came from.",
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "$ref": "#/$defs/records__SourceKind",
+                        "description": "What kind of thing this reference points at.",
+                    },
+                    "source_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the source within its own system of record.",
+                    },
+                    "locator": {
+                        "type": "string",
+                        "description": "Optional locator within the source, such as a path, offset, or message id.",
+                        "maxLength": 2048,
+                    },
+                    "retrieved_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the source was read to produce the record it supports.",
+                    },
+                },
+                "required": [
+                    "kind",
+                    "source_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__SourceSpan": {
+                "title": "SourceSpan",
+                "description": "An addressable position within a source: a pointer plus an optional character span, so evidence can be pinpointed within a source rather than only referencing the source as a whole.",
+                "type": "object",
+                "properties": {
+                    "pointer": {
+                        "type": "string",
+                        "description": "Locator within the source, such as a JSON Pointer, XPath, byte offset path, or line reference.",
+                        "maxLength": 2048,
+                    },
+                    "start_offset": {
+                        "type": "integer",
+                        "description": "Start of the span, in characters from the start of the pointed-at unit, when known.",
+                        "minimum": 0,
+                    },
+                    "end_offset": {
+                        "type": "integer",
+                        "description": "End of the span, in characters from the start of the pointed-at unit, when known.",
+                        "minimum": 0,
+                    },
+                },
+                "required": [
+                    "pointer",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__SupersessionReference": {
+                "title": "SupersessionReference",
+                "description": "A direction-neutral pointer from one record version to another related record version. The direction of the relationship comes entirely from which field on `RecordIdentity` carries it (`supersedes` vs `superseded_by`); this DTO itself states only which record and version, and why.",
+                "type": "object",
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/records__RecordId",
+                        "description": "Identifier of the related record.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/records__RecordVersion",
+                        "description": "The specific related version, when known.",
+                    },
+                    "reason": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming why this supersession relationship exists.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "MemoryCreateInput",
+        "description": "Input for `memory.create`: the proposed record's type, domain scope, content, evidence/provenance, and assertion. Carries no authority-level, reviewer/policy decision, governance-state, currentness, record id, version, recorded time, or supersession field, so a caller can never assert accepted, current-canonical, superseded, or historical authority through this payload; every `memory.create` result is proposed-only.",
+        "type": "object",
+        "properties": {
+            "record_type": {
+                "$ref": "#/$defs/memory__GovernedRecordType",
+                "description": "What kind of governed record is being proposed.",
+            },
+            "domain_scope": {
+                "$ref": "#/$defs/memory__RecordDomainScope",
+                "description": "Non-empty domain/record classification the caller proposes for this record; every candidate proposes one. The server remains the final authority on the domain scope actually stored; this field never carries authority level, reviewer/policy decision, or any other server-owned governance field.",
+            },
+            "content": {
+                "$ref": "#/$defs/common__JsonObject",
+                "description": "Opaque proposed content.",
+            },
+            "evidence_disposition": {
+                "$ref": "#/$defs/records__EvidenceDisposition",
+                "description": "Whether concrete evidence is actually available for this proposal.",
+            },
+            "sources": {
+                "type": "array",
+                "description": "Sources this proposal draws on. May be empty only when `evidence_disposition` explicitly excuses it.",
+                "items": {
+                    "$ref": "#/$defs/records__SourceReference",
+                },
+                "maxItems": 256,
+            },
+            "assertion": {
+                "$ref": "#/$defs/records__CandidateAssertion",
+                "description": "Who is asserting this candidate, when, on what evidence, and the validity window they propose. Every candidate carries one. Shared with `RecordProvenance.assertion`, so the lineage a proposal supplies is the lineage the resulting record preserves.",
+            },
+            "extraction": {
+                "$ref": "#/$defs/records__CandidateExtractionMetadata",
+                "description": "Provenance of the automated extractor that produced this candidate, when one did. Absent for a candidate a human asserted directly. Shared with `RecordProvenance.extraction`.",
+            },
+            "event_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the underlying fact occurred in the world (source/event time), when the caller can supply it.",
+            },
+            "observed_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the underlying fact was observed, when the caller can supply it.",
+            },
+        },
+        "required": [
+            "record_type",
+            "domain_scope",
+            "content",
+            "evidence_disposition",
+            "sources",
+            "assertion",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "memory__GovernedRecordType": {
+                "title": "GovernedRecordType",
+                "description": "Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact` or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add record types without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "memory__RecordDomainScope": {
+                "title": "RecordDomainScope",
+                "description": "Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the caller-authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or checks a permission, it only classifies what the record is about. Open by design so a compatible minor release can add classifications without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__CandidateAssertion": {
+                "title": "CandidateAssertion",
+                "description": "Who is asserting a governed record's claim, when, and on what evidence, plus the validity window they propose for it. This is caller-supplied provenance for the claim -- carried into `memory.create` and `record.supersede` inputs, and preserved on the resulting record's `RecordProvenance` -- not the server-owned governance decision: it never carries authority level, reviewer/policy identity, or any other field a least-authority-escalating mutation input is forbidden from carrying. Defined here rather than in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json` depending on a document that already depends on it.",
+                "type": "object",
+                "properties": {
+                    "actor_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Principal or system asserting this candidate.",
+                    },
+                    "actor_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`.",
+                    },
+                    "actor_role": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the role the actor asserted this candidate under.",
+                    },
+                    "asserted_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the actor asserted this candidate.",
+                    },
+                    "proposed_valid_from": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "Start of the validity window the caller proposes for this candidate, when known. The server remains the final authority on the validity window actually stored.",
+                    },
+                    "proposed_valid_until": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "End of the validity window the caller proposes for this candidate, when bounded. The server remains the final authority on the validity window actually stored.",
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "description": "Concrete evidence substantiating this assertion. May be empty only when the enclosing input's `evidence_disposition` explicitly excuses it; enforcing that agreement is a semantic-validation concern, not a wire-shape one.",
+                        "items": {
+                            "$ref": "#/$defs/records__EvidenceReference",
+                        },
+                        "maxItems": 256,
+                    },
+                },
+                "required": [
+                    "actor_id",
+                    "actor_kind",
+                    "actor_role",
+                    "asserted_at",
+                    "evidence",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__CandidateExtractionMetadata": {
+                "title": "CandidateExtractionMetadata",
+                "description": "Optional provenance about the automated extractor that produced a governed record's claim, when one did. Absent entirely for a claim a human asserted directly. Defined here rather than in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json` depending on a document that already depends on it.",
+                "type": "object",
+                "properties": {
+                    "extractor_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the extractor that produced this candidate.",
+                    },
+                    "extractor_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Version of the extractor that produced this candidate, when known.",
+                    },
+                    "model_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Version of the model the extractor used, when known.",
+                    },
+                    "prompt_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Version of the prompt the extractor used, when known.",
+                    },
+                    "extracted_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the extractor produced this candidate.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "reconciliation_state": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming this candidate's reconciliation/deduplication state against prior extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined one. Open by design; an unrecognized value must be preserved, not coerced to a known one, and must never widen this candidate's authority.",
+                    },
+                },
+                "required": [
+                    "extractor_id",
+                    "extracted_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__EvidenceDisposition": {
+                "title": "EvidenceDisposition",
+                "description": "Open, dot-namespaced code stating whether concrete evidence is actually available for a record, such as `available` or `unavailable` or `redacted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__EvidenceReference": {
+                "title": "EvidenceReference",
+                "description": "A concrete piece of evidence supporting one claim in a record.",
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "$ref": "#/$defs/records__SourceReference",
+                        "description": "The source this evidence was drawn from.",
+                    },
+                    "span": {
+                        "$ref": "#/$defs/records__SourceSpan",
+                        "description": "Addressable position within the source this evidence was drawn from, when known.",
+                    },
+                    "excerpt": {
+                        "type": "string",
+                        "description": "Optional short excerpt from the source substantiating the claim. Not a stable interface.",
+                        "maxLength": 4096,
+                    },
+                },
+                "required": [
+                    "source",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__SourceKind": {
+                "title": "SourceKind",
+                "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__SourceReference": {
+                "title": "SourceReference",
+                "description": "A pointer to the external or internal thing a record's claim came from.",
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "$ref": "#/$defs/records__SourceKind",
+                        "description": "What kind of thing this reference points at.",
+                    },
+                    "source_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the source within its own system of record.",
+                    },
+                    "locator": {
+                        "type": "string",
+                        "description": "Optional locator within the source, such as a path, offset, or message id.",
+                        "maxLength": 2048,
+                    },
+                    "retrieved_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the source was read to produce the record it supports.",
+                    },
+                },
+                "required": [
+                    "kind",
+                    "source_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "records__SourceSpan": {
+                "title": "SourceSpan",
+                "description": "An addressable position within a source: a pointer plus an optional character span, so evidence can be pinpointed within a source rather than only referencing the source as a whole.",
+                "type": "object",
+                "properties": {
+                    "pointer": {
+                        "type": "string",
+                        "description": "Locator within the source, such as a JSON Pointer, XPath, byte offset path, or line reference.",
+                        "maxLength": 2048,
+                    },
+                    "start_offset": {
+                        "type": "integer",
+                        "description": "Start of the span, in characters from the start of the pointed-at unit, when known.",
+                        "minimum": 0,
+                    },
+                    "end_offset": {
+                        "type": "integer",
+                        "description": "End of the span, in characters from the start of the pointed-at unit, when known.",
+                        "minimum": 0,
+                    },
+                },
+                "required": [
+                    "pointer",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "MemoryCreateResult",
+        "description": "Result of `memory.create`: the resulting proposed governed record. `provenance.identity.governance_state` is always `proposed`; this operation never creates accepted canonical knowledge.",
+        "type": "object",
+        "properties": {
+            "record": {
+                "$ref": "#/$defs/memory__GovernedRecord",
+                "description": "The newly proposed governed record.",
+            },
+        },
+        "required": [
+            "record",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
             },
             "common__Timestamp": {
                 "title": "Timestamp",

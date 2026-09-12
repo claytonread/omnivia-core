@@ -324,7 +324,7 @@ def test_every_advertised_tool_is_read_only_and_closed(
         assert tool["annotations"]["open_world_hint"] is False
         assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "1.1"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.0"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
