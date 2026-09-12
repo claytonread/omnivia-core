@@ -23,6 +23,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -338,14 +339,21 @@ def test_control_plane_barrel_has_no_getattr_or_dir_escape_hatch() -> None:
 def test_control_plane_barrel_namespace_is_exact() -> None:
     canonical = importlib.import_module("omnivia_core.control_plane")
     importlib.import_module("omnivia_core.control_plane.effects")
-    actual = {name for name in vars(canonical) if not name.startswith("_")}
-    expected = set(CANONICAL_CONTROL_PLANE_ALL) | {
-        "annotations",
-        "effects",
-        "imports",
-        "models",
-        "validation",
+    # Submodule attributes are excluded, not enumerated. Importing
+    # `omnivia_core.control_plane.X` binds `X` on the parent package, and pytest
+    # imports every collected module before running anything -- so which
+    # submodules appear here depends on which tests were SELECTED. `effects` is
+    # bound whenever test_control_plane_effect_mapping.py is collected and absent
+    # when this file runs alone, which made an enumerated expected set green one
+    # way and red the other. What this test is actually about is the barrel's
+    # exported API, so it asserts over exactly that; the submodules are reached
+    # by identity below instead.
+    actual = {
+        name
+        for name, value in vars(canonical).items()
+        if not name.startswith("_") and not isinstance(value, ModuleType)
     }
+    expected = set(CANONICAL_CONTROL_PLANE_ALL) | {"annotations"}
     assert actual == expected
     assert vars(canonical)["annotations"] is __future__.annotations
     assert canonical.effects is importlib.import_module("omnivia_core.control_plane.effects")

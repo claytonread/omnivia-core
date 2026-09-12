@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "decision": "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clayton Read",
+  "decision": "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / SPEC-CORE-SEM-001 v0.2 / Clayton Read",
   "frozen_source_head": "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3",
   "reserved_rule": "A reserved migration number is an allocation, not a file. Its SQL must remain absent from the migration directory until this authority deliberately advances that allocation's state from 'reserved' to 'candidate' in the same change that adds the file, with its content hash and introducing commit recorded here.",
   "accepted_predecessor": {
@@ -215,6 +215,50 @@
       "predecessor": 35,
       "sha256": "5eb74bfce6c2d1f4b357207e3256636c75b99dfdd225e6ab6e56697221127e73",
       "introduced_commit": "9c6a83ea966e8aa4456bed6f05e0a00693069d17",
+      "accepted_commit": null
+    },
+    {
+      "number": 37,
+      "filename": "0037_semantic_registry.sql",
+      "owner": "Semantic Registry",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 36,
+      "sha256": "d2a70981a75f9486816c3692fcd87c59b5de137d4a76d4660a9feb1c335f1716",
+      "introduced_commit": "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
+      "accepted_commit": null
+    },
+    {
+      "number": 38,
+      "filename": "0038_semantic_evidence_observations.sql",
+      "owner": "Semantic Registry",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 37,
+      "sha256": "837c9eee56626cbfc53ddce3e63ef98ec702e6dd046b98a568928806c74e7ed1",
+      "introduced_commit": "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
+      "accepted_commit": null
+    },
+    {
+      "number": 39,
+      "filename": "0039_semantic_retention_recovery.sql",
+      "owner": "Semantic Registry",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 38,
+      "sha256": "c4e6497d75b70760b474c5e298bfc2cf81fd79c165b20c89bb77f91929dea757",
+      "introduced_commit": "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
+      "accepted_commit": null
+    },
+    {
+      "number": 40,
+      "filename": "0040_semantic_temporal_source_metadata.sql",
+      "owner": "Semantic Registry",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 39,
+      "sha256": "7c7b29d5bcd64f17d973fc3365e375b6f98902313a7d05abd1417354062e79eb",
+      "introduced_commit": "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
       "accepted_commit": null
     }
   ]
