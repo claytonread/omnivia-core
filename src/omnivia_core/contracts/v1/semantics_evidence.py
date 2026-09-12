@@ -18,6 +18,8 @@ caught by an explicit type check up front and reraised as `ContractSemanticError
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -34,6 +36,8 @@ from omnivia_core.contracts.v1.generated import (
     TIMESTAMP_PATTERN,
     WORKSPACE_ID_PATTERN,
     EvidenceArtifact,
+    EvidenceCaptureInput,
+    EvidenceCaptureResult,
     EvidenceReference,
     EvidenceSearchInput,
     EvidenceSearchResult,
@@ -47,9 +51,15 @@ from omnivia_core.contracts.v1.semantics import (
 )
 
 __all__ = [
+    "EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES",
+    "EVIDENCE_CAPTURE_MAX_CONTENT_BYTES",
+    "EVIDENCE_CAPTURE_SOURCE_KIND",
     "EVIDENCE_TOMBSTONE_ACTION",
+    "decode_evidence_capture_input",
     "decode_evidence_search_input",
     "validate_evidence_artifact",
+    "validate_evidence_capture_input",
+    "validate_evidence_capture_result",
     "validate_evidence_search_input",
     "validate_evidence_search_result",
 ]
@@ -83,6 +93,32 @@ for one wire shape, wherever that shape is reached from."""
 EVIDENCE_TOMBSTONE_ACTION: Final = "tombstoned"
 """The one `ProvenanceEntry.action` value that counts as recording a tombstoning act. A
 generic `created`/`modified` entry is not evidence that a tombstone was itself audited."""
+
+EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES: Final = frozenset({"text/plain", "text/markdown"})
+"""The exact `evidence.capture` media allowlist (v1.3 section 6.2). No media-type
+parameter such as `charset=` is admitted: the value must match one of these two literal
+strings exactly, not merely start with one."""
+
+EVIDENCE_CAPTURE_MAX_CONTENT_BYTES: Final = 1_048_576
+"""The decoded-byte ceiling `evidence.capture` content must fall within (v1.3 section
+6.2), inclusive at both ends: `content_length_bytes` in `[1, 1_048_576]`."""
+
+EVIDENCE_CAPTURE_SOURCE_KIND: Final = "direct_submission"
+"""The one `SourceReference.kind` a captured evidence artifact's persisted source may
+carry (v1.3 section 6.3/6.4). `evidence.capture` never produces any other source kind."""
+
+_EVIDENCE_CAPTURE_DISPOSITIONS: Final = frozenset({"created", "already_captured"})
+"""The closed `capture_disposition` vocabulary (v1.3 section 6.3). Unlike the open codes
+elsewhere in this module, this result field is not forward-open: a caller cannot decide
+what to do with a disposition it has never seen, so an unrecognized value is rejected
+rather than preserved."""
+
+_EVIDENCE_CAPTURE_MAX_BASE64_LENGTH: Final = 4 * ((EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3)
+"""The maximum `content_base64` string length that could possibly decode to no more than
+:data:`EVIDENCE_CAPTURE_MAX_CONTENT_BYTES` bytes. Checked before any base64 decode is
+attempted, so an oversized encoded payload is rejected on its encoded length alone rather
+than after allocating the decoded buffer -- the encoded-size bound v1.3 section 6.2
+requires ahead of unbounded base64 allocation."""
 
 _EVIDENCE_ID_RE: Final = re.compile(EVIDENCE_ID_PATTERN)
 _IDENTIFIER_RE: Final = re.compile(IDENTIFIER_PATTERN)
@@ -504,3 +540,159 @@ def validate_evidence_search_result(
                 f"{label}.sensitivity {artifact.sensitivity!r} does not match the requested "
                 f"sensitivity {request.sensitivity!r}"
             )
+
+
+def _decode_evidence_capture_content(input_: EvidenceCaptureInput) -> bytes:
+    """Raise unless `input_` carries exactly one content form, and return its decoded bytes.
+
+    Checked in this order, each ahead of the next so no step does costly work a cheaper
+    prior step could have refused: exactly one of `text`/`content_base64` is present;
+    `content_base64`'s own encoded length is bounded before any decode is attempted (the
+    encoded-size bound v1.3 section 6.2 requires ahead of unbounded base64 allocation);
+    the encoded text decodes as strict RFC 4648 base64 (no whitespace tolerance, no
+    non-alphabet characters, exact padding); and only then is the decoded byte length
+    bound (:data:`EVIDENCE_CAPTURE_MAX_CONTENT_BYTES`) checked against the real decoded
+    bytes -- `text`'s own UTF-8 encoding is bounded the same way, since a `text` value is
+    already decoded and skips only the base64 step.
+    """
+    has_text = input_.text is not None
+    has_base64 = input_.content_base64 is not None
+    if has_text == has_base64:
+        raise ContractSemanticError(
+            "exactly one of text/content_base64 is required, "
+            f"found {'both' if has_text else 'neither'}"
+        )
+
+    if has_text:
+        text = _require_str(input_.text, "text")
+        try:
+            content = text.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ContractSemanticError(f"text is not valid Unicode text: {error}") from error
+    else:
+        encoded = _require_str(input_.content_base64, "content_base64")
+        if len(encoded) > _EVIDENCE_CAPTURE_MAX_BASE64_LENGTH:
+            raise ContractSemanticError(
+                f"content_base64 length {len(encoded)} exceeds the maximum of "
+                f"{_EVIDENCE_CAPTURE_MAX_BASE64_LENGTH} encoded characters, the largest "
+                f"encoding that could decode to no more than "
+                f"{EVIDENCE_CAPTURE_MAX_CONTENT_BYTES} bytes"
+            )
+        if not re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", encoded) or len(encoded) % 4 != 0:
+            raise ContractSemanticError("content_base64 is not strict RFC 4648 base64")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ContractSemanticError(f"content_base64 is not strict RFC 4648 base64: {error}") from error
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ContractSemanticError(f"content_base64 does not decode to valid UTF-8: {error}") from error
+
+    if not (1 <= len(content) <= EVIDENCE_CAPTURE_MAX_CONTENT_BYTES):
+        raise ContractSemanticError(
+            f"decoded content length {len(content)} is outside the bounded range "
+            f"[1, {EVIDENCE_CAPTURE_MAX_CONTENT_BYTES}]"
+        )
+    return content
+
+
+def validate_evidence_capture_input(input_: object) -> None:
+    """Raise unless `input_` is a structurally and semantically valid `evidence.capture`
+    input: bounded `source_native_id`/`source_version` identifiers, `media_type` restricted
+    to the exact allowlist (:data:`EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES`), exactly one of
+    `text`/`content_base64` present and decodable to 1..1,048,576 bytes of valid UTF-8
+    (:func:`_decode_evidence_capture_content`), and -- when both are present --
+    `event_at` not later than `observed_at`.
+    """
+    _require_type(input_, EvidenceCaptureInput, "input_")
+    assert isinstance(input_, EvidenceCaptureInput)
+
+    _validate_identifier(input_.source_native_id, "source_native_id")
+
+    media_type = _require_str(input_.media_type, "media_type")
+    if media_type not in EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES:
+        raise ContractSemanticError(
+            f"media_type {media_type!r} is not one of {sorted(EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES)!r}"
+        )
+
+    _decode_evidence_capture_content(input_)
+
+    if input_.source_version is not None:
+        _validate_identifier(input_.source_version, "source_version")
+
+    event_at = None
+    observed_at = None
+    if input_.event_at is not None:
+        event_at = _parse_timestamp(input_.event_at, "event_at")
+    if input_.observed_at is not None:
+        observed_at = _parse_timestamp(input_.observed_at, "observed_at")
+    if event_at is not None and observed_at is not None and event_at > observed_at:
+        raise ContractSemanticError(
+            f"event_at {input_.event_at!r} is after observed_at {input_.observed_at!r}"
+        )
+
+
+def decode_evidence_capture_input(payload: object, path: str = "EvidenceCaptureInput") -> EvidenceCaptureInput:
+    """Decode and fully validate `payload` into a semantically valid `EvidenceCaptureInput`."""
+    input_ = EvidenceCaptureInput.from_wire(payload, path)
+    validate_evidence_capture_input(input_)
+    return input_
+
+
+def validate_evidence_capture_result(result: object) -> None:
+    """Raise unless `result` is an internally coherent `evidence.capture` result:
+    bounded `evidence_id`; `source` is exactly `{kind: "direct_submission", source_id}`
+    with a bounded, pattern-valid `source_id` and no `locator`/`retrieved_at` (a direct
+    submission's identity is the caller-supplied native id alone, never a locator or a
+    retrieval instant borrowed from some other source kind); `media_type` restricted to
+    the exact allowlist (:data:`EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES`); `content_checksum`
+    is shape-valid and specifically a lowercase `sha256:` digest, not merely any
+    `EvidenceChecksum`-shaped algorithm; `content_length_bytes` falls in
+    `[1, 1_048_576]`; and `capture_disposition` is one of the closed
+    `created`/`already_captured` vocabulary.
+    """
+    _require_type(result, EvidenceCaptureResult, "result")
+    assert isinstance(result, EvidenceCaptureResult)
+
+    _validate_evidence_id(result.evidence_id, "evidence_id")
+
+    source = result.source
+    _require_type(source, SourceReference, "source")
+    assert isinstance(source, SourceReference)
+    if source.kind != EVIDENCE_CAPTURE_SOURCE_KIND:
+        raise ContractSemanticError(
+            f"source.kind {source.kind!r} must be {EVIDENCE_CAPTURE_SOURCE_KIND!r}"
+        )
+    _validate_identifier(source.source_id, "source.source_id")
+    if source.locator is not None:
+        raise ContractSemanticError("source.locator must be absent for a direct_submission source")
+    if source.retrieved_at is not None:
+        raise ContractSemanticError("source.retrieved_at must be absent for a direct_submission source")
+
+    media_type = _require_str(result.media_type, "media_type")
+    if media_type not in EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES:
+        raise ContractSemanticError(
+            f"media_type {media_type!r} is not one of {sorted(EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES)!r}"
+        )
+
+    checksum = _require_str(result.content_checksum, "content_checksum")
+    _validate_evidence_checksum(checksum, "content_checksum")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", checksum):
+        raise ContractSemanticError(
+            f"content_checksum {checksum!r} must be a lowercase sha256:<64 hex digits> digest"
+        )
+
+    length = _require_int(result.content_length_bytes, "content_length_bytes")
+    if not (1 <= length <= EVIDENCE_CAPTURE_MAX_CONTENT_BYTES):
+        raise ContractSemanticError(
+            f"content_length_bytes {length} is outside the bounded range "
+            f"[1, {EVIDENCE_CAPTURE_MAX_CONTENT_BYTES}]"
+        )
+
+    disposition = _require_str(result.capture_disposition, "capture_disposition")
+    if disposition not in _EVIDENCE_CAPTURE_DISPOSITIONS:
+        raise ContractSemanticError(
+            f"capture_disposition {disposition!r} is not one of "
+            f"{sorted(_EVIDENCE_CAPTURE_DISPOSITIONS)!r}"
+        )
