@@ -146,42 +146,6 @@ def backup_database(source: Path, destination: Path) -> Path:
     return destination
 
 
-def compact_database(source: Path, destination: Path) -> Path:
-    """Write a compacted copy of `source` to `destination` via `VACUUM INTO`.
-
-    Refuses to overwrite an existing destination, for the same reason
-    `backup_database` does: a compaction routine that clobbers can destroy the only
-    remaining copy. `VACUUM INTO` takes its own consistent snapshot of the source, so
-    this is as safe to run against a live database as `backup_database` is -- and,
-    unlike a page-for-page copy, it also defragments and drops free pages, which is
-    the property that makes the result a *compacted* copy rather than merely another
-    one.
-
-    The source is opened `mode=ro` at the connection URI rather than through
-    `open_database`'s `OpenMode.READ_ONLY`: that mode also sets `PRAGMA
-    query_only = ON`, which SQLite applies to every file the connection writes, the
-    fresh `VACUUM INTO` target included -- so the same pragma that protects `source`
-    from a write would refuse the compacted copy's own creation. `mode=ro` alone
-    still makes the source itself un-writable at the VFS level.
-    """
-    if not source.is_file():
-        raise BackupError(f"no database to compact at {source}")
-    if destination.exists():
-        raise BackupError(
-            f"refusing to overwrite an existing compaction target at {destination}"
-        )
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    uri = source.resolve().as_uri().replace("file://", "file:", 1)
-    source_connection = sqlite3.connect(f"{uri}?mode=ro", uri=True)
-    try:
-        source_connection.execute("VACUUM INTO ?", (str(destination),))
-    finally:
-        source_connection.close()
-    return destination
-
-
 def verify_backup(source: Path, backup: Path, attempt_id: str) -> VerifiedBackup:
     """Integrity-check a backup and compare its contents against the source."""
     source_connection = open_database(source, OpenMode.READ_ONLY)
@@ -277,7 +241,6 @@ __all__ = [
     "InstallationLayout",
     "VerifiedBackup",
     "backup_database",
-    "compact_database",
     "create_verified_backup",
     "new_attempt_id",
     "restore_backup",

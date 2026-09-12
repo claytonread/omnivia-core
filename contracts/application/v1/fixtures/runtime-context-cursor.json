@@ -1,9 +1,0 @@
-{
-  "attempt_id": "attempt-child-1",
-  "issued_at": "2026-08-22T09:00:04Z",
-  "max_items": 2,
-  "next_sequence": 0,
-  "run_id": "run-0002",
-  "run_step_id": "step-child",
-  "workspace_id": "ws-runtime-1"
-}
