@@ -180,28 +180,28 @@ def test_0041_adds_one_index_and_touches_nothing_else() -> None:
         assert forbidden not in executed, forbidden
 
     without = sqlite3.connect(":memory:")
-    with_37 = sqlite3.connect(":memory:")
+    with_41 = sqlite3.connect(":memory:")
     try:
-        for connection in (without, with_37):
+        for connection in (without, with_41):
             connection.executescript(m2.phase0_baseline_sql())
         for migration in load_migrations():
             if migration.version < MIGRATION_VERSION:
                 without.executescript(migration.sql)
             if migration.version <= MIGRATION_VERSION:
-                with_37.executescript(migration.sql)
+                with_41.executescript(migration.sql)
 
         before = m2.fingerprint_schema(without)
-        after = m2.fingerprint_schema(with_37)
+        after = m2.fingerprint_schema(with_41)
         assert after.tables == before.tables
         assert after.triggers == before.triggers
         assert after.indexes - before.indexes == 1
         assert after.digest != before.digest
-        assert m2.object_names(with_37, "index") - m2.object_names(without, "index") == {
-            INDEX
-        }
+        assert m2.object_names(with_41, "index") - m2.object_names(
+            without, "index"
+        ) == {INDEX}
     finally:
         without.close()
-        with_37.close()
+        with_41.close()
 
 
 def test_0041_index_key_is_the_whole_source_identity_tuple(migrated: Path) -> None:
@@ -259,10 +259,18 @@ def test_0041_refuses_a_repeated_identity_whose_nullable_members_are_null() -> N
         # And with only one of the two absent, in each direction.
         add(connection, "evd-located", **submission(source_locator="mcp://doc-1"))
         with pytest.raises(sqlite3.IntegrityError, match=COLLISION):
-            add(connection, "evd-located-again", **submission(source_locator="mcp://doc-1"))
+            add(
+                connection,
+                "evd-located-again",
+                **submission(source_locator="mcp://doc-1"),
+            )
         add(connection, "evd-timed", **submission(source_retrieved_at_us=BASE_US))
         with pytest.raises(sqlite3.IntegrityError, match=COLLISION):
-            add(connection, "evd-timed-again", **submission(source_retrieved_at_us=BASE_US))
+            add(
+                connection,
+                "evd-timed-again",
+                **submission(source_retrieved_at_us=BASE_US),
+            )
         assert m2.count(connection, EVIDENCE) == 3
     finally:
         connection.close()
@@ -311,7 +319,9 @@ def test_0041_refuses_the_repeat_in_a_live_guarded_workspace(migrated: Path) -> 
         m2.seed_chain(holder)
         m2.write(holder, EVIDENCE, evidence_id="evd-submitted", **submission())
         with pytest.raises(sqlite3.IntegrityError, match=COLLISION):
-            m2.write(holder, EVIDENCE, evidence_id="evd-submitted-again", **submission())
+            m2.write(
+                holder, EVIDENCE, evidence_id="evd-submitted-again", **submission()
+            )
 
         rows = holder.connection.execute(
             f"SELECT evidence_id FROM {EVIDENCE} "
@@ -412,7 +422,7 @@ def test_0041_is_pinned_by_content_and_never_applied_twice(migrated: Path) -> No
 def test_0041_cannot_be_edited_after_it_has_been_applied(
     migrated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A changed 0037 is detected, not silently accepted as already done."""
+    """A changed 0041 is detected, not silently accepted as already done."""
     edited = Migration(
         version=MIGRATION_VERSION,
         name=MIGRATION_NAME,

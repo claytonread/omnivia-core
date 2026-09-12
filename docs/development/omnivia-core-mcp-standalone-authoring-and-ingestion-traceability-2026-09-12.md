@@ -16,7 +16,7 @@ product acceptance evidence.
 
 **Branch:** `codex/core-mcp-completion-integration`
 
-**Qualified implementation:** `44b8cd5729578f5a4e2d858f99f816f5613f3458`
+**Qualified implementation:** `6d8112454ac6cbdc1ac6952370efdec888885112`
 
 **Specification baseline:** `990b0f980c633840922170976c73b8f966361eab`
 
@@ -486,7 +486,7 @@ What closed the two review rows that were `partial`:
 ## 9. Phase 8 qualification evidence
 
 `docs/development/qualification-evidence/mcp-real-host-qualification.json` was
-produced from `44b8cd5729578f5a4e2d858f99f816f5613f3458`. It contains no prompt,
+produced from `6d8112454ac6cbdc1ac6952370efdec888885112`. It contains no prompt,
 transcript, path, endpoint, credential, grant, process identifier, account,
 workspace identifier, job identifier, record identifier, content or free-form
 diagnostic. It retains only closed-vocabulary facts, versions, counts, boolean

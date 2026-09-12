@@ -364,6 +364,13 @@ def test_every_green_host_row_is_backed_by_the_guarded_record() -> None:
     assert harness.verify_record(document, commit=document.get("commit")) == [], (
         "a green HOST row is backed by a record that fails its own guard"
     )
+    qualified = re.search(
+        r"\*\*Qualified implementation:\*\* `([0-9a-f]{40})`", DOCUMENT
+    )
+    assert qualified is not None, "the traceability record names no qualified commit"
+    assert document["commit"] == qualified.group(1), (
+        "the retained host record is not bound to the implementation traced here"
+    )
     assert all(
         "docs/development/qualification-evidence/mcp-real-host-qualification.json"
         in row
