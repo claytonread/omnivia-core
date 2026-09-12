@@ -42,6 +42,7 @@ from omnivia_core_client import (
     InstalledConfigStore,
     InstalledCredentialStore,
     installed_credentials,
+    owner_private,
 )
 
 REFERENCE = CredentialReference("omcp-0123456789abcdef")
@@ -439,7 +440,9 @@ def test_the_credential_store_also_refuses_a_component_it_cannot_restrict(
     duplicating -- or omitting -- it.
     """
     monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
-    monkeypatch.setattr(installed_credentials, "restrict_to_owner", lambda _p: False)
+    monkeypatch.setattr(
+        installed_credentials, "restrict_to_owner", lambda _p, *, directory: False
+    )
     with pytest.raises(CredentialUnavailableError):
         store(tmp_path).store(REFERENCE, Credential(SECRET))
     assert not directory(tmp_path).exists()
@@ -1359,9 +1362,9 @@ def test_the_pathname_form_restricts_each_created_component_in_order(
     restricted: list[str] = []
     real = installed_credentials.restrict_to_owner
 
-    def watched(path: Path) -> bool:
+    def watched(path: Path, *, directory: bool) -> bool:
         restricted.append(path.name)
-        return real(path)
+        return real(path, directory=directory)
 
     monkeypatch.setattr(installed_credentials, "restrict_to_owner", watched)
     assert configs(tmp_path).write(HOST, DOCUMENT) is True
@@ -1386,9 +1389,9 @@ def test_the_pathname_form_does_not_restrict_a_component_it_did_not_create(
     restricted: list[str] = []
     real = installed_credentials.restrict_to_owner
 
-    def watched(path: Path) -> bool:
+    def watched(path: Path, *, directory: bool) -> bool:
         restricted.append(path.name)
-        return real(path)
+        return real(path, directory=directory)
 
     monkeypatch.setattr(installed_credentials, "restrict_to_owner", watched)
     assert configs(tmp_path).write(HOST, DOCUMENT) is True
@@ -1407,7 +1410,9 @@ def test_a_component_that_cannot_be_restricted_ends_the_walk_before_the_next_is_
     an unrestricted -- and therefore unproved -- parent.
     """
     monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
-    monkeypatch.setattr(installed_credentials, "restrict_to_owner", lambda _p: False)
+    monkeypatch.setattr(
+        installed_credentials, "restrict_to_owner", lambda _p, *, directory: False
+    )
     assert configs(tmp_path).write(HOST, DOCUMENT) is False
     assert (tmp_path / CONFIGURATION_STORE_DIRECTORY[0]).is_dir()
     assert not (
@@ -1427,7 +1432,7 @@ def test_the_pathname_form_restricts_the_temporary_file_before_a_byte_is_written
     config = configs(tmp_path)
     assert config.write(HOST, DOCUMENT) is True
 
-    def refuse_only_the_temporary(path: Path) -> bool:
+    def refuse_only_the_temporary(path: Path, *, directory: bool) -> bool:
         return path.suffix != ".partial"
 
     monkeypatch.setattr(
@@ -1545,3 +1550,46 @@ def test_the_two_forms_agree_on_what_is_written(tmp_path: Path) -> None:
             assert store.read(HOST) == DOCUMENT
             assert store.health(HOST) == "present"
             assert store.remove(HOST) is True
+
+
+# --- end to end, on a real Windows host ---------------------------------------
+#
+# Every case above doubles the Win32 calls or `subprocess.run`, because neither
+# can run off Windows. This is the one test that doubles nothing: it drives
+# both installed stores through a real installation-state layout on this host
+# and asks the real native owner-and-DACL reader whether what they wrote is
+# what they, and it, agree is owner-private. It skips only off Windows, and
+# never on it.
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="exercises the real Windows ACL writer and reader"
+)
+def test_the_installed_stores_agree_with_the_native_reader_on_real_windows(
+    tmp_path: Path,
+) -> None:
+    """`restrict_to_owner`'s `icacls` writer and `owner_private`'s native reader,
+    proved to agree through the two stores that depend on both of them."""
+    credentials = store(tmp_path)
+    credentials.store(REFERENCE, Credential(SECRET))
+    assert credentials.resolve(REFERENCE).reveal() == SECRET
+    assert credentials.health(REFERENCE) == "present"
+
+    descriptor = os.open(stored_file(tmp_path), os.O_RDONLY)
+    try:
+        metadata = os.fstat(descriptor)
+        assert owner_private.owner_private_file(metadata, descriptor) is True
+    finally:
+        os.close(descriptor)
+    assert owner_private.owner_private_directory(directory(tmp_path)) is True
+
+    configuration = configs(tmp_path)
+    assert configuration.write(HOST, DOCUMENT) is True
+    assert configuration.read(HOST) == DOCUMENT
+    assert configuration.health(HOST) == "present"
+    assert owner_private.owner_private_directory(config_directory(tmp_path)) is True
+
+    credentials.remove(REFERENCE)
+    assert credentials.health(REFERENCE) == "absent"
+    configuration.remove(HOST)
+    assert configuration.health(HOST) == "absent"

@@ -546,7 +546,7 @@ def _proved_chain(
                     # Losing a race to create it is not a failure; the proof at
                     # the end decides, and it decides on what is actually there.
                     created = False
-                if created and not restrict_to_owner(target):
+                if created and not restrict_to_owner(target, directory=True):
                     # A component this call just made could not be restricted to
                     # this user alone. Stopping here, rather than falling through
                     # to the proof below, is what keeps a child from ever being
@@ -614,7 +614,7 @@ def _write_by_path(
         descriptor, temporary = tempfile.mkstemp(
             dir=str(directory), suffix=_PARTIAL_SUFFIX
         )
-        failed = not restrict_to_owner(Path(temporary))
+        failed = not restrict_to_owner(Path(temporary), directory=False)
         if not failed:
             metadata = os.fstat(descriptor)
             failed = not owner_private_file(metadata, descriptor) or not _write_all(

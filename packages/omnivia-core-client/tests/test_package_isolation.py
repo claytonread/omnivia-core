@@ -283,9 +283,18 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     derives a filename from a credential reference by digesting it, which is what
     keeps a valid reference from spelling a reserved device name or colliding
     with another on a case-insensitive filesystem.
+
+    ``subprocess`` is shared with ``owner_private.py`` for a narrow reason of its
+    own: ``restrict_to_owner``'s Windows writer shells out to ``whoami.exe`` and
+    ``icacls.exe`` rather than calling a native security API directly, because a
+    wrong native call is silent and a wrong ``icacls`` argument is a non-zero
+    exit this module can see. That sets a file's owner and ACL; it never
+    locates, starts or stops a process, which is why it belongs here rather than
+    being exempted from this test.
     """
     shared = {
         "hashlib": {"installed_credentials.py"},
+        "subprocess": {"owner_private.py"},
         "tempfile": {"installed_credentials.py", "owner_private.py"},
     }
     for imported in (

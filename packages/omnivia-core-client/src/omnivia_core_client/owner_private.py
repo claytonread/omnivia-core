@@ -50,7 +50,9 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import stat
+import subprocess
 import tempfile
 from collections.abc import Sequence
 from ctypes import wintypes
@@ -90,22 +92,20 @@ _ACCESS_DENIED_ACE_TYPE: Final = 1
 _ALLOWED_ACE_MASK_OFFSET: Final = 4
 _ALLOWED_ACE_SID_OFFSET: Final = 8
 _MINIMUM_SID_BYTES: Final = 8
-_ACL_REVISION: Final = 2
 
-#: Set alongside the new DACL so it replaces whatever the parent would otherwise
-#: contribute by inheritance, rather than being merged with it -- the one thing
-#: :func:`restrict_to_owner` exists to override.
-_PROTECTED_DACL_SECURITY_INFORMATION: Final = 0x80000000
+#: The `icacls` rights :func:`restrict_to_owner` grants the owner alone -- the
+#: repository's already hosted mechanism (see the Core Runtime distribution's
+#: `ownership/discovery.py`, function `_restrict_windows`, and
+#: `scripts/run-standard-journey.py`'s `_windows_owner_only`), repeated here
+#: rather than imported, since this package may depend on neither. A directory
+#: carries `(OI)(CI)` so anything created below it inherits this one entry
+#: instead of whatever the parent would otherwise contribute -- the closest
+#: Windows has to a POSIX `0o700` that also binds new children.
+_WINDOWS_DIRECTORY_RIGHTS: Final = "(OI)(CI)F"
+_WINDOWS_FILE_RIGHTS: Final = "F"
 
-#: `FILE_ALL_ACCESS`: what the one ACE in a freshly restricted object's DACL
-#: grants its owner. The verdict this module reads back does not care which
-#: rights an owner ACE names -- only that every ACE names the owner -- so this is
-#: generous rather than load-bearing.
-_OWNER_FULL_ACCESS: Final = 0x1F01FF
-
-#: Comfortably more than an `ACL` header plus one ACE naming the longest SID a
-#: token user can have; there is no reason to size this exactly.
-_OWNER_ONLY_ACL_BYTES: Final = 1024
+#: `whoami /user` reports the SID in this form, mixed into a CSV row.
+_SID_RE: Final = re.compile(r"S-1-[0-9-]+")
 
 #: Every access right that lets a holder change what a directory contains, or
 #: change who may.
@@ -217,23 +217,6 @@ class _SecurityApi(Protocol):
         security: object,
     ) -> int: ...
 
-    def SetNamedSecurityInfoW(
-        self,
-        name: str,
-        kind: int,
-        wanted: int,
-        owner: object,
-        group: object,
-        dacl: object,
-        sacl: object,
-    ) -> int: ...
-
-    def InitializeAcl(self, acl: object, length: int, revision: int) -> int: ...
-
-    def AddAccessAllowedAce(
-        self, acl: object, revision: int, mask: int, sid: object
-    ) -> int: ...
-
     def GetCurrentProcess(self) -> int: ...
 
     def OpenProcessToken(self, process: int, access: int, token: object) -> int: ...
@@ -293,32 +276,6 @@ class _WinSecurityApi:
             address,
         ]
         self.GetNamedSecurityInfoW.restype = wintypes.DWORD
-        self.SetNamedSecurityInfoW = advapi32.SetNamedSecurityInfoW
-        self.SetNamedSecurityInfoW.argtypes = [
-            wintypes.LPWSTR,
-            ctypes.c_int,
-            wintypes.DWORD,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-        ]
-        self.SetNamedSecurityInfoW.restype = wintypes.DWORD
-        self.InitializeAcl = advapi32.InitializeAcl
-        self.InitializeAcl.argtypes = [
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            wintypes.DWORD,
-        ]
-        self.InitializeAcl.restype = wintypes.BOOL
-        self.AddAccessAllowedAce = advapi32.AddAccessAllowedAce
-        self.AddAccessAllowedAce.argtypes = [
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            ctypes.c_void_p,
-        ]
-        self.AddAccessAllowedAce.restype = wintypes.BOOL
         self.GetCurrentProcess = kernel32.GetCurrentProcess
         self.GetCurrentProcess.argtypes = []
         self.GetCurrentProcess.restype = wintypes.HANDLE
@@ -597,66 +554,91 @@ def _windows_owner_only_directory(path: Path) -> bool:
     return _windows_directory_verdict(path, owner_only=True)
 
 
-def _owner_only_acl(
-    api: _SecurityApi, owner_sid: bytes
-) -> ctypes.Array[ctypes.c_char] | None:
-    """One DACL, built fresh in native memory, that grants only `owner_sid`.
+def _system32(program: str) -> str:
+    """An absolute path to a Windows system tool.
 
-    Built rather than read: the whole point of :func:`restrict_to_owner` is to
-    stop trusting whatever DACL Windows gave a new object at creation and hand it
-    one this process chose instead.
+    Resolving through `PATH` would let any directory earlier on it supply the
+    program that sets an object's ACL, which is backwards for a restriction.
+    `SystemRoot` is where these live and is not always `C:\\Windows`.
     """
-    acl = ctypes.create_string_buffer(_OWNER_ONLY_ACL_BYTES)
-    if not api.InitializeAcl(acl, _OWNER_ONLY_ACL_BYTES, _ACL_REVISION):
-        return None
-    sid = ctypes.create_string_buffer(owner_sid, len(owner_sid))
-    if not api.AddAccessAllowedAce(acl, _ACL_REVISION, _OWNER_FULL_ACCESS, sid):
-        return None
-    return acl
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
 
 
-def _windows_restrict_to_owner(path: Path) -> bool:
+def _windows_restrict_to_owner(path: Path, *, directory: bool) -> bool:
     """Set `path`'s owner and DACL to this process's user alone, or answer ``False``.
 
-    By name rather than by handle: a directory this module just made with
-    ``mkdir`` has no open descriptor here, and the descriptor ``tempfile.mkstemp``
-    returns for a fresh file was not opened with ``WRITE_DAC``/``WRITE_OWNER``.
-    ``SetNamedSecurityInfoW`` checks the caller against the object's *current*
-    owner and DACL rather than against any handle's already-granted rights,
-    which is what lets the process that just created the object -- and so either
-    is its owner already or belongs to the group Windows made its owner -- set
-    both without one.
+    `icacls`, not `ctypes`. A prior version of this function called
+    `SetNamedSecurityInfoW` directly. It passed every test written for it and
+    failed on the one host that matters, because no host in this repository can
+    exercise Windows: a wrong `ctypes` security call either does nothing or
+    writes a security descriptor nobody intended, and both failures are silent.
+    A wrong `icacls` argument is a non-zero exit this function can see. The cost
+    is a process launch per command rather than one native call, paid once per
+    object created, never in a loop.
 
-    ``PROTECTED_DACL_SECURITY_INFORMATION`` is set alongside the DACL so the new
-    one replaces what the parent would otherwise contribute by inheritance
-    instead of being merged with it: that inherited contribution, on a host whose
-    token makes it wider than this user alone, is the failure this function
-    exists to close.
+    The sequence -- `/setowner`, `/reset`, then `/inheritance:r` with
+    `/grant:r` -- and the SID it names are this repository's already hosted
+    mechanism, repeated here rather than imported: see the Core Runtime
+    distribution's `ownership/discovery.py`, function `_restrict_windows`, and
+    `scripts/run-standard-journey.py`'s `_windows_owner_only`. `/setowner`
+    first, because ownership comes from the token, not the DACL, and an
+    elevated administrator's token makes it `BUILTIN\\Administrators` rather
+    than this user. `/reset` drops whatever explicit entries an installer or a
+    prior default left, which `/inheritance:r` alone would not touch;
+    `/inheritance:r` together with `/grant:r` drops the inherited entries too,
+    marks the DACL protected so a permissive parent cannot re-supply them, and
+    leaves one allow ACE naming this process's own SID -- read from `whoami
+    /user`'s closed CSV grammar, the same one this repository's other Windows
+    SID readers use, rather than from a `ctypes` token query.
+
+    `directory` is why this takes it rather than asking the filesystem: the
+    rights an owner-only object needs differ by kind -- `(OI)(CI)F` so a
+    directory's children inherit this one entry, or plain `F` for a file, which
+    has none -- and the caller that just created the object already knows which
+    one it made.
+
+    Every step runs in order and the first failure ends the sequence: a
+    non-zero `icacls` exit, a SID this call could not read, or any exception at
+    all, including one raised by `subprocess` or while decoding a tool's
+    output. Nothing about a failure is kept -- not the path, the SID, the
+    command, or what either tool wrote to its own streams. A caller that cannot
+    restrict an object it just created has no safe way to use it, and no
+    diagnostic here is worth the risk of one of those reaching a log or a
+    traceback.
     """
+    rights = _WINDOWS_DIRECTORY_RIGHTS if directory else _WINDOWS_FILE_RIGHTS
     try:
-        api = _security_api()
-        owner_sid = _token_user_sid(api)
-        acl = _owner_only_acl(api, owner_sid)
-        if acl is None:
-            return False
-        owner = ctypes.create_string_buffer(owner_sid, len(owner_sid))
-        result = api.SetNamedSecurityInfoW(
-            str(path),
-            _SE_FILE_OBJECT,
-            _OWNER_SECURITY_INFORMATION
-            | _DACL_SECURITY_INFORMATION
-            | _PROTECTED_DACL_SECURITY_INFORMATION,
-            owner,
-            None,
-            acl,
-            None,
+        identity = subprocess.run(
+            [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
         )
-    except Exception:  # noqa: BLE001 -- platform verifier must fail closed.
+        found = _SID_RE.search(identity.stdout) if identity.returncode == 0 else None
+        if found is None:
+            return False
+        sid = found.group()
+        for arguments in (
+            ("/setowner", f"*{sid}"),
+            ("/reset",),
+            ("/inheritance:r", "/grant:r", f"*{sid}:{rights}"),
+        ):
+            completed = subprocess.run(
+                [_system32("icacls.exe"), str(path), *arguments, "/q"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if completed.returncode != 0:
+                return False
+    except Exception:  # noqa: BLE001 -- platform writer must fail closed.
         return False
-    return result == 0
+    return True
 
 
-def restrict_to_owner(path: Path) -> bool:
+def restrict_to_owner(path: Path, *, directory: bool) -> bool:
     """Make sure nobody but this process's user can reach an object just created.
 
     A no-op success off Windows, where the mode already given to ``mkdir`` or
@@ -673,10 +655,15 @@ def restrict_to_owner(path: Path) -> bool:
     this could not restrict is never treated as restricted merely because a
     later read-only proof happened to find the host's inherited defaults narrow
     enough by chance.
+
+    `directory` is required rather than inferred from `path`: every call site
+    already knows what kind of object it just created, and asking the
+    filesystem again would be asking a name a racing attacker can move between
+    the two calls.
     """
     if not _IS_WINDOWS:
         return True
-    return _windows_restrict_to_owner(path)
+    return _windows_restrict_to_owner(path, directory=directory)
 
 
 def owner_private_file(metadata: os.stat_result, descriptor: int) -> bool:
@@ -881,7 +868,9 @@ def write_owner_private(path: Path, content: bytes) -> bool:
             directory.mkdir(parents=True, mode=_NEW_DIRECTORY_MODE)
         except OSError:
             return False
-        if not restrict_to_owner(directory) or not owner_private_directory(directory):
+        if not restrict_to_owner(
+            directory, directory=True
+        ) or not owner_private_directory(directory):
             return False
     descriptor, temporary = -1, ""
     failed = False
@@ -889,7 +878,7 @@ def write_owner_private(path: Path, content: bytes) -> bool:
         descriptor, temporary = tempfile.mkstemp(
             dir=str(directory), suffix=_PARTIAL_SUFFIX
         )
-        failed = not restrict_to_owner(Path(temporary))
+        failed = not restrict_to_owner(Path(temporary), directory=False)
         if not failed:
             metadata = os.fstat(descriptor)
             failed = not owner_private_file(metadata, descriptor) or not _write_all(
