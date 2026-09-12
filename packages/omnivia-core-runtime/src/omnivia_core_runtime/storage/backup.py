@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -74,6 +75,20 @@ _ROOT_RESTRICTION_FAILURE = (
     "could not restrict a newly created installation-state root to its owner"
 )
 
+#: Fixed and path-free, for the one failure `_create_owner_private_component`
+#: raises directly -- same reasoning as `_ROOT_RESTRICTION_FAILURE`, for a
+#: layout component beneath the root rather than the root itself.
+_COMPONENT_RESTRICTION_FAILURE = (
+    "could not restrict a newly created installation-state component to its owner"
+)
+
+#: Windows marks a junction or mount point with this attribute; the entry is a
+#: directory to `stat` regardless, so this is the only signal that tells the
+#: two apart. Mirrors `distribution/trusted_runtime.py`'s
+#: `_FILE_ATTRIBUTE_REPARSE_POINT`, restated here rather than imported --
+#: `storage` and `distribution` do not otherwise depend on each other.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
 
 class BackupError(StorageError):
     """A backup could not be created or could not be verified."""
@@ -96,7 +111,7 @@ def _windows_restrict_root(path: Path) -> bool:
     exists to keep closed. `/setowner` first, because ownership comes from the
     token rather than the DACL; `/reset` drops explicit entries `/inheritance:r`
     does not touch; `/inheritance:r` with `/grant:r` drops the inherited entries
-    too and leaves one allow ACE naming this process's own SID, read from
+    too and leaves one allow ACE naming the owning OS user's own SID, read from
     `whoami /user`'s closed CSV grammar. Every step runs in order and the first
     failure ends the sequence.
     """
@@ -154,6 +169,69 @@ def _restrict_root_to_owner(path: Path) -> bool:
     return _windows_restrict_root(path)
 
 
+def _is_real_directory_no_follow(path: Path) -> bool:
+    """Whether a path `mkdir` found already there is a real, unlinked directory
+    rather than something merely shaped like one.
+
+    Decided from `os.lstat` metadata, never from `Path.is_dir()`: `is_dir()`
+    follows a POSIX symlink to whatever it names, and on Windows does not
+    distinguish an ordinary directory from a junction or mount point --
+    either one is a directory to every check but this one, and either would
+    let a pre-existing path silently redirect where a later child actually
+    gets created. `S_ISDIR` alone already excludes a symlink: `lstat` reports
+    the link itself, never the kind of what it points at.
+    """
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        == 0
+    )
+
+
+def _create_owner_private_component(path: Path) -> None:
+    """Create exactly `path` -- not its parents -- owner-private, restricting
+    it before returning if this call is the one that created it.
+
+    The same invariant `InstallationLayout._ensure_root` establishes for the
+    root, extended to every component `create()` makes beneath it: a brand
+    new directory inherits whatever DACL its parent's inheritance supplies on
+    Windows, and `runtime/<workspace-id>` left at that inherited DACL is what
+    a hosted Windows runner's `InstalledCredentialStore` parent-chain proof
+    refused, even with an owner-private root above it.
+
+    A `FileExistsError` is accepted only when `path` is already a real
+    directory -- left exactly as found, never re-restricted, since it may be
+    this call's own prior work or a pre-existing directory of somebody
+    else's that downstream store proofs remain responsible for refusing.
+    Any other pre-existing component, including a file, propagates that
+    error closed.
+
+    Fails closed the same way the root does: a component this call created
+    but could not restrict is rolled back -- a plain, non-recursive `rmdir`
+    of that exact empty directory, never a pre-existing path or anything
+    created beneath it -- before raising one fixed, path-free `BackupError`,
+    so a retry finds it absent and creates and restricts it again rather
+    than reading a bare, unrestricted directory as somebody else's.
+    """
+    try:
+        path.mkdir(mode=_ROOT_MODE)
+    except FileExistsError:
+        if _is_real_directory_no_follow(path):
+            return
+        raise
+    if _restrict_root_to_owner(path):
+        return
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+    raise BackupError(_COMPONENT_RESTRICTION_FAILURE)
+
+
 @dataclass(frozen=True)
 class InstallationLayout:
     """Installation-local state, deliberately outside the portable workspace.
@@ -195,13 +273,28 @@ class InstallationLayout:
         return self.catalogue / INSTALLATION_LOCK
 
     def create(self, workspace_id: str) -> None:
+        """Bring this workspace's directories into being under an
+        already owner-private root.
+
+        Each component is created and restricted to its owner in turn,
+        before its descendant is created -- `backups`, then its workspace
+        child, then `attempts` and its workspace child, then `runtime` and
+        its workspace child -- rather than `mkdir(parents=True)`, which
+        would create the whole chain in one call and leave every
+        intermediate directory to inherit its parent's DACL on Windows
+        instead of the owner-only one `_create_owner_private_component`
+        applies to each.
+        """
         self._ensure_root()
-        for path in (
+        for component in (
+            self.root / BACKUPS_DIR,
             self.root / BACKUPS_DIR / workspace_id,
+            self.root / ATTEMPTS_DIR,
             self.attempts_for(workspace_id),
+            self.root / RUNTIME_DIR,
             self.runtime_for(workspace_id),
         ):
-            path.mkdir(parents=True, exist_ok=True)
+            _create_owner_private_component(component)
 
     def _ensure_root(self) -> None:
         """Bring the installation-state root into being, owner-private from the
@@ -250,7 +343,7 @@ class InstallationLayout:
         try:
             self.root.mkdir(parents=True, mode=_ROOT_MODE)
         except OSError:
-            if not self.root.is_dir():
+            if not _is_real_directory_no_follow(self.root):
                 raise
             return
         if _restrict_root_to_owner(self.root):
