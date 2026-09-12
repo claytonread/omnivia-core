@@ -117,6 +117,252 @@ def test_journey_has_no_skip_or_xfail_path() -> None:
     assert not {"skip", "skipif", "xfail", "importorskip"} & attributes
 
 
+def test_journey_provisions_the_mcp_setup_through_installed_configure() -> None:
+    """The real journey path uses `mcp configure`, never a hand-written config.
+
+    A legacy `omnivia.mcp-config.v1` written without a `credential_reference`
+    is exactly the shape the installed MCP server now refuses, so the source
+    must define no function that writes one, and `run` must reach the
+    installed CLI's `configure` and `status` commands -- in that order, and
+    before the host-interoperability proof that actually starts the server.
+    """
+    source = JOURNEY.read_text(encoding="utf-8")
+    assert "_write_mcp_configuration" not in source
+
+    tree = _tree()
+    (run_function,) = (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "run"
+    )
+    # Compared by source line rather than `ast.walk` order, which is
+    # breadth-first and does not track how the two calls are actually
+    # sequenced once they sit at different nesting depths.
+    lines = {
+        node.func.id: node.lineno
+        for node in ast.walk(run_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"_provision_restricted_mcp", "_host_interoperability"}
+    }
+    assert lines["_provision_restricted_mcp"] < lines["_host_interoperability"]
+
+    (provision_function,) = (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_provision_restricted_mcp"
+    )
+    admin_calls = [
+        node.func.id
+        for node in ast.walk(provision_function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert admin_calls.count("_mcp_admin") == 2
+
+    provisioned = {
+        node.value
+        for node in ast.walk(provision_function)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert {
+        "configure",
+        "status",
+        "--host",
+        "--workspace",
+        "--profile",
+        "--json",
+    } <= provisioned
+
+
+def test_the_journey_registers_a_workspace_before_configuring_mcp() -> None:
+    """Registration happens first, and the same identifiers flow through.
+
+    `mcp configure` refuses a workspace that is not in the installation's
+    authorised inventory, and only `workspace.create` -- reached here through
+    `_register_workspace` -- puts one there. The assignment target proves the
+    rest of the journey (capture, governance, MCP, crash recovery) runs
+    against exactly the workspace that call minted, and never the bootstrap
+    workspace `_register_workspace` used to reach it.
+    """
+    tree = _tree()
+    (run_function,) = (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "run"
+    )
+    register_call = next(
+        node
+        for node in ast.walk(run_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_register_workspace"
+    )
+    (assignment,) = (
+        node
+        for node in ast.walk(run_function)
+        if isinstance(node, ast.Assign) and node.value is register_call
+    )
+    (target,) = assignment.targets
+    assert isinstance(target, ast.Tuple)
+    names = [element.id for element in target.elts if isinstance(element, ast.Name)]
+    assert names == ["workspace_id", "workspace", "registered_workspace"]
+
+    provision_call = next(
+        node
+        for node in ast.walk(run_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_provision_restricted_mcp"
+    )
+    start_service_calls = [
+        node
+        for node in ast.walk(run_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_start_service"
+    ]
+    assert register_call.lineno < provision_call.lineno
+    assert all(register_call.lineno < call.lineno for call in start_service_calls)
+    provisioned_names = {
+        argument.id for argument in provision_call.args if isinstance(argument, ast.Name)
+    }
+    assert "workspace_id" in provisioned_names
+    started_names = {
+        argument.id
+        for call in start_service_calls
+        for argument in call.args
+        if isinstance(argument, ast.Name)
+    }
+    assert "workspace" in started_names
+
+
+def _fake_bootstrap_init(bootstrap_id: str) -> str:
+    return json.dumps({"workspace": {"workspace_id": bootstrap_id}})
+
+
+def _fake_workspace_create(minted_id: str, *, format_version: str = "3") -> str:
+    return json.dumps(
+        {
+            "result": {
+                "workspace": {
+                    "workspace_id": minted_id,
+                    "display_name": "Standard journey",
+                    "status": "active",
+                    "compatibility": {
+                        "workspace_format_version": format_version,
+                        "supported_workspace_versions": {"minimum": "1", "maximum": "3"},
+                        "status": "current",
+                    },
+                    "created_at": "2026-08-13T00:00:00Z",
+                }
+            }
+        }
+    )
+
+
+class _FakeBootstrapProcess:
+    """A `Popen`-shaped fake that only ever answers `poll` and `wait`."""
+
+    def __init__(self) -> None:
+        self.pid = 4242
+        self._exited = False
+
+    def poll(self) -> int | None:
+        return 0 if self._exited else None
+
+    def wait(self, timeout: float | None = None) -> int:
+        self._exited = True
+        return 0
+
+
+def test_register_workspace_mints_through_the_bootstrap_service_then_stops_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    root = tmp_path
+    installation = root / "installation-state"
+    bootstrap_id = "ws-bootstrap-1"
+    minted_id = "ws-registered-1"
+    (root / "workspaces" / minted_id).mkdir(parents=True)
+
+    calls: list[list[str]] = []
+
+    def _fake_run(arguments, *, input_text=None, timeout=None):
+        calls.append(list(arguments))
+        if "--init" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, _fake_bootstrap_init(bootstrap_id), ""
+            )
+        return subprocess.CompletedProcess(
+            arguments, 0, _fake_workspace_create(minted_id), ""
+        )
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    started_workspaces: list[Path] = []
+    process = _FakeBootstrapProcess()
+
+    def _fake_start_service(executable, workspace, installation_arg, endpoint):
+        started_workspaces.append(workspace)
+        return process
+
+    monkeypatch.setattr(module, "_start_service", _fake_start_service)
+    monkeypatch.setattr(module, "_wait_for_descriptor", lambda path, proc: {"ready": True})
+    stopped_pids: list[int] = []
+    monkeypatch.setattr(
+        module, "_stop_pid", lambda pid, graceful: stopped_pids.append(pid)
+    )
+
+    workspace_id, workspace, descriptor = module._register_workspace(
+        Path("/bin/omnivia-core-service"), Path("/bin/omnivia"), installation, root
+    )
+
+    assert workspace_id == minted_id
+    assert workspace == root / "workspaces" / minted_id
+    assert descriptor["workspace_id"] == minted_id
+    assert started_workspaces == [root / "bootstrap-workspace"]
+    assert stopped_pids == [process.pid]
+
+    create_call = next(call for call in calls if "create" in call)
+    assert create_call[create_call.index("--workspace-id") + 1] == bootstrap_id
+
+
+def test_register_workspace_stops_the_bootstrap_service_even_when_create_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    root = tmp_path
+    installation = root / "installation-state"
+    bootstrap_id = "ws-bootstrap-1"
+
+    def _fake_run(arguments, *, input_text=None, timeout=None):
+        if "--init" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, _fake_bootstrap_init(bootstrap_id), ""
+            )
+        return subprocess.CompletedProcess(
+            arguments, 1, "", "the installed MCP authority refused the requested change\n"
+        )
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    process = _FakeBootstrapProcess()
+    monkeypatch.setattr(
+        module, "_start_service", lambda executable, workspace, inst, endpoint: process
+    )
+    monkeypatch.setattr(module, "_wait_for_descriptor", lambda path, proc: {"ready": True})
+    stopped_pids: list[int] = []
+    monkeypatch.setattr(
+        module, "_stop_pid", lambda pid, graceful: stopped_pids.append(pid)
+    )
+
+    with pytest.raises(module.JourneyError):
+        module._register_workspace(
+            Path("/bin/omnivia-core-service"), Path("/bin/omnivia"), installation, root
+        )
+
+    assert stopped_pids == [process.pid]
+
+
 def _windows(
     module: ModuleType, monkeypatch: pytest.MonkeyPatch, *results: tuple[int, str]
 ) -> list[list[str]]:
@@ -166,27 +412,6 @@ def test_windows_restriction_issues_the_established_icacls_sequence(
         [icacls, str(config), "/setowner", f"*{sid}", "/q"],
         [icacls, str(config), "/reset", "/q"],
         [icacls, str(config), "/inheritance:r", "/grant:r", f"*{sid}:F", "/q"],
-    ]
-
-
-def test_writing_the_mcp_configuration_restricts_it_on_windows(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    module = _module()
-    commands = _windows(
-        module, monkeypatch, (0, _whoami_row()), (0, ""), (0, ""), (0, "")
-    )
-    config = tmp_path / "omnivia-mcp.json"
-
-    module._write_mcp_configuration(config, tmp_path / "installation-state", "ws-1")
-
-    document = json.loads(config.read_text(encoding="utf-8"))
-    assert document["format"] == "omnivia.mcp-config.v1"
-    assert [command[0] for command in commands] == [
-        _system32("whoami.exe"),
-        _system32("icacls.exe"),
-        _system32("icacls.exe"),
-        _system32("icacls.exe"),
     ]
 
 
@@ -271,23 +496,196 @@ def test_windows_restriction_failure_reports_a_fixed_message(
             assert secret not in surface
 
 
-def test_the_posix_configuration_is_written_owner_read_write_only(
+def _configure_snippet(path: str, *, command: str = "omnivia-core-mcp") -> str:
+    return json.dumps(
+        {"mcpServers": {"omnivia-core": {"command": command, "args": ["--config", path]}}}
+    )
+
+
+def test_configured_path_reads_the_accepted_claude_code_snippet(tmp_path: Path) -> None:
+    module = _module()
+    config = (
+        tmp_path
+        / "installation-state"
+        / "runtime"
+        / ".installed-mcp"
+        / "claude-code.json"
+    )
+
+    assert module._configured_path(_configure_snippet(str(config))) == config
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not json",
+        "[]",
+        json.dumps({"mcp_servers": {"omnivia-core": {"command": "x", "args": []}}}),
+        json.dumps({"mcpServers": {}}),
+        json.dumps({"mcpServers": {"other": {"command": "x", "args": []}}}),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {
+                        "command": "omnivia-core-mcp",
+                        "args": ["--config", "/x"],
+                        "env": {},
+                    }
+                }
+            }
+        ),
+        _configure_snippet("/x", command="/usr/local/bin/omnivia-core-mcp"),
+        json.dumps(
+            {"mcpServers": {"omnivia-core": {"command": "omnivia-core-mcp", "args": []}}}
+        ),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {
+                        "command": "omnivia-core-mcp",
+                        "args": ["--other", "/x"],
+                    }
+                }
+            }
+        ),
+        json.dumps(
+            {"mcpServers": {"omnivia-core": {"command": "omnivia-core-mcp", "args": ["--config", ""]}}}
+        ),
+    ],
+)
+def test_configured_path_fails_closed_on_anything_unaccepted(text: str) -> None:
+    module = _module()
+    with pytest.raises(module.JourneyError):
+        module._configured_path(text)
+
+
+def _fake_admin_run(
+    *, configure: tuple[int, str, str], status: tuple[int, str, str]
+) -> tuple[list[list[str]], object]:
+    calls: list[list[str]] = []
+
+    def _run(arguments, *, input_text=None, timeout=None):
+        calls.append(list(arguments))
+        code, stdout, stderr = status if "status" in arguments else configure
+        return subprocess.CompletedProcess(list(arguments), code, stdout, stderr)
+
+    return calls, _run
+
+
+def _settled_status(**overrides: object) -> str:
+    row = {
+        "advertised_tool_count": 6,
+        "authoring_intent": False,
+        "configuration": "present",
+        "credential": "present",
+        "grant": "active",
+        "host": "claude-code",
+        "principal_id": "mcp-claude-code-1",
+        "profile": "restricted",
+        "service": "reachable",
+        "workspace_id": "ws-1",
+    }
+    row.update(overrides)
+    return json.dumps({"mcp_status_version": 1, "hosts": [row]})
+
+
+def test_provision_restricted_mcp_uses_installed_configure_then_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = _module()
-    modes: list[int] = []
-    commands: list[list[str]] = []
-    monkeypatch.setattr(module, "_IS_WINDOWS", False)
-    monkeypatch.setattr(module, "_run", lambda arguments, **_: commands.append(list(arguments)))
-    # Recorded rather than read back from the filesystem: a Windows host cannot
-    # store `0o600`, and the mode this asks for is what the assertion is about.
-    monkeypatch.setattr(Path, "chmod", lambda self, mode: modes.append(mode))
-    config = tmp_path / "omnivia-mcp.json"
+    installation = tmp_path / "installation-state"
+    config_path = installation / "runtime" / ".installed-mcp" / "claude-code.json"
+    calls, fake_run = _fake_admin_run(
+        configure=(0, _configure_snippet(str(config_path)), ""),
+        status=(0, _settled_status(), ""),
+    )
+    monkeypatch.setattr(module, "_run", fake_run)
 
-    module._write_mcp_configuration(config, tmp_path / "installation-state", "ws-1")
+    path = module._provision_restricted_mcp(Path("/bin/omnivia"), installation, "ws-1")
 
-    assert modes == [0o600]
-    assert commands == []
+    assert path == config_path
+    assert calls[0] == [
+        "/bin/omnivia",
+        "--installation-state",
+        str(installation),
+        "mcp",
+        "configure",
+        "--host",
+        "claude-code",
+        "--workspace",
+        "ws-1",
+        "--profile",
+        "restricted",
+    ]
+    assert calls[1] == [
+        "/bin/omnivia",
+        "--installation-state",
+        str(installation),
+        "mcp",
+        "status",
+        "--host",
+        "claude-code",
+        "--json",
+    ]
+
+
+def test_provision_restricted_mcp_fails_closed_when_configure_does_not_exit_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    installation = tmp_path / "installation-state"
+    _, fake_run = _fake_admin_run(
+        configure=(1, "", "the installation service could not be reached\n"),
+        status=(0, _settled_status(), ""),
+    )
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    with pytest.raises(module.JourneyError):
+        module._provision_restricted_mcp(Path("/bin/omnivia"), installation, "ws-1")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"configuration": "mismatched"},
+        {"credential": "unusable"},
+        {"grant": "revoked"},
+        {"profile": "authoring"},
+        {"workspace_id": "ws-2"},
+        {"advertised_tool_count": 5},
+        {"service": "unreachable"},
+    ],
+)
+def test_provision_restricted_mcp_fails_closed_when_status_is_not_settled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, override: dict[str, object]
+) -> None:
+    module = _module()
+    installation = tmp_path / "installation-state"
+    config_path = installation / "runtime" / ".installed-mcp" / "claude-code.json"
+    _, fake_run = _fake_admin_run(
+        configure=(0, _configure_snippet(str(config_path)), ""),
+        status=(0, _settled_status(**override), ""),
+    )
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    with pytest.raises(module.JourneyError):
+        module._provision_restricted_mcp(Path("/bin/omnivia"), installation, "ws-1")
+
+
+def test_provision_restricted_mcp_fails_closed_when_the_path_escapes_the_installation_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    installation = tmp_path / "installation-state"
+    outside = tmp_path / "elsewhere" / "claude-code.json"
+    _, fake_run = _fake_admin_run(
+        configure=(0, _configure_snippet(str(outside)), ""),
+        status=(0, _settled_status(), ""),
+    )
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    with pytest.raises(module.JourneyError):
+        module._provision_restricted_mcp(Path("/bin/omnivia"), installation, "ws-1")
 
 
 class _FakeKernel32:
