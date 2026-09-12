@@ -1,6 +1,6 @@
 """R2a: the authenticated application authority seam.
 
-Every one of the twenty-seven accepted catalogue operations goes through this file, and
+Every one of the twenty-eight accepted catalogue operations goes through this file, and
 the properties proved are the ones a later slice could silently break: that a claim
 can only ever narrow what the server already granted, that installation and
 workspace scope rules and the endpoint binding are all enforced, that capability
