@@ -613,6 +613,9 @@ def test_an_unredacted_value_is_caught_even_where_the_schema_would_allow_it() ->
         assert HARNESS._redaction_findings({key: "0123456789abcdef"}), (
             f"a {key} field passed the redaction check"
         )
+    assert HARNESS._redaction_findings({"anything": "grant_issue"}) == [], (
+        "the literal excluded tool name is mistaken for leaked grant material"
+    )
 
 
 # --- the case register is the specification of the run -------------------------

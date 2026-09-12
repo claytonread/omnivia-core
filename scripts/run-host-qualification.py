@@ -496,7 +496,7 @@ _FORBIDDEN_VALUE_PATTERNS = (
     re.compile(r"\\"),
     re.compile(r"@"),
     re.compile(r"\s"),
-    re.compile(r"(?i)bearer|token|secret|credential|grant|passwd|key="),
+    re.compile(r"(?i)bearer|token|secret|credential|passwd|key="),
     re.compile(r"(?i)unix:|pipe:|https?:"),
 )
 _FORBIDDEN_KEYS = frozenset(
