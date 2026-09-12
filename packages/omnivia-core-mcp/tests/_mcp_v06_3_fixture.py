@@ -11,13 +11,17 @@ does: it runs as a separate process reached only over a socket, which is the
 arrangement in which "MCP does not import the runtime" is proven rather than
 asserted.
 
-**The other caller wants the opposite, and gets it from the same three steps.**
+**The other callers want the opposite, and get it from the same three steps.**
 `test_mcp_standalone_authoring_acceptance` runs R004 section 13.B's journey,
 which forbids pre-seeded application data of any kind and begins with a host
 nobody has configured. `serving(seed=False, configure=False)` is that: the same
 registered workspace and the same real service, with the seeding pass and the
 MCP provisioning below both skipped, so the only writer that workspace ever has
-is the MCP surface under test.
+is the MCP surface under test. `test_mcp_import_job_acceptance` runs section
+13.D's import journey on that same empty workspace plus exactly one thing MCP
+cannot make for itself -- `serving(seed=False, stage=True, configure=False)`
+adds the verified staged source R004 section 8.3 requires an import to name, and
+nothing else.
 
 **The workspace is registered, not invented.** It is created by dispatching the
 canonical `workspace.create` request through a real
@@ -160,6 +164,18 @@ AUTHORING_PROFILE = "authoring"
 #: one.
 _CONTROL_TIMEOUT_SECONDS = 60.0
 
+#: The installed CLI's own entry point, reached through this interpreter so the
+#: worktree's distributions are the ones under test. A string rather than an
+#: import even here, where importing it would be allowed: a console script
+#: resolved from `PATH` would be whichever `omnivia` a developer happens to have
+#: installed, and an in-process import would not be the installed command at all.
+_CLI_ENTRY = "from omnivia_core_cli.main import main; raise SystemExit(main())"
+
+#: The whole budget for one installed command. Generous for the same reason the
+#: control budget is: `mcp configure` qualifies a real MCP child against a
+#: service that has only just reported ready.
+_CLI_TIMEOUT_SECONDS = 600.0
+
 SERVICE_INSTANCE = "svc-mcp-1"
 SEED_INSTANCE = "svc-mcp-seed-1"
 CREATE_INSTANCE = "svc-mcp-create-1"
@@ -212,6 +228,33 @@ DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 DIGEST_C = "sha256:" + "c" * 64
 DIGEST_D = "sha256:" + "d" * 64
+#: The staged import source's own blob. A digest of its own rather than
+#: :data:`DIGEST_A` so `stage=True` and `seed=True` can both be asked for
+#: without the second insert colliding with the first on the blob's primary key.
+DIGEST_E = "sha256:" + "e" * 64
+
+#: The one already-staged import source :func:`build` writes when asked, and the
+#: exact descriptor `import.start` will match it on -- `require_staged_import_source`
+#: compares the staging handle, the kind, the checksum, the byte count, the media
+#: type and the (absent) source version, and accepts only a `verified` staging
+#: whose blob agrees about the bytes. A module constant rather than something the
+#: caller composes: a test that spelled its own descriptor could disagree with the
+#: staged row in a way that reads as `import.start` refusing rather than as the
+#: fixture staging the wrong thing.
+#:
+#: **Staging is deliberately on this side of the boundary.** R004 section 8.3 puts
+#: it outside the MCP milestone -- the handle must already have been produced by an
+#: installed, trusted Core path, and `import_start` accepts no archive, path or URL
+#: to produce one from -- so the suite's trusted fixture produces it and the MCP
+#: surface only ever names it.
+STAGED_SOURCE_REF = "stg-ovmcpstaged-1"
+STAGED_SOURCE: dict[str, object] = {
+    "staged_source_ref": STAGED_SOURCE_REF,
+    "source_kind": "archive",
+    "content_checksum": DIGEST_E,
+    "content_length_bytes": 4096,
+    "media_type": "application/zip",
+}
 
 # --- table names, as 0008 and 0009 declare them -------------------------------
 
@@ -414,6 +457,72 @@ def _seed_evidence_chain(holder: _Holder) -> None:
             native_id=EVIDENCE_ID,
             locator=EVIDENCE_LOCATOR,
             at=BASE_US + 10,
+        )
+
+
+def _stage_import_source(holder: _Holder) -> None:
+    """One verified staged source and the blob it resolves to, and nothing else.
+
+    The whole of what `import.start` needs and none of what a workspace holding
+    application data would have: a blob object, the integrity pass that verified
+    it, and the `verified` staging row naming both. No evidence artifact, no
+    normalized record, no governed version -- so a workspace built with
+    `stage=True` and `seed=False` holds one staging handle and no application
+    data at all, which is the state R004 section 13.D's import journey starts
+    from.
+
+    The three rows are one unit because 0008 makes them one: a `verified` staging
+    must name a blob, the reference is composite over digest *and* length, and
+    the integrity event is how "verification happened" is a recorded fact rather
+    than a column somebody set.
+    """
+    with fenced_transaction(
+        holder.connection,
+        holder.identity,
+        workspace_id=holder.workspace_id,
+        fencing_generation=holder.generation,
+    ):
+        _insert(
+            holder.connection,
+            BLOBS,
+            {
+                "workspace_id": holder.workspace_id,
+                "content_digest": DIGEST_E,
+                "content_length_bytes": STAGED_SOURCE["content_length_bytes"],
+                "created_at_us": BASE_US,
+                "verified_at_us": BASE_US + 1,
+            },
+        )
+        _insert(
+            holder.connection,
+            INTEGRITY,
+            {
+                "integrity_event_id": "bie-staged-1",
+                "workspace_id": holder.workspace_id,
+                "content_digest": DIGEST_E,
+                "integrity_sequence": 1,
+                "outcome": "verified",
+                "checked_at_us": BASE_US + 2,
+            },
+        )
+        _insert(
+            holder.connection,
+            STAGED,
+            {
+                "staged_source_ref": STAGED_SOURCE_REF,
+                "workspace_id": holder.workspace_id,
+                "source_kind": STAGED_SOURCE["source_kind"],
+                "declared_checksum": DIGEST_E,
+                "content_length_bytes": STAGED_SOURCE["content_length_bytes"],
+                "media_type": STAGED_SOURCE["media_type"],
+                "computed_checksum": DIGEST_E,
+                "original_metadata_json": '{"kind":"archive"}',
+                "original_metadata_digest": DIGEST_C,
+                "staging_outcome": "verified",
+                "blob_workspace_id": holder.workspace_id,
+                "blob_content_digest": DIGEST_E,
+                "recorded_at_us": BASE_US + 3,
+            },
         )
 
 
@@ -973,7 +1082,7 @@ def _create_workspace(
     return WorkspaceCreateResult.from_wire(response.result).workspace
 
 
-def build(root: Path, *, seed: bool = True) -> GovernedWorkspace:
+def build(root: Path, *, seed: bool = True, stage: bool = False) -> GovernedWorkspace:
     """Create a registered workspace under `root` and seed it, then hand it back closed.
 
     The layout is the managed-local convention the service itself assumes:
@@ -993,6 +1102,12 @@ def build(root: Path, *, seed: bool = True) -> GovernedWorkspace:
     13.B's standalone journey may start from -- it forbids pre-seeding
     application data through any path at all -- so the flag is the whole of how
     this file stays out of that journey's way.
+
+    `stage=True` adds :func:`_stage_import_source` and nothing else, so
+    `seed=False, stage=True` is that same empty workspace plus the one staged
+    handle section 13.D's import journey has to be able to name. A staging handle
+    is not application data: it is what a trusted installed path leaves behind
+    for an import to read, and MCP has no tool that could produce one.
     """
     installation = InstallationLayout(root=(root / "installation-state").resolve())
     descriptor = _create_workspace(
@@ -1002,11 +1117,14 @@ def build(root: Path, *, seed: bool = True) -> GovernedWorkspace:
         root=(root / WORKSPACE_STORAGE_DIRECTORY / descriptor.workspace_id).resolve()
     )
 
-    if seed:
+    if seed or stage:
         holder = _take_ownership(workspace.database_path, descriptor.workspace_id)
         try:
-            _seed_evidence_chain(holder)
-            _seed_governed_truth(holder)
+            if seed:
+                _seed_evidence_chain(holder)
+                _seed_governed_truth(holder)
+            if stage:
+                _stage_import_source(holder)
         finally:
             holder.connection.close()
 
@@ -1191,6 +1309,39 @@ sys.exit(main(argv, resolve_credential=resolve))
 """
 
 
+def installed_cli(
+    installation_state: Path, *argv: str
+) -> subprocess.CompletedProcess[str]:
+    """Run one installed command against `installation_state`, and hand it back whole.
+
+    How the installed CLI is reached, in one place, for the same reason the
+    runtime import is: a module that spelled the invocation for itself would be
+    free to reach a different `omnivia` than the rest of the suite does, and the
+    property every acceptance module rests on is that the command under test is
+    this worktree's.
+
+    Nothing is asserted and nothing is parsed here. The exit code, stdout and
+    stderr go back untouched, because what they have to mean is the caller's
+    claim -- a redacted host snippet, a health document, a revocation line --
+    and a helper that decided any of that for them would be answering the
+    question the test is asking.
+    """
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CLI_ENTRY,
+            "--installation-state",
+            str(installation_state),
+            *argv,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=_CLI_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+
 def _free_loopback_port() -> int:
     """A port the kernel just handed out on 127.0.0.1, released for the service.
 
@@ -1260,6 +1411,7 @@ def serving(
     http_credential: str | None = None,
     profile: str = RESTRICTED_PROFILE,
     seed: bool = True,
+    stage: bool = False,
     configure: bool = True,
 ) -> Iterator[GovernedService]:
     """Create and seed a governed workspace, serve it, provision MCP, tear down.
@@ -1288,6 +1440,10 @@ def serving(
     `omnivia mcp configure` for itself and have that command be the thing under
     test rather than a step this fixture already took.
 
+    `stage=True` adds the one verified staged import source section 13.D's
+    journey names, and nothing else. It is orthogonal to `seed`: section 13.D
+    asks for a staged handle, not for seeded application data.
+
     With `http_credential`, the same process also serves authenticated HTTP on a
     loopback port through :data:`_HTTP_EMBEDDER`, so one service -- one lease,
     one workspace state -- answers both the local socket and HTTP.
@@ -1296,7 +1452,7 @@ def serving(
     # Outside `tmp_path`: R004-15 caps a local endpoint at 86 encoded bytes and
     # pytest's `tmp_path` nests deep enough to exceed it.
     socket_directory = Path(tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir()))
-    built = build(root, seed=seed)
+    built = build(root, seed=seed, stage=stage)
     endpoint = endpoint_for_path(socket_directory / "s.sock")
     service_argv = [
         "--workspace",
