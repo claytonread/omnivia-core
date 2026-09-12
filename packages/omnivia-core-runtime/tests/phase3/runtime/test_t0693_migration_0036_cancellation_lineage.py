@@ -381,7 +381,11 @@ def test_0036_is_the_unique_consecutive_successor_to_0035() -> None:
     migrations = load_migrations()
     versions = [migration.version for migration in migrations]
     assert versions == sorted(versions)
-    assert versions == list(range(1, MIGRATION_VERSION + 1))
+    # Consecutive from one, with no gap and no duplicate. Held against the catalogue's
+    # own length rather than against this module's version, because later slices append
+    # their own migrations and this test is about 0036's place in the sequence, not
+    # about 0036 being the last thing the repository will ever migrate.
+    assert versions == list(range(1, len(migrations) + 1))
     assert [m.name for m in migrations if m.version == MIGRATION_VERSION] == [
         MIGRATION_NAME
     ]
@@ -434,11 +438,15 @@ def test_the_schema_names_exactly_what_0035_head_already_named(
         m1.bootstrap_and_migrate(at_35, workspace_id=WORKSPACE_ID)
         before = named(at_35)
 
-    at_head = tmp_path / "at-head.sqlite"
-    materialise_phase0_baseline(at_head)
-    m1.bootstrap_and_migrate(at_head, workspace_id=WORKSPACE_ID)
+    at_36 = tmp_path / "at-36.sqlite"
+    materialise_phase0_baseline(at_36)
+    # Through 0036 rather than through head: this is a claim about what *0036* changes,
+    # and later migrations legitimately add objects of their own. Comparing against head
+    # would turn every subsequent migration into a failure of this one.
+    with m1.migration_catalogue_through(MIGRATION_VERSION):
+        m1.bootstrap_and_migrate(at_36, workspace_id=WORKSPACE_ID)
 
-    assert named(at_head) == before
+    assert named(at_36) == before
     assert TRIGGER in before["trigger"]
 
 

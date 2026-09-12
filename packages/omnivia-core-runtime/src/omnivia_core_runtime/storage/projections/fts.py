@@ -23,6 +23,19 @@ inverted lists and is rebuilt per session. That costs a linear pass over one run
 documents at startup and buys a projection whose every persisted byte is fenced,
 leased and workspace-scoped like every other row in the database.
 
+**What the index is made of is durable rows plus the content those rows address.** The
+projection table carries each artifact's identity surface, and `open_search_projection`
+composes that with the artifact's own stored bytes, read at the `sha256:` address the
+row names under the workspace's blob root. That is what makes a captured document
+findable by the words in it rather than only by the identifier it was submitted under,
+and it keeps every durable structure this module owns exactly as 0012 declared it: the
+table, its guards, the build digest, the run lifecycle and the reclamation rule are
+untouched, because the content is not a second copy in the database -- it is the one
+copy the workspace already holds, addressed by the digest the row carries. The index
+therefore stays a pure function of durable state, which is the property restart
+convergence rests on: a blob that is gone, a media type this projection does not treat
+as text, or a build with no blob root simply yields the identity surface alone.
+
 **It still satisfies persistence and restart convergence**, which is the property that
 matters and the one a session-scoped index could plausibly break. It does not, because
 the index is a pure function of durable rows the ledger already points at: after a
@@ -78,12 +91,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
+from omnivia_core.contracts.v1 import (
+    EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES,
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+)
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError, authorised
@@ -97,6 +117,10 @@ from omnivia_core_runtime.storage.retrieval import (
     ProjectedCandidate,
     ProjectedFrontier,
     normalize_query,
+)
+from omnivia_core_runtime.workspace.blob_publication import (
+    BlobPublicationRefused,
+    blob_path,
 )
 
 #: The ledger identity this module builds and reads. One projection, one id, and the
@@ -132,6 +156,21 @@ VOCAB_TABLE: Final = "omnivia_evidence_search_vocabulary"
 #: is the bound on how much work an interruption can cost -- not a performance knob.
 #: ponytail: fixed batch, make it a parameter if a workspace ever makes it matter.
 CHECKPOINT_BATCH: Final = 256
+
+#: The media types whose stored bytes this projection indexes as text, which is exactly
+#: the set `evidence.capture` admits. Taken from the contract rather than restated, so
+#: the operation that can submit text and the projection that must make it findable
+#: cannot come to disagree about what text is. Anything else -- a PDF, an archive, a
+#: connector's binary asset -- is indexed by its identity surface alone, because
+#: tokenising bytes that are not text produces noise rather than search.
+INDEXED_MEDIA_TYPES: Final = EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES
+
+#: The most content this projection reads back out of one blob. The capture ceiling, so
+#: everything `evidence.capture` can store is indexed whole; a larger object that some
+#: other lane published -- local file capture admits 16 MiB -- is indexed by identity
+#: rather than truncated, because a half-indexed document answers "not found" for text
+#: it actually contains while reporting success.
+MAX_INDEXED_CONTENT_BYTES: Final = EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
 
 
 class ProjectionError(StorageError):
@@ -288,6 +327,12 @@ class SearchProjection:
     #: `_materialise_terms`.
     material: Mapping[str, tuple[str, ...]]
     document_count: int
+    #: The documents whose tokens include the artifact's own stored content rather than
+    #: its identity surface alone. Not used by ranking, which treats every document's
+    #: material the same way; it exists so `evidence.capture`'s post-commit barrier can
+    #: state the thing Gate A actually requires -- that the words just submitted are in
+    #: this index -- instead of inferring it from an open that succeeded.
+    content_indexed: frozenset[str] = frozenset()
 
     def project(self, frontier: AuthorizedFrontier) -> ProjectedFrontier:
         """Narrow this session's material to exactly the frozen frontier's ids.
@@ -367,15 +412,36 @@ def require_current(
 
 
 def open_search_projection(
-    connection: sqlite3.Connection, *, workspace_id: str
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    blobs_root: Path | None = None,
 ) -> SearchProjection:
     """Materialise this session's index and its token material, or refuse.
 
-    Called from startup and maintenance, never from a request -- `service/main.py`
-    invokes it behind `build_search_projection` before the endpoint accepts anything.
-    It re-creates the `temp` tables from scratch rather than repairing them, because a
-    rebuild from durable rows is both cheaper to reason about and the only version that
-    converges after an interruption partway through a previous materialisation.
+    Called from startup and from the service-owned barrier `evidence.capture` runs after
+    its business commit, never from a request path -- `service/main.py` invokes it behind
+    `build_search_projection` before the endpoint accepts anything, and the capture
+    handler invokes the same pair before it may report success. It re-creates the `temp`
+    tables from scratch rather than repairing them, because a rebuild from durable rows
+    is both cheaper to reason about and the only version that converges after an
+    interruption partway through a previous materialisation.
+
+    **`blobs_root` is what makes captured text findable, and it widens nothing.** The
+    durable projection table carries each artifact's identity surface; the bytes of a
+    text artifact live at their `sha256:` address under the workspace's blob root, named
+    by the artifact row's own `blob_content_digest`. Composing the two here keeps the
+    index a pure function of durable state -- rows plus the content those rows address --
+    which is the property the whole module rests on, while leaving 0012's table, its
+    guards, the build digest and the run lifecycle exactly as they were. No path is read
+    from a request, from a caller or from the row: the only filesystem input is the
+    workspace root this process was launched to own, and the only path arithmetic is
+    `blob_path`, whose digest domain admits no separator and no `..`.
+
+    A build with no blob root, or an artifact whose bytes are gone, are not failures:
+    that document is indexed by its identity surface, exactly as every document was
+    before this. Refusing to open the whole projection because one reclaimed object is
+    missing would make a workspace unstartable over derived material it can reproduce.
 
     **The FTS5 index is the tokenizer.** The material this returns is not a second
     analysis of the same text: the documents go into the index, and `_materialise_terms`
@@ -400,12 +466,35 @@ def open_search_projection(
     require_fts5(connection)
     build = current_build(connection, workspace_id=workspace_id)
     with authorised(connection, mutations=False, ddl=False) as fenced:
+        # LEFT JOIN, so the indexed document set is exactly the activated run's rows.
+        # Evidence is append-preserved and the artifact is always there, but an inner
+        # join would make that assumption load-bearing: a document silently dropped
+        # here becomes missing material and a retryable refusal at every later read.
         documents = fenced.execute(
-            f"SELECT evidence_id, search_text FROM {DOCUMENTS_TABLE} "
-            "WHERE workspace_id = ? AND projection_id = ? AND run_id = ? "
-            "ORDER BY evidence_id ASC",
+            f"SELECT d.evidence_id, d.search_text, a.media_type, a.blob_content_digest "
+            f"FROM {DOCUMENTS_TABLE} d "
+            "LEFT JOIN omnivia_evidence_artifacts a "
+            "  ON a.workspace_id = d.workspace_id AND a.evidence_id = d.evidence_id "
+            "WHERE d.workspace_id = ? AND d.projection_id = ? AND d.run_id = ? "
+            "ORDER BY d.evidence_id ASC",
             (workspace_id, PROJECTION_ID, build.run_id),
         ).fetchall()
+    composed = tuple(
+        (
+            str(evidence_id),
+            _indexed_text(
+                blobs_root,
+                identity=str(search_text),
+                media_type=None if media_type is None else str(media_type),
+                digest=None if digest is None else str(digest),
+            ),
+        )
+        for evidence_id, search_text, media_type, digest in documents
+    )
+    indexed = tuple((evidence_id, text) for evidence_id, (text, _) in composed)
+    content_indexed = frozenset(
+        evidence_id for evidence_id, (_, from_content) in composed if from_content
+    )
 
     # Cleared first. A failure below must not leave a previous session's material
     # reachable through `session_search_projection` behind a run that is no longer
@@ -433,19 +522,111 @@ def open_search_projection(
             # caller happened to type. The durable row keeps the raw identity surface,
             # which is what makes it comparable with the candidate the read layer builds.
             [
-                (evidence_id, normalize_query(str(search_text)))
-                for evidence_id, search_text in documents
+                (evidence_id, normalize_query(search_text))
+                for evidence_id, search_text in indexed
             ],
         )
-    material = _materialise_terms(connection, documents)
+    material = _materialise_terms(connection, indexed)
     projection = SearchProjection(
         workspace_id=workspace_id,
         build=build,
         material=material,
         document_count=len(material),
+        content_indexed=content_indexed,
     )
     connection.omnivia_search_projection = projection  # type: ignore[attr-defined]
     return projection
+
+
+def _indexed_text(
+    blobs_root: Path | None,
+    *,
+    identity: str,
+    media_type: str | None,
+    digest: str | None,
+) -> tuple[str, bool]:
+    """One document's indexable text, and whether the artifact's own content is in it.
+
+    Identity always comes first and is always whole, so every query that matched this
+    projection before still matches it. What may follow is the artifact's own stored
+    bytes, and only under all four of: a blob root to resolve against, a media type this
+    projection indexes as text, an address in the accepted digest domain, and bytes that
+    are within bound and are valid UTF-8. Anything else yields the identity surface
+    alone, which is a smaller index rather than a wrong one.
+
+    The second element is what makes that distinction *checkable* by a caller that needs
+    it. `evidence.capture` may not report success on a document indexed by identity
+    alone -- a reclaimed, unreadable or mistyped blob would otherwise satisfy its
+    post-commit barrier while the words the caller submitted are findable nowhere -- and
+    it is stated here, where the composition actually happened, rather than inferred
+    afterwards from tokens that identity and content can both produce.
+    """
+    if blobs_root is None or digest is None:
+        return identity, False
+    if media_type not in INDEXED_MEDIA_TYPES:
+        return identity, False
+    content = _blob_text(blobs_root, digest)
+    if content is None:
+        return identity, False
+    return f"{identity}\n{content}", True
+
+
+def _blob_text(blobs_root: Path, digest: str) -> str | None:
+    """The bytes at one content address, decoded as text, or `None`.
+
+    Opened with `O_NOFOLLOW` and re-checked through the descriptor, exactly as
+    `blob_publication._verify` opens the same objects: a symlink or a non-regular file
+    standing where the object should be is skipped rather than followed to whatever it
+    points at. The read is bounded before it allocates, so a larger object costs one
+    `fstat` rather than its own size in memory.
+
+    **The bytes are verified against the address they were read from.** A content-
+    addressed store's whole claim is that the digest names the content, and an object
+    that no longer hashes to its own address is not this artifact's content whatever it
+    is -- indexing it would make `evidence.search` answer with an artifact for words it
+    does not contain, and would let `evidence.capture`'s barrier pass over material that
+    is not what was captured. Hashing here costs one pass over an object this module
+    already reads whole, inside a call that re-indexes the corpus anyway.
+
+    Every failure is `None`. A missing, unreadable, oversized, mistyped, non-UTF-8 or
+    unverifiable object is a document indexed by identity alone; none of them is a reason
+    to refuse to open a projection whose durable rows are intact.
+    """
+    try:
+        path = blob_path(blobs_root, digest)
+    except BlobPublicationRefused:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_size > MAX_INDEXED_CONTENT_BYTES:
+            return None
+        chunks: list[bytes] = []
+        # Looped rather than one `os.read`, because a short read is a legal thing for
+        # the operating system to do and silently indexing a prefix of a document is
+        # the one failure this whole path exists to avoid.
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    content = b"".join(chunks)
+    if len(content) != status.st_size:
+        return None
+    if hashlib.sha256(content).hexdigest() != path.name:
+        return None
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _materialise_terms(
@@ -1120,7 +1301,9 @@ def _next_us(connection: sqlite3.Connection, workspace_id: str, now_us: int) -> 
 __all__ = [
     "CHECKPOINT_BATCH",
     "DOCUMENTS_TABLE",
+    "INDEXED_MEDIA_TYPES",
     "INDEX_TABLE",
+    "MAX_INDEXED_CONTENT_BYTES",
     "PROFILE_VERSION",
     "PROJECTION_ID",
     "PROJECTION_KIND",

@@ -35,13 +35,28 @@ class BlobPublicationRefused(RuntimeError):
     """Bytes cannot be published, or what is already published is not those bytes."""
 
 
-def _blob_path(blobs_root: Path, digest: str, content: bytes) -> Path:
+def blob_path(blobs_root: Path, digest: str) -> Path:
+    """The path one `sha256:` address resolves to under `blobs_root`.
+
+    Address arithmetic and nothing else: it opens no file, proves no bytes and states
+    no opinion about whether anything is there. A caller that needs the object to be
+    real reads it and verifies; a caller that needs to publish one calls
+    :func:`publish_blob`, which is the only thing that writes.
+
+    The digest is checked against the one accepted address domain first, so a caller's
+    value cannot reach the filesystem as a path segment without passing
+    `sha256:[0-9a-f]{64}` -- which admits no separator, no `..` and no absolute path.
+    """
     if DIGEST_PATTERN.fullmatch(digest) is None:
         raise BlobPublicationRefused("blob digest is outside the accepted address domain")
-    digest_hex = digest.removeprefix("sha256:")
-    if hashlib.sha256(content).hexdigest() != digest_hex:
+    return blobs_root / "sha256" / digest.removeprefix("sha256:")
+
+
+def _blob_path(blobs_root: Path, digest: str, content: bytes) -> Path:
+    target = blob_path(blobs_root, digest)
+    if hashlib.sha256(content).hexdigest() != target.name:
         raise BlobPublicationRefused("blob digest does not match the published bytes")
-    return blobs_root / "sha256" / digest_hex
+    return target
 
 
 def _verify(path: Path, content: bytes) -> None:
@@ -129,5 +144,6 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
 __all__ = [
     "DIGEST_PATTERN",
     "BlobPublicationRefused",
+    "blob_path",
     "publish_blob",
 ]

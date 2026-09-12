@@ -760,7 +760,15 @@ def main(
             fencing_generation=started.generation,
             now_us=time.time_ns() // 1000,
         )
-        open_search_projection(started.connection, workspace_id=started.workspace_id)
+        # The blob root is this workspace's own, taken off the layout this process was
+        # launched with. It is what lets the index carry each text artifact's content
+        # as well as its identity, and it is the same root `evidence.capture`'s own
+        # post-commit barrier re-materialises from.
+        open_search_projection(
+            started.connection,
+            workspace_id=started.workspace_id,
+            blobs_root=started.layout.blobs_path,
+        )
 
         dispatcher = Dispatcher.for_service_operations(
             Grant(

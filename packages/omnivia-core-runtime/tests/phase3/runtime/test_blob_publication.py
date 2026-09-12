@@ -213,12 +213,21 @@ def test_the_primitive_writes_no_database_and_captures_no_source() -> None:
     assert blob_publication.__all__ == [
         "DIGEST_PATTERN",
         "BlobPublicationRefused",
+        "blob_path",
         "publish_blob",
     ]
     assert list(inspect.signature(publish_blob).parameters) == [
         "blobs_root",
         "digest",
         "content",
+    ]
+    # `blob_path` is address arithmetic and is held to the same boundary: a root, a
+    # digest, and nothing that could carry a connection, a source or a media type. It
+    # opens nothing, which is why a reader that needs the bytes still has to read and
+    # verify them itself.
+    assert list(inspect.signature(blob_publication.blob_path).parameters) == [
+        "blobs_root",
+        "digest",
     ]
 
     # The only things it imports are the standard library's hashing and filesystem
