@@ -1,0 +1,59 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t04",
+      "attemptId": "attempt-t04",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t04",
+      "attemptId": "attempt-t04",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t04-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t04",
+      "attemptId": "attempt-t04",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t04-1",
+      "stepId": "step-1",
+      "delta": "Partial answer"
+    },
+    {
+      "invocationId": "invocation-t04",
+      "attemptId": "attempt-t04",
+      "ordinal": 3,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "finishReason": "cancelled",
+      "usage": {
+        "reported": {
+          "inputTokens": 40,
+          "outputTokens": 5,
+          "totalTokens": 45
+        }
+      },
+      "responseMetadata": {
+        "providerResponseId": "resp-t04-001",
+        "respondedAt": "2026-08-20T10:10:03Z"
+      },
+      "cancellationState": "cancelled",
+      "cancellationInitiator": "caller"
+    }
+  ]
+}

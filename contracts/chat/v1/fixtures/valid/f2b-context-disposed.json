@@ -1,0 +1,8 @@
+{
+  "messageType": "bridge.context-disposed",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "reason": "navigated_away",
+  "disposedAt": "2026-08-20T10:05:00Z"
+}

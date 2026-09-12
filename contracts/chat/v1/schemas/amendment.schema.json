@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - CommitMessageAmendment",
+  "description": "Closes CGAP-042-006. Normative wire shapes for the idempotent `CommitMessageAmendment` command exactly as ADR-022 §6 and REF-042 §13.3-§13.6 define it. The command's atomic commit boundary covers Message, derivation, branch, head event, view state, Generation Job, Audit and outbox records (REF-042 §13.3, Appendix C; ADR-022 §4.8). A validation or permission failure before commit creates no Message or branch (REF-042 §13.5). Exact command replay by `commandId` is idempotent and returns the original committed result (REF-042 §13.6, §21.2, REF042-INV-015, ADR022-INV-015); conflicting reuse of `commandId` with different content fails as an idempotency conflict and creates no new graph state (REF-042 §21.3, REF042-INV-016).",
+  "type": "object",
+  "$defs": {
+    "EditablePartInput": {
+      "title": "EditablePartInput",
+      "description": "One caller-supplied Message Part for the amended Message's canonical editable content (REF-042 §13.3). The server assigns `partId`, `index`, `contentHash` and `createdAt`; `visibility` defaults to `standard` for user-authored amendment input when absent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload", "type"],
+      "properties": {
+        "type": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Type-specific closed payload envelope, owned by the Chat Part-type registry (out of scope for REF-042 and this contract per REF-042 §2.2)."
+        },
+        "visibility": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageVisibility" }
+      }
+    },
+    "CommitMessageAmendmentRequest": {
+      "title": "CommitMessageAmendmentRequest",
+      "description": "Conceptual request exactly as REF-042 §13.3 and ADR-022 §6 define it. Closes CGAP-042-006.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actorId",
+        "attachmentReferences",
+        "commandId",
+        "contextReferences",
+        "conversationId",
+        "editableParts",
+        "newBranchId",
+        "newMessageId",
+        "protocolVersion",
+        "requestedAt",
+        "sourceMessageId",
+        "workspaceId"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "expectedSourceContentHash": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContentHash",
+          "description": "Optional optimistic pre-commit check. When supplied and mismatched, the command fails as `source_content_hash_mismatch` (REF-042 §13.3 step 5)."
+        },
+        "newMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "newBranchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "editableParts": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/EditablePartInput" },
+          "minItems": 1,
+          "maxItems": 4096
+        },
+        "attachmentReferences": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" },
+          "maxItems": 64
+        },
+        "contextReferences": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" },
+          "maxItems": 64
+        },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "clientObservedGraphRevision": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision",
+          "description": "Optional. Never itself an authority grant; used only as an optimistic staleness hint (REF-042 §13.3)."
+        },
+        "clientCorrelationHint": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ClientCorrelationHint" },
+        "requestedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "CommitMessageAmendmentResult": {
+      "title": "CommitMessageAmendmentResult",
+      "description": "Conceptual successful result exactly as REF-042 §13.4 and ADR-022 §6 define it. `idempotentReplay` is `true` when this exact result was returned from a prior committed execution of the same `commandId` rather than a new commit (REF-042 §13.6, §21.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attachmentWarnings",
+        "branchId",
+        "commandId",
+        "conversationId",
+        "conversationSequence",
+        "generationJobId",
+        "graphRevision",
+        "headMessageId",
+        "idempotentReplay",
+        "newMessageId",
+        "protocolVersion",
+        "sourceMessageId",
+        "workspaceId"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "newMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "attachmentWarnings": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ReferenceFailure" },
+          "maxItems": 64,
+          "description": "Non-blocking reference issues surfaced with the successful commit (REF-042 §14.3). A blocking reference failure instead fails the command with `Failure.referenceFailures` (CGAP-042-010)."
+        },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "CommitMessageAmendmentFailure": {
+      "title": "CommitMessageAmendmentFailure",
+      "description": "The closed command-failure envelope for `CommitMessageAmendment`, reusing the shared `Failure` shape (REF-042 §13.5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "failure", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "failure": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Failure" }
+      }
+    }
+  }
+}

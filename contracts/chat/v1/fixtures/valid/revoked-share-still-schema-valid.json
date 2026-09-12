@@ -1,0 +1,13 @@
+{
+  "workspaceId": "ws-acme",
+  "shareId": "share-0002",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "headMessageId": "msg-0002-a1",
+  "graphRevision": 2,
+  "createdBy": "actor-alice",
+  "createdAt": "2026-08-20T10:00:00Z",
+  "accessPolicy": "link_read_only",
+  "schemaVersion": 1,
+  "revokedAt": "2026-08-20T10:05:00Z"
+}

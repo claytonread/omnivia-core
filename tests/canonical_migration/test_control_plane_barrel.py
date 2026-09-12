@@ -338,6 +338,7 @@ def test_control_plane_barrel_has_no_getattr_or_dir_escape_hatch() -> None:
 
 def test_control_plane_barrel_namespace_is_exact() -> None:
     canonical = importlib.import_module("omnivia_core.control_plane")
+    importlib.import_module("omnivia_core.control_plane.effects")
     # Submodule attributes are excluded, not enumerated. Importing
     # `omnivia_core.control_plane.X` binds `X` on the parent package, and pytest
     # imports every collected module before running anything -- so which
@@ -355,6 +356,7 @@ def test_control_plane_barrel_namespace_is_exact() -> None:
     expected = set(CANONICAL_CONTROL_PLANE_ALL) | {"annotations"}
     assert actual == expected
     assert vars(canonical)["annotations"] is __future__.annotations
+    assert canonical.effects is importlib.import_module("omnivia_core.control_plane.effects")
     assert canonical.imports is importlib.import_module("omnivia_core.control_plane.imports")
     assert canonical.models is importlib.import_module("omnivia_core.control_plane.models")
     assert canonical.validation is importlib.import_module("omnivia_core.control_plane.validation")

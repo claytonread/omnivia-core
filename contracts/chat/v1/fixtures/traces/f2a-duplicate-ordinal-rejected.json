@@ -1,0 +1,57 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-tdup",
+      "attemptId": "attempt-tdup",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-tdup",
+      "attemptId": "attempt-tdup",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-tdup-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-tdup",
+      "attemptId": "attempt-tdup",
+      "ordinal": 1,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-tdup-1",
+      "stepId": "step-1",
+      "delta": "duplicated ordinal"
+    },
+    {
+      "invocationId": "invocation-tdup",
+      "attemptId": "attempt-tdup",
+      "ordinal": 2,
+      "eventType": "text-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "partId": "part-tdup-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-tdup",
+      "attemptId": "attempt-tdup",
+      "ordinal": 3,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:04Z",
+      "receivedAt": "2026-08-20T10:10:04Z",
+      "finishReason": "stop"
+    }
+  ]
+}

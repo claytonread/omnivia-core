@@ -1,0 +1,12 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "actorId": "actor-alice",
+  "deviceId": "device-laptop-01",
+  "activeBranchId": "branch-0001-original",
+  "focusedMessageId": "msg-0002-a1",
+  "lastSeenGraphRevision": 2,
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-20T10:00:05Z",
+  "version": 1
+}

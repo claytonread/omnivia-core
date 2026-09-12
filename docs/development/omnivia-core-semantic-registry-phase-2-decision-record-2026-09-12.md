@@ -154,7 +154,7 @@ the Phase 2 resolution handoff:
    producers import their values from that registry. The former unversioned
    publication producer now emits `semantic.version.published.v1`. No existing
    immutable outbox row is rewritten.
-2. Migration `0029_semantic_temporal_source_metadata.sql` adds adjacent source-text
+2. Migration `0040_semantic_temporal_source_metadata.sql` adds adjacent source-text
    and trusted-timezone columns for evidence and observation source times and for
    assertion valid/attested boundaries. Typed reads reconstruct complete
    `TemporalInstant` values. Auxiliary fields participate in record digests only
@@ -183,9 +183,9 @@ outstanding before Phase 2 can be formally accepted:
 
 ## 12. Rollback posture
 
-- The resolution adds forward migration 0029. Existing migrations and immutable
-  rows are unchanged. Rollback is restoration of the verified pre-0029 database;
-  application code must not write source metadata until 0029 is present.
+- The resolution adds forward migration 0040. Existing migrations and immutable
+  rows are unchanged. Rollback is restoration of the verified pre-0040 database;
+  application code must not write source metadata until 0040 is present.
 - Any future change to the values frozen in sections 1–7 that alters storage
   identity, temporal meaning, retention, or access-control semantics requires a
   new decision record superseding this one, not an in-place edit — consistent

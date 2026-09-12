@@ -1,0 +1,8 @@
+{
+  "commandId": "cmd-envelope-0003",
+  "status": "rejected",
+  "error": {
+    "code": "authorization_denied",
+    "message": "Not permitted to perform this command."
+  }
+}

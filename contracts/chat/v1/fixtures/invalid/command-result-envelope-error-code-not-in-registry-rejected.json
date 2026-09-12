@@ -1,0 +1,8 @@
+{
+  "commandId": "cmd-envelope-0009",
+  "status": "rejected",
+  "error": {
+    "code": "totally_made_up_code",
+    "message": "This code is not a member of the shared ErrorCode registry."
+  }
+}

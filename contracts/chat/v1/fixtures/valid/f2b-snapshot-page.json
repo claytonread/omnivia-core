@@ -1,0 +1,26 @@
+{
+  "messageType": "bridge.snapshot-page",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "snapshotId": "bsnap-0001",
+  "snapshotGraphRevision": 2,
+  "pageIndex": 0,
+  "items": [
+    {
+      "itemKind": "conversation",
+      "payload": {
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "createdBy": "actor-alice",
+        "createdAt": "2026-08-20T10:00:00Z",
+        "state": "active",
+        "graphRevision": 2,
+        "latestConversationSequence": 2,
+        "schemaVersion": 1
+      }
+    }
+  ],
+  "hasMore": false,
+  "snapshotBoundaryCursor": "cursor-snap-boundary-0001"
+}

@@ -1,0 +1,407 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/runtime/v1/trusted-runtime.schema.json",
+  "title": "OmniVia trusted runtime payload and resolution contract v1",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/payloadManifest" },
+    { "$ref": "#/$defs/releaseSignature" },
+    { "$ref": "#/$defs/activeSelection" },
+    { "$ref": "#/$defs/trustAnchor" },
+    { "$ref": "#/$defs/verifiedRuntimeDescriptor" },
+    { "$ref": "#/$defs/resolutionRefusal" },
+    { "$ref": "#/$defs/conformanceCase" },
+    { "$ref": "#/$defs/canonicalVectors" }
+  ],
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "contractVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "sha256Hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "payloadIdentity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "keyId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "base64": { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$", "maxLength": 4096 },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*//)(?!(.*/)?\\.\\.?(/|$))[^\\\\\\u0000-\\u001f:*?\"<>|]+$"
+    },
+    "octalMode": { "type": "string", "pattern": "^0[0-7]{3}$" },
+    "operatingSystem": { "enum": ["macos", "linux", "windows"] },
+    "architecture": { "enum": ["arm64", "x86_64"] },
+    "signatureAlgorithm": { "const": "ed25519" },
+
+    "inventoryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size", "executable"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "executable": { "type": "boolean" }
+      }
+    },
+
+    "executableEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256Hex" }
+      }
+    },
+
+    "payloadManifest": {
+      "title": "Runtime payload manifest v1",
+      "description": "The signed description of one immutable installed Core runtime payload. Written at <candidate>/omnivia-runtime-manifest.json. Strict: an unknown member is refused rather than ignored, because an unknown member is inside the signed bytes and would change the payload identity that member was omitted from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_version",
+        "release_version",
+        "platform",
+        "executables",
+        "inventory",
+        "compatibility",
+        "signing",
+        "payload_identity"
+      ],
+      "properties": {
+        "manifest_version": { "const": "1.0" },
+        "release_version": { "$ref": "#/$defs/semver" },
+        "platform": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "arch"],
+          "properties": {
+            "os": { "$ref": "#/$defs/operatingSystem" },
+            "arch": { "$ref": "#/$defs/architecture" }
+          }
+        },
+        "executables": {
+          "description": "The two fixed product executables. Their paths are frozen per operating system and a manifest may not name any other value; the member exists so the document is self-describing, never so metadata can move an executable.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cli", "service"],
+          "properties": {
+            "cli": { "$ref": "#/$defs/executableEntry" },
+            "service": { "$ref": "#/$defs/executableEntry" }
+          }
+        },
+        "inventory": {
+          "description": "Every security-relevant payload file, excluding the manifest and its detached signature. Unique normalised relative POSIX paths, sorted lexicographically by UTF-8 bytes.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/inventoryEntry" }
+        },
+        "compatibility": {
+          "description": "The bootstrap contract window this payload can serve. A consumer states the bootstrap contract version it implements and is refused outside the window.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimum_bootstrap_contract", "maximum_bootstrap_contract"],
+          "properties": {
+            "minimum_bootstrap_contract": { "$ref": "#/$defs/contractVersion" },
+            "maximum_bootstrap_contract": { "$ref": "#/$defs/contractVersion" }
+          }
+        },
+        "signing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key_id", "algorithm"],
+          "properties": {
+            "key_id": { "$ref": "#/$defs/keyId" },
+            "algorithm": { "$ref": "#/$defs/signatureAlgorithm" }
+          }
+        },
+        "payload_identity": {
+          "description": "sha256 of the domain-separated canonical identity claim over every manifest member except this one. Declared so the document is self-describing; always recomputed and compared, never trusted.",
+          "$ref": "#/$defs/payloadIdentity"
+        }
+      }
+    },
+
+    "releaseSignature": {
+      "title": "Detached release signature v1",
+      "description": "Written at <candidate>/omnivia-runtime-manifest.sig.json. The signature covers the domain-separated canonical manifest including the computed payload identity.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signature_version",
+        "key_id",
+        "algorithm",
+        "payload_identity",
+        "signature"
+      ],
+      "properties": {
+        "signature_version": { "const": "1.0" },
+        "key_id": { "$ref": "#/$defs/keyId" },
+        "algorithm": { "$ref": "#/$defs/signatureAlgorithm" },
+        "payload_identity": { "$ref": "#/$defs/payloadIdentity" },
+        "signature": { "$ref": "#/$defs/base64" }
+      }
+    },
+
+    "activeSelection": {
+      "title": "Active runtime selection record v1",
+      "description": "The existing installation-manager record at <installation root>/active.json and previous-known-good.json. An untrusted selector: only release_version and payload_digest are read, the candidate directory is derived beneath the explicit installation root, and relative_path must equal that derived value rather than supply one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "release_version", "payload_digest", "relative_path"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "release_version": { "$ref": "#/$defs/semver" },
+        "payload_digest": { "$ref": "#/$defs/sha256Hex" },
+        "relative_path": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+
+    "trustAnchor": {
+      "title": "Approved release trust anchor v1",
+      "description": "An explicit resolver input, never read from the installation. A key is usable only inside its declared window and only while it has not been retired.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "algorithm", "public_key", "not_before", "not_after"],
+      "properties": {
+        "key_id": { "$ref": "#/$defs/keyId" },
+        "algorithm": { "$ref": "#/$defs/signatureAlgorithm" },
+        "public_key": {
+          "description": "Base64 of the 32 raw Ed25519 public key bytes.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{43}=$"
+        },
+        "not_before": { "$ref": "#/$defs/timestamp" },
+        "not_after": { "$ref": "#/$defs/timestamp" },
+        "retired_at": {
+          "description": "When set, the key is refused from this instant onward even inside its window.",
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "verifiedRuntimeDescriptor": {
+      "title": "Verified runtime descriptor v1",
+      "description": "Returned only on complete verification. A cache hint for a consumer, never continuing authority: every launch resolves again.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_descriptor_version",
+        "release_version",
+        "payload_identity",
+        "runtime_root",
+        "cli_path",
+        "service_path"
+      ],
+      "properties": {
+        "runtime_descriptor_version": { "const": "1.0" },
+        "release_version": { "$ref": "#/$defs/semver" },
+        "payload_identity": { "$ref": "#/$defs/payloadIdentity" },
+        "runtime_root": { "type": "string", "minLength": 1 },
+        "cli_path": { "type": "string", "minLength": 1 },
+        "service_path": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "resolutionRefusal": {
+      "title": "Runtime resolution refusal v1",
+      "description": "The whole of what a failed resolution returns. Payload-free by construction: one closed code and nothing else, so no path, file content, key material or child output can leave through it. Human diagnostics stay on stderr.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_descriptor_version", "refusal"],
+      "properties": {
+        "runtime_descriptor_version": { "const": "1.0" },
+        "refusal": { "$ref": "#/$defs/refusalCode" }
+      }
+    },
+
+    "refusalCode": {
+      "description": "runtime_not_installed: no active installed candidate exists (retry after installation or repair). runtime_metadata_invalid: a selection or manifest document is malformed, oversized or an unsupported version (repair). runtime_untrusted: the signature, key or key window is not approved (never execute). runtime_tampered: payload identity or a file digest does not match (never execute). runtime_layout_invalid: the executable pair is missing, split, escaping, symlinked or of the wrong mode or owner (never execute). runtime_incompatible: an authentic release cannot serve the consumer contract (install a compatible Core). runtime_busy: the installation selection is being changed (bounded retry). runtime_io_failure: a bounded local read failed (bounded retry or repair).",
+      "enum": [
+        "runtime_not_installed",
+        "runtime_metadata_invalid",
+        "runtime_untrusted",
+        "runtime_tampered",
+        "runtime_layout_invalid",
+        "runtime_incompatible",
+        "runtime_busy",
+        "runtime_io_failure"
+      ]
+    },
+
+    "conformanceEntry": {
+      "description": "One entry of the installation tree a conformance case materialises, relative to the installation root. Missing parent directories are created 0700 before explicit directory entries are applied deepest-first.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "kind": { "enum": ["file", "directory", "symlink"] },
+        "content_base64": { "$ref": "#/$defs/base64" },
+        "mode": { "$ref": "#/$defs/octalMode" },
+        "target": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+
+    "conformanceCase": {
+      "title": "Cross-language resolution conformance case v1",
+      "description": "A self-contained accept/refuse case. A verifier in any language materialises `installation.entries` under a fresh absolute root, resolves with the stated anchors, verification time and bounds, and must produce `expected`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_version",
+        "case_id",
+        "description",
+        "requires",
+        "verification_time",
+        "bootstrap_contract_version",
+        "host_operating_system",
+        "host_architecture",
+        "trust_anchors",
+        "installation",
+        "expected"
+      ],
+      "properties": {
+        "case_version": { "const": "1.0" },
+        "case_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "requires": {
+          "description": "Host capabilities the case needs. A verifier that cannot provide one skips the case rather than reporting a verdict it did not observe.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["posix_modes", "symlinks"],
+          "properties": {
+            "posix_modes": { "type": "boolean" },
+            "symlinks": { "type": "boolean" }
+          }
+        },
+        "verification_time": { "$ref": "#/$defs/timestamp" },
+        "bootstrap_contract_version": { "$ref": "#/$defs/contractVersion" },
+        "minimum_release_version": {
+          "oneOf": [{ "$ref": "#/$defs/semver" }, { "type": "null" }]
+        },
+        "host_operating_system": {
+          "description": "The operating system the verifier is to resolve as. An explicit input so one corpus produces the same verdicts on macOS, Linux and Windows; a compatibility input, never a trust input.",
+          "$ref": "#/$defs/operatingSystem"
+        },
+        "host_architecture": {
+          "description": "The architecture the verifier is to resolve as, compared with the manifest's platform.arch. An explicit input for the same reason as host_operating_system, so one corpus produces the same verdicts on arm64 and x86_64; a compatibility input, never a trust input. A manifest declaring the other architecture is runtime_incompatible.",
+          "$ref": "#/$defs/architecture"
+        },
+        "trust_anchors": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/trustAnchor" }
+        },
+        "installation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entries"],
+          "properties": {
+            "entries": {
+              "type": "array",
+              "minItems": 0,
+              "maxItems": 256,
+              "items": { "$ref": "#/$defs/conformanceEntry" }
+            }
+          }
+        },
+        "expected": {
+          "description": "On a verified case the descriptor's three path members are stated relative to the installation root the verifier chose, because the case cannot know the absolute root it will be materialised under. A verifier compares them after making them relative again.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome"],
+          "properties": {
+            "outcome": { "enum": ["verified", "refused"] },
+            "refusal": {
+              "oneOf": [{ "$ref": "#/$defs/refusalCode" }, { "type": "null" }]
+            },
+            "descriptor": { "$ref": "#/$defs/verifiedRuntimeDescriptor" }
+          }
+        }
+      }
+    },
+
+    "canonicalVectors": {
+      "title": "Canonicalisation and signature vectors v1",
+      "description": "Language-neutral vectors proving an independent implementation produces the same canonical bytes, the same payload identity and the same signature verdicts. Every JSON input and output is carried as raw text rather than as a parsed value, because a parsed value cannot distinguish 1.5 from 1 or preserve a duplicate key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vectors_version",
+        "identity_domain",
+        "signature_domain",
+        "canonicalisation",
+        "identity",
+        "signatures"
+      ],
+      "properties": {
+        "vectors_version": { "const": "1.0" },
+        "identity_domain": { "type": "string", "minLength": 1 },
+        "signature_domain": { "type": "string", "minLength": 1 },
+        "canonicalisation": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "json", "accepted"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "json": { "type": "string" },
+              "accepted": { "type": "boolean" },
+              "canonical": { "type": "string" },
+              "sha256": { "$ref": "#/$defs/sha256Hex" },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "identity": {
+          "description": "Manifest documents carried as raw text, with the payload identity an implementation must derive from them.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "manifest_json", "identity_claim_sha256", "payload_identity"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "manifest_json": { "type": "string" },
+              "identity_claim_sha256": { "$ref": "#/$defs/sha256Hex" },
+              "payload_identity": { "$ref": "#/$defs/payloadIdentity" }
+            }
+          }
+        },
+        "signatures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "public_key", "signed_message_base64", "signature", "valid"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "public_key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" },
+              "signed_message_base64": { "$ref": "#/$defs/base64" },
+              "signature": { "$ref": "#/$defs/base64" },
+              "valid": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

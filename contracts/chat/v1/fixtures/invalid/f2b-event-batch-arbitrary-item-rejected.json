@@ -1,0 +1,14 @@
+{
+  "messageType": "bridge.event-batch",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "events": [
+    {
+      "eventType": "not-a-real-chat-event-type",
+      "somethingArbitrary": true
+    }
+  ],
+  "fromCursor": "cursor-x",
+  "nextCursor": "cursor-b-0002"
+}

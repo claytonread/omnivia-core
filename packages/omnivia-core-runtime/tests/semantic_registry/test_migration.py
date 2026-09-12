@@ -1,6 +1,6 @@
-"""Acceptance tests for `0026_semantic_registry.sql` (SR-101).
+"""Acceptance tests for `0037_semantic_registry.sql` (SR-101).
 
-Focused, not exhaustive: this proves 0026 is the unique successor to 0025, that it
+Focused, not exhaustive: this proves 0037 is the unique successor to 0036, that it
 adds exactly the eighteen `omnivia_semantic_*` tables and their fifty-four guard
 triggers, that the fencing predicate and append-only guards actually hold, that the
 pointer/activation contract advances correctly and refuses a stale or
@@ -56,9 +56,9 @@ from test_application_audit_idempotency_migration import (
     row_for as audit_row_for,
 )
 
-MIGRATION_VERSION = 26
-MIGRATION_NAME = "0026_semantic_registry.sql"
-PREDECESSOR_NAME = "0025_runtime_stop_and_admission_control.sql"
+MIGRATION_VERSION = 37
+MIGRATION_NAME = "0037_semantic_registry.sql"
+PREDECESSOR_NAME = "0036_workflow_control_cancellation_lineage.sql"
 
 WORKSPACE_ID = "ws-sr-0001"
 OTHER_WORKSPACE_ID = "ws-sr-0002"
@@ -243,7 +243,7 @@ def activate(
 # --- migration identity, ledger and fingerprint --------------------------------
 
 
-def test_0026_is_the_unique_successor_to_0025() -> None:
+def test_0037_is_the_unique_successor_to_0036() -> None:
     ordered = load_migrations()
     versions = [m.version for m in ordered]
     prefix = [v for v in versions if v <= MIGRATION_VERSION]

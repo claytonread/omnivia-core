@@ -1,0 +1,8 @@
+{
+  "messageType": "bridge.snapshot-request",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "requestedAt": "2026-08-20T10:06:01Z",
+  "cursor": "cursor-fresh-b-01"
+}

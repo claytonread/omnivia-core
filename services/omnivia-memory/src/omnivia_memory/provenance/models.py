@@ -12,7 +12,7 @@ Deprecated: import ``Source`` / ``SourceType`` from
 # bindings (`Any`, `Enum`, `annotations`) -- names the canonical module's own
 # imports left at its module scope and that this leaf's historical namespace
 # still has to resolve. No other error code is suppressed.
-from omnivia_core.provenance.models import (  # type: ignore[attr-defined]
+from omnivia_core.provenance.models import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     Enum,
     Source,

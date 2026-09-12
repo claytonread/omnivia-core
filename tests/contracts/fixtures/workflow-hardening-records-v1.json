@@ -1,0 +1,373 @@
+{
+  "description": "Clean-room OmniVia-authored T-0679 workflow hardening fixtures. The records use invented IDs and payloads only; they are not copied, vendored, translated, or derived from external project schemas or fixtures.",
+  "records": {
+    "workflowValuePresent": {
+      "contractName": "WorkflowValue",
+      "valueId": "value-atlas-retention-days",
+      "semanticType": "semantic-duration-days",
+      "physicalSchema": {
+        "contractId": "contract-positive-integer-v1"
+      },
+      "cardinality": "single",
+      "presence": "present",
+      "classification": {
+        "classificationId": "internal"
+      },
+      "lineage": {
+        "sourceId": "fixture-clean-room"
+      },
+      "valueDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "value": 30
+    },
+    "workflowValueNull": {
+      "contractName": "WorkflowValue",
+      "valueId": "value-atlas-review-note",
+      "semanticType": "semantic-review-note",
+      "physicalSchema": {
+        "contractId": "contract-json-null-v1"
+      },
+      "cardinality": "single",
+      "presence": "null_value",
+      "classification": {
+        "classificationId": "internal"
+      },
+      "lineage": {
+        "sourceId": "fixture-clean-room"
+      },
+      "value": null
+    },
+    "absentValue": {
+      "contractName": "AbsentValue",
+      "kind": "absent",
+      "reason": "not_reached",
+      "subject": {
+        "diagnosticId": "diag-branch-not-reached"
+      },
+      "provenance": {
+        "sourceId": "fixture-clean-room"
+      }
+    },
+    "workflowValueEmpty": {
+      "contractName": "WorkflowValue",
+      "valueId": "value-atlas-empty-attachments",
+      "semanticType": "semantic-attachment-list",
+      "physicalSchema": {
+        "contractId": "contract-json-array-v1"
+      },
+      "cardinality": "many",
+      "presence": "empty",
+      "classification": {
+        "classificationId": "internal"
+      },
+      "lineage": {
+        "sourceId": "fixture-clean-room"
+      },
+      "value": []
+    },
+    "workflowValueRedacted": {
+      "contractName": "WorkflowValue",
+      "valueId": "value-atlas-redacted-token",
+      "semanticType": "semantic-api-token",
+      "physicalSchema": {
+        "contractId": "contract-redacted-secret-v1"
+      },
+      "cardinality": "single",
+      "presence": "redacted",
+      "classification": {
+        "classificationId": "secret"
+      },
+      "lineage": {
+        "sourceId": "fixture-clean-room"
+      },
+      "diagnostic": {
+        "diagnosticId": "diag-atlas-redacted"
+      }
+    },
+    "workflowCheckRunnable": {
+      "contractName": "WorkflowCheckReadinessExtension",
+      "definitionValid": true,
+      "runnable": true,
+      "implementationBindings": [
+        {
+          "bindingId": "binding-atlas-reader",
+          "workflowComponentId": "component-atlas-reader",
+          "component": {
+            "componentId": "component-atlas-reader",
+            "version": "1.0.0"
+          },
+          "implementation": {
+            "implementationId": "implementation-atlas-reader",
+            "version": "1.0.0"
+          },
+          "signatureDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "capability": {
+            "capabilityId": "capability-read-fixture"
+          },
+          "state": "available"
+        }
+      ],
+      "diagnostics": []
+    },
+    "workflowCheckValidNotRunnable": {
+      "contractName": "WorkflowCheckReadinessExtension",
+      "definitionValid": true,
+      "runnable": false,
+      "implementationBindings": [
+        {
+          "bindingId": "binding-atlas-writer",
+          "workflowComponentId": "component-atlas-writer",
+          "component": {
+            "componentId": "component-atlas-writer",
+            "version": "1.0.0"
+          },
+          "implementation": {
+            "implementationId": "implementation-atlas-writer",
+            "version": "1.0.0"
+          },
+          "signatureDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "capability": {
+            "capabilityId": "capability-write-fixture"
+          },
+          "state": "revoked",
+          "diagnostics": [
+            {
+              "code": "implementation_revoked",
+              "subject": "component-atlas-writer"
+            }
+          ]
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "implementation_revoked",
+          "subject": "component-atlas-writer"
+        }
+      ]
+    },
+    "workflowVersionDiff": {
+      "contractName": "WorkflowVersionDiff",
+      "diffId": "diff-atlas-v1-v2",
+      "fromVersion": {
+        "versionId": "workflow-version-atlas-1"
+      },
+      "toVersion": {
+        "versionId": "workflow-version-atlas-2"
+      },
+      "stableIdMap": {
+        "component-atlas-reader": "component-atlas-reader"
+      },
+      "classifications": ["semantic", "presentation"],
+      "changes": [
+        {
+          "stableId": "component-atlas-reader",
+          "field": "label"
+        }
+      ],
+      "runtimeCausalityClaimed": false
+    },
+    "suggestedWorkflowFix": {
+      "contractName": "SuggestedWorkflowFix",
+      "suggestedFixId": "fix-atlas-binding",
+      "diagnosticCode": "implementation_revoked",
+      "subject": {
+        "diagnosticId": "diag-atlas-binding"
+      },
+      "preconditions": [
+        {
+          "kind": "diagnostic_still_present",
+          "reference": {
+            "diagnosticId": "diag-atlas-binding"
+          }
+        }
+      ],
+      "previewDiff": {
+        "contractName": "WorkflowVersionDiff",
+        "diffId": "diff-atlas-fix-preview",
+        "fromVersion": {
+          "versionId": "workflow-version-atlas-2"
+        },
+        "toVersion": {
+          "versionId": "workflow-draft-atlas-fix"
+        },
+        "stableIdMap": {
+          "component-atlas-writer": "component-atlas-writer"
+        },
+        "classifications": ["semantic"],
+        "changes": [
+          {
+            "stableId": "component-atlas-writer",
+            "field": "implementation"
+          }
+        ],
+        "runtimeCausalityClaimed": false
+      },
+      "editBatch": {
+        "editBatchId": "edit-batch-atlas-fix",
+        "semanticRevision": "revision-atlas-2"
+      },
+      "postApplyCheckProfile": "runtime_load",
+      "undoOperation": {
+        "editBatchId": "edit-batch-atlas-undo",
+        "semanticRevision": "revision-atlas-2"
+      },
+      "authorityCeiling": "proposal_only"
+    },
+    "simulationResult": {
+      "contractName": "SimulationResult",
+      "simulationId": "simulation-atlas-preview",
+      "workflow": {
+        "workflowId": "workflow-atlas"
+      },
+      "scope": {
+        "kind": "selected_components",
+        "componentIds": ["component-atlas-reader"]
+      },
+      "effectMode": "mocked",
+      "reachedTargets": ["component-atlas-reader"],
+      "notReachedTargets": ["component-atlas-writer"],
+      "output": {
+        "contractName": "WorkflowValue",
+        "valueId": "value-atlas-simulation-output",
+        "semanticType": "semantic-summary",
+        "physicalSchema": {
+          "contractId": "contract-text-v1"
+        },
+        "cardinality": "single",
+        "presence": "present",
+        "classification": {
+          "classificationId": "internal"
+        },
+        "lineage": {
+          "sourceId": "simulation-atlas-preview"
+        },
+        "value": "fixture-only summary"
+      },
+      "diagnostics": [],
+      "browserEnvelope": {
+        "resolvedTargets": [
+          {
+            "targetId": "target-atlas-preview",
+            "targetKind": "document"
+          }
+        ],
+        "observations": [
+          {
+            "evidenceId": "evidence-atlas-observation"
+          }
+        ],
+        "effectsPerformed": false
+      },
+      "productionReadinessContribution": false
+    },
+    "branchAggregatePolicy": {
+      "contractName": "BranchAggregatePolicy",
+      "policyId": "policy-atlas-threshold",
+      "branchGroupId": "branch-group-atlas-review",
+      "mode": "threshold",
+      "threshold": 2,
+      "lateResultPolicy": "indeterminate_if_material"
+    },
+    "loopPlan": {
+      "contractName": "LoopPlan",
+      "loopPlanId": "loop-plan-atlas-pages",
+      "loopComponentId": "component-atlas-loop",
+      "frozenAtRunStart": true,
+      "maximumIterations": 25,
+      "concurrencyLimit": 3,
+      "deterministicOrder": ["page-001", "page-002", "page-003"],
+      "iterationLedgerRequired": true
+    },
+    "attemptSettlementIndeterminate": {
+      "contractName": "AttemptSettlement",
+      "attemptId": "attempt-atlas-browser-click",
+      "outcome": "indeterminate",
+      "effectDisposition": "indeterminate",
+      "settledAt": "2026-04-02T09:15:09Z"
+    },
+    "attemptSettlementFailed": {
+      "contractName": "AttemptSettlement",
+      "attemptId": "attempt-atlas-write",
+      "outcome": "failed",
+      "effectDisposition": "failed",
+      "settledAt": "2026-04-02T09:16:09Z"
+    },
+    "cancellationRecordRequestedOnly": {
+      "contractName": "CancellationRecord",
+      "cancellationId": "cancellation-atlas-requested",
+      "workflowRunId": "workflow-run-atlas-1",
+      "requestedAt": "2026-04-02T09:15:00Z",
+      "inFlightState": "requested"
+    },
+    "cancellationRecordSettled": {
+      "contractName": "CancellationRecord",
+      "cancellationId": "cancellation-atlas-settled",
+      "workflowRunId": "workflow-run-atlas-2",
+      "requestedAt": "2026-04-02T10:15:00Z",
+      "providerAcknowledgement": {
+        "evidenceId": "evidence-atlas-cancel-ack"
+      },
+      "inFlightState": "acknowledged",
+      "finalSettlement": {
+        "contractName": "AttemptSettlement",
+        "attemptId": "attempt-atlas-cancelled",
+        "outcome": "cancelled",
+        "effectDisposition": "cancelled",
+        "settledAt": "2026-04-02T10:15:03Z"
+      }
+    },
+    "artifactReceiptSkippedVisual": {
+      "contractName": "WorkflowArtifactReceipt",
+      "receiptId": "receipt-atlas-artifact",
+      "sourceDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "artifactDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "deterministicChecks": [
+        {
+          "checkId": "check-atlas-bytes",
+          "result": "passed"
+        }
+      ],
+      "visual_review": "skipped",
+      "deliveredAtomically": true
+    },
+    "artifactReceiptPassedVisual": {
+      "contractName": "WorkflowArtifactReceipt",
+      "receiptId": "receipt-atlas-visual-artifact",
+      "sourceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "artifactDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "deterministicChecks": [
+        {
+          "checkId": "check-atlas-render",
+          "result": "passed"
+        }
+      ],
+      "visual_review": "passed",
+      "deliveredAtomically": true
+    },
+    "migrationReceiptDraft": {
+      "contractName": "MigrationReceipt",
+      "receiptId": "receipt-atlas-migration-draft",
+      "migrationRunId": "migration-run-atlas-1",
+      "sourceVersion": {
+        "versionId": "workflow-version-atlas-1"
+      },
+      "producedDraft": {
+        "draftId": "workflow-draft-atlas-2"
+      },
+      "idempotencyKey": "idempotency-atlas-migration-1",
+      "rewrittenPublishedVersionInPlace": false
+    },
+    "migrationReceiptVersion": {
+      "contractName": "MigrationReceipt",
+      "receiptId": "receipt-atlas-migration-version",
+      "migrationRunId": "migration-run-atlas-2",
+      "sourceVersion": {
+        "versionId": "workflow-version-atlas-1"
+      },
+      "producedVersion": {
+        "versionId": "workflow-version-atlas-2"
+      },
+      "idempotencyKey": "idempotency-atlas-migration-2",
+      "rewrittenPublishedVersionInPlace": false
+    }
+  }
+}

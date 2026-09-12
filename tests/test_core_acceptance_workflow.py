@@ -64,6 +64,12 @@ SKIP_CONSTRUCTS = frozenset({"skip", "skipif", "importorskip", "xfail"})
 GATE_STEPS = (
     ("Check package boundaries", "python scripts/check-package-boundaries.py"),
     ("Run package boundary tests", "python -m pytest tests/test_package_boundaries.py -q"),
+    # Migration numbers are one global sequence shared by several queued lanes, so
+    # two lanes that each take "the next free number" produce two `0021_*.sql`
+    # files rather than a merge conflict. This is the step that holds the T-0660
+    # allocation authority against the migration directory and its own history;
+    # its fail-closed shape is pinned below.
+    ("Check migration allocations", "python scripts/check-migration-allocations.py"),
     ("Build and install-check all distributions", "PYTHON=python scripts/check-package-builds.sh"),
     ("Check application contracts", "python scripts/check-application-contracts.py"),
     # The MCP exposure manifest's advertised input and output schemas are
@@ -488,7 +494,7 @@ def test_stable_workflow_and_job_identity() -> None:
     job = _block(jobs, "core-acceptance")
     assert _entry(job, "name") == "Core acceptance"
     assert _entry(job, "runs-on") == "ubuntu-latest"
-    assert _entry(job, "timeout-minutes") == "60"
+    assert _entry(job, "timeout-minutes") == "120"
     assert _entry(_block(job, "permissions"), "contents") == "read"
 
 
@@ -568,6 +574,33 @@ def test_required_commands_run_in_their_own_steps_and_in_order() -> None:
     expected = [name for name, _ in GATE_STEPS] + list(SCOPED_STEPS)
     positions = [order.index(name) for name in expected]
     assert positions == sorted(positions), f"gate steps are out of order: {order}"
+
+
+MIGRATION_ALLOCATION_STEP = "Check migration allocations"
+MIGRATION_ALLOCATION_SCRIPT = "scripts/check-migration-allocations.py"
+
+
+def test_the_migration_allocation_gate_step_is_fail_closed() -> None:
+    """`GATE_STEPS` pins this step's name, command and place in the order. This pins
+    its shape: nothing about it may turn a rejected allocation into a green check.
+
+    Every one of these is a real way a merge gate stops gating while still
+    appearing in the job's step list -- `continue-on-error` reports success for a
+    failed step, an `if:` skips it under some event or condition, and a shell
+    bypass (`|| true`, `|| :`, a trailing `; true`, `set +e`) discards the exit
+    code the step is there to report. The step is also required to be exactly one
+    command, so none of that can arrive beside the check inside the same `run:`.
+    """
+    assert (REPO_ROOT / MIGRATION_ALLOCATION_SCRIPT).is_file()
+
+    step = _step(_steps(), MIGRATION_ALLOCATION_STEP)
+    assert _entry(step, "continue-on-error") is None
+    assert _entry(step, "if") is None
+
+    commands = _commands(step)
+    assert commands == (f"python {MIGRATION_ALLOCATION_SCRIPT}",)
+    for forbidden in ("|| true", "|| :", "; true", "set +e", "continue-on-error", "-k "):
+        assert forbidden not in commands[0], forbidden
 
 
 def test_contract_checkpoint_env_is_supplied_from_repository_vars_and_only_there() -> None:
@@ -969,6 +1002,41 @@ def test_the_generated_mcp_schema_gate_runs_locally_and_on_the_gate() -> None:
     )
 
 
+RUNTIME_FIXTURE_GATE_STEP = "Check generated trusted-runtime fixtures"
+RUNTIME_FIXTURE_GENERATOR = "scripts/generate-runtime-contract.py"
+RUNTIME_FIXTURE_CORPUS = "contracts/runtime/v1/fixtures"
+
+
+def test_the_trusted_runtime_fixture_gate_runs_locally_and_on_the_gate() -> None:
+    """The derived conformance corpus has a drift check on the gate and in preflight.
+
+    Every SHA-256, payload identity and Ed25519 signature under
+    `contracts/runtime/v1/fixtures` is derived from the payload the generator builds.
+    An edit that changes a payload byte without regenerating leaves a fixture whose
+    digest no longer describes its content -- which does not fail, it silently stops
+    testing the case it is named for, and Platform's independent verifier then agrees
+    with Core about a corpus neither of them is checking.
+
+    `GATE_STEPS` is deliberately *not* where this is pinned: the workflow keeps this
+    step beside the Host Contract's own `--check`, which is likewise absent from that
+    tuple. So the workflow step, the preflight step and the two paths are pinned here.
+    """
+    assert (REPO_ROOT / RUNTIME_FIXTURE_GENERATOR).is_file()
+    assert (REPO_ROOT / RUNTIME_FIXTURE_CORPUS).is_dir()
+
+    step = _step(_steps(), RUNTIME_FIXTURE_GATE_STEP)
+    assert f"python {RUNTIME_FIXTURE_GENERATOR} --check" in _commands(step)
+
+    preflight = "\n".join(
+        line
+        for line in PREFLIGHT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    assert f"{RUNTIME_FIXTURE_GENERATOR} --check" in preflight, (
+        "preflight must run the same drift check the gate does"
+    )
+
+
 def _preflight_full_suite_command() -> str:
     """The `step "Run full repository test suite" ...` invocation, joined.
 
@@ -1003,7 +1071,7 @@ RESOLVER_SCRIPT = "scripts/check-root-facade-resolver.py"
 
 def test_resolver_smoke_step_is_bounded_and_fail_closed() -> None:
     """The resolving install is the one gate step that reaches the network, so it
-    carries its own explicit timeout rather than relying on the job's 60 minutes --
+    carries its own explicit timeout rather than relying on the job's 120 minutes --
     a hung index would otherwise burn the whole budget before failing. It must also
     be a single command with no skip flag and no offline fallback: a step that
     quietly degraded to `--no-deps` or `--no-index` would report a pass for a proof

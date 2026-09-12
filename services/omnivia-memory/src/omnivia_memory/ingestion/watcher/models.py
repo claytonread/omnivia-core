@@ -16,7 +16,7 @@ instead.
 # (`TYPE_CHECKING`, `annotations`, `dataclass`, `datetime`, `field`, `timezone`,
 # and the plain `enum` and `uuid` module bindings). No other error code is
 # suppressed.
-from omnivia_core.ingestion.watcher.models import (  # type: ignore[attr-defined]
+from omnivia_core.ingestion.watcher.models import (  # type: ignore[attr-defined,unused-ignore]
     TYPE_CHECKING,
     DebounceConfig,
     FileChange,

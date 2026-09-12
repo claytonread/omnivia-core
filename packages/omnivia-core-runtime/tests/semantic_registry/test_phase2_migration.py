@@ -1,6 +1,6 @@
-"""Acceptance tests for `0027_semantic_evidence_observations.sql` (WP-SEM-06).
+"""Acceptance tests for `0038_semantic_evidence_observations.sql` (WP-SEM-06).
 
-Focused, not exhaustive: this proves 0027 is the unique successor to 0026, that it
+Focused, not exhaustive: this proves 0038 is the unique successor to 0037, that it
 adds exactly the fifteen Phase 2 tables and their forty-five guard triggers plus the
 expected query indexes, that every Phase 2 table fails closed to an unguarded write
 and to a stale writer, that append-only holds for UPDATE/DELETE everywhere, that the
@@ -61,9 +61,9 @@ from test_migration import (  # type: ignore[import-not-found]
     version_row,
 )
 
-MIGRATION_VERSION = 27
-MIGRATION_NAME = "0027_semantic_evidence_observations.sql"
-PREDECESSOR_NAME = "0026_semantic_registry.sql"
+MIGRATION_VERSION = 38
+MIGRATION_NAME = "0038_semantic_evidence_observations.sql"
+PREDECESSOR_NAME = "0037_semantic_registry.sql"
 
 WORKSPACE_ID = "ws-p2-0001"
 OTHER_WORKSPACE_ID = "ws-p2-0002"
@@ -428,7 +428,7 @@ def seed_suppression(holder: Owned) -> None:
 # --- migration identity, ledger and triggers -----------------------------------
 
 
-def test_0027_is_the_unique_successor_to_0026() -> None:
+def test_0038_is_the_unique_successor_to_0037() -> None:
     ordered = load_migrations()
     versions = [m.version for m in ordered]
     prefix = [v for v in versions if v <= MIGRATION_VERSION]

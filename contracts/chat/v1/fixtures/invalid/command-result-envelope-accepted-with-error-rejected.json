@@ -1,0 +1,8 @@
+{
+  "commandId": "cmd-envelope-0006",
+  "status": "accepted",
+  "error": {
+    "code": "internal_recoverable",
+    "message": "This SHALL NOT appear alongside status accepted."
+  }
+}

@@ -1,0 +1,740 @@
+{
+  "schemaVersion": "t0688-workflow-runtime-conformance/v1",
+  "description": "T-0688 G3 clean-room red-baseline manifest. Fourteen invented conformance families describing Workflow, Runtime and Gateway behavior OmniVia Core does not implement today. Every entry is a characterization of the CURRENT refusal or absence, not a claim of product conformance. Payloads, identifiers, codes and destinations are invented OmniVia terminology.",
+  "provenance": {
+    "task": "T-0688 G3",
+    "repository": "omnivia-core",
+    "authoringMode": "clean-room",
+    "sourceOfTruth": "the T-0688 G3 behavioral description plus current OmniVia source and contracts only",
+    "networkAccess": "none",
+    "credentials": "none",
+    "destinationPolicy": "fake .test hostnames and RFC 5737 / RFC 3849 documentation addresses only",
+    "baselineIntent": "expected-red characterization; passing tests assert current rejection or absence"
+  },
+  "fixtures": [
+    {
+      "familyId": "FX-WEFT-PROJECTION",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-016"],
+      "domain": "workflow",
+      "plannedValidator": "validate_owir_source_projection",
+      "behavioralRequirement": "An OWIR source projection is a faithful read-only view of a Workflow definition. Every projected node keeps a stable identity across projections, the projection is bound to the exact semantic revision it was taken from, and the projection is never treated as the canonical definition: writes never target it and a stale revision binding invalidates it rather than being silently refreshed.",
+      "inventedInput": {
+        "inputId": "IN-T0688-PROJECTION-HARBOUR-01",
+        "probe": {
+          "kind": "workflow_unknown_contract",
+          "oracle": "validate_workflow_record",
+          "payload": {
+            "contractName": "OwirSourceProjection",
+            "projectionId": "projection-t0688-harbour-01",
+            "workflowVersion": {"versionId": "workflow-version-harbour-3"},
+            "semanticRevision": "revision-harbour-3.7",
+            "canonical": false,
+            "readOnly": true,
+            "stableNodes": [
+              {"stableId": "node-harbour-intake", "projectedOrder": 0},
+              {"stableId": "node-harbour-dispatch", "projectedOrder": 1}
+            ],
+            "projectionDigest": "sha256:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_contract",
+        "currentRejectionReason": "workflow record: contractName is not a known T-0679 contract",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-PROJECTION-CANONICAL-WRITE",
+        "description": "A caller attempts to publish an edit whose target is the projection rather than the Workflow definition, or presents a projection bound to a superseded semantic revision.",
+        "expectedRefusalCode": "omnivia.t0688.projection.not_canonical_target",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (Workflow definition and projection contracts)",
+      "currentGapCode": "gap.t0688.projection.contract_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-EDIT",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-009"],
+      "domain": "workflow",
+      "plannedValidator": "validate_workflow_edit_batch",
+      "behavioralRequirement": "A Workflow edit batch applies as one ordered atomic unit against an expected base revision. Either every operation in declared order lands or none does, each batch carries the inverse or compensating batch that undoes it, and a batch presented against a base revision that is no longer current is rejected outright rather than rebased or partially applied.",
+      "inventedInput": {
+        "inputId": "IN-T0688-EDIT-HARBOUR-02",
+        "probe": {
+          "kind": "workflow_unknown_contract",
+          "oracle": "validate_workflow_record",
+          "payload": {
+            "contractName": "WorkflowEditBatch",
+            "editBatchId": "edit-batch-t0688-harbour-02",
+            "expectedBaseRevision": "revision-harbour-3.7",
+            "atomic": true,
+            "orderedOperations": [
+              {"ordinal": 0, "operation": "add_component", "targetStableId": "node-harbour-review"},
+              {"ordinal": 1, "operation": "connect_port", "targetStableId": "node-harbour-dispatch"}
+            ],
+            "inverseBatch": {"editBatchId": "edit-batch-t0688-harbour-02-inverse", "semanticRevision": "revision-harbour-3.7"},
+            "staleBaseRejection": "reject_without_rebase"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_contract",
+        "currentRejectionReason": "workflow record: contractName is not a known T-0679 contract",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-EDIT-STALE-BASE",
+        "description": "The batch declares expectedBaseRevision revision-harbour-3.7 while the definition has advanced to revision-harbour-3.8; the batch must be refused whole, leaving no operation applied.",
+        "expectedRefusalCode": "omnivia.t0688.edit.stale_base_revision",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (Workflow edit and revision contracts)",
+      "currentGapCode": "gap.t0688.edit.batch_contract_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-PORT",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-010"],
+      "domain": "workflow",
+      "plannedValidator": "validate_workflow_port_specification",
+      "behavioralRequirement": "A Workflow port declares its semantic type, physical schema, presence, cardinality, delivery mode, driver role, fan-out behavior and whether its value is derived. A port whose reference is resolved dynamically at run time and cannot be resolved at publication is not publishable: publication is refused rather than deferred to the Run.",
+      "inventedInput": {
+        "inputId": "IN-T0688-PORT-HARBOUR-03",
+        "probe": {
+          "kind": "workflow_unknown_contract",
+          "oracle": "validate_workflow_record",
+          "payload": {
+            "contractName": "WorkflowPortSpecification",
+            "portId": "port-t0688-harbour-manifest-in",
+            "semanticType": "semantic-harbour-manifest",
+            "physicalSchema": {"contractId": "contract-harbour-manifest-v1"},
+            "presence": "present",
+            "cardinality": "many",
+            "delivery": "batch_at_close",
+            "driver": "upstream_component",
+            "fanOut": "broadcast_to_all_subscribers",
+            "derivation": "not_derived",
+            "dynamicReference": {"referenceId": "port-ref-t0688-unresolved", "resolvedAtPublication": false},
+            "publishable": false
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_contract",
+        "currentRejectionReason": "workflow record: contractName is not a known T-0679 contract",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-PORT-UNRESOLVED-DYNAMIC",
+        "description": "Publication is attempted while dynamicReference.resolvedAtPublication is false; publication must be refused rather than accepted with resolution deferred to the Run.",
+        "expectedRefusalCode": "omnivia.t0688.port.unresolved_dynamic_reference",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (Workflow port and publication contracts)",
+      "currentGapCode": "gap.t0688.port.specification_contract_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-BOUNDARY",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-011"],
+      "domain": "workflow",
+      "plannedValidator": "validate_nested_workflow_boundary",
+      "behavioralRequirement": "A Nested Workflow is a boundary. A child component that connects directly to something outside its parent boundary bypasses that boundary, and the first shipped behavior is a diagnostic that names the offending child and the external target. The diagnostic is reported before any enforcement stage refuses the definition, so authors see the bypass before it becomes a publication failure.",
+      "inventedInput": {
+        "inputId": "IN-T0688-BOUNDARY-HARBOUR-04",
+        "probe": {
+          "kind": "workflow_unknown_contract",
+          "oracle": "validate_workflow_record",
+          "payload": {
+            "contractName": "NestedWorkflowBoundaryDiagnostic",
+            "diagnosticId": "diag-t0688-harbour-boundary-04",
+            "diagnosticCode": "omnivia.t0688.boundary.child_to_external_bypass",
+            "parentWorkflowComponentId": "component-t0688-harbour-nested",
+            "offendingChildStableId": "node-harbour-child-emit",
+            "externalTargetStableId": "node-harbour-external-sink",
+            "stage": "diagnostic_only",
+            "enforcementStage": "not_yet_enforcing",
+            "severity": "warning"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_contract",
+        "currentRejectionReason": "workflow record: contractName is not a known T-0679 contract",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-BOUNDARY-SILENT-BYPASS",
+        "description": "A child-to-external connection is accepted with no diagnostic at all; the family requires that the bypass is always named, even while enforcement is still deferred.",
+        "expectedRefusalCode": "omnivia.t0688.boundary.bypass_undiagnosed",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (Nested Workflow boundary contracts)",
+      "currentGapCode": "gap.t0688.boundary.diagnostic_contract_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-LOOP",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-012"],
+      "domain": "workflow",
+      "plannedValidator": "validate_loop_iteration_ledger",
+      "behavioralRequirement": "Loop iterations carry stable iteration identities derived from the frozen plan, are launched in a deterministic order, and each launch is atomic against the iteration ledger. After a crash the Run replays from the ledger and produces exactly the same iteration identities and order, so a replayed Loop neither re-launches a recorded iteration nor renames one.",
+      "inventedInput": {
+        "inputId": "IN-T0688-LOOP-HARBOUR-05",
+        "probe": {
+          "kind": "workflow_unknown_fields",
+          "oracle": "validate_loop_plan",
+          "baseRecord": {
+            "contractName": "LoopPlan",
+            "loopPlanId": "loop-plan-t0688-harbour",
+            "loopComponentId": "component-t0688-harbour-loop",
+            "frozenAtRunStart": true,
+            "maximumIterations": 4,
+            "concurrencyLimit": 2,
+            "deterministicOrder": [
+              "iteration-harbour-1",
+              "iteration-harbour-2",
+              "iteration-harbour-3",
+              "iteration-harbour-4"
+            ],
+            "iterationLedgerRequired": true
+          },
+          "deltaFields": {
+            "iterationIdStrategy": "stable_ordinal_from_frozen_plan",
+            "atomicLaunchRequired": true,
+            "crashReplayPolicy": "replay_from_iteration_ledger"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_fields",
+        "currentRejectionReason": "LoopPlan: unknown fields ['atomicLaunchRequired', 'crashReplayPolicy', 'iterationIdStrategy']",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-LOOP-REPLAY-RENAME",
+        "description": "A crash replay re-derives iteration identities from live input order instead of the frozen plan, renaming iteration-harbour-3; the family requires the replay to be refused.",
+        "expectedRefusalCode": "omnivia.t0688.loop.iteration_identity_drift",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (LoopPlan) with iteration ledger execution owned by Platform (Runtime)",
+      "currentGapCode": "gap.t0688.loop.ledger_fields_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-WAIT",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-014"],
+      "domain": "runtime",
+      "plannedValidator": "validate_wait_resume_idempotency",
+      "behavioralRequirement": "A Run suspends durably at a wait and resumes on a fresh worker that holds none of the suspending worker's memory. The wait outcome is consumed exactly once: a resume that observes an already-consumed outcome is a no-op returning the recorded result, never a second consumption and never a second downstream dispatch.",
+      "inventedInput": {
+        "inputId": "IN-T0688-WAIT-HARBOUR-06",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "runtime",
+          "currentNarrowerValidator": "validate_resolve_wait",
+          "scenario": {
+            "waitId": "wait-t0688-harbour-approval",
+            "suspendingWorkerId": "worker-t0688-harbour-a",
+            "resumingWorkerId": "worker-t0688-harbour-b",
+            "outcomeConsumptionCount": 1,
+            "secondResumeExpectedEffect": "no_op_returning_recorded_outcome"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_runtime exposes no validate_wait_resume_idempotency; the narrower validate_resolve_wait judges one resolution in isolation and says nothing about fresh-worker resume or single-consumption.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-WAIT-DOUBLE-CONSUME",
+        "description": "A second resume on worker-t0688-harbour-b consumes the outcome again and dispatches the downstream step twice.",
+        "expectedRefusalCode": "omnivia.t0688.wait.outcome_consumed_twice",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Runtime); the Core runtime contracts here are transitional",
+      "currentGapCode": "gap.t0688.wait.resume_idempotency_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-ACTIVITY",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-003"],
+      "domain": "runtime",
+      "plannedValidator": "validate_declared_activity_call_order",
+      "behavioralRequirement": "A step declares the activities it will call and the order it will call them in. A replay or continuation whose observed call order does not match the declaration fails the step rather than adapting to it, and any material external effect observed under a mismatched call order is ineligible to be counted as a committed effect of that step.",
+      "inventedInput": {
+        "inputId": "IN-T0688-ACTIVITY-HARBOUR-07",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "runtime",
+          "currentNarrowerValidator": "validate_effect_intent",
+          "scenario": {
+            "runStepId": "step-t0688-harbour-dispatch",
+            "declaredCallOrder": ["activity-harbour-fetch", "activity-harbour-notify"],
+            "observedCallOrder": ["activity-harbour-notify", "activity-harbour-fetch"],
+            "materialEffectObserved": true,
+            "expectedEffectEligibility": "ineligible"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_runtime exposes no validate_declared_activity_call_order; the narrower validate_effect_intent judges authorization of a single intent and never compares a declared call order with an observed one.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-ACTIVITY-ORDER-MISMATCH",
+        "description": "The observed order inverts the declaration and the material effect from activity-harbour-notify is nevertheless settled as committed for the step.",
+        "expectedRefusalCode": "omnivia.t0688.activity.call_order_mismatch",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Runtime); the Core runtime contracts here are transitional",
+      "currentGapCode": "gap.t0688.activity.call_order_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-BINDING",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-006"],
+      "domain": "workflow",
+      "plannedValidator": "validate_immutable_execution_binding",
+      "behavioralRequirement": "A Run start freezes the whole execution binding: definition, component implementation, execution profile, policy, resource allocation and model selection. Every one of those is immutable for the life of the Run, and any substitution of a bound element is surfaced as drift rather than silently applied.",
+      "inventedInput": {
+        "inputId": "IN-T0688-BINDING-HARBOUR-08",
+        "probe": {
+          "kind": "workflow_unknown_fields",
+          "oracle": "validate_component_implementation_binding",
+          "baseRecord": {
+            "bindingId": "binding-t0688-harbour-notify",
+            "workflowComponentId": "component-t0688-harbour-notify",
+            "component": {"referenceId": "component-definition-t0688-notify-1"},
+            "implementation": {"referenceId": "implementation-t0688-notify-1"},
+            "signatureDigest": "sha256:1c2d3e4f50617283940a1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f",
+            "capability": {"referenceId": "capability-t0688-notify-dispatch"},
+            "state": "available"
+          },
+          "deltaFields": {
+            "profileBinding": {"referenceId": "profile-t0688-harbour-standard"},
+            "policyBinding": {"referenceId": "policy-t0688-harbour-standard"},
+            "resourceBinding": {"referenceId": "resource-t0688-harbour-pool-a"},
+            "modelBinding": {"referenceId": "model-t0688-harbour-selection-1"},
+            "silentDriftDetected": false
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_fields",
+        "currentRejectionReason": "ComponentImplementationBinding: unknown fields ['modelBinding', 'policyBinding', 'profileBinding', 'resourceBinding', 'silentDriftDetected']",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-BINDING-SILENT-SUBSTITUTION",
+        "description": "Mid-Run the resource allocation moves from resource-t0688-harbour-pool-a to another pool with no drift record; the family requires the substitution to be refused or recorded as drift, never silently applied.",
+        "expectedRefusalCode": "omnivia.t0688.binding.silent_drift",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (binding shape) with enforcement at Run start owned by Platform (Runtime)",
+      "currentGapCode": "gap.t0688.binding.execution_binding_fields_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-BUNDLE",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-007"],
+      "domain": "workflow",
+      "plannedValidator": "validate_transition_bundle",
+      "behavioralRequirement": "A state advance is written as exactly one transition bundle applied against the revision the writer expected. The bundle is idempotent under its own key: a replay of an already-applied bundle is a no-op that neither rewrites the state nor emits a second set of events, and a bundle presented against an unexpected revision is refused whole.",
+      "inventedInput": {
+        "inputId": "IN-T0688-BUNDLE-HARBOUR-09",
+        "probe": {
+          "kind": "workflow_unknown_contract",
+          "oracle": "validate_workflow_record",
+          "payload": {
+            "contractName": "WorkflowTransitionBundle",
+            "bundleId": "bundle-t0688-harbour-09",
+            "idempotencyKey": "idem-t0688-harbour-09",
+            "expectedRevision": "revision-harbour-run-14",
+            "producedRevision": "revision-harbour-run-15",
+            "transitions": [
+              {"ordinal": 0, "subject": "step-t0688-harbour-dispatch", "toStatus": "running"},
+              {"ordinal": 1, "subject": "run-t0688-harbour", "toStatus": "running"}
+            ],
+            "replayDisposition": "no_op",
+            "appliedAtomically": true
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "workflow_unknown_contract",
+        "currentRejectionReason": "workflow record: contractName is not a known T-0679 contract",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-BUNDLE-REPLAY-DUPLICATE",
+        "description": "A replay of bundle-t0688-harbour-09 under the same idempotency key advances the revision a second time and re-emits its events.",
+        "expectedRefusalCode": "omnivia.t0688.bundle.replay_not_no_op",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Core / contracts.v1 (transition bundle contract) with application owned by Platform (Runtime)",
+      "currentGapCode": "gap.t0688.bundle.transition_contract_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-POISON",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-002", "WEFT-BL-003"],
+      "domain": "runtime",
+      "plannedValidator": "validate_poison_effect_reconciliation",
+      "behavioralRequirement": "An external effect succeeds and the authoritative commit that records it then fails or becomes uncertain. The step must never re-dispatch the external effect on the strength of the missing commit; the divergence is held as an explicit reconciliation obligation until the true disposition of the external effect is established.",
+      "inventedInput": {
+        "inputId": "IN-T0688-POISON-HARBOUR-10",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "runtime",
+          "currentNarrowerValidator": "validate_effect_settlement",
+          "scenario": {
+            "effectIntentId": "effect-intent-t0688-harbour-notify",
+            "externalEffectDisposition": "succeeded",
+            "authoritativeCommitDisposition": "uncertain",
+            "expectedDispatchCount": 1,
+            "expectedReconciliationRequired": true
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_runtime exposes no validate_poison_effect_reconciliation; the narrower validate_effect_settlement judges one settlement against its intent and receipts and carries no obligation that survives a failed or uncertain commit.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-POISON-DUPLICATE-DISPATCH",
+        "description": "The uncertain commit is read as not-committed and effect-intent-t0688-harbour-notify is dispatched a second time.",
+        "expectedRefusalCode": "omnivia.t0688.poison.duplicate_external_dispatch",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Runtime); the Core runtime contracts here are transitional",
+      "currentGapCode": "gap.t0688.poison.reconciliation_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-FENCE",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-004", "WEFT-BL-017"],
+      "domain": "runtime",
+      "plannedValidator": "validate_ownership_fence_token",
+      "behavioralRequirement": "Ownership of a Run step is fenced by a monotonic token. A holder of a stale token can neither write authoritative state nor newly dispatch an effect. A result that arrives from a stale owner is not discarded silently: it is retained as Evidence, which records what happened without granting it authority.",
+      "inventedInput": {
+        "inputId": "IN-T0688-FENCE-HARBOUR-11",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "runtime",
+          "currentNarrowerValidator": "validate_attempt",
+          "scenario": {
+            "runStepId": "step-t0688-harbour-dispatch",
+            "currentFenceToken": 8,
+            "staleFenceToken": 7,
+            "staleWriteExpected": "refused",
+            "staleNewDispatchExpected": "refused",
+            "lateStaleResultExpected": "retained_as_evidence"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_runtime exposes no validate_ownership_fence_token; the narrower validate_attempt judges one attempt's shape and lease fields and models no monotonic ownership fence.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-FENCE-STALE-WRITE",
+        "description": "The holder of fence token 7 writes an authoritative settlement for step-t0688-harbour-dispatch after token 8 was issued.",
+        "expectedRefusalCode": "omnivia.t0688.fence.stale_owner_write",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Runtime); the Core runtime contracts here are transitional",
+      "currentGapCode": "gap.t0688.fence.ownership_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-CORRUPTION",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-008"],
+      "domain": "runtime",
+      "plannedValidator": "validate_event_stream_quarantine",
+      "behavioralRequirement": "Two distinct faults reach the same disposition. A recorded state that cannot be decoded, and an event sequence with a missing entry, both quarantine the affected Run. Quarantine stops resume: the Run is not advanced, retried or repaired by inference, and it stays stopped until an operator disposition is recorded.",
+      "inventedInput": {
+        "inputId": "IN-T0688-CORRUPTION-HARBOUR-12",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "runtime",
+          "currentNarrowerValidator": "validate_runtime_event_stream",
+          "scenario": {
+            "runId": "run-t0688-harbour",
+            "decodeCorruption": {"subject": "run-state-t0688-harbour", "expectedDisposition": "quarantined"},
+            "missingSequence": {"observedSequences": [0, 1, 3], "missingSequence": 2, "expectedDisposition": "quarantined"},
+            "expectedResumeBehavior": "stopped_until_operator_disposition"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_runtime exposes no validate_event_stream_quarantine; the narrower validate_runtime_event_stream refuses a non-contiguous stream but reaches no quarantine disposition and never stops resume.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-CORRUPTION-RESUME-ANYWAY",
+        "description": "run-t0688-harbour is resumed after the gap at sequence 2 by inferring the missing event from its neighbours.",
+        "expectedRefusalCode": "omnivia.t0688.corruption.resume_after_quarantine",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Runtime); the Core runtime contracts here are transitional",
+      "currentGapCode": "gap.t0688.corruption.quarantine_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-HUMAN",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-014", "WEFT-BL-018"],
+      "domain": "runtime",
+      "plannedValidator": "validate_human_permission_settlement",
+      "behavioralRequirement": "A human decision settles only under a Permission that is current at the moment of decision. A stale Permission does not settle, several responders may answer but the wait settles exactly once and idempotently, and possession of the response channel is not authority: holding the link never substitutes for the Permission the decision requires.",
+      "inventedInput": {
+        "inputId": "IN-T0688-HUMAN-HARBOUR-13",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "runtime",
+          "currentNarrowerValidator": "validate_approval",
+          "scenario": {
+            "waitId": "wait-t0688-harbour-approval",
+            "currentPermissionId": "permission-t0688-harbour-release-2",
+            "stalePermissionId": "permission-t0688-harbour-release-1",
+            "responders": ["responder-t0688-harbour-a", "responder-t0688-harbour-b"],
+            "expectedSettlementCount": 1,
+            "possessionOfChannelIsAuthority": false
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_runtime exposes no validate_human_permission_settlement; the narrower validate_approval requires a complete attributable decision but models no Permission currency, no duplicate responders and no single idempotent settlement.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-HUMAN-STALE-PERMISSION",
+        "description": "responder-t0688-harbour-b settles wait-t0688-harbour-approval under permission-t0688-harbour-release-1 after release-2 superseded it, on the strength of still holding the response channel.",
+        "expectedRefusalCode": "omnivia.t0688.human.stale_permission_settlement",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Runtime) with Permission currency owned by Platform; the Core runtime contracts here are transitional",
+      "currentGapCode": "gap.t0688.human.permission_settlement_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    },
+    {
+      "familyId": "FX-WEFT-EGRESS",
+      "workPackages": ["WEFT-BL-001", "WEFT-BL-004", "WEFT-BL-005"],
+      "domain": "gateway",
+      "plannedValidator": "validate_egress_connect_time_revalidation",
+      "behavioralRequirement": "Egress destinations are revalidated at connect time, not only when the destination string is admitted. The name and the address actually connected to are both re-checked, so a destination that validated as public and then resolves to a private-zone address at connect time is rejected rather than dialled.",
+      "inventedInput": {
+        "inputId": "IN-T0688-EGRESS-HARBOUR-14",
+        "probe": {
+          "kind": "planned_validator_absent",
+          "module": "gateway",
+          "currentNarrowerValidator": "validate_service_endpoint_uri",
+          "syntacticallyAcceptedUris": [
+            "https://gateway-egress.omnivia.test/dispatch",
+            "https://192.0.2.41/dispatch",
+            "https://198.51.100.23/dispatch",
+            "https://[2001:db8::2c]/dispatch"
+          ],
+          "scenario": {
+            "destination": "gateway-egress.omnivia.test",
+            "admissionTimeAddress": "192.0.2.41",
+            "admissionTimeZone": "simulated_public",
+            "connectTimeAddress": "198.51.100.23",
+            "connectTimeZone": "simulated_private",
+            "simulationOnly": true,
+            "expectedConnectTimeOutcome": "rejected"
+          }
+        }
+      },
+      "expectedBoundaryResult": {
+        "redClassification": "planned_validator_absent",
+        "currentRejectionReason": "omnivia_core.contracts.v1.semantics_service exposes no validate_egress_connect_time_revalidation; the narrower validate_service_endpoint_uri is a pure syntactic value-domain guard that accepts the admission-time and the rebound documentation addresses alike and never revalidates a resolution.",
+        "productBehaviorImplemented": false
+      },
+      "refusalCase": {
+        "refusalId": "RF-T0688-EGRESS-REBIND",
+        "description": "gateway-egress.omnivia.test is admitted while it maps to the simulated public documentation address 192.0.2.41 and is then dialled after it maps to the simulated private-zone documentation address 198.51.100.23. Addresses are fixture constants; nothing is resolved or dialled.",
+        "expectedRefusalCode": "omnivia.t0688.egress.connect_time_rebinding",
+        "enforcedToday": false
+      },
+      "canonicalOwner": "Platform (Gateway); Core publishes only the endpoint URI value domain",
+      "currentGapCode": "gap.t0688.egress.revalidation_validator_absent",
+      "attestation": {
+        "statement": "Independently authored from the behavioral description in the T-0688 G3 task packet only, expressed in OmniVia terminology.",
+        "independentlyAuthored": true,
+        "derivedFromExternalSource": false,
+        "copiedExternalSchema": false,
+        "copiedExternalFixtureData": false,
+        "copiedExternalTestCase": false,
+        "copiedExternalGeneratedOutput": false,
+        "translatedExternalCode": false,
+        "inspectedExternalPackageContents": false,
+        "containsCredentials": false,
+        "performsNetworkCalls": false
+      }
+    }
+  ]
+}

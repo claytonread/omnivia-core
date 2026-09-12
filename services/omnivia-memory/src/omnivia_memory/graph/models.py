@@ -14,7 +14,7 @@ Deprecated: import these from ``omnivia_core.graph.models`` instead.
 # bindings this leaf's historical namespace still has to resolve (`Any`, `Enum`,
 # `annotations`, `dataclass`, `datetime`, `field`, `timezone`, and the plain
 # `uuid` module binding). No other error code is suppressed.
-from omnivia_core.graph.models import (  # type: ignore[attr-defined]
+from omnivia_core.graph.models import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     ApprovalStatus,
     Entity,

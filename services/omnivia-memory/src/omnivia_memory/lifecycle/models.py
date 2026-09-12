@@ -11,7 +11,7 @@ Deprecated: import ``LifecycleState`` from ``omnivia_core.lifecycle.models`` ins
 # bindings (`Enum`, `annotations`) -- names the canonical module's own imports
 # left at its module scope and that this leaf's historical namespace still has
 # to resolve. No other error code is suppressed.
-from omnivia_core.lifecycle.models import (  # type: ignore[attr-defined]
+from omnivia_core.lifecycle.models import (  # type: ignore[attr-defined,unused-ignore]
     Enum,
     LifecycleState,
     annotations,

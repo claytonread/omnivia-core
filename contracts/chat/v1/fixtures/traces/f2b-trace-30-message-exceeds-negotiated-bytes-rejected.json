@@ -1,0 +1,69 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-30",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 512,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-30",
+      "requestedAt": "2026-08-20T10:00:01Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-30",
+      "snapshotId": "bsnap-t30",
+      "snapshotGraphRevision": 2,
+      "pageIndex": 0,
+      "items": [
+        {
+          "itemKind": "conversation",
+          "payload": {
+            "workspaceId": "ws-acme",
+            "conversationId": "conv-0001",
+            "createdBy": "actor-alice",
+            "createdAt": "2026-08-20T10:00:00Z",
+            "state": "active",
+            "graphRevision": 2,
+            "latestConversationSequence": 2,
+            "schemaVersion": 1
+          }
+        },
+        {
+          "itemKind": "message",
+          "payload": {
+            "workspaceId": "ws-acme",
+            "conversationId": "conv-0001",
+            "messageId": "msg-0001-root",
+            "role": "user",
+            "authorType": "human",
+            "authorId": "actor-alice",
+            "conversationSequence": 1,
+            "schemaVersion": 1,
+            "contentHash": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+            "completionStatus": "complete",
+            "visibility": "standard",
+            "parts": [],
+            "createdAt": "2026-08-20T10:00:00Z",
+            "committedAt": "2026-08-20T10:00:00Z"
+          }
+        }
+      ],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t30-boundary"
+    }
+  ]
+}

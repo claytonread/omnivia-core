@@ -103,6 +103,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "context-pack",
     "compatibility-matrix",
     "runtime",
+    "chat",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1443,12 +1444,33 @@ _CREATE_MUT: tuple[str, ...] = tuple(
 _GOV_MUT: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "mutation_precondition_failed", "not_found"))
 )
+#: Deliberately excludes ``mutation_precondition_failed``: a chat command states the
+#: conversation revision it expects, and a conversation another writer advanced is a
+#: state the caller re-reads and re-decides against -- a ``conflict`` -- not a record
+#: version it refreshes and retries.
+_CHAT_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 _IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceeded")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 _JOB_EVENTS: tuple[str, ...] = tuple(
     sorted((*_BASE_WORKSPACE, "not_found", "size_limit_exceeded"))
+)
+#: Deliberately includes ``not_found``, which ``CREATE_MUT`` does not: starting a
+#: Workflow Run names an exact released Workflow version, and a release authority that
+#: serves no such version is a ``not_found`` about the thing the caller named. Every
+#: other ``CREATE_MUT`` operation creates a record from the request alone and has no
+#: prior thing to fail to find.
+_WORKFLOW_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: Deliberately includes ``conflict``, which ``JOB_CONTROL`` excludes. The reason
+#: ``job.cancel`` and ``job.retry`` exclude it holds for this operation's ``cancel``
+#: too -- a finished Run settles as ``cancellation_ignored_already_terminal``, an
+#: explicit disposition rather than an error -- but ``resolve_wait`` is a second action
+#: with a second refusal: a resolution the wait authority re-checks against the stored
+#: wait and the run's status and rejects is a state conflict, and reporting it as
+#: anything else would report a resolution nothing performed.
+_WORKFLOW_CONTROL: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "not_found"))
 )
 
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
@@ -1463,9 +1485,12 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "CONTEXT_READ": _CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "GOV_MUT": _GOV_MUT,
+    "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
     "JOB_CONTROL": _JOB_CONTROL,
     "JOB_EVENTS": _JOB_EVENTS,
+    "WORKFLOW_START": _WORKFLOW_START,
+    "WORKFLOW_CONTROL": _WORKFLOW_CONTROL,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1497,7 +1522,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 20 application operations, in the frozen code-point order. Runtime
+#: The exact 27 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1508,6 +1533,18 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "candidate.reject": FrozenOperation(
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "CandidateReject", "GOV_MUT", False,
+    ),
+    "chat.command": FrozenOperation(
+        "workspace", ("chat:write",), "update", "chat.command",
+        "chat", "ChatCommand", "CHAT_MUT", False,
+    ),
+    "chat.events": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatEvents", "JOB_EVENTS", False,
+    ),
+    "chat.snapshot": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatSnapshot", "POINT_READ", False,
     ),
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",
@@ -1569,6 +1606,23 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "record.supersede": FrozenOperation(
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "RecordSupersede", "GOV_MUT", False,
+    ),
+    "workflow.control": FrozenOperation(
+        "workspace", ("workflow:control",), "update", "workflow.control",
+        "runtime", "WorkflowControl", "WORKFLOW_CONTROL", False,
+    ),
+    "workflow.inspect": FrozenOperation(
+        "workspace", ("workflow:read",), "none", "workflow.read",
+        "runtime", "WorkflowInspect", "POINT_READ", False,
+    ),
+    "workflow.review": FrozenOperation(
+        "workspace", ("workflow:read",), "none", "workflow.read",
+        "runtime", "WorkflowReview", "POINT_READ", False,
+    ),
+    "workflow.start": FrozenOperation(
+        "workspace", ("workflow:write",), "create", "workflow.write",
+        "runtime", "WorkflowStart", "WORKFLOW_START", False,
+        job_kind="workflow.execute", terminal_result="WorkflowCompletion",
     ),
     "workspace.create": FrozenOperation(
         "installation", ("workspace:write",), "create", "workspace.write",

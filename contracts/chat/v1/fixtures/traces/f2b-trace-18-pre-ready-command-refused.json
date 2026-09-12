@@ -1,0 +1,74 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-18",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-18",
+      "commandId": "cmd-t18-early",
+      "commandKind": "SubmitMessage",
+      "payload": {
+        "protocolVersion": "1.0",
+        "commandId": "cmd-t18-early",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "branchId": "branch-0001-original",
+        "actorId": "actor-alice",
+        "expectedHeadMessageId": "msg-0001-root",
+        "expectedHeadVersion": 1,
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "hi"
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    },
+    {
+      "messageType": "bridge.refusal",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "reason": "not_ready",
+      "safeMessage": "Your session is not ready yet.",
+      "contextId": "bctx-trace-18",
+      "refusedCommandId": "cmd-t18-early"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-18",
+      "requestedAt": "2026-08-20T10:00:02Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-18",
+      "snapshotId": "bsnap-t18",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t18-boundary"
+    }
+  ]
+}

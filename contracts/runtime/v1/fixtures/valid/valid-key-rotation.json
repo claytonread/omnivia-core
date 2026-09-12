@@ -1,0 +1,114 @@
+{
+  "bootstrap_contract_version": "1.0",
+  "case_id": "valid-key-rotation",
+  "case_version": "1.0",
+  "description": "Overlapping approved anchors accept a release signed by the new key.",
+  "expected": {
+    "descriptor": {
+      "cli_path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/bin/omnivia",
+      "payload_identity": "sha256:488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff",
+      "release_version": "0.6.5",
+      "runtime_descriptor_version": "1.0",
+      "runtime_root": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff",
+      "service_path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/bin/omnivia-core-service"
+    },
+    "outcome": "verified",
+    "refusal": null
+  },
+  "host_architecture": "arm64",
+  "host_operating_system": "macos",
+  "installation": {
+    "entries": [
+      {
+        "content_base64": "eyJwYXlsb2FkX2RpZ2VzdCI6IjQ4OGU4MzI2MWVhZTg0MTc0NDA1YmFkNDk2OThkMTM1OTJjMjg0MzZiMTM2MzIxNzUxOTUzMjM1ZDU3MDNiZmYiLCJyZWxhdGl2ZV9wYXRoIjoicnVudGltZXMvMC42LjUvNDg4ZTgzMjYxZWFlODQxNzQ0MDViYWQ0OTY5OGQxMzU5MmMyODQzNmIxMzYzMjE3NTE5NTMyMzVkNTcwM2JmZiIsInJlbGVhc2VfdmVyc2lvbiI6IjAuNi41Iiwic2NoZW1hX3ZlcnNpb24iOjF9Cg==",
+        "kind": "file",
+        "mode": "0600",
+        "path": "active.json"
+      },
+      {
+        "kind": "directory",
+        "mode": "0700",
+        "path": "runtimes"
+      },
+      {
+        "kind": "directory",
+        "mode": "0700",
+        "path": "runtimes/0.6.5"
+      },
+      {
+        "content_base64": "IyEvYmluL3NoCiMgdGVzdC1vbmx5IG9tbml2aWEgMC42LjUgbWFjb3MgdGVzdC1vbmx5LXJlbGVhc2UtMjAyNmIK",
+        "kind": "file",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/bin/omnivia"
+      },
+      {
+        "content_base64": "IyEvYmluL3NoCiMgdGVzdC1vbmx5IG9tbml2aWEtY29yZS1zZXJ2aWNlIDAuNi41IG1hY29zIHRlc3Qtb25seS1yZWxlYXNlLTIwMjZiCg==",
+        "kind": "file",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/bin/omnivia-core-service"
+      },
+      {
+        "content_base64": "dGVzdC1vbmx5IHBheWxvYWQgbWVtYmVyIDAuNi41IG1hY29zIHRlc3Qtb25seS1yZWxlYXNlLTIwMjZiCg==",
+        "kind": "file",
+        "mode": "0400",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/lib/omnivia/release.txt"
+      },
+      {
+        "content_base64": "eyJjb21wYXRpYmlsaXR5Ijp7Im1heGltdW1fYm9vdHN0cmFwX2NvbnRyYWN0IjoiMS4wIiwibWluaW11bV9ib290c3RyYXBfY29udHJhY3QiOiIxLjAifSwiZXhlY3V0YWJsZXMiOnsiY2xpIjp7InBhdGgiOiJiaW4vb21uaXZpYSIsInNoYTI1NiI6ImY1YmQyM2JjNzBjNzNiYmNkMzk0MTgwNjZiNzg1ZTU5NjlhMjk4ODYzNDBkOWRjOTQzMzNjNzMxOGI5NzEzZjkifSwic2VydmljZSI6eyJwYXRoIjoiYmluL29tbml2aWEtY29yZS1zZXJ2aWNlIiwic2hhMjU2IjoiNTZiMTY5ZjFiNGU2YWJmMTI3NWI3MTg4MTdlN2UwNjRhOTg0MDc2NDllZTYyMjFhY2M2MzRiMTU2OTlkNDg2ZiJ9fSwiaW52ZW50b3J5IjpbeyJleGVjdXRhYmxlIjp0cnVlLCJwYXRoIjoiYmluL29tbml2aWEiLCJzaGEyNTYiOiJmNWJkMjNiYzcwYzczYmJjZDM5NDE4MDY2Yjc4NWU1OTY5YTI5ODg2MzQwZDlkYzk0MzMzYzczMThiOTcxM2Y5Iiwic2l6ZSI6NjZ9LHsiZXhlY3V0YWJsZSI6dHJ1ZSwicGF0aCI6ImJpbi9vbW5pdmlhLWNvcmUtc2VydmljZSIsInNoYTI1NiI6IjU2YjE2OWYxYjRlNmFiZjEyNzViNzE4ODE3ZTdlMDY0YTk4NDA3NjQ5ZWU2MjIxYWNjNjM0YjE1Njk5ZDQ4NmYiLCJzaXplIjo3OX0seyJleGVjdXRhYmxlIjpmYWxzZSwicGF0aCI6ImxpYi9vbW5pdmlhL3JlbGVhc2UudHh0Iiwic2hhMjU2IjoiMWJiZjAyYjZjMjQ3Zjc1ZTdhYzI4N2NkMDQ2MGFiYmVkZDI5N2JlMmQ5YjM1ZDk0Yzk5NmE1OTdhMjU3ZDdhYyIsInNpemUiOjYxfV0sIm1hbmlmZXN0X3ZlcnNpb24iOiIxLjAiLCJwYXlsb2FkX2lkZW50aXR5Ijoic2hhMjU2OjQ4OGU4MzI2MWVhZTg0MTc0NDA1YmFkNDk2OThkMTM1OTJjMjg0MzZiMTM2MzIxNzUxOTUzMjM1ZDU3MDNiZmYiLCJwbGF0Zm9ybSI6eyJhcmNoIjoiYXJtNjQiLCJvcyI6Im1hY29zIn0sInJlbGVhc2VfdmVyc2lvbiI6IjAuNi41Iiwic2lnbmluZyI6eyJhbGdvcml0aG0iOiJlZDI1NTE5Iiwia2V5X2lkIjoidGVzdC1vbmx5LXJlbGVhc2UtMjAyNmIifX0K",
+        "kind": "file",
+        "mode": "0400",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/omnivia-runtime-manifest.json"
+      },
+      {
+        "content_base64": "eyJhbGdvcml0aG0iOiJlZDI1NTE5Iiwia2V5X2lkIjoidGVzdC1vbmx5LXJlbGVhc2UtMjAyNmIiLCJwYXlsb2FkX2lkZW50aXR5Ijoic2hhMjU2OjQ4OGU4MzI2MWVhZTg0MTc0NDA1YmFkNDk2OThkMTM1OTJjMjg0MzZiMTM2MzIxNzUxOTUzMjM1ZDU3MDNiZmYiLCJzaWduYXR1cmUiOiI3TzlYQy95ZFRibmZXR2hNUXdNbjNhd2QwYlBRZEdYd2xlazNuRWVNKy9xMUNTYmxFd0lIY0R5VTBpTTg2dEc0MXZ3YU1YOG91OGlmRlp2T0E5M3pCQT09Iiwic2lnbmF0dXJlX3ZlcnNpb24iOiIxLjAifQo=",
+        "kind": "file",
+        "mode": "0400",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/omnivia-runtime-manifest.sig.json"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/bin"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/lib"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff/lib/omnivia"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/488e83261eae84174405bad49698d13592c28436b136321751953235d5703bff"
+      }
+    ]
+  },
+  "minimum_release_version": null,
+  "requires": {
+    "posix_modes": false,
+    "symlinks": false
+  },
+  "trust_anchors": [
+    {
+      "algorithm": "ed25519",
+      "key_id": "test-only-release-2026a",
+      "not_after": "2026-12-01T00:00:00Z",
+      "not_before": "2026-01-01T00:00:00Z",
+      "public_key": "45TtObJ05zYKRBt3T+XUxwYbt7j1E/ky6M7QuwJi3SY=",
+      "retired_at": null
+    },
+    {
+      "algorithm": "ed25519",
+      "key_id": "test-only-release-2026b",
+      "not_after": "2027-06-01T00:00:00Z",
+      "not_before": "2026-06-01T00:00:00Z",
+      "public_key": "mMKrJKdsS69CdtzbrBx/qE6A72JRrgfQS/CvGLiAbak=",
+      "retired_at": null
+    }
+  ],
+  "verification_time": "2026-09-10T12:00:00Z"
+}

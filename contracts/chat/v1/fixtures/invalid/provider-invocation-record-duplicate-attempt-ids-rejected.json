@@ -1,0 +1,14 @@
+{
+  "invocationId": "invocation-rec-08",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "jobId": "job-0002",
+  "generationAttemptId": "attempt-0008",
+  "operation": "language.stream",
+  "connectionId": "conn-primary-anthropic",
+  "modelId": "claude-sonnet-5",
+  "attemptIds": ["attempt-0008a", "attempt-0008a"],
+  "lifecycleState": "in_progress",
+  "createdAt": "2026-08-20T10:00:00Z",
+  "updatedAt": "2026-08-20T10:00:05Z"
+}

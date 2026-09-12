@@ -1,0 +1,35 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "messageId": "msg-0005-u2b",
+  "parentMessageId": "msg-0002-a1",
+  "role": "user",
+  "authorType": "human",
+  "authorId": "actor-alice",
+  "conversationSequence": 5,
+  "schemaVersion": 1,
+  "contentHash": "04baf6b20ac2d1e4f9ee1f991c8277453d64c070de69c42c4d1acbc34faa1b5d",
+  "completionStatus": "complete",
+  "visibility": "standard",
+  "parts": [
+    {
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "messageId": "msg-0005-u2b",
+      "partId": "part-0005",
+      "index": 0,
+      "type": "text",
+      "schemaVersion": 1,
+      "visibility": "standard",
+      "payload": {
+        "text": "Compare price, delivery, risk and contractual terms"
+      },
+      "provenance": "human",
+      "contentHash": "536c351ae15e5f5e3dc37bcc5dea8ab641e70fc0431a088a1d684aef2ebf3e5b",
+      "createdAt": "2026-08-20T10:00:10Z"
+    }
+  ],
+  "createdOnBranchId": "branch-0002-amend",
+  "createdAt": "2026-08-20T10:00:10Z",
+  "committedAt": "2026-08-20T10:00:10Z"
+}

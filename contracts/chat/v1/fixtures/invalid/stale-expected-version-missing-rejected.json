@@ -1,0 +1,9 @@
+{
+  "actorId": "actor-alice",
+  "commandId": "cmd-reorder-bad",
+  "conversationId": "conv-0001",
+  "queuedSubmissionId": "qs-0001",
+  "targetPosition": 1,
+  "protocolVersion": "1.0",
+  "workspaceId": "ws-acme"
+}

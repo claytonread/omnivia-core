@@ -31,8 +31,8 @@ not authorise a public mutation adapter.
 
 ### R2 — Complete source temporal metadata
 
-- Forward migration `0029_semantic_temporal_source_metadata.sql` adds adjacent
-  source-text and trusted-timezone columns without editing migrations 0026–0028.
+- Forward migration `0040_semantic_temporal_source_metadata.sql` adds adjacent
+  source-text and trusted-timezone columns without editing semantic migrations 0037–0039.
 - Evidence and observation source times and assertion valid/attested boundaries
   round-trip complete `TemporalInstant` values.
 - Original source text is limited to 2,048 Unicode characters. Trusted timezone
@@ -108,8 +108,8 @@ authority or activation authority.
 
 ## 6. Rollback posture
 
-- Migrations 0026–0028 and prior rows are unchanged.
-- Rollback of temporal persistence restores the verified pre-0029 database and the
+- Semantic migrations 0037–0039 and prior rows are unchanged.
+- Rollback of temporal persistence restores the verified pre-0040 database and the
   matching pre-resolution application version.
 - Existing immutable outbox values are never rewritten; the versioned publication
   value applies to newly emitted events.

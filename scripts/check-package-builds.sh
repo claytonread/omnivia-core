@@ -139,18 +139,28 @@ build_wheel "${CLIENT_DIR}"
 # fully offline and reports success -- proven by execution, which is why this flag
 # is here and on every install below rather than only on one of them.
 #
+# Both wheels that declare a third-party requirement are named, not only the MCP
+# one: `omnivia-core-runtime` declares `cryptography` for Ed25519 verification of a
+# runtime payload's release signature. Staging from the MCP wheel alone happened to
+# cover it -- `mcp` pulls `cryptography` in transitively -- and would have gone on
+# covering it silently until the day `mcp` dropped it, at which point the offline
+# install below would fail with a resolver error rather than with a dependency
+# change somebody reviewed.
+#
 # `--constraint` is R005-03's "resolve against the repository's exact dependency
 # lock or equivalent reviewed constraints". `uv.lock` names none of this closure,
 # so the reviewed pins are the equivalent; without them this step resolved fresh
 # from the index on every run, which is verbatim R005-03's rejected alternative.
 echo "--- staging the declared third-party closure into the wheelhouse ---"
 MCP_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core_mcp-*.whl)"
+RUNTIME_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core_runtime-*.whl)"
 "${PYTHON}" -m pip download \
   --only-binary=:all: \
   --constraint "${CONSTRAINTS}" \
   --dest "${WHEELHOUSE}" \
   --find-links "${WHEELHOUSE}" \
-  "${MCP_WHEEL}"
+  "${MCP_WHEEL}" \
+  "${RUNTIME_WHEEL}"
 echo
 
 # R005-03 Phase 1 requires the staged names, versions *and hashes* as test
@@ -232,45 +242,52 @@ import zipfile
 from pathlib import Path
 
 wheel_path, repo_root = sys.argv[1], Path(sys.argv[2])
-schemas_dir = repo_root / "contracts" / "application" / "v1" / "schemas"
-fixtures_dir = repo_root / "contracts" / "application" / "v1" / "fixtures"
-
-expected_schema_names = {path.name for path in schemas_dir.glob("*.schema.json")}
-expected_fixture_names = {path.name for path in fixtures_dir.glob("*.json")}
 
 with zipfile.ZipFile(wheel_path) as archive:
     names = archive.namelist()
 
-resource_prefix = "omnivia_core/contracts/v1/resources/"
-packaged_schema_names = {
-    Path(name).name for name in names if name.startswith(f"{resource_prefix}schemas/")
-}
-packaged_fixture_names = {
-    Path(name).name for name in names if name.startswith(f"{resource_prefix}fixtures/")
-}
+# Each canonical contract family and the importable prefix its force-include maps it
+# onto. The trusted-runtime corpus is nested (valid/, invalid/, vectors/), so its
+# fixture set is compared on the path *below* the prefix rather than on a bare
+# filename: two categories may hold the same name, and flattening would let one
+# stand in for the other.
+FAMILIES = (
+    ("application contract", ("application",), "omnivia_core/contracts/v1/resources/"),
+    ("trusted runtime", ("runtime",), "omnivia_core/runtime_contract/v1/resources/"),
+)
 
 # The packaged resource set must be exact in both directions: a missing file breaks a
 # documented read, and an extra one ships a resource no canonical source vouches for.
 failures = []
-for label, expected, packaged in (
-    ("schema", expected_schema_names, packaged_schema_names),
-    ("fixture", expected_fixture_names, packaged_fixture_names),
-):
-    missing = sorted(expected - packaged)
-    extra = sorted(packaged - expected)
-    if missing:
-        failures.append(f"missing packaged {label}(s): {missing}")
-    if extra:
-        failures.append(f"packaged {label}(s) with no canonical source: {extra}")
+packaged_totals = []
+for family, canonical, resource_prefix in FAMILIES:
+    canonical_root = repo_root.joinpath("contracts", *canonical, "v1")
+    for label, directory in (("schema", "schemas"), ("fixture", "fixtures")):
+        source = canonical_root / directory
+        expected = {
+            path.relative_to(source).as_posix() for path in source.rglob("*.json") if path.is_file()
+        }
+        prefix = f"{resource_prefix}{directory}/"
+        packaged = {name[len(prefix) :] for name in names if name.startswith(prefix)}
+        packaged = {name for name in packaged if name and not name.endswith("/")}
+        missing = sorted(expected - packaged)
+        extra = sorted(packaged - expected)
+        if missing:
+            failures.append(f"missing packaged {family} {label}(s): {missing}")
+        if extra:
+            failures.append(f"packaged {family} {label}(s) with no canonical source: {extra}")
+        packaged_totals.append((family, label, len(packaged)))
 
-# Nothing under the resource prefix may be anything but those JSON files.
-non_json_resources = sorted(
-    name
-    for name in names
-    if name.startswith(resource_prefix) and not name.endswith("/") and not name.endswith(".json")
-)
-if non_json_resources:
-    failures.append(f"non-JSON file(s) under the resource prefix: {non_json_resources}")
+    # Nothing under the resource prefix may be anything but those JSON files.
+    non_json_resources = sorted(
+        name
+        for name in names
+        if name.startswith(resource_prefix)
+        and not name.endswith("/")
+        and not name.endswith(".json")
+    )
+    if non_json_resources:
+        failures.append(f"non-JSON file(s) under {resource_prefix}: {non_json_resources}")
 
 rejected_markers = ("tests/", "scripts/", "__pycache__", ".pyc")
 rejected = [name for name in names if any(marker in name for marker in rejected_markers)]
@@ -298,9 +315,9 @@ if failures:
     sys.exit(1)
 
 print(
-    f"wheel packages exactly {len(packaged_schema_names)} schema(s) and "
-    f"{len(packaged_fixture_names)} fixture file(s), no test/script/cache artifacts, "
-    "and no Requires-Dist."
+    "wheel packages exactly "
+    + ", ".join(f"{count} {family} {label}(s)" for family, label, count in packaged_totals)
+    + ", no test/script/cache artifacts, and no Requires-Dist."
 )
 PYEOF
 echo
@@ -535,9 +552,34 @@ validate_version_capability_envelope(success.metadata.version)
 assert encode_response(envelope) == document
 assert issubclass(ContractSemanticError, ContractDecodeError)
 
+# The trusted-runtime corpus, read the way Platform reads it. The unit tests for
+# these accessors substitute both lookup seams with a plain directory, because the
+# force-included copy exists only once a wheel is built -- so the `importlib.resources`
+# path construction itself, the part a packaging change breaks, is exercised here and
+# nowhere else.
+from omnivia_core.runtime_contract.v1 import resources as runtime_resources
+
+assert runtime_resources.list_schema_names() == ('trusted-runtime-v1',)
+runtime_schema = runtime_resources.read_schema('trusted-runtime-v1')
+assert runtime_schema['$id'].startswith('https://'), runtime_schema['$id']
+
+case_paths = runtime_resources.list_case_paths()
+assert {path.split('/', 1)[0] for path in case_paths} == {'valid', 'invalid', 'vectors'}
+for case_path in case_paths:
+    assert runtime_resources.read_case_text(case_path), case_path
+assert runtime_resources.read_vectors()['vectors_version'], 'vectors carry no version'
+
+for bad_case in ('..', 'valid/../../../etc/passwd', '/etc/passwd', 'valid/no-such-case.json'):
+    try:
+        runtime_resources.read_case_text(bad_case)
+    except ValueError:
+        continue
+    raise AssertionError(f'read_case_text accepted {bad_case!r}')
+
 print(
     f'public API OK; read and parsed {len(schema_names)} schema(s) and '
-    f'{len(fixture_files)} fixture file(s)'
+    f'{len(fixture_files)} fixture file(s), plus the trusted-runtime schema and '
+    f'{len(case_paths)} corpus document(s)'
 )
 PYEOF
 )

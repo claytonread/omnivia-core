@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/branch.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - MessageBranch and BranchHeadEvent",
+  "description": "Closes CGAP-042-003 (MessageBranch) and CGAP-042-004 (BranchHeadEvent). Normative wire shapes exactly as REF-042 §7.5-§7.6 and ADR-022 §4.4-§4.5, §4.15 define them. `currentHeadMessageId` is a current projection that advances only through a valid append operation (REF042-INV-005); prior heads remain recoverable through the append-only `BranchHeadEvent` history (REF042-RULE-006, ADR022-INV-010). Branch membership is never a single exclusive field on a Message; it is derived from a branch head and Message ancestry (REF042-RULE-007, REF042-INV-007, ADR022-INV-011).",
+  "type": "object",
+  "$defs": {
+    "MessageBranch": {
+      "title": "MessageBranch",
+      "description": "The durable domain record identifying a branch, its origin, fork provenance and current head projection (REF-042 §4.13, §7.5). No second `ConversationBranch` entity is introduced (REF-042 §4.13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branchId",
+        "conversationId",
+        "createdAt",
+        "createdBy",
+        "createdConversationSequence",
+        "currentHeadMessageId",
+        "headVersion",
+        "initialHeadMessageId",
+        "originKind",
+        "schemaVersion",
+        "state",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "originKind": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchOriginKind" },
+        "createdFromBranchId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId",
+          "description": "Creation provenance only, never ancestry (REF-042 §7.5)."
+        },
+        "forkParentMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "The structural parent from which this branch diverges; absent means a root fork (REF-042 §4.15)."
+        },
+        "forkSourceMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "The sibling source Message when this branch originated from Edit or Regenerate (REF-042 §7.5). Absent for an `original` or a childward `explicit_fork` branch."
+        },
+        "initialHeadMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Immutable after creation (REF-042 §7.5)."
+        },
+        "currentHeadMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "A current projection. Advances only through a valid, durable append operation (REF-042 §7.5, REF042-INV-005)."
+        },
+        "createdBy": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "createdConversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "headVersion": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/HeadVersion",
+          "description": "Increments with each valid head advance (REF-042 §7.5, REF042-INV-010)."
+        },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchState" },
+        "archivedAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Archiving a branch never deletes its Messages (REF-042 §7.5, §9.7)."
+        },
+        "tombstonedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "BranchHeadEvent": {
+      "title": "BranchHeadEvent",
+      "description": "One append-only entry in a branch's durable head-advance history (REF-042 §7.6). `(branchId, headVersion)` is unique; projection repair SHALL NOT invent a head unsupported by durable events (REF-042 §7.6, §24.5). Closes CGAP-042-004.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actorId",
+        "branchId",
+        "cause",
+        "commandId",
+        "conversationId",
+        "conversationSequence",
+        "eventId",
+        "graphRevision",
+        "headVersion",
+        "newHeadMessageId",
+        "occurredAt",
+        "schemaVersion",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchHeadEventId" },
+        "headVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/HeadVersion" },
+        "previousHeadMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Absent only for `headVersion` 1. Every later event references the prior current head (REF-042 §7.6)."
+        },
+        "newHeadMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "cause": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchHeadCause" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" }
+      },
+      "if": {
+        "properties": { "headVersion": { "const": 1 } },
+        "required": ["headVersion"]
+      },
+      "then": {
+        "not": { "required": ["previousHeadMessageId"] }
+      },
+      "else": {
+        "required": ["previousHeadMessageId"]
+      }
+    }
+  }
+}

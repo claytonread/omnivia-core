@@ -233,7 +233,7 @@ Exit criteria:
 
 ### B4. Add the Phase 2 SQLite migration
 
-Create the next ordered migration after `0026` with workspace-scoped tables for:
+Create the next ordered migration after semantic registry migration `0037` with workspace-scoped tables for:
 
 - evidence items and protected content references;
 - evidence extractions;

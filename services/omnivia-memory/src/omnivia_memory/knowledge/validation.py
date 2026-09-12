@@ -13,7 +13,7 @@ Deprecated: import these from ``omnivia_core.knowledge.validation`` instead.
 # validator imports from its sibling `models` leaf, the nine normalizers it
 # imports from `normalize`, and `ValidationResult`/`scan_sensitive_fields` from
 # the shared validation primitive. No other error code is suppressed.
-from omnivia_core.knowledge.validation import (  # type: ignore[attr-defined]
+from omnivia_core.knowledge.validation import (  # type: ignore[attr-defined,unused-ignore]
     BUILTIN_GRAPH_NODE_KINDS,
     BUILTIN_GRAPH_RELATIONS,
     BUILTIN_OBJECT_KINDS,

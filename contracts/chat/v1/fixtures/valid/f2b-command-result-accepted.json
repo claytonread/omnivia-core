@@ -1,0 +1,11 @@
+{
+  "messageType": "bridge.command-result",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "commandId": "cmd-hosted-0001",
+  "result": {
+    "commandId": "cmd-hosted-0001",
+    "status": "accepted"
+  }
+}

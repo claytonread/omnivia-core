@@ -41,7 +41,7 @@ merged or released. This handoff does not authorise Phase 2 or any later phase.
 - UUIDv7 allocation through a standard-library-only public seam.
 - Consumer, dependency, exact binding, review, decision, publication, activation
   and history records.
-- SQLite migration `0026_semantic_registry.sql` with workspace isolation,
+- SQLite migration `0037_semantic_registry.sql` with workspace isolation,
   append-only guards, immutable history, publication records, activation
   compare-and-swap, consumer bindings and an outbox.
 - Fenced repository writes using the existing Core writer authority.
@@ -92,7 +92,7 @@ dependency.
 
 ### 3.2 Authoritative persistence
 
-`packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/migration_files/0026_semantic_registry.sql`
+`packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/migration_files/0037_semantic_registry.sql`
 adds the authoritative SQLite schema. It includes:
 
 - 18 semantic-registry tables;
@@ -261,7 +261,7 @@ for the required protected-branch check.
 Before release or database migration, rollback is a normal revert of commit
 `dd72159`.
 
-After migration `0026` has been applied to a workspace, do not drop or rewrite
+After migration `0037` has been applied to a workspace, do not drop or rewrite
 semantic-registry tables to roll back application behaviour. Published content
 and governance history are append-only. Restore a prior active model through a
 new authorised activation/publication decision, or ship a forward migration that

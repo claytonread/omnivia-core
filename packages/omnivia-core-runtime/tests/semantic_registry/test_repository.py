@@ -1,6 +1,6 @@
 """Acceptance tests for the Phase 1 Semantic Registry repository (SR-101).
 
-Focused on what the repository is responsible for and 0026 is not: that a model
+Focused on what the repository is responsible for and migration 0037 is not: that a model
 and its generation-zero pointer land together, that every one of the seven
 element kinds survives the round trip through storage as the type it was, that
 operations keep their canonical ordinals, that a publication writes its six

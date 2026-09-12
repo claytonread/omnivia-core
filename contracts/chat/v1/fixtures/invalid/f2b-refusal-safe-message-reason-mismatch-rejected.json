@@ -1,0 +1,8 @@
+{
+  "messageType": "bridge.refusal",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "reason": "oversize",
+  "safeMessage": "Your session has ended.",
+  "contextId": "bctx-refusal-01"
+}

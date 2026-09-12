@@ -1,0 +1,9 @@
+{
+  "commandId": "cmd-envelope-0007",
+  "status": "conflict",
+  "currentVersion": 12,
+  "error": {
+    "code": "stale_expected_version",
+    "message": "The record changed since it was last read; re-read currentVersion and retry."
+  }
+}

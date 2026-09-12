@@ -1,0 +1,19 @@
+{
+  "itemKind": "message",
+  "payload": {
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "messageId": "msg-0001-root",
+    "role": "user",
+    "authorType": "human",
+    "authorId": "actor-alice",
+    "conversationSequence": 1,
+    "schemaVersion": 1,
+    "contentHash": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+    "completionStatus": "complete",
+    "visibility": "standard",
+    "parts": [],
+    "createdAt": "2026-08-20T10:00:00Z",
+    "committedAt": "2026-08-20T10:00:00Z"
+  }
+}

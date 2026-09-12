@@ -20,7 +20,8 @@
     "https://contracts.omnivia.dev/application/v1/graph.schema.json",
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
-    "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
+    "https://contracts.omnivia.dev/application/v1/chat.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -733,6 +734,87 @@
     },
     "ResolveWait": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait"
+    },
+    "ChatConversationExpectation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation"
+    },
+    "ChatCommandInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput"
+    },
+    "ChatCommandResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult"
+    },
+    "ChatGenerationEvent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
+    },
+    "ChatEventsInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput"
+    },
+    "ChatEventsResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult"
+    },
+    "ChatSnapshotInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput"
+    },
+    "ChatSnapshotResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult"
+    },
+    "WorkflowRunState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowRunState"
+    },
+    "WorkflowStepRoute": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStepRoute"
+    },
+    "WorkflowControlAction": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlAction"
+    },
+    "WorkflowControlDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlDisposition"
+    },
+    "WorkflowCompletionOutcome": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowCompletionOutcome"
+    },
+    "WorkflowResumeDiagnostic": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowResumeDiagnostic"
+    },
+    "WorkflowPlanStep": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowPlanStep"
+    },
+    "WorkflowStepObservation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStepObservation"
+    },
+    "WorkflowRunProjection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowRunProjection"
+    },
+    "WorkflowCompletion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowCompletion"
+    },
+    "WorkflowJournalEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowJournalEntry"
+    },
+    "WorkflowStartInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput"
+    },
+    "WorkflowStartResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult"
+    },
+    "WorkflowInspectInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectInput"
+    },
+    "WorkflowInspectResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectResult"
+    },
+    "WorkflowControlInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlInput"
+    },
+    "WorkflowControlResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlResult"
+    },
+    "WorkflowReviewInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewInput"
+    },
+    "WorkflowReviewResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult"
     }
   }
 }

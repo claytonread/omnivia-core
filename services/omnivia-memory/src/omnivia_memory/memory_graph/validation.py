@@ -15,7 +15,7 @@ Deprecated: import these from ``omnivia_core.memory_graph.validation`` instead.
 # canonical validator imports from its sibling `models` leaf, and
 # `ValidationResult` from the shared validation primitive. No other error code is
 # suppressed.
-from omnivia_core.memory_graph.validation import (  # type: ignore[attr-defined]
+from omnivia_core.memory_graph.validation import (  # type: ignore[attr-defined,unused-ignore]
     CONFIDENCE_BUCKETS,
     Confidence,
     EvidenceGraphResponse,

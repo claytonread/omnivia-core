@@ -13,7 +13,7 @@ Deprecated: import these from ``omnivia_core.control_plane.models`` instead.
 # imports from the knowledge leaf to build `CONTROL_PLANE_CONTRACT_VERSION`) --
 # names this leaf's historical namespace still has to resolve. No other error
 # code is suppressed.
-from omnivia_core.control_plane.models import (  # type: ignore[attr-defined]
+from omnivia_core.control_plane.models import (  # type: ignore[attr-defined,unused-ignore]
     CONTROL_PLANE_CONTRACT_VERSION,
     CONTROL_PLANE_SCHEMA_VERSION,
     Agent,

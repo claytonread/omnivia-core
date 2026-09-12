@@ -1,0 +1,36 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t07",
+      "attemptId": "attempt-t07",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t07",
+      "attemptId": "attempt-t07",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t07-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t07",
+      "attemptId": "attempt-t07",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t07-1",
+      "stepId": "step-1",
+      "delta": "cut off mid-stream"
+    }
+  ]
+}

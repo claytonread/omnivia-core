@@ -154,6 +154,9 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
+        "chat.events",
+        "chat.snapshot",
         "context_pack.build",
         "evidence.search",
         "graph.traverse",
@@ -169,6 +172,10 @@
         "memory.list",
         "memory.search",
         "record.supersede",
+        "workflow.control",
+        "workflow.inspect",
+        "workflow.review",
+        "workflow.start",
         "workspace.create",
         "workspace.inspect",
         "workspace.list"
@@ -255,12 +262,15 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
         "import.start",
         "job.cancel",
         "job.retry",
         "knowledge.propose",
         "memory.create",
         "record.supersede",
+        "workflow.control",
+        "workflow.start",
         "workspace.create"
       ]
     },
@@ -273,12 +283,15 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
         "import.start",
         "job.cancel",
         "job.retry",
         "knowledge.propose",
         "memory.create",
         "record.supersede",
+        "workflow.control",
+        "workflow.start",
         "workspace.create"
       ]
     },
@@ -315,6 +328,9 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
+        "chat.events",
+        "chat.snapshot",
         "context_pack.build",
         "evidence.search",
         "graph.traverse",
@@ -330,6 +346,10 @@
         "memory.list",
         "memory.search",
         "record.supersede",
+        "workflow.control",
+        "workflow.inspect",
+        "workflow.review",
+        "workflow.start",
         "workspace.create",
         "workspace.inspect",
         "workspace.list"
@@ -344,6 +364,9 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
+        "chat.events",
+        "chat.snapshot",
         "context_pack.build",
         "evidence.search",
         "graph.traverse",
@@ -359,6 +382,10 @@
         "memory.list",
         "memory.search",
         "record.supersede",
+        "workflow.control",
+        "workflow.inspect",
+        "workflow.review",
+        "workflow.start",
         "workspace.create",
         "workspace.inspect",
         "workspace.list"

@@ -1,0 +1,163 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "requestedAt": "2026-08-20T10:00:01Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "snapshotId": "bsnap-t09",
+      "snapshotGraphRevision": 2,
+      "pageIndex": 0,
+      "items": [
+        {
+          "itemKind": "conversation",
+          "payload": {
+            "workspaceId": "ws-acme",
+            "conversationId": "conv-0001",
+            "createdBy": "actor-alice",
+            "createdAt": "2026-08-20T10:00:00Z",
+            "state": "active",
+            "graphRevision": 2,
+            "latestConversationSequence": 2,
+            "schemaVersion": 1
+          }
+        }
+      ],
+      "hasMore": true,
+      "nextCursor": "cursor-t09-page1"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "requestedAt": "2026-08-20T10:00:02Z",
+      "cursor": "cursor-t09-page1"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "snapshotId": "bsnap-t09",
+      "snapshotGraphRevision": 2,
+      "pageIndex": 1,
+      "items": [
+        {
+          "itemKind": "message",
+          "payload": {
+            "workspaceId": "ws-acme",
+            "conversationId": "conv-0001",
+            "messageId": "msg-0001-root",
+            "role": "user",
+            "authorType": "human",
+            "authorId": "actor-alice",
+            "conversationSequence": 1,
+            "schemaVersion": 1,
+            "contentHash": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+            "completionStatus": "complete",
+            "visibility": "standard",
+            "parts": [],
+            "createdAt": "2026-08-20T10:00:00Z",
+            "committedAt": "2026-08-20T10:00:00Z"
+          }
+        }
+      ],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t09-boundary"
+    },
+    {
+      "messageType": "bridge.event-batch",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "events": [
+        {
+          "eventId": "evt-t09-a",
+          "eventType": "chat.message.committed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "messageId": "msg-0002-a1",
+          "role": "assistant",
+          "branchId": "branch-0001-original",
+          "graphRevision": 2,
+          "conversationSequence": 2,
+          "occurredAt": "2026-08-20T10:00:00Z",
+          "cursor": "cursor-t09-a",
+          "parentMessageId": "msg-0001-root"
+        }
+      ],
+      "fromCursor": "cursor-t09-boundary",
+      "nextCursor": "cursor-t09-b"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "commandId": "cmd-t09",
+      "commandKind": "SubmitMessage",
+      "payload": {
+        "protocolVersion": "1.0",
+        "commandId": "cmd-t09",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "branchId": "branch-0001-original",
+        "actorId": "actor-alice",
+        "expectedHeadMessageId": "msg-0001-root",
+        "expectedHeadVersion": 1,
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "hi"
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    },
+    {
+      "messageType": "bridge.command-result",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "commandId": "cmd-t09",
+      "result": {
+        "commandId": "cmd-t09",
+        "status": "accepted"
+      }
+    },
+    {
+      "messageType": "bridge.context-disposed",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-09",
+      "reason": "explicit_dispose",
+      "disposedAt": "2026-08-20T10:05:00Z"
+    }
+  ]
+}

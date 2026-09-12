@@ -14,7 +14,7 @@ Deprecated: import ``Memory`` / ``MemoryCreate`` / ``MemoryUpdate`` from
 # `Source`, which the canonical memory model imports from the lifecycle and
 # provenance leaves) -- names this leaf's historical namespace still has to
 # resolve. No other error code is suppressed.
-from omnivia_core.memory.models import (  # type: ignore[attr-defined]
+from omnivia_core.memory.models import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     CreatedBy,
     LifecycleState,

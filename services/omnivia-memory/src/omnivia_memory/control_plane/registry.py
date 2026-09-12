@@ -5228,7 +5228,8 @@ def _resource_lifecycle(payload: dict[str, Any]) -> str:
     lifecycle = payload.get("lifecycle")
     if isinstance(lifecycle, str):
         return lifecycle
-    return LifecycleState.CANDIDATE.value
+    default_lifecycle: str = LifecycleState.CANDIDATE.value
+    return default_lifecycle
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -5896,7 +5897,8 @@ def _find_in_flight_automation_run(
             run_record.automation_id == automation_id
             and run_record.status in IN_FLIGHT_RUN_STATUSES
         ):
-            return run_record.id
+            run_id: str = run_record.id
+            return run_id
     return None
 
 

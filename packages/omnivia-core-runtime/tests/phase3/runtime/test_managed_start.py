@@ -47,6 +47,11 @@ from omnivia_core_runtime.service.managed_start import (
     _clean_child_descriptor,
     managed_start,
 )
+from omnivia_core_runtime.service.workspace_init import (
+    WORKSPACE_INIT_VERSION,
+    WorkspaceInitRefusal,
+    WorkspaceInitStatus,
+)
 from omnivia_core_runtime.storage.backup import InstallationLayout
 
 WORKSPACE_ID = "ws-managed-start-0001"
@@ -322,6 +327,7 @@ import argparse, json, os, sys, time
 from pathlib import Path
 sys.path[:0] = {syspath!r}
 from omnivia_core_runtime.ownership.identity import SystemProcessEvidence
+from omnivia_core_runtime.service.workspace_init import WorkspaceInitStatus
 from omnivia_core_runtime.storage.backup import InstallationLayout
 
 parser = argparse.ArgumentParser()
@@ -629,7 +635,7 @@ def _runtime_for(root: Path, workspace_id: str) -> Path:
     return installation.runtime_for(workspace_id)
 
 
-def _initialise(root: Path, name: str) -> _Selection:
+def _initialise(root: Path, name: str, *, executable: str | None = None) -> _Selection:
     """One workspace, made by the shipped `--init`, under the shared installation.
 
     `--init` mints the workspace identity itself, so the two selections here differ
@@ -639,7 +645,7 @@ def _initialise(root: Path, name: str) -> _Selection:
     workspace = root / name
     completed = subprocess.run(
         [
-            _locate(),
+            executable or _locate(),
             "--init",
             "--workspace",
             str(workspace),
@@ -663,11 +669,13 @@ def _initialise(root: Path, name: str) -> _Selection:
     )
 
 
-def _managed_start_selection(root: Path, selection: _Selection) -> dict[str, Any]:
+def _managed_start_selection(
+    root: Path, selection: _Selection, *, executable: str | None = None
+) -> dict[str, Any]:
     """One managed start for one selected workspace, through the console script."""
     completed = subprocess.run(
         [
-            _locate(),
+            executable or _locate(),
             "--managed-start",
             "--workspace",
             str(selection.workspace_root),
@@ -803,6 +811,55 @@ def test_two_writable_workspaces_each_own_one_authoritative_service(
     assert sorted(_service_pids(root)) == sorted(pids), "a second start crossed owners"
 
 
+def test_a_service_answering_for_another_workspace_is_not_a_successful_start(
+    two_selections: tuple[Path, tuple[_Selection, _Selection]],
+) -> None:
+    """The bootstrap seam's requirement: a live ready answer *for this workspace*.
+
+    A consumer reads a workspace id out of `--init` and then requires managed start
+    to answer for that same id. What used to make that hard to break was accidental:
+    the readiness dial sent `descriptor.workspace_id` -- the answering service's own
+    claim -- and the service's grant is `frozenset({its own workspace})`, so a
+    *forged* claim was refused by the service. The case that arrangement could not
+    see is this one, where the claim is true and belongs to somebody else: a second
+    workspace's real, ready, correctly-signed-for service, advertised in the first
+    workspace's runtime directory. Every id in that descriptor is genuine; it is
+    simply not about the workspace the caller selected, and the dial answered `ready`
+    for it.
+
+    Planting the descriptor rather than corrupting one is deliberate: the file is
+    copied verbatim from the second workspace, so nothing here is malformed, stale
+    or unreachable, and the *only* thing wrong is which workspace it is about.
+    """
+    root, (first, second) = two_selections
+    running = _managed_start_selection(root, second)
+    assert running["service"]["ready"] is True
+    (second_pid,) = _service_pids(root)
+
+    planted = (_runtime_for(root, second.workspace_id) / "service.json").read_bytes()
+    first_runtime = _runtime_for(root, first.workspace_id)
+    first_runtime.mkdir(parents=True, exist_ok=True)
+    (first_runtime / "service.json").write_bytes(planted)
+
+    result = managed_start(
+        workspace_root=first.workspace_root,
+        installation_root=root / "installation-state",
+        endpoint_uri=first.endpoint_uri,
+        timeout_seconds=2.0,
+    )
+
+    assert result.status is ManagedStartStatus.FAILED, result
+    assert result.failure is ManagedStartFailure.TIMEOUT
+    # Not attached to the neighbour, and not reported as this workspace's service.
+    document = result.to_dict()
+    assert document["service"] is None, document
+    assert second.workspace_id not in json.dumps(document)
+
+    # And the neighbour it declined to borrow is untouched: not stopped, not
+    # replaced, and still the one service under this installation.
+    assert _service_pids(root) == [second_pid]
+
+
 # --- R004-09: production integration evidence ---
 
 
@@ -883,3 +940,213 @@ def test_the_cli_call_reaches_the_service_through_the_shared_managed_start_path(
     assert again.returncode == 0, again.stderr
     assert json.loads(again.stdout)["status"] == "pass"
     assert _service_pids(home) == [pid]
+
+
+# --- The packaged bootstrap seam: exact path in, one identity through both modes ---
+
+#: A hostile `omnivia-core-service` that records being run and does nothing else.
+#:
+#: `_FAKE_SERVICE` above is the opposite fixture and is used the opposite way: it is
+#: put on `PATH` so an *in-process* call spawns it. This one is put on `PATH` so the
+#: packaged console script gets the chance to spawn it and must not take it.
+_HOSTILE_SERVICE = '''#!{python}
+import sys
+from pathlib import Path
+
+Path(__file__).with_name("hostile-was-invoked").write_text(" ".join(sys.argv))
+sys.exit(97)
+'''
+
+
+def _packaged_service() -> str:
+    """The installed console script, located *without* consulting `PATH`.
+
+    `_locate()` asks `PATH` first, which is right for the tests above and useless
+    for the two below: they put a hostile executable on `PATH` on purpose, and a
+    harness that then located *that* would be testing nothing. This is the
+    production arrangement instead -- a consumer that has verified a runtime payload
+    names its `omnivia-core-service` by absolute path and never searches for it.
+    """
+    beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
+    if beside.is_file() and os.access(beside, os.X_OK):
+        return str(beside)
+    pytest.skip(f"{SERVICE_EXECUTABLE} is not installed beside {sys.executable}")
+
+
+@pytest.fixture
+def hostile_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An attacker-controlled `omnivia-core-service`, first on `PATH`."""
+    directory = tmp_path / "hostile-bin"
+    directory.mkdir()
+    script = directory / SERVICE_EXECUTABLE
+    script.write_text(_HOSTILE_SERVICE.format(python=sys.executable), encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ.get('PATH', '')}")
+    return directory
+
+
+@pytest.fixture
+def bootstrap_root() -> Iterator[Path]:
+    """One installation root with no workspace in it yet, and nothing left running."""
+    root = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    try:
+        yield root
+    finally:
+        for pid in _service_pids(root):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:  # pragma: no cover - already gone
+                pass
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a Windows console script is an .exe, which a text shadow cannot impersonate",
+)
+def test_the_exact_invoked_service_spawns_itself_and_never_a_path_substitute(
+    bootstrap_root: Path, hostile_path: Path
+) -> None:
+    """The consumer seam's whole point: invoking the verified path binds the child too.
+
+    A consumer that has verified one runtime payload invokes that payload's
+    `omnivia-core-service` by absolute path. Managed start then spawns *another*
+    `omnivia-core-service`, and if that second lookup went to `PATH` the verification
+    would have bought nothing -- the process that ends up owning the workspace would
+    be whichever executable an attacker put earliest on `PATH`.
+
+    `_service_executable()` selects `sys.argv[0]` before `PATH` for exactly this
+    reason, and until now that was a comment. This is the acceptance the handoff asks
+    for: a hostile `omnivia-core-service` is first on `PATH` for the whole call, and
+    it must never run.
+
+    Both halves are asserted, because either alone is weak. That the hostile script
+    left no marker proves it was not executed; that the started service is ready and
+    answers for this workspace proves the real one was.
+    """
+    service = _packaged_service()
+    marker = hostile_path / "hostile-was-invoked"
+    assert shutil.which(SERVICE_EXECUTABLE) == str(hostile_path / SERVICE_EXECUTABLE)
+    assert service != shutil.which(SERVICE_EXECUTABLE)
+
+    selection = _initialise(bootstrap_root, "verified", executable=service)
+    assert not marker.exists(), "`--init` reached the shadow"
+
+    result = _managed_start_selection(bootstrap_root, selection, executable=service)
+    assert result["status"] == ManagedStartStatus.STARTED.value, result
+    assert result["service"]["ready"] is True
+    assert result["service"]["workspace_id"] == selection.workspace_id
+    assert not marker.exists(), "managed start spawned the executable first on PATH"
+
+    # And the process that is now running is that exact console script, by argv.
+    # The console script is a shebang shim, so its interpreter leads the line and the
+    # script path follows it; what matters is which script, not which argument index.
+    (service_pid,) = _service_pids(bootstrap_root)
+    assert result["service"]["pid"] == service_pid
+    listing = subprocess.run(
+        ["ps", "-eww", "-o", "pid=,args="], capture_output=True, text=True, check=False
+    ).stdout
+    argv = next(
+        line.strip().partition(" ")[2]
+        for line in listing.splitlines()
+        if line.strip().partition(" ")[0] == str(service_pid)
+    )
+    assert service in argv.split(" "), argv
+    assert str(hostile_path) not in argv
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a Windows console script is an .exe, which a text shadow cannot impersonate",
+)
+def test_init_adopt_and_managed_start_agree_on_one_workspace_identity(
+    bootstrap_root: Path, hostile_path: Path
+) -> None:
+    """Create, adopt and start return one identity, through the packaged entry point.
+
+    A consumer reads the workspace id out of `--init`'s stdout and then requires
+    `--managed-start` to answer for that same id; if the two ever disagreed, the
+    consumer would configure a target for a workspace no service owns. The adopt path
+    is the interesting one -- a repeated `--init` must *retain* the identity rather
+    than mint a second -- and it is asserted here through the console script rather
+    than through an in-process call, because the stdout document is the contract.
+
+    The hostile `PATH` entry is in place throughout, so nothing here can be answered
+    by a substitute.
+    """
+    service = _packaged_service()
+    created = _initialise(bootstrap_root, "adopted", executable=service)
+
+    adopted = subprocess.run(
+        [
+            service,
+            "--init",
+            "--workspace",
+            str(created.workspace_root),
+            "--installation-state",
+            str(bootstrap_root / "installation-state"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+    assert adopted.returncode == 0, adopted.stderr
+    document = json.loads(adopted.stdout)
+    assert document["status"] == WorkspaceInitStatus.ALREADY_INITIALISED.value, document
+    assert document["workspace"]["workspace_id"] == created.workspace_id
+
+    result = _managed_start_selection(bootstrap_root, created, executable=service)
+    assert result["managed_start_version"] == MANAGED_START_VERSION
+    assert result["service"]["workspace_id"] == created.workspace_id
+    assert not (hostile_path / "hostile-was-invoked").exists()
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a Windows console script is an .exe, which a text shadow cannot impersonate",
+)
+def test_a_refused_init_is_a_versioned_document_and_a_non_zero_exit(
+    bootstrap_root: Path,
+) -> None:
+    """The refusal half of the `--init` output contract, through the shipped script.
+
+    The success half is pinned above. This is the half a consumer actually branches
+    on, and it is only worth pinning *here*: an in-process call returns a
+    `WorkspaceInitResult` object and can say nothing about an exit code, so a suite
+    that only made in-process calls would leave "do not infer success from exit code
+    alone" resting on a reading of `main.py`.
+
+    Three separable facts, because a consumer that got two of them and not the third
+    would still be wrong: the process exits non-zero, stdout is the whole versioned
+    document and nothing but it, and the human sentence is on the other stream.
+    """
+    service = _packaged_service()
+    occupied = bootstrap_root / "somebody-elses-folder"
+    occupied.mkdir(parents=True)
+    (occupied / "tax-return.pdf").write_bytes(b"%PDF-1.4\n")
+
+    completed = subprocess.run(
+        [
+            service,
+            "--init",
+            "--workspace",
+            str(occupied),
+            "--installation-state",
+            str(bootstrap_root / "installation-state"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+
+    assert completed.returncode == 1, completed.stderr
+    document = json.loads(completed.stdout)
+    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION
+    assert document["status"] == WorkspaceInitStatus.REFUSED.value
+    assert document["refusal"] == WorkspaceInitRefusal.UNRELATED_DIRECTORY.value
+    assert document["workspace"] is None
+    # Nothing was converted, and the human sentence went to the human stream.
+    assert sorted(path.name for path in occupied.iterdir()) == ["tax-return.pdf"]
+    assert completed.stderr.strip()

@@ -13,7 +13,7 @@ Deprecated: import ``CreatedBy`` / ``LifecycleRules`` from
 # which the canonical rules module imports from its sibling `models`) -- names
 # this leaf's historical namespace still has to resolve. No other code is
 # suppressed.
-from omnivia_core.lifecycle.rules import (  # type: ignore[attr-defined]
+from omnivia_core.lifecycle.rules import (  # type: ignore[attr-defined,unused-ignore]
     CreatedBy,
     Enum,
     LifecycleRules,

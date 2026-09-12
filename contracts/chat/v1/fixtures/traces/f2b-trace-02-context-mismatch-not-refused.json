@@ -1,0 +1,82 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-01",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-01",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-01",
+      "commandId": "cmd-t02-a",
+      "commandKind": "SubmitMessage",
+      "payload": {
+        "protocolVersion": "1.0",
+        "commandId": "cmd-t02-a",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "branchId": "branch-0001-original",
+        "actorId": "actor-alice",
+        "expectedHeadMessageId": "msg-0001-root",
+        "expectedHeadVersion": 1,
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "hi"
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-WRONG",
+      "commandId": "cmd-t02-b",
+      "commandKind": "SubmitMessage",
+      "payload": {
+        "protocolVersion": "1.0",
+        "commandId": "cmd-t02-b",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "branchId": "branch-0001-original",
+        "actorId": "actor-alice",
+        "expectedHeadMessageId": "msg-0001-root",
+        "expectedHeadVersion": 1,
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "hi"
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    }
+  ]
+}

@@ -1309,6 +1309,56 @@ def test_v06_5_s3_cancel_disposition_and_pending_availability_are_distinct(
     assert result.result["job"]["state"] == "running"
 
 
+def test_v06_5_s3_import_control_is_not_narrowed_by_the_kind_allowlist(
+    owned: m1.Owned,
+) -> None:
+    """The fail-closed kind policy preserves prior import controls."""
+    clock = FakeClock(wall=WALL)
+    dispatcher = _dispatcher(owned, tag="import-still-controllable", clock=clock)
+    _, _, started = _start_import(
+        owned,
+        tag="import-still-controllable",
+        dispatcher=dispatcher,
+    )
+    assert started.metadata.job is not None
+    job_id = started.metadata.job.job_id
+
+    running = dispatcher.dispatch(
+        _request(
+            "job.get",
+            {"job_id": job_id},
+            request_id="req-import-still-controllable-get",
+        )
+    )
+    assert isinstance(running, SuccessResponseEnvelope), running
+    assert running.result["job"]["identity"]["job_kind"] == "ingestion.import"
+    assert running.result["job"]["control"]["cancellation"] == "cancellable"
+
+    clock.advance_wall(10)
+    _fail_job(owned, clock, job_id)
+    failed = dispatcher.dispatch(
+        _request(
+            "job.get",
+            {"job_id": job_id},
+            request_id="req-import-still-controllable-failed",
+        )
+    )
+    assert isinstance(failed, SuccessResponseEnvelope), failed
+    assert failed.result["job"]["control"]["recovery"] == "retryable"
+
+    clock.advance_wall(10)
+    retried = dispatcher.dispatch(
+        _retry_request(
+            job_id,
+            request_id="req-import-still-controllable-retry",
+            key="idem-import-still-controllable-retry",
+        )
+    )
+    assert isinstance(retried, SuccessResponseEnvelope), retried
+    assert retried.result["recovery_disposition"] == "retry_scheduled"
+    assert retried.result["job"]["state"] == "queued"
+
+
 def test_v06_5_s3_job_read_is_workspace_scoped_and_snapshot_coherent(
     owned: m1.Owned,
 ) -> None:

@@ -1,22 +1,20 @@
-"""RT-109 acceptance for startup recovery and orphan-attempt classification.
+"""RT-109 acceptance for the fenced startup recovery pass.
 
-Every crash point is reached by actually crashing: the SQLite connection is closed
-and the file is reopened by a *different* service instance which acquires a higher
-fencing generation, which is what a process restart is here. Nothing is simulated by
-hand-editing rows into the state a crash would have left; the state is whatever the
-real scheduler, the real wait writes and the real fence left behind when the process
-went away.
+Every test here restarts for real: the owning connection is closed and a successor
+service instance reopens the file and acquires a new fencing generation, exactly as a
+crashed-and-restarted Core service would. What the successor then knows about the
+previous one is only what the file holds, which is the whole point of the slice.
 
-The single property behind all of it: recovery reads evidence and never invents it.
-No Run, Step, Attempt or job is marked succeeded by this pass, an absent worker
-session is never read as a completion, and an item whose history contradicts itself
-is reported and left exactly as found.
+The seeds are the accepted ones. `m1` owns the workspace, `m18` owns the durable job
+and the claim a run is admitted against, RT-106's scheduler makes the claims, and
+RT-107's real command seam opens and resolves the waits -- so what recovery is tested
+against is history this repository already knows how to produce.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,10 +22,11 @@ from typing import Any
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_rt102_agent_runtime_migration as m18
+import test_rt102_agent_runtime_repository as rt102
 import test_rt104_runtime_command_transaction as rt104
-import test_rt106_runtime_scheduler as rt106
 import test_v06_5_s0_mutation_foundation as s0
-from omnivia_core_runtime.ownership.fencing import StaleGeneration
+from omnivia_core_runtime.ownership.fencing import StaleGeneration, open_guard
+from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.runtime_command import RuntimeAggregateExpectation
 from omnivia_core_runtime.service.runtime_recovery import (
@@ -37,21 +36,25 @@ from omnivia_core_runtime.service.runtime_recovery import (
     CLASSIFICATION_NO_OPEN_ATTEMPT,
     CLASSIFICATION_ORPHAN_ATTEMPT,
     CLASSIFICATION_TERMINAL_HISTORY,
-    RECOVERY_CLASSIFICATIONS,
-    StartupRecoveryReport,
-    recover_at_startup,
+    RUNTIME_JOB_CLASSIFICATIONS,
+    RuntimeStartupRecovery,
+    recover_runtime_startup,
 )
 from omnivia_core_runtime.service.runtime_scheduler import (
-    RuntimeClaim,
     RuntimeScheduler,
+    RuntimeSchedulingError,
 )
-from omnivia_core_runtime.service.runtime_waits import resolve_runtime_wait
+from omnivia_core_runtime.service.runtime_waits import (
+    WaitOpening,
+    open_runtime_wait,
+    resolve_runtime_wait,
+)
+from omnivia_core_runtime.service.worker_adapter import HostLineage, WorkerAdapter
 from omnivia_core_runtime.storage.agent_runtime import (
+    admit_run,
     append_run_event,
-    open_wait,
+    append_run_step,
     read_run,
-    read_run_sequence,
-    record_step_status,
 )
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
@@ -60,21 +63,22 @@ from omnivia_core_runtime.storage.projections.runtime_run_summary import (
     runtime_run_summary_projection_digest,
 )
 
-from omnivia_core.contracts.v1 import ResolveWait
+from omnivia_core.contracts.v1 import Approval, ResolveWait, Wait
 
 WORKSPACE_ID = m1.WORKSPACE_ID
 BASE_US = m18.BASE_US
-DIGEST = m18.DIGEST
 
-WAIT_OPEN_US = BASE_US + 2_000
-RECOVER_US = BASE_US + 10_000
-#: Inside the mutation grant's own window, which `rt104` issues at its settled
-#: instant. A resolution is a real RT-104 command here, not a storage write.
-RESOLVE_US = rt104.SETTLED_US + 10_000
+#: One claim, one suspension, one restart and one resolution, in that order. The
+#: command instants sit beside RT-104's own settlement instant because the grants these
+#: tests issue are RT-104's, and a grant has a validity window.
+CLAIM_US = BASE_US + 1_000
+OPEN_US = rt104.SETTLED_US + 1_000
+RECOVER_US = OPEN_US + 1_000
+RESOLVE_US = RECOVER_US + 1_000
 
-#: Everything a startup pass could possibly change. Counted as one set, because
-#: "this classification changed nothing" is a statement about the whole ledger.
-LEDGER_TABLES = (
+#: Every relation a startup pass could reach, mutable and canonical alike. Compared as
+#: a whole, because "left untouched" and "idempotent" are statements about the set.
+STATE_TABLES = (
     "omnivia_durable_jobs",
     "omnivia_job_attempts",
     "omnivia_job_events",
@@ -88,20 +92,8 @@ LEDGER_TABLES = (
     "omnivia_runtime_waits",
     "omnivia_runtime_wait_resolutions",
     "omnivia_runtime_events",
+    "omnivia_runtime_run_summaries",
 )
-
-
-@pytest.fixture
-def owned(tmp_path: Path) -> Iterator[m1.Owned]:
-    path = tmp_path / "workspace.sqlite"
-    materialise_phase0_baseline(path)
-    m1.bootstrap_and_migrate(path)
-    holder = m1.take_ownership(path)
-    yield holder
-    holder.connection.close()
-
-
-# --- crashing, and what comes back up -------------------------------------------
 
 
 def timestamp(value: int) -> str:
@@ -112,671 +104,769 @@ def timestamp(value: int) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
 
 
-def clock_at(value: int) -> m1.FakeClock:
-    return m1.FakeClock(wall=datetime.fromtimestamp(value / 1_000_000, tz=UTC))
+def clock_at(value: int) -> FakeClock:
+    return FakeClock(
+        monotonic=s0.MONOTONIC_BASE,
+        wall=datetime.fromtimestamp(value / 1_000_000, tz=UTC),
+    )
 
 
-def restart(holder: m1.Owned, *, instance: str = "svc-rt109-successor") -> m1.Owned:
-    """Close the database and bring it back up under a new instance and fence.
+def state_of(holder: m1.Owned) -> dict[str, list[Any]]:
+    """Every row of every relation this pass could write, for exact comparison."""
+    return {
+        table: holder.connection.execute(f"SELECT * FROM {table}").fetchall()
+        for table in STATE_TABLES
+    }
 
-    The connection really is closed, so nothing the previous process held in memory
-    survives -- including RT-108's adapter sessions, which is the point: what the
-    successor knows is what the file says.
-    """
-    path = holder.path
-    holder.connection.close()
-    successor = m1.make_identity(instance=instance, pid=6109)
-    connection = open_database(path, OpenMode.SERVICE_OWNED)
-    lease = acquire_lease(
-        connection,
-        successor,
-        clock=clock_at(RECOVER_US),
+
+@dataclass
+class Service:
+    """One workspace file and whichever service instance currently owns it."""
+
+    current: m1.Owned
+    restarts: int = field(default=0)
+
+    def restart(self) -> m1.Owned:
+        """Close this owner's connection and reopen the file as a successor.
+
+        A real restart, not a takeover on a live connection: the previous instance's
+        connection is gone before the successor acquires the lease, so everything the
+        successor can know it reads back out of the file.
+        """
+        previous = self.current
+        previous.connection.close()
+        self.restarts += 1
+        identity = m1.make_identity(
+            instance=f"svc-rt109-successor-{self.restarts}", pid=6109 + self.restarts
+        )
+        connection = open_database(previous.path, OpenMode.SERVICE_OWNED)
+        lease = acquire_lease(
+            connection,
+            identity,
+            clock=FakeClock(),
+            workspace_id=WORKSPACE_ID,
+            holds_storage_lock=True,
+            lock_mechanism="flock",
+            predecessor=previous.identity.service_instance_id,
+        )
+        open_guard(
+            connection,
+            identity,
+            clock=FakeClock(),
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=lease.fencing_generation,
+        )
+        self.current = m1.Owned(
+            connection=connection,
+            identity=identity,
+            generation=lease.fencing_generation,
+            path=previous.path,
+        )
+        return self.current
+
+
+@pytest.fixture
+def service(tmp_path: Path) -> Iterator[Service]:
+    path = tmp_path / "workspace.sqlite"
+    materialise_phase0_baseline(path)
+    m1.bootstrap_and_migrate(path)
+    session = Service(m1.take_ownership(path))
+    yield session
+    session.current.connection.close()
+
+
+def seed_run(
+    holder: m1.Owned,
+    *,
+    job_id: str,
+    run_id: str,
+    step_id: str,
+    state: str = "queued",
+    max_attempts: int = 8,
+) -> None:
+    """One audited durable job, its claim, its canonical run and that run's first step."""
+    audit_ref = m18.audit_ref_for(job_id)
+    with m18.guarded(holder):
+        holder.connection.execute(
+            "INSERT OR IGNORE INTO omnivia_application_audit_events "
+            "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
+            "correlation_id, trace_id, granted_authority_json, outcome_class, "
+            "error_code, recorded_at_us) VALUES "
+            "(?, ?, 'core-service', 'runtime.admit', 'runtime.execute', ?, ?, ?, "
+            "'{}', 'succeeded', NULL, ?)",
+            (
+                audit_ref,
+                WORKSPACE_ID,
+                f"req-{job_id}",
+                f"cor-{job_id}",
+                f"trc-{job_id}",
+                BASE_US,
+            ),
+        )
+        holder.connection.execute(
+            "INSERT INTO omnivia_durable_jobs "
+            "(job_id, job_type, state, payload_json, created_at, updated_at, "
+            "fencing_generation, claimed_by_service_instance) "
+            "VALUES (?, 'ingestion.import', ?, '{}', ?, ?, ?, ?)",
+            (
+                job_id,
+                state,
+                f"2039-09-18T23:06:{40 + len(job_id) % 20:02d}Z",
+                "2039-09-18T23:06:40Z",
+                holder.generation,
+                holder.identity.service_instance_id,
+            ),
+        )
+        holder.connection.execute(
+            "INSERT INTO omnivia_job_application_metadata "
+            "(workspace_id, job_id, job_kind, originating_operation, audit_ref, "
+            "created_at_us, terminal_result_kind, supports_checkpoint_resume, "
+            "max_attempts) VALUES (?, ?, 'ingestion.import', 'runtime.admit', ?, ?, "
+            "NULL, 1, ?)",
+            (WORKSPACE_ID, job_id, audit_ref, BASE_US, max_attempts),
+        )
+        m18.insert_claim(
+            holder,
+            claim_id=m18.claim_id_for(job_id),
+            audit_ref=audit_ref,
+            idempotency_key=m18.logical_key_for(job_id),
+            workspace_id=WORKSPACE_ID,
+        )
+    admit_run(
+        holder.connection,
+        holder.identity,
         workspace_id=WORKSPACE_ID,
-        holds_storage_lock=True,
-        lock_mechanism="flock",
-        predecessor=holder.identity.service_instance_id,
+        fencing_generation=holder.generation,
+        admission=rt102.admission(run_id=run_id, job_id=job_id, event_id=f"evt-{run_id}"),
     )
-    m1.open_guard(
-        connection,
-        successor,
-        clock=clock_at(RECOVER_US),
+    append_run_step(
+        holder.connection,
+        holder.identity,
         workspace_id=WORKSPACE_ID,
-        fencing_generation=lease.fencing_generation,
-    )
-    return m1.Owned(
-        connection=connection,
-        identity=successor,
-        generation=lease.fencing_generation,
-        path=path,
+        fencing_generation=holder.generation,
+        run_id=run_id,
+        run_step_id=step_id,
+        ordinal=1,
+        step_kind="worker_invocation",
+        created_at_us=BASE_US,
     )
 
 
-def scheduler_at(holder: m1.Owned, *, now_us: int = RECOVER_US) -> RuntimeScheduler:
+def scheduler_at(holder: m1.Owned, at_us: int = RECOVER_US) -> RuntimeScheduler:
     return RuntimeScheduler(
         holder.connection,
         holder.identity,
         WORKSPACE_ID,
         holder.generation,
-        clock_at(now_us),
+        clock_at(at_us),
     )
 
 
-@dataclass(frozen=True)
-class Seeded:
-    """One runtime-bound job, its run and the single step the tests drive."""
-
-    job_id: str
-    run_id: str
-    step_id: str
-
-
-def seed(holder: m1.Owned, name: str, *, max_attempts: int = 8) -> Seeded:
-    seeded = Seeded(f"job-{name}", f"run-{name}", f"step-{name}")
-    rt106._seed_run(
-        holder,
-        job_id=seeded.job_id,
-        run_id=seeded.run_id,
-        step_id=seeded.step_id,
-        max_attempts=max_attempts,
-    )
-    return seeded
-
-
-def claim(holder: m1.Owned) -> RuntimeClaim:
-    claimed = scheduler_at(holder, now_us=BASE_US + 1_000).claim_next()
-    assert claimed is not None
-    return claimed
-
-
-def suspend(holder: m1.Owned, claimed: RuntimeClaim, *, wait_id: str) -> str:
-    """Open one durable wait over the claimed attempt, as RT-107's three writes do.
-
-    The order is the migration's: the wait exists before the step may say it is
-    waiting, and the run's event stream states `waiting` last.
-    """
-    open_wait(
-        holder.connection,
-        holder.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=holder.generation,
-        wait_id=wait_id,
-        run_id=claimed.run_id,
-        run_step_id=claimed.run_step_id,
-        kind="external_signal",
-        created_at_us=WAIT_OPEN_US,
-        resume_digest=DIGEST,
-    )
-    record_step_status(
-        holder.connection,
-        holder.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=holder.generation,
-        run_step_id=claimed.run_step_id,
-        status="waiting",
-        observed_at_us=WAIT_OPEN_US,
-    )
-    append_run_event(
-        holder.connection,
-        holder.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=holder.generation,
-        run_id=claimed.run_id,
-        runtime_event_id=f"evt-{wait_id}-opened",
-        occurred_at_us=WAIT_OPEN_US,
-        event_kind="wait_opened",
-        run_status="waiting",
-        run_step_id=claimed.run_step_id,
-    )
-    return wait_id
-
-
-def stream_partial_worker_evidence(holder: m1.Owned, claimed: RuntimeClaim) -> str:
-    """Persist one nonterminal worker observation, then stop mid-stream.
-
-    This is the only thing a partial worker stream leaves behind that outlives the
-    process: RT-108's adapter holds its session in memory and the restart destroys
-    it. The event says a message was seen; it says nothing about a turn completing.
-    """
-    event_id = f"evt-{claimed.run_id}-partial"
-    append_run_event(
-        holder.connection,
-        holder.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=holder.generation,
-        run_id=claimed.run_id,
-        runtime_event_id=event_id,
-        occurred_at_us=BASE_US + 3_000,
-        event_kind="worker_message_observed",
-        run_status="running",
-        run_step_id=claimed.run_step_id,
-        message="a partial worker message was persisted before the process stopped",
-    )
-    return event_id
-
-
-# --- reading the ledger back ----------------------------------------------------
-
-
-def ledger(holder: m1.Owned) -> dict[str, int]:
-    return {table: m1.count(holder.connection, table) for table in LEDGER_TABLES}
-
-
-def ledger_rows(holder: m1.Owned) -> dict[str, list[str]]:
-    """Every stored row of every table a pass could touch, not merely how many.
-
-    A count proves nothing was inserted; this proves nothing was rewritten either,
-    which is what "left exactly as found" has to mean for a refusal.
-    """
-    return {
-        table: sorted(
-            repr(row)
-            for row in holder.connection.execute(f"SELECT * FROM {table}").fetchall()
-        )
-        for table in LEDGER_TABLES
-    }
-
-
-def job_row(holder: m1.Owned, job_id: str) -> tuple[Any, ...]:
-    row = holder.connection.execute(
-        "SELECT state, claimed_by_service_instance, fencing_generation "
-        "FROM omnivia_durable_jobs WHERE job_id = ?",
-        (job_id,),
-    ).fetchone()
-    assert row is not None
-    return tuple(row)
-
-
-def classification_of(report: StartupRecoveryReport, job_id: str) -> str:
-    matched = [item for item in report.classifications if item.job_id == job_id]
-    assert len(matched) == 1, matched
-    return matched[0].classification
-
-
-def assert_nothing_succeeded(holder: m1.Owned) -> None:
-    """No pass may leave a success behind that no worker ever reported."""
-    assert holder.connection.execute(
-        "SELECT COUNT(*) FROM omnivia_runtime_attempt_outcomes WHERE status = 'succeeded'"
-    ).fetchone() == (0,)
-    assert holder.connection.execute(
-        "SELECT COUNT(*) FROM omnivia_runtime_run_step_states WHERE status = 'succeeded'"
-    ).fetchone() == (0,)
-    assert holder.connection.execute(
-        "SELECT COUNT(*) FROM omnivia_runtime_events WHERE run_status = 'succeeded'"
-    ).fetchone() == (0,)
-    assert holder.connection.execute(
-        "SELECT COUNT(*) FROM omnivia_durable_jobs WHERE state = 'succeeded'"
-    ).fetchone() == (0,)
-    assert holder.connection.execute(
-        "SELECT COUNT(*) FROM omnivia_job_attempts WHERE state = 'succeeded'"
-    ).fetchone() == (0,)
-
-
-# --- the crash points -----------------------------------------------------------
-
-
-def test_crash_before_the_claim_invents_no_work(owned: m1.Owned) -> None:
-    seeded = seed(owned, "before-claim")
-    successor = restart(owned)
-    before = ledger(successor)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert classification_of(report, seeded.job_id) == CLASSIFICATION_NO_OPEN_ATTEMPT
-    assert report.adoptions == () and report.recoveries == ()
-    assert ledger(successor) == before
-    assert job_row(successor, seeded.job_id)[0] == "queued"
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_crash_after_the_claim_before_worker_start_recovers_the_orphan(
-    owned: m1.Owned,
-) -> None:
-    seed(owned, "after-claim")
-    claimed = claim(owned)
-    successor = restart(owned)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert classification_of(report, claimed.job_id) == CLASSIFICATION_ORPHAN_ATTEMPT
-    assert len(report.recoveries) == 1
-    assert report.recoveries[0].runtime_attempt_id == claimed.runtime_attempt_id
-    assert report.recoveries[0].requeued is True
-    assert report.adoptions == ()
-    assert job_row(successor, claimed.job_id) == ("queued", None, successor.generation)
-    assert successor.connection.execute(
-        "SELECT status FROM omnivia_runtime_attempt_outcomes WHERE attempt_id = ?",
-        (claimed.runtime_attempt_id,),
-    ).fetchone() == ("failed",)
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_crash_during_a_partial_worker_stream_retains_its_evidence(
-    owned: m1.Owned,
-) -> None:
-    seed(owned, "partial-stream")
-    claimed = claim(owned)
-    partial_event_id = stream_partial_worker_evidence(owned, claimed)
-    successor = restart(owned)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert classification_of(report, claimed.job_id) == CLASSIFICATION_ORPHAN_ATTEMPT
-    assert report.recoveries[0].requeued is True
-    # The partial observation survives untouched, and is not read as a completion.
-    assert successor.connection.execute(
-        "SELECT event_kind, run_status FROM omnivia_runtime_events "
-        "WHERE workspace_id = ? AND runtime_event_id = ?",
-        (WORKSPACE_ID, partial_event_id),
-    ).fetchone() == ("worker_message_observed", "running")
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_open_wait_survives_a_restart_and_is_adopted_not_recovered(
-    owned: m1.Owned,
-) -> None:
-    seed(owned, "waiting")
-    claimed = claim(owned)
-    wait_id = suspend(owned, claimed, wait_id="wait-rt109-waiting")
-    stale_generation = owned.generation
-    successor = restart(owned)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert classification_of(report, claimed.job_id) == CLASSIFICATION_DURABLE_OPEN_WAIT
-    assert report.recoveries == ()
-    assert len(report.adoptions) == 1
-    adopted = report.adoptions[0]
-    assert adopted.wait_id == wait_id
-    assert adopted.runtime_attempt_id == claimed.runtime_attempt_id
-    assert adopted.previous_fencing_generation == stale_generation
-
-    # Only the claim moved. The wait, the step and the attempt are the ones that
-    # were already there.
-    assert job_row(successor, claimed.job_id) == (
-        "claimed",
-        successor.identity.service_instance_id,
-        successor.generation,
-    )
-    snapshot = read_run(
-        successor.connection, workspace_id=WORKSPACE_ID, run_id=claimed.run_id
-    )
-    assert snapshot is not None
-    assert snapshot.status == "waiting"
-    assert snapshot.waits[0].wait_id == wait_id
-    assert snapshot.waits[0].status == "pending"
-    assert snapshot.steps[0].status == "waiting"
-    assert [attempt.attempt_id for attempt in snapshot.steps[0].attempts] == [
-        claimed.runtime_attempt_id
-    ]
-    assert snapshot.steps[0].attempts[-1].status == "running"
-    assert snapshot.events[-1].event_kind == "wait_adopted"
-    assert snapshot.events[-1].run_status == "waiting"
-    assert successor.connection.execute(
-        "SELECT COUNT(*) FROM omnivia_runtime_attempt_outcomes"
-    ).fetchone() == (0,)
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_resolve_wait_after_adoption_resumes_the_same_step_and_attempt(
-    owned: m1.Owned,
-) -> None:
-    seed(owned, "resume")
-    claimed = claim(owned)
-    wait_id = suspend(owned, claimed, wait_id="wait-rt109-resume")
-    successor = restart(owned)
-    recover_at_startup(scheduler_at(successor))
-    job_before = job_row(successor, claimed.job_id)
-
-    key = "rt109-resolve-0001"
+def authority(holder: m1.Owned, key: str) -> tuple[Any, Any, Any]:
     context = rt104.authorize(idempotency_key=key)
     equivalence = rt104.equivalence_for(idempotency_key=key)
-    outcome = resolve_runtime_wait(
-        successor.connection,
-        successor.identity,
-        grant=rt104.issue(successor, context, equivalence=equivalence),
+    return context, equivalence, rt104.issue(holder, context, equivalence=equivalence)
+
+
+def open_wait(
+    holder: m1.Owned,
+    *,
+    run_id: str,
+    step_id: str,
+    wait_id: str,
+    sequence: int = 1,
+    at_us: int = OPEN_US,
+) -> None:
+    """Suspend one running step on one durable wait, through RT-107's own seam."""
+    context, equivalence, grant = authority(holder, f"rt109-open-{wait_id}")
+    open_runtime_wait(
+        holder.connection,
+        holder.identity,
+        grant=grant,
+        context=context,
+        equivalence=equivalence,
+        opening=WaitOpening(
+            wait_id=wait_id,
+            run_id=run_id,
+            run_step_id=step_id,
+            kind="external_signal",
+            resume_digest=m18.DIGEST,
+            runtime_event_id=f"evt-{wait_id}",
+        ),
+        validate_result=s0.accept_any,
+        clock=clock_at(at_us),
+        expected=RuntimeAggregateExpectation(run_id=run_id, sequence=sequence),
+    )
+
+
+def no_approval(_context: Any, _command: ResolveWait, _wait: Wait) -> Approval | None:
+    """The fail-closed policy seam's answer for a resolution that carries no approval."""
+    return None
+
+
+def resolve_wait(
+    holder: m1.Owned,
+    *,
+    run_id: str,
+    wait_id: str,
+    sequence: int,
+    at_us: int = RESOLVE_US,
+) -> Any:
+    context, equivalence, grant = authority(holder, f"rt109-resolve-{wait_id}")
+    return resolve_runtime_wait(
+        holder.connection,
+        holder.identity,
+        grant=grant,
         context=context,
         equivalence=equivalence,
         command=ResolveWait(
             workspace_id=WORKSPACE_ID,
-            run_id=claimed.run_id,
+            run_id=run_id,
             wait_id=wait_id,
             resolution="external_signal",
             approval_id=None,
-            resume_digest=DIGEST,
-            requested_at=timestamp(RESOLVE_US),
+            resume_digest=m18.DIGEST,
+            requested_at=timestamp(at_us),
             reason="signal_received",
         ),
-        policy=lambda _context, _command, _wait: None,
-        runtime_event_id=f"evt-{key}",
+        policy=no_approval,
+        runtime_event_id=f"evt-resolve-{wait_id}",
         validate_result=s0.accept_any,
-        clock=clock_at(RESOLVE_US),
-        expected=RuntimeAggregateExpectation(
-            run_id=claimed.run_id,
-            sequence=read_run_sequence(
-                successor.connection, workspace_id=WORKSPACE_ID, run_id=claimed.run_id
-            ),
-        ),
+        clock=clock_at(at_us),
+        expected=RuntimeAggregateExpectation(run_id=run_id, sequence=sequence),
     )
 
-    assert outcome.result["status"] == "resolved"
-    snapshot = read_run(
-        successor.connection, workspace_id=WORKSPACE_ID, run_id=claimed.run_id
+
+def classifications(result: RuntimeStartupRecovery) -> dict[str, str]:
+    return {job.job_id: job.classification for job in result.jobs}
+
+
+def events_of(holder: m1.Owned, run_id: str) -> list[tuple[Any, ...]]:
+    return holder.connection.execute(
+        "SELECT sequence, event_kind, run_status FROM omnivia_runtime_events "
+        "WHERE workspace_id = ? AND run_id = ? ORDER BY sequence",
+        (WORKSPACE_ID, run_id),
+    ).fetchall()
+
+
+def waiting_workspace(service: Service) -> m1.Owned:
+    """One run claimed, suspended on a durable wait, then restarted under a successor."""
+    seed_run(
+        service.current,
+        job_id="job-wait",
+        run_id="run-wait",
+        step_id="step-wait",
     )
-    assert snapshot is not None
-    assert snapshot.status == "running"
-    assert snapshot.steps[0].run_step_id == claimed.run_step_id
-    assert snapshot.steps[0].status == "running"
-    # The same attempt, not a replacement, and no requeue: the job's claim is the
-    # one adoption left in place.
-    assert [attempt.attempt_id for attempt in snapshot.steps[0].attempts] == [
-        claimed.runtime_attempt_id
-    ]
-    assert snapshot.steps[0].attempts[-1].status == "running"
-    assert job_row(successor, claimed.job_id) == job_before
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_terminal_history_is_observed_and_never_re_settled(owned: m1.Owned) -> None:
-    seed(owned, "terminal")
-    claimed = claim(owned)
-    scheduler_at(owned, now_us=BASE_US + 1_000).complete(
-        claimed, result_kind="runtime_completion", result={"outcome": "complete"}
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None
+    open_wait(
+        service.current, run_id="run-wait", step_id="step-wait", wait_id="wait-0001"
     )
-    successor = restart(owned)
-    before = ledger(successor)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert classification_of(report, claimed.job_id) == CLASSIFICATION_TERMINAL_HISTORY
-    assert report.adoptions == () and report.recoveries == ()
-    assert ledger(successor) == before
-    successor.connection.close()
+    return service.restart()
 
 
-def test_attempt_exhaustion_fails_the_orphan_without_requeueing(
-    owned: m1.Owned,
+# --- what the pass reads out of persisted evidence ------------------------------
+
+
+def test_a_queued_job_before_any_claim_has_no_open_attempt(service: Service) -> None:
+    seed_run(
+        service.current, job_id="job-queued", run_id="run-queued", step_id="step-queued"
+    )
+    successor = service.restart()
+    before = state_of(successor)
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {"job-queued": CLASSIFICATION_NO_OPEN_ATTEMPT}
+    assert state_of(successor) == before
+
+
+def test_a_claim_with_no_worker_progress_is_an_orphan_attempt(
+    service: Service,
 ) -> None:
-    seed(owned, "exhausted", max_attempts=1)
-    claimed = claim(owned)
-    successor = restart(owned)
+    seed_run(
+        service.current, job_id="job-orphan", run_id="run-orphan", step_id="step-orphan"
+    )
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None
+    successor = service.restart()
 
-    report = recover_at_startup(scheduler_at(successor))
+    result = recover_runtime_startup(scheduler_at(successor))
 
-    assert classification_of(report, claimed.job_id) == CLASSIFICATION_ORPHAN_ATTEMPT
-    assert len(report.recoveries) == 1 and report.recoveries[0].requeued is False
-    assert job_row(successor, claimed.job_id)[0] == "failed"
+    assert classifications(result) == {"job-orphan": CLASSIFICATION_ORPHAN_ATTEMPT}
+    assert result.jobs[0].requeued is True
+    assert result.jobs[0].runtime_attempt_id == claim.runtime_attempt_id
     assert successor.connection.execute(
-        "SELECT run_status FROM omnivia_runtime_events WHERE run_id = ? "
-        "ORDER BY sequence DESC LIMIT 1",
-        (claimed.run_id,),
+        "SELECT state FROM omnivia_durable_jobs WHERE job_id = 'job-orphan'"
+    ).fetchone() == ("queued",)
+    assert successor.connection.execute(
+        "SELECT status FROM omnivia_runtime_attempt_outcomes WHERE attempt_id = ?",
+        (claim.runtime_attempt_id,),
     ).fetchone() == ("failed",)
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_mixed_waiting_and_orphan_jobs_are_settled_independently(
-    owned: m1.Owned,
-) -> None:
-    seed(owned, "mixed-a-waiting")
-    waiting_claim = claim(owned)
-    suspend(owned, waiting_claim, wait_id="wait-rt109-mixed")
-    seed(owned, "mixed-b-orphan")
-    orphan_claim = claim(owned)
-    seed(owned, "mixed-c-queued")
-    successor = restart(owned)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert {item.job_id: item.classification for item in report.classifications} == {
-        waiting_claim.job_id: CLASSIFICATION_DURABLE_OPEN_WAIT,
-        orphan_claim.job_id: CLASSIFICATION_ORPHAN_ATTEMPT,
-        "job-mixed-c-queued": CLASSIFICATION_NO_OPEN_ATTEMPT,
-    }
-    assert [adoption.job_id for adoption in report.adoptions] == [waiting_claim.job_id]
-    assert [recovery.job_id for recovery in report.recoveries] == [orphan_claim.job_id]
-
-    # The waiting job keeps its attempt; only the orphan's is failed.
     assert successor.connection.execute(
-        "SELECT attempt_id FROM omnivia_runtime_attempt_outcomes"
-    ).fetchall() == [(orphan_claim.runtime_attempt_id,)]
-    assert job_row(successor, waiting_claim.job_id) == (
+        "SELECT status FROM omnivia_runtime_run_step_states WHERE run_step_id = ? "
+        "ORDER BY state_sequence DESC LIMIT 1",
+        ("step-orphan",),
+    ).fetchone() == ("pending",)
+
+
+def test_a_partial_nonterminal_stream_is_still_an_orphan_attempt(
+    service: Service,
+) -> None:
+    seed_run(
+        service.current,
+        job_id="job-partial",
+        run_id="run-partial",
+        step_id="step-partial",
+    )
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None
+    append_run_event(
+        service.current.connection,
+        service.current.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=service.current.generation,
+        run_id="run-partial",
+        runtime_event_id="evt-partial-progress",
+        occurred_at_us=CLAIM_US + 100,
+        event_kind="worker_event_observed",
+        run_status="running",
+        run_step_id="step-partial",
+        message="a worker reported progress and then the service was lost",
+    )
+    successor = service.restart()
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {"job-partial": CLASSIFICATION_ORPHAN_ATTEMPT}
+    assert events_of(successor, "run-partial") == [
+        (0, "run_admitted", "admitted"),
+        (1, "attempt_started", "running"),
+        (2, "worker_event_observed", "running"),
+        (3, "attempt_interrupted", "running"),
+    ]
+
+
+def test_a_finished_run_is_terminal_history_and_is_not_touched(
+    service: Service,
+) -> None:
+    seed_run(
+        service.current, job_id="job-done", run_id="run-done", step_id="step-done"
+    )
+    scheduler = scheduler_at(service.current, CLAIM_US)
+    claim = scheduler.claim_next()
+    assert claim is not None
+    scheduler.complete(claim, result_kind="runtime_completion", result={"ok": True})
+    successor = service.restart()
+    before = state_of(successor)
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {"job-done": CLASSIFICATION_TERMINAL_HISTORY}
+    assert result.jobs[0].superseded is False
+    assert state_of(successor) == before
+
+
+def test_a_claim_held_at_this_generation_is_active_and_is_not_recovered(
+    service: Service,
+) -> None:
+    seed_run(
+        service.current, job_id="job-live", run_id="run-live", step_id="step-live"
+    )
+    successor = service.restart()
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None
+    before = state_of(successor)
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {"job-live": CLASSIFICATION_ACTIVE_CLAIM}
+    assert result.jobs[0].superseded is False
+    assert state_of(successor) == before
+
+
+def test_the_classification_vocabulary_is_closed(service: Service) -> None:
+    assert RUNTIME_JOB_CLASSIFICATIONS == frozenset(
+        {
+            "active_claim",
+            "durable_open_wait",
+            "orphan_attempt",
+            "no_open_attempt",
+            "terminal_history",
+            "contradictory_history",
+        }
+    )
+    successor = waiting_workspace(service)
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert {job.classification for job in result.jobs} <= RUNTIME_JOB_CLASSIFICATIONS
+    assert result.classified(CLASSIFICATION_DURABLE_OPEN_WAIT) == result.jobs
+    with pytest.raises(RuntimeSchedulingError, match="not a runtime recovery"):
+        result.classified("recovered_somehow")
+
+
+# --- adopting a durable open wait ------------------------------------------------
+
+
+def test_a_superseded_open_wait_rebinds_only_the_claim(service: Service) -> None:
+    successor = waiting_workspace(service)
+    before = read_run(successor.connection, workspace_id=WORKSPACE_ID, run_id="run-wait")
+    assert before is not None
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {"job-wait": CLASSIFICATION_DURABLE_OPEN_WAIT}
+    assert result.jobs[0].adopted is True
+    assert result.jobs[0].wait_id == "wait-0001"
+    assert successor.connection.execute(
+        "SELECT state, claimed_by_service_instance, fencing_generation "
+        "FROM omnivia_durable_jobs WHERE job_id = 'job-wait'"
+    ).fetchone() == (
         "claimed",
         successor.identity.service_instance_id,
         successor.generation,
     )
-    assert job_row(successor, "job-mixed-c-queued")[0] == "queued"
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
+    assert successor.connection.execute(
+        "SELECT attempt_number, state FROM omnivia_job_attempts WHERE job_id = ?",
+        ("job-wait",),
+    ).fetchall() == [(1, "running")]
+
+    after = read_run(successor.connection, workspace_id=WORKSPACE_ID, run_id="run-wait")
+    assert after is not None
+    assert after.status == "waiting"
+    assert after.waits == before.waits
+    assert after.steps == before.steps
+    assert events_of(successor, "run-wait") == [
+        (0, "run_admitted", "admitted"),
+        (1, "attempt_started", "running"),
+        (2, "wait_opened", "waiting"),
+        (3, "wait_adopted", "waiting"),
+    ]
+    adopted = successor.connection.execute(
+        "SELECT details_json FROM omnivia_runtime_events WHERE run_id = ? "
+        "ORDER BY sequence DESC LIMIT 1",
+        ("run-wait",),
+    ).fetchone()
+    assert adopted is not None
+    assert successor.identity.service_instance_id in str(adopted[0])
+    assert "wait-0001" in str(adopted[0])
 
 
-def test_contradictory_history_is_fail_closed_and_mutates_nothing(
-    owned: m1.Owned,
+def test_resolving_the_adopted_wait_resumes_the_same_step_and_attempt(
+    service: Service,
 ) -> None:
-    seed(owned, "contradictory")
-    claimed = claim(owned)
-    # A running runtime attempt whose durable job says it was never claimed.
-    with m18.guarded(owned):
-        owned.connection.execute(
-            "UPDATE omnivia_durable_jobs SET state = 'queued' WHERE job_id = ?",
-            (claimed.job_id,),
-        )
-    successor = restart(owned)
-    before = ledger(successor)
+    successor = waiting_workspace(service)
+    before = read_run(successor.connection, workspace_id=WORKSPACE_ID, run_id="run-wait")
+    assert before is not None
+    attempts = before.steps[0].attempts
+    recover_runtime_startup(scheduler_at(successor))
 
-    report = recover_at_startup(scheduler_at(successor))
-
-    item = next(
-        candidate
-        for candidate in report.classifications
-        if candidate.job_id == claimed.job_id
+    outcome = resolve_wait(
+        successor, run_id="run-wait", wait_id="wait-0001", sequence=3
     )
-    assert item.classification == CLASSIFICATION_CONTRADICTORY_HISTORY
-    assert item.runtime_attempt_id == claimed.runtime_attempt_id
-    assert report.adoptions == () and report.recoveries == ()
-    assert ledger(successor) == before
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
+
+    assert outcome.result["status"] == "resolved"
+    resumed = read_run(
+        successor.connection, workspace_id=WORKSPACE_ID, run_id="run-wait"
+    )
+    assert resumed is not None
+    assert resumed.status == "running"
+    assert resumed.steps[0].run_step_id == "step-wait"
+    assert resumed.steps[0].status == "running"
+    assert [attempt.attempt_id for attempt in resumed.steps[0].attempts] == [
+        attempt.attempt_id for attempt in attempts
+    ]
+    assert resumed.steps[0].attempts[-1].status == "running"
 
 
-def test_an_uncertain_run_is_refused_rather_than_recovered_as_an_orphan(
-    owned: m1.Owned,
+def test_an_open_wait_is_never_handed_to_the_stranded_job_recovery(
+    service: Service, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stale claim shaped exactly like an orphan, except the run says `uncertain`.
-
-    One running step, one running attempt, no wait: the only difference from
-    `test_crash_after_the_claim_before_worker_start_recovers_the_orphan` is the run's
-    own status, and that difference alone has to stop the pass. `uncertain` is an open
-    question about work nobody can account for, so failing the attempt and requeueing
-    the job would settle a question the ledger has not answered.
-    """
-    seed(owned, "uncertain")
-    claimed = claim(owned)
-    append_run_event(
-        owned.connection,
-        owned.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=owned.generation,
-        run_id=claimed.run_id,
-        runtime_event_id=f"evt-{claimed.run_id}-uncertain",
-        occurred_at_us=BASE_US + 4_000,
-        event_kind="run_marked_uncertain",
-        run_status="uncertain",
-        run_step_id=claimed.run_step_id,
-        message="the run's outcome was unaccounted for when the process stopped",
+    """The waiting job is a stale claim, and the all-stale pass would have taken it."""
+    successor = waiting_workspace(service)
+    seed_run(
+        successor, job_id="job-also-orphan", run_id="run-also", step_id="step-also"
     )
-    successor = restart(owned)
-    before = ledger_rows(successor)
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None and claim.job_id == "job-also-orphan"
+    second = service.restart()
+    allowlists: list[Any] = []
+    recover_locked = RuntimeScheduler._recover_stranded_locked
 
-    report = recover_at_startup(scheduler_at(successor))
+    def record(scheduler: RuntimeScheduler, *, job_ids: Any = None) -> Any:
+        allowlists.append(job_ids)
+        return recover_locked(scheduler, job_ids=job_ids)
 
-    item = next(
-        candidate
-        for candidate in report.classifications
-        if candidate.job_id == claimed.job_id
-    )
-    assert item.classification == CLASSIFICATION_CONTRADICTORY_HISTORY
-    assert item.runtime_attempt_id == claimed.runtime_attempt_id
-    assert report.adoptions == () and report.recoveries == ()
+    monkeypatch.setattr(RuntimeScheduler, "_recover_stranded_locked", record)
 
-    # Nothing was settled: no outcome for the attempt, no requeue, no event appended.
-    assert ledger_rows(successor) == before
-    snapshot = read_run(
-        successor.connection, workspace_id=WORKSPACE_ID, run_id=claimed.run_id
-    )
-    assert snapshot is not None
-    assert snapshot.status == "uncertain"
-    assert snapshot.steps[0].status == "running"
-    assert snapshot.steps[0].attempts[-1].status == "running"
-    assert snapshot.events[-1].event_kind == "run_marked_uncertain"
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
+    result = recover_runtime_startup(scheduler_at(second))
+
+    assert allowlists == [("job-also-orphan",)]
+    assert classifications(result) == {
+        "job-wait": CLASSIFICATION_DURABLE_OPEN_WAIT,
+        "job-also-orphan": CLASSIFICATION_ORPHAN_ATTEMPT,
+    }
+    assert second.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_runtime_attempt_outcomes WHERE attempt_id IN "
+        "(SELECT attempt_id FROM omnivia_runtime_attempts WHERE run_id = 'run-wait')"
+    ).fetchone() == (0,)
+    assert second.connection.execute(
+        "SELECT status FROM omnivia_runtime_run_step_states WHERE run_step_id = ? "
+        "ORDER BY state_sequence DESC LIMIT 1",
+        ("step-wait",),
+    ).fetchone() == ("waiting",)
 
 
-def test_a_claim_from_a_later_generation_is_refused_not_read_as_active(
-    owned: m1.Owned,
+# --- the bounded recovery this pass reuses ---------------------------------------
+
+
+def test_attempt_exhaustion_fails_the_run_instead_of_requeueing(
+    service: Service,
 ) -> None:
-    """Only equality is a live claim; a generation beyond this pass's is a refusal.
-
-    Reading `>` as `active_claim` would report a claim this pass has no standing to
-    speak for as the healthy one, and would hide the drift behind a benign class.
-    """
-    seed(owned, "future-generation")
-    claimed = claim(owned)
-    successor = restart(owned)
-    with m18.guarded(successor):
-        successor.connection.execute(
-            "UPDATE omnivia_durable_jobs SET fencing_generation = ? WHERE job_id = ?",
-            (successor.generation + 5, claimed.job_id),
-        )
-    before = ledger_rows(successor)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert (
-        classification_of(report, claimed.job_id) == CLASSIFICATION_CONTRADICTORY_HISTORY
+    seed_run(
+        service.current,
+        job_id="job-last",
+        run_id="run-last",
+        step_id="step-last",
+        max_attempts=1,
     )
-    assert report.adoptions == () and report.recoveries == ()
-    assert ledger_rows(successor) == before
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None
+    successor = service.restart()
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {"job-last": CLASSIFICATION_ORPHAN_ATTEMPT}
+    assert result.jobs[0].requeued is False
+    assert successor.connection.execute(
+        "SELECT state FROM omnivia_durable_jobs WHERE job_id = 'job-last'"
+    ).fetchone() == ("failed",)
+    assert successor.connection.execute(
+        "SELECT run_status FROM omnivia_runtime_events WHERE run_id = 'run-last' "
+        "ORDER BY sequence DESC LIMIT 1"
+    ).fetchone() == ("failed",)
 
 
-def test_repeated_startup_recovery_changes_nothing_the_second_time(
-    owned: m1.Owned,
-) -> None:
-    seed(owned, "repeat-waiting")
-    waiting_claim = claim(owned)
-    suspend(owned, waiting_claim, wait_id="wait-rt109-repeat")
-    seed(owned, "repeat-orphan")
-    orphan_claim = claim(owned)
-    successor = restart(owned)
-
-    first = recover_at_startup(scheduler_at(successor))
-    settled = ledger(successor)
-
-    second = recover_at_startup(scheduler_at(successor, now_us=RECOVER_US + 5_000))
-
-    assert len(first.adoptions) == 1 and len(first.recoveries) == 1
-    assert second.adoptions == () and second.recoveries == ()
-    assert ledger(successor) == settled
-    assert classification_of(second, waiting_claim.job_id) == (
-        CLASSIFICATION_ACTIVE_CLAIM
+def test_an_empty_or_foreign_allowlist_recovers_nothing(service: Service) -> None:
+    seed_run(
+        service.current, job_id="job-listed", run_id="run-listed", step_id="step-listed"
     )
-    assert classification_of(second, orphan_claim.job_id) == (
-        CLASSIFICATION_NO_OPEN_ATTEMPT
-    )
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_a_superseded_owner_cannot_run_startup_recovery(owned: m1.Owned) -> None:
-    seed(owned, "stale-fence")
-    claim(owned)
-    stale = scheduler_at(owned)
-    successor = restart(owned)
-    # The stale scheduler still holds the same file handle only because the test
-    # keeps it; its generation is the one that was superseded.
-    stale.connection = successor.connection
-    before = ledger(successor)
-
-    with pytest.raises(StaleGeneration):
-        recover_at_startup(stale)
-
-    assert ledger(successor) == before
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
-
-
-def test_the_recovery_allowlist_ignores_identifiers_this_workspace_does_not_hold(
-    owned: m1.Owned,
-) -> None:
-    """A foreign or empty allowlist recovers nothing rather than everything."""
-    seed(owned, "allowlist")
-    claimed = claim(owned)
-    successor = restart(owned)
-    stale_claim = job_row(successor, claimed.job_id)
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None
+    successor = service.restart()
     scheduler = scheduler_at(successor)
+    before = state_of(successor)
 
     assert scheduler.recover_stranded(job_ids=()) == ()
-    assert scheduler.recover_stranded(job_ids=("job-of-another-workspace",)) == ()
-    assert job_row(successor, claimed.job_id) == stale_claim
+    assert scheduler.recover_stranded(job_ids=("job-somewhere-else",)) == ()
+    assert state_of(successor) == before
 
-    assert len(scheduler.recover_stranded(job_ids=(claimed.job_id,))) == 1
-    assert job_row(successor, claimed.job_id)[0] == "queued"
-    assert_nothing_succeeded(successor)
-    successor.connection.close()
+    recovered = scheduler.recover_stranded(job_ids=("job-listed",))
+
+    assert [job.job_id for job in recovered] == ["job-listed"]
+    assert scheduler.recover_stranded() == ()
 
 
-def test_recovery_preserves_replay_and_live_projection_equivalence(
-    owned: m1.Owned,
+def test_mixed_waiting_orphaned_and_queued_jobs_settle_in_one_pass(
+    service: Service,
 ) -> None:
-    seed(owned, "projection-waiting")
-    waiting_claim = claim(owned)
-    suspend(owned, waiting_claim, wait_id="wait-rt109-projection")
-    seed(owned, "projection-orphan")
-    claim(owned)
-    successor = restart(owned)
+    successor = waiting_workspace(service)
+    seed_run(successor, job_id="job-mix-orphan", run_id="run-mix-o", step_id="step-o")
+    seed_run(successor, job_id="job-mix-queued", run_id="run-mix-q", step_id="step-q")
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None and claim.job_id == "job-mix-orphan"
+    second = service.restart()
 
-    recover_at_startup(scheduler_at(successor))
+    result = recover_runtime_startup(scheduler_at(second))
 
-    live = runtime_run_summary_projection_digest(
-        successor.connection, workspace_id=WORKSPACE_ID
+    assert classifications(result) == {
+        "job-wait": CLASSIFICATION_DURABLE_OPEN_WAIT,
+        "job-mix-orphan": CLASSIFICATION_ORPHAN_ATTEMPT,
+        "job-mix-queued": CLASSIFICATION_NO_OPEN_ATTEMPT,
+    }
+    assert second.connection.execute(
+        "SELECT job_id, state FROM omnivia_durable_jobs ORDER BY job_id"
+    ).fetchall() == [
+        ("job-mix-orphan", "queued"),
+        ("job-mix-queued", "queued"),
+        ("job-wait", "claimed"),
+    ]
+
+
+# --- what the pass refuses to do -------------------------------------------------
+
+
+def test_a_contradictory_history_is_left_exactly_as_it_is(service: Service) -> None:
+    seed_run(
+        service.current,
+        job_id="job-contradictory",
+        run_id="run-contradictory",
+        step_id="step-contradictory",
+        state="claimed",
     )
-    replayed = rebuild_runtime_run_summaries(
+    seed_run(
+        service.current, job_id="job-sound", run_id="run-sound", step_id="step-sound"
+    )
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None and claim.job_id == "job-sound"
+    successor = service.restart()
+    untouched = "SELECT * FROM omnivia_durable_jobs WHERE job_id = 'job-contradictory'"
+    before = successor.connection.execute(untouched).fetchone()
+
+    result = recover_runtime_startup(scheduler_at(successor))
+
+    assert classifications(result) == {
+        "job-contradictory": CLASSIFICATION_CONTRADICTORY_HISTORY,
+        "job-sound": CLASSIFICATION_ORPHAN_ATTEMPT,
+    }
+    contradictory = result.classified(CLASSIFICATION_CONTRADICTORY_HISTORY)[0]
+    assert contradictory.detail is not None
+    assert contradictory.adopted is False and contradictory.requeued is None
+    assert successor.connection.execute(untouched).fetchone() == before
+    assert events_of(successor, "run-contradictory") == [
+        (0, "run_admitted", "admitted")
+    ]
+
+
+def test_a_superseded_owner_recovers_nothing(service: Service) -> None:
+    seed_run(
+        service.current, job_id="job-fenced", run_id="run-fenced", step_id="step-fenced"
+    )
+    claim = scheduler_at(service.current, CLAIM_US).claim_next()
+    assert claim is not None
+    superseded = service.current.identity
+    superseded_generation = service.current.generation
+    successor = service.restart()
+    before = state_of(successor)
+    stale = RuntimeScheduler(
         successor.connection,
-        successor.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=successor.generation,
+        superseded,
+        WORKSPACE_ID,
+        superseded_generation,
+        clock_at(RECOVER_US),
     )
-    assert replayed.build_digest == live
+
+    with pytest.raises(StaleGeneration):
+        recover_runtime_startup(stale)
+
+    assert state_of(successor) == before
+
+
+def test_a_failure_anywhere_in_the_pass_rolls_the_whole_pass_back(
+    service: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adoption has already written by the time orphan recovery runs, and still rolls back."""
+    successor = waiting_workspace(service)
+    seed_run(successor, job_id="job-atomic", run_id="run-atomic", step_id="step-atomic")
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None
+    second = service.restart()
+    before = state_of(second)
+
+    def fail(_scheduler: RuntimeScheduler, *, job_ids: Any = None) -> Any:
+        raise RuntimeError("injected orphan recovery failure")
+
+    monkeypatch.setattr(RuntimeScheduler, "_recover_stranded_locked", fail)
+
+    with pytest.raises(RuntimeError, match="injected orphan recovery failure"):
+        recover_runtime_startup(scheduler_at(second))
+
+    assert state_of(second) == before
+
+
+def test_no_startup_path_manufactures_success_from_an_absent_worker(
+    service: Service,
+) -> None:
+    """A worker session this process never held is not evidence that a turn finished."""
+    successor = waiting_workspace(service)
+    seed_run(successor, job_id="job-absent", run_id="run-absent", step_id="step-absent")
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None
+    second = service.restart()
+    adapter = WorkerAdapter()
+    lineage = HostLineage(
+        workspace_id=WORKSPACE_ID,
+        run_id=claim.run_id,
+        run_step_id=claim.run_step_id,
+        attempt_id=claim.runtime_attempt_id,
+    )
+    assert adapter.session_count == 0  # nothing in memory knows this attempt
+
+    recover_runtime_startup(scheduler_at(second))
+
+    assert adapter.session_count == 0 and lineage.run_id == claim.run_id
+    assert second.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_runtime_attempt_outcomes WHERE status = 'succeeded'"
+    ).fetchone() == (0,)
+    assert second.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_runtime_events WHERE run_status = 'succeeded'"
+    ).fetchone() == (0,)
+    assert second.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_durable_jobs WHERE state = 'succeeded'"
+    ).fetchone() == (0,)
+    assert second.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_job_attempts WHERE state = 'succeeded'"
+    ).fetchone() == (0,)
+    assert second.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_job_terminal_observations "
+        "WHERE terminal_state = 'succeeded'"
+    ).fetchone() == (0,)
+
+
+# --- repeating the pass, and the projection it leaves behind ----------------------
+
+
+def test_a_second_pass_reclassifies_and_writes_nothing(service: Service) -> None:
+    successor = waiting_workspace(service)
+    seed_run(successor, job_id="job-again", run_id="run-again", step_id="step-again")
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None
+    second = service.restart()
+    scheduler = scheduler_at(second)
+
+    first_result = recover_runtime_startup(scheduler)
+    settled = state_of(second)
+    second_result = recover_runtime_startup(scheduler)
+
+    assert state_of(second) == settled
+    assert classifications(first_result) == {
+        "job-wait": CLASSIFICATION_DURABLE_OPEN_WAIT,
+        "job-again": CLASSIFICATION_ORPHAN_ATTEMPT,
+    }
+    assert classifications(second_result) == {
+        "job-wait": CLASSIFICATION_DURABLE_OPEN_WAIT,
+        "job-again": CLASSIFICATION_NO_OPEN_ATTEMPT,
+    }
+    assert [job.adopted for job in second_result.jobs] == [False, False]
+    assert [job.requeued for job in second_result.jobs] == [None, None]
+
+
+def test_the_pass_preserves_live_and_rebuilt_projection_equivalence(
+    service: Service,
+) -> None:
+    successor = waiting_workspace(service)
+    seed_run(successor, job_id="job-proj", run_id="run-proj", step_id="step-proj")
+    claim = scheduler_at(successor, CLAIM_US).claim_next()
+    assert claim is not None
+    second = service.restart()
+
+    recover_runtime_startup(scheduler_at(second))
+    live = runtime_run_summary_projection_digest(
+        second.connection, workspace_id=WORKSPACE_ID
+    )
+    rebuild = rebuild_runtime_run_summaries(
+        second.connection,
+        second.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=second.generation,
+    )
+
+    assert rebuild.record_count == 2
+    assert rebuild.build_digest == live
     assert (
         runtime_run_summary_projection_digest(
-            successor.connection, workspace_id=WORKSPACE_ID
+            second.connection, workspace_id=WORKSPACE_ID
         )
         == live
     )
-    successor.connection.close()
-
-
-def test_the_classification_vocabulary_is_closed(owned: m1.Owned) -> None:
-    seed(owned, "vocabulary")
-    claim(owned)
-    successor = restart(owned)
-
-    report = recover_at_startup(scheduler_at(successor))
-
-    assert report.classifications
-    assert {
-        item.classification for item in report.classifications
-    } <= RECOVERY_CLASSIFICATIONS
-    assert report.with_classification(CLASSIFICATION_ORPHAN_ATTEMPT) == tuple(
-        item
-        for item in report.classifications
-        if item.classification == CLASSIFICATION_ORPHAN_ATTEMPT
-    )
-    successor.connection.close()

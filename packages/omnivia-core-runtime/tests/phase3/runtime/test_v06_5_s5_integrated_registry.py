@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
+from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service.application import (
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
@@ -42,7 +43,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "4725374cf11bf5d444ed249de4c93903a98b800b412db995ea1485dcf1269c07"
+CORPUS_SHA256 = "1f5050e1c4a1b26faf4432de2e5b2e6ba336efbabbda7df1296f65523475a532"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -66,7 +67,13 @@ def surface(tmp_path: Path) -> Iterator[ProductionApplicationSurface]:
         ),
         owned,
     )
-    started = SimpleNamespace(**vars(owned), workspace_id=m1.WORKSPACE_ID)
+    # `clock` because a real ServiceRunner always carries one -- it is set in the
+    # constructor and cannot be absent -- and the production surface now builds the
+    # Chat generation executor from it. A double missing it would only prove that the
+    # double is incomplete.
+    started = SimpleNamespace(
+        **vars(owned), workspace_id=m1.WORKSPACE_ID, clock=SystemClock()
+    )
     installation = build_installation_application_dispatcher(
         service=_InstallationService(),  # type: ignore[arg-type]
         principal_id=principal,
@@ -89,7 +96,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 20
+    assert len(catalogue) == len(set(catalogue)) == 27
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -103,6 +110,7 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
     reads = routes["workspace.inspect"]
     memory = routes["memory.create"]
     jobs = routes["job.get"]
+    workflow = routes["workflow.start"]
     with pytest.raises(ValueError, match="already registered"):
         compose_production_application_surface(
             installation=installation,
@@ -110,6 +118,8 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
             memory=memory,
             jobs=jobs,
             governance=memory,
+            chat=reads,
+            workflow=workflow,
             probe=surface.probe,
         )
 
@@ -125,7 +135,7 @@ def test_v06_5_s5_every_handler_is_production_callable(
         assert handler.__module__.startswith(
             "omnivia_core_runtime.service.handlers."
         ), operation
-    assert len(identities) == 20
+    assert len(identities) == 27
     assert not any(
         token in identity.lower()
         for identity in identities.values()
@@ -190,7 +200,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 73
+    assert len(corpus["cases"]) == 86
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -210,7 +220,45 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 219
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 258
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )
+
+
+def test_the_production_surface_installs_the_chat_generation_executor(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """The composed surface must arrive with an executor, not merely accept one.
+
+    `_build_production_application_surface` declared an `execute_chat_generation`
+    parameter and passed it through to the chat dispatcher, so the seam read as wired
+    at every point a reader would check -- and nothing supplied it. The real service
+    composed with `None`, and every `SubmitMessage` refused with
+    `dependency_unavailable` before mutating anything, while Core's own tests passed
+    because they construct an executor directly.
+
+    This asserts the CALLER, which is the half that was missing. It reaches the handler
+    the registry actually routes `chat.command` to, rather than re-testing the factory
+    in isolation: a factory that works and is never called is the bug being fixed here.
+    """
+    handler = surface.registry.get("chat.command")
+    handlers = getattr(handler, "__self__", None)
+    assert handlers is not None, "chat.command should route to a bound handler method"
+    assert handlers.execute_generation is not None
+
+
+def test_the_production_surface_routes_chat_snapshot_to_the_same_bound_chat_handlers(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """`chat.snapshot` is a read: it shares the Chat family's bound handlers object
+    with `chat.command` and `chat.events`, not a second, separately-wired instance."""
+    from omnivia_core_runtime.service.handlers.chat import ChatHandlers
+
+    command_handler = surface.registry.get("chat.command")
+    snapshot_handler = surface.registry.get("chat.snapshot")
+    assert snapshot_handler is not None
+    handlers = getattr(snapshot_handler, "__self__", None)
+    assert isinstance(handlers, ChatHandlers)
+    assert getattr(snapshot_handler, "__func__", None) is ChatHandlers.chat_snapshot
+    assert handlers is getattr(command_handler, "__self__", None)

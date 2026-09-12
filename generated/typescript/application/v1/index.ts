@@ -17,6 +17,7 @@
 //   contracts/application/v1/schemas/context-pack.schema.json
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 //   contracts/application/v1/schemas/runtime.schema.json
+//   contracts/application/v1/schemas/chat.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -1799,6 +1800,189 @@ export function isWorktreeLeaseLifecycle(value: unknown): value is WorktreeLease
 }
 
 /**
+ * Where a Workflow Run stands, as a projection of the canonical `Run` it is bound to. Eight
+ * states and no ninth durable column: `created` is bound with no step opened, `queued` is bound
+ * with its steps opened, and the remaining six are `RunStatus` read in Workflow terms --
+ * `partially_completed` reads as `failed`, because a run that reached the end without succeeding
+ * is not a success. `indeterminate` is deliberately not terminal, exactly as `uncertain` is not:
+ * an unreconciled run is an open question, and calling it finished would licence the blind retry
+ * the uncertainty exists to forbid. Closed at the schema and open on the wire, with the same
+ * fail-safe reading as `RunStatus`.
+ */
+export type WorkflowRunState = string;
+
+/**
+ * The closed `WorkflowRunState` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_RUN_STATE_VALUES = [
+  "created",
+  "queued",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "indeterminate",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowRunState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowRunState(value: unknown): value is WorkflowRunState {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_RUN_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The reference route one materialised plan step resolves to. The first four are exactly the
+ * execution classes a profile runs; `CHILD_WORKFLOW` is the one route no execution class names,
+ * because delegating to another Workflow is not a shape of work a profile itself runs. Closed at
+ * the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowStepRoute = string;
+
+/**
+ * The closed `WorkflowStepRoute` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_STEP_ROUTE_VALUES = [
+  "AGENT",
+  "DETERMINISTIC",
+  "EFFECT",
+  "WAIT",
+  "CHILD_WORKFLOW",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowStepRoute`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowStepRoute(value: unknown): value is WorkflowStepRoute {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_STEP_ROUTE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Which control one `workflow.control` request asks for: `cancel` requests the Run stop through
+ * the durable stop ledger, and `resolve_wait` resolves one durable `Wait` through the runtime
+ * wait authority. An action outside this vocabulary is refused explicitly rather than answered
+ * with a fabricated success. Closed at the schema and open on the wire, with the same fail-safe
+ * reading as `RunStatus`.
+ */
+export type WorkflowControlAction = string;
+
+/**
+ * The closed `WorkflowControlAction` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_CONTROL_ACTION_VALUES = [
+  "cancel",
+  "resolve_wait",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowControlAction`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowControlAction(value: unknown): value is WorkflowControlAction {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_CONTROL_ACTION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What one `workflow.control` call did. `cancellation_accepted` appended the cancellation the
+ * outcome names; `cancellation_ignored_already_terminal` found a finished Run and left its event
+ * stream untouched, which is a successful idempotent control result rather than a `conflict`;
+ * `wait_resolved` closed one durable `Wait`. Closed at the schema and open on the wire, with the
+ * same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowControlDisposition = string;
+
+/**
+ * The closed `WorkflowControlDisposition` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_CONTROL_DISPOSITION_VALUES = [
+  "cancellation_accepted",
+  "cancellation_ignored_already_terminal",
+  "wait_resolved",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowControlDisposition`. The generated decoders do
+ * not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowControlDisposition(value: unknown): value is WorkflowControlDisposition {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_CONTROL_DISPOSITION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The single evidence-gated completion decision recorded for one Workflow Run. Closed at the
+ * schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowCompletionOutcome = string;
+
+/**
+ * The closed `WorkflowCompletionOutcome` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_COMPLETION_OUTCOME_VALUES = [
+  "SUCCEEDED",
+  "FAILED",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowCompletionOutcome`. The generated decoders do
+ * not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowCompletionOutcome(value: unknown): value is WorkflowCompletionOutcome {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_COMPLETION_OUTCOME_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The one typed reason a Workflow Run may not resume: `RT_JOURNAL_QUARANTINED` means its journal
+ * is held on an unanswered integrity finding, and `RT_JOURNAL_RETENTION_BOUNDARY` means a
+ * recorded boundary removed history the Run cannot resume without. Neither is answered by
+ * skipping, folding or reconstructing the history that could not be verified. Closed at the
+ * schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowResumeDiagnostic = string;
+
+/**
+ * The closed `WorkflowResumeDiagnostic` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_RESUME_DIAGNOSTIC_VALUES = [
+  "RT_JOURNAL_QUARANTINED",
+  "RT_JOURNAL_RETENTION_BOUNDARY",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowResumeDiagnostic`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowResumeDiagnostic(value: unknown): value is WorkflowResumeDiagnostic {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_RESUME_DIAGNOSTIC_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -2180,6 +2364,123 @@ export interface WorkspaceCreateInput {
  * identifier.
  */
 export interface WorkspaceInspectInput {
+}
+
+/**
+ * The conversation a chat command changes, and the revision the caller believes it is at.
+ * Optimistic concurrency for the conversation aggregate, stated as both counters rather than
+ * one: a conversation's `graph_revision` and its append position move independently, so
+ * expecting only one of them admits a command whose view is stale in exactly the half it did not
+ * state. A mismatch is a `conflict` the caller re-reads and re-decides against; it is not a
+ * `mutation_precondition_failed`, which names a record version the caller refreshes and retries.
+ */
+export interface ChatConversationExpectation {
+  /**
+   * Identifier of the conversation this command expects to change.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The conversation graph's optimistic revision token as the caller last observed it.
+   */
+  readonly graph_revision: number;
+  /**
+   * The conversation's latest append position as the caller last observed it.
+   */
+  readonly latest_conversation_sequence: number;
+}
+
+/**
+ * One durable generation-lifecycle event, as the workspace recorded it. Provider content is
+ * never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
+ * persisted, and no request body, response body, header, URL or credential has a path into it.
+ */
+export interface ChatGenerationEvent {
+  /**
+   * Identifier of this durable event.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The durable event type, such as `chat.generation.started`. Open by design so a compatible
+   * minor release can add lifecycle vocabulary.
+   */
+  readonly event_type: OpenCode;
+  /**
+   * This event's position in its generation's contiguous history, counting from one.
+   */
+  readonly generation_event_sequence: number;
+  /**
+   * The server-issued cursor naming this position. Round-tripped verbatim as a later request's
+   * `after_cursor`; never parsed.
+   */
+  readonly cursor: OpaqueToken;
+  /**
+   * When the workspace recorded this event.
+   */
+  readonly occurred_at: Timestamp;
+  /**
+   * The event's sanitised durable payload.
+   */
+  readonly payload?: JsonObject;
+}
+
+/**
+ * Input for `chat.events`: replay one generation's durable event history after a cursor. A
+ * request carrying no `after_cursor` replays the whole history. Transport-level streaming is out
+ * of scope: this is a replay of what was recorded, not a subscription. Workspace-scoped through
+ * the request envelope's selected workspace, so this payload never carries a second, independent
+ * workspace identifier.
+ */
+export interface ChatEventsInput {
+  /**
+   * Identifier of the generation whose events to replay.
+   */
+  readonly generation_job_id: Identifier;
+  /**
+   * Replay strictly after this position. Absent replays from the beginning.
+   */
+  readonly after_cursor?: OpaqueToken;
+}
+
+/**
+ * Input for `chat.snapshot`: the authoritative selected-path snapshot of one conversation, the
+ * answer a caller takes when `chat.events` tells it a cursor can no longer be continued.
+ * `snapshot_query` is the Chat Contract v1 `ConversationSnapshotQuery` document, carried
+ * verbatim and opaque to this envelope, for the same reason `chat.command` carries its command
+ * that way -- Chat's snapshot shape is already frozen in `contracts/chat/v1`, and restating it
+ * here would create a second, drifting copy. `conversation_id` is the addressed conversation
+ * stated natively, so authorization and audit read one identifier rather than parsing a document
+ * this boundary does not validate. Workspace-scoped through the request envelope's selected
+ * workspace, so this payload never carries a second, independent workspace identifier.
+ */
+export interface ChatSnapshotInput {
+  /**
+   * Identifier of the conversation to snapshot. Must be the conversation `snapshot_query`
+   * names.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The Chat Contract v1 `ConversationSnapshotQuery` document, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly snapshot_query: JsonObject;
+}
+
+/**
+ * Result of `chat.snapshot`: the Chat Contract v1 `ConversationSnapshotResult` document the
+ * query produced -- conversation, resolved active branch path and actor view state -- carried
+ * opaquely for the same reason the request is, and echoed with the conversation it answers. A
+ * snapshot is a complete authoritative read at one revision, not a continuation, so there is no
+ * cursor to honour and no resnapshot branch to signal.
+ */
+export interface ChatSnapshotResult {
+  /**
+   * Identifier of the conversation this snapshot answers. Echoes the request.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The Chat Contract v1 `ConversationSnapshotResult` document, carried verbatim.
+   */
+  readonly snapshot: JsonObject;
 }
 
 /**
@@ -2986,8 +3287,10 @@ export interface OperationJobMetadata {
    * Reference to the JSON Schema governing `JobTerminalSuccess.result` for the job this
    * operation starts. This is what makes terminal success typed rather than opaque:
    * `result_kind` names the shape and this reference resolves it. Present exactly when
-   * `completion_mode` entails a durable job: in the v1 catalogue that is `import.start` alone,
-   * bound to `ImportCompletionResult`. A synchronous operation omits it, along with
+   * `completion_mode` entails a durable job: in the v1 catalogue that is `import.start`, bound
+   * to `ImportCompletionResult`, and `workflow.start`, bound to `WorkflowCompletion` -- the
+   * same evidence-gated decision the Run itself publishes, so the job's terminal success and
+   * its Run cannot state two different endings. A synchronous operation omits it, along with
    * `job_kind`.
    */
   readonly terminal_result_schema_ref?: SchemaReference;
@@ -3850,6 +4153,186 @@ export interface ResolveWait {
 }
 
 /**
+ * One step of a sealed Workflow plan, exactly as it was materialised. `sequence_index` is the
+ * materialised order, which is derived from the declared dependencies rather than from the
+ * authoring order, and both digests are content addresses: `step_definition_digest` names the
+ * authored step this materialises, `materialised_step_digest` names this step itself.
+ */
+export interface WorkflowPlanStep {
+  /**
+   * Stable identifier of this step within its plan.
+   */
+  readonly step_id: Identifier;
+  /**
+   * The Component this step executes.
+   */
+  readonly component_id: Identifier;
+  /**
+   * The released version of that Component.
+   */
+  readonly component_version: ReleaseVersion;
+  /**
+   * The reference route this step resolves to.
+   */
+  readonly route: WorkflowStepRoute;
+  /**
+   * This step's position in the materialised order.
+   */
+  readonly sequence_index: number;
+  /**
+   * Content address of the authored step this materialises.
+   */
+  readonly step_definition_digest: ContentChecksum;
+  /**
+   * Content address of this materialised step.
+   */
+  readonly materialised_step_digest: ContentChecksum;
+}
+
+/**
+ * One durable, replay-safe record that a plan step was reached. Observations are what make a
+ * Workflow Run report an execution rather than a plan: a step that carries none has not been
+ * reached, and a second observation contradicting the one recorded is refused rather than
+ * applied.
+ */
+export interface WorkflowStepObservation {
+  /**
+   * The step that was reached.
+   */
+  readonly step_id: Identifier;
+  /**
+   * The route it was reached on.
+   */
+  readonly route: WorkflowStepRoute;
+  /**
+   * The materialised position it was reached at.
+   */
+  readonly sequence_index: number;
+  /**
+   * When the observation was recorded.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * The single evidence-gated completion decision for one Workflow Run. Present only once a
+ * decision has actually been recorded; a Run still running carries none rather than a
+ * provisional one.
+ */
+export interface WorkflowCompletion {
+  /**
+   * What was decided.
+   */
+  readonly outcome: WorkflowCompletionOutcome;
+  /**
+   * When it was decided.
+   */
+  readonly decided_at: Timestamp;
+  /**
+   * The audit event this decision is attributable to.
+   */
+  readonly audit_reference: AuditReference;
+}
+
+/**
+ * One verified entry of a Workflow Run's hash-chained runtime journal. The `event` is the public
+ * `RuntimeJournalEvent` carried verbatim, and `event_digest` is the address of exactly the
+ * canonical bytes it was stored as. Entries are returned in contiguous sequence order from zero
+ * or not at all: a chain that could not be recomputed whole is refused rather than returned with
+ * its gap silently closed.
+ */
+export interface WorkflowJournalEntry {
+  /**
+   * This entry's position in the Run's journal.
+   */
+  readonly sequence: number;
+  /**
+   * The transition bundle this entry was recorded with.
+   */
+  readonly bundle_id: Identifier;
+  /**
+   * The `RuntimeJournalEvent`, carried verbatim.
+   */
+  readonly event: JsonObject;
+  /**
+   * Content address of the canonical event bytes.
+   */
+  readonly event_digest: ContentChecksum;
+}
+
+/**
+ * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
+ * through the request envelope's selected workspace, so this payload never carries a second,
+ * independent workspace identifier. There is no definition, plan, binding or logical-key member.
+ * A caller that could state the material it runs against could state material nobody released,
+ * so the plan is sealed and the binding is resolved server-side from the exact release this
+ * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
+ * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
+ */
+export interface WorkflowStartInput {
+  /**
+   * The Workflow to run.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The released version of it to run.
+   */
+  readonly workflow_version: ReleaseVersion;
+}
+
+/**
+ * Input for `workflow.inspect`. Names one Workflow Run. Workspace-scoped through the request
+ * envelope's selected workspace, so a Run of another workspace is invisible rather than merely
+ * unlikely to be asked for.
+ */
+export interface WorkflowInspectInput {
+  /**
+   * The Workflow Run to read.
+   */
+  readonly run_id: Identifier;
+}
+
+/**
+ * Input for `workflow.control`. Names one Workflow Run and one control to apply to it. `wait_id`
+ * and `resolution` are required by `resolve_wait` and forbidden by `cancel`; `reason` is
+ * recorded on the control's own outcome and is never an authorization input. Workspace-scoped
+ * through the request envelope's selected workspace.
+ */
+export interface WorkflowControlInput {
+  /**
+   * The Workflow Run to control.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Which control to apply.
+   */
+  readonly action: WorkflowControlAction;
+  /**
+   * Open code naming why the caller is asking, such as `operator.cancelled`.
+   */
+  readonly reason?: OpenCode;
+  /**
+   * The durable `Wait` to resolve. Required by `resolve_wait`.
+   */
+  readonly wait_id?: Identifier;
+  /**
+   * How to resolve that wait, paired to its kind. Required by `resolve_wait`.
+   */
+  readonly resolution?: WaitResolution;
+}
+
+/**
+ * Input for `workflow.review`. Names one Workflow Run. Workspace-scoped through the request
+ * envelope's selected workspace.
+ */
+export interface WorkflowReviewInput {
+  /**
+   * The Workflow Run to review.
+   */
+  readonly run_id: Identifier;
+}
+
+/**
  * A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it
  * carries no `operation`, no `input`, and no workspace or authority scoping, because a probe
  * must be answerable before those concepts apply.
@@ -4049,6 +4532,108 @@ export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]):
   } catch {
     return false;
   }
+}
+
+/**
+ * Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's single
+ * mutation seam. `command_name` names a member of the Chat Contract's own closed command
+ * registry and `command` is that command's request document, carried verbatim and opaque to this
+ * envelope. Workspace-scoped through the request envelope's selected workspace, so this payload
+ * never carries a second, independent workspace identifier. The envelope's `idempotency_key` is
+ * required by the catalogue and is what makes a repeated submission answer from the settled
+ * outcome rather than appending a second message.
+ */
+export interface ChatCommandInput {
+  /**
+   * The Chat Contract v1 command name, such as `SubmitMessage`. Refused when it is not a
+   * member of that contract's closed registry.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 request document for `command_name`, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly command: JsonObject;
+  /**
+   * The conversation revision this command expects. Absent for a command that touches no
+   * existing conversation.
+   */
+  readonly expected_conversation?: ChatConversationExpectation;
+}
+
+/**
+ * Result of `chat.command`: the settled command's own Chat Contract v1 result envelope, echoed
+ * with the command name it answers. The chat result is carried opaquely for the same reason the
+ * request is. A replayed submission returns the stored result of the command that already ran,
+ * not a second settlement.
+ */
+export interface ChatCommandResult {
+  /**
+   * The Chat Contract v1 command name this result answers. Echoes the request.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 `CommandResultEnvelope` the command produced, carried verbatim.
+   */
+  readonly command_result: JsonObject;
+  /**
+   * The conversation the settled command changed, where it changed one.
+   */
+  readonly conversation_id?: Identifier;
+  /**
+   * The authoritative aggregate facts for that conversation after this command settled, in the
+   * same shape the next command states as its `expected_conversation`. Present only where the
+   * runtime can state the post-settlement counters exactly; absent otherwise, which is what
+   * every existing command and peer already sends and reads. A caller carries it straight into
+   * its next optimistic command rather than fabricating counters for a conversation it has not
+   * read back.
+   */
+  readonly conversation_authority?: ChatConversationExpectation;
+}
+
+/**
+ * Result of `chat.events`: the durable event suffix after the requested cursor, or the demand
+ * for a fresh snapshot -- never both. When `requires_resnapshot` is true, both `events` and
+ * `transport_events` are empty and `resnapshot_reason` states why the requested position could
+ * not be honoured; a fabricated continuation is exactly what that answer exists to prevent.
+ * Events are strictly increasing, duplicate-free and contiguous from the position the request
+ * continued from. The same suffix is offered in two forms: `events` is the backward-compatible
+ * sanitised lifecycle projection this envelope has always returned, and the optional
+ * `transport_events` is the exact Chat Contract v1 transport stream for the same positions. A
+ * caller that understands the chat contract reads `transport_events`; one that does not keeps
+ * reading `events` unchanged.
+ */
+export interface ChatEventsResult {
+  /**
+   * Identifier of the generation these events belong to. Echoes the request.
+   */
+  readonly generation_job_id: Identifier;
+  /**
+   * The backward-compatible sanitised lifecycle projection of the durable events after the
+   * requested cursor, in ascending sequence order. Carries no provider content, and stays
+   * exactly what it has always been for callers that do not read `transport_events`. Empty
+   * when a resnapshot is required.
+   */
+  readonly events: readonly ChatGenerationEvent[];
+  /**
+   * The exact Chat Contract v1 transport stream for the same positions, in ascending sequence
+   * order. Each item is an exact Chat Contract v1 `ChatEvent` document, validated and emitted
+   * against the separately published Chat contract; this application envelope carries it
+   * opaquely and deliberately does not restate that union. Order and cursors match `events`
+   * position for position. Optional for compatibility: a result that omits it is a well-formed
+   * result. Empty when a resnapshot is required, as `events` is.
+   */
+  readonly transport_events?: readonly JsonObject[];
+  /**
+   * Whether the caller must take a fresh snapshot instead of continuing from the cursor it
+   * presented.
+   */
+  readonly requires_resnapshot: boolean;
+  /**
+   * Why a fresh snapshot is required, such as `cursor_unknown_or_expired`. Present only when
+   * `requires_resnapshot` is true.
+   */
+  readonly resnapshot_reason?: OpenCode;
 }
 
 /**
@@ -5093,6 +5678,42 @@ export interface WorktreeLease {
 }
 
 /**
+ * The current durable truth about one Workflow Run: what it is bound to, where it stands, and
+ * the binding a verified read produced for it. Every field is read from storage; none is
+ * simulated, previewed or inferred. `state` and `run_status` are two readings of one fact and
+ * never two facts -- the state is a projection of the status and the Run's step ledger -- and
+ * `binding` is the public `RuntimeDefinitionBindingProjection`, carried opaquely because the
+ * binding lane owns its shape.
+ */
+export interface WorkflowRunProjection {
+  /**
+   * The canonical Run this Workflow Run is.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The exact Workflow and released version this Run executes.
+   */
+  readonly definition: RunDefinitionRef;
+  /**
+   * Content address of the sealed plan this Run is bound to.
+   */
+  readonly plan_digest: ContentChecksum;
+  /**
+   * Where this Run stands, in Workflow terms.
+   */
+  readonly state: WorkflowRunState;
+  /**
+   * The canonical Runtime status the state is projected from.
+   */
+  readonly run_status: RunStatus;
+  /**
+   * The `RuntimeDefinitionBindingProjection` a verified read produced for this Run, carried
+   * verbatim.
+   */
+  readonly binding: JsonObject;
+}
+
+/**
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
@@ -5939,6 +6560,88 @@ export interface MutationEvidence {
    * Immutable reference to the audit record for this mutation.
    */
   readonly audit_reference: AuditReference;
+}
+
+/**
+ * Result of `workflow.start`: the Run as it now stands durably. There is no admitted-versus-
+ * replayed member, because an honest replay is answered from the stored bytes of the first call
+ * and so could not carry a different one; the Run this names is the caller's Run either way.
+ */
+export interface WorkflowStartResult {
+  /**
+   * The Run this call bound or replayed.
+   */
+  readonly run: WorkflowRunProjection;
+}
+
+/**
+ * Result of `workflow.inspect`: one Run's current durable truth. The sealed plan it is bound to,
+ * every step observation actually recorded against it, and the projection of where it stands.
+ * Never a preview and never a simulation: an unobserved step is absent rather than predicted,
+ * and a state is read from the durable event stream rather than computed from what the plan
+ * would do next.
+ */
+export interface WorkflowInspectResult {
+  /**
+   * Where this Run stands.
+   */
+  readonly run: WorkflowRunProjection;
+  /**
+   * The sealed plan, in materialised order.
+   */
+  readonly plan: readonly WorkflowPlanStep[];
+  /**
+   * Every step observation recorded against this Run.
+   */
+  readonly observations: readonly WorkflowStepObservation[];
+}
+
+/**
+ * Result of `workflow.control`: what the call did, and the Run as it now stands. A state-based
+ * refusal is a successful, idempotent control result rather than an API error -- a Run already
+ * finished settles as `cancellation_ignored_already_terminal` with its stream untouched, and is
+ * never reported as `conflict` merely for being terminal. An unsupported action is refused as
+ * `invalid_request` rather than answered with a fabricated success.
+ */
+export interface WorkflowControlResult {
+  /**
+   * The Run after this call.
+   */
+  readonly run: WorkflowRunProjection;
+  /**
+   * What this call actually did.
+   */
+  readonly disposition: WorkflowControlDisposition;
+}
+
+/**
+ * Result of `workflow.review`: one deterministic projection of a Run's durable history. The
+ * verified journal in contiguous sequence order, whether the Run may resume and the one typed
+ * reason it may not, and the evidence-gated completion decision if one has been recorded.
+ * Deterministic in the strict sense: the same durable rows produce the same projection, because
+ * every field is read rather than sampled, timed or ranked.
+ */
+export interface WorkflowReviewResult {
+  /**
+   * Where this Run stands.
+   */
+  readonly run: WorkflowRunProjection;
+  /**
+   * The Run's verified journal, in contiguous sequence order.
+   */
+  readonly journal: readonly WorkflowJournalEntry[];
+  /**
+   * Whether this Run's history permits it to resume.
+   */
+  readonly resumable: boolean;
+  /**
+   * The one typed reason it may not. Present exactly when `resumable` is false.
+   */
+  readonly resume_diagnostic?: WorkflowResumeDiagnostic;
+  /**
+   * The recorded completion decision, if there is one.
+   */
+  readonly completion?: WorkflowCompletion;
 }
 
 /**
@@ -7423,6 +8126,101 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     ],
   },
   {
+    name: "chat.command",
+    scope: { required_scopes: ["chat:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult",
+    required_capability: { id: "chat.command", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.events",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.snapshot",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
     name: "context_pack.build",
     scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBuildInput",
@@ -7897,6 +8695,137 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_purpose",
       "invalid_request",
       "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.control",
+    scope: { required_scopes: ["workflow:control"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlResult",
+    required_capability: { id: "workflow.control", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.inspect",
+    scope: { required_scopes: ["workflow:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectResult",
+    required_capability: { id: "workflow.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.review",
+    scope: { required_scopes: ["workflow:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult",
+    required_capability: { id: "workflow.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.start",
+    scope: { required_scopes: ["workflow:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult",
+    required_capability: { id: "workflow.write", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "workflow.execute",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowCompletion",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
       "not_found",
       "rate_limited",
       "upgrade_required",

@@ -1,0 +1,9 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "derivedMessageId": "msg-0005-u2b",
+  "sourceMessageId": "msg-0003-u2",
+  "kind": "amendment",
+  "createdBy": "actor-alice",
+  "createdAt": "2026-08-20T10:00:10Z"
+}

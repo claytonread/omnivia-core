@@ -136,12 +136,12 @@ The Phase 1 implementation remains independently identifiable at `dd72159`.
 ## 4. Migration range
 
 ```text
-0026_semantic_registry.sql                 Phase 1 semantic registry
-0027_semantic_evidence_observations.sql    Phase 2 evidence and governance
-0028_semantic_retention_recovery.sql       Phase 2 retention and recovery
+0037_semantic_registry.sql                 Phase 1 semantic registry
+0038_semantic_evidence_observations.sql    Phase 2 evidence and governance
+0039_semantic_retention_recovery.sql       Phase 2 retention and recovery
 ```
 
-`0027` and `0028` are the Phase 2 additions. Migration order and checksums are
+`0038` and `0039` are the Phase 2 additions. Migration order and checksums are
 owned by the existing migration ledger.
 
 ## 5. Local acceptance evidence
@@ -257,7 +257,7 @@ history into Phase 1 tables.
 ## 10. Outstanding external gates
 
 - [ ] Architecture sign-off on the frozen Phase 2 decisions and review notes.
-- [ ] Runtime/storage sign-off on migrations `0027` and `0028`, fencing and
+- [ ] Runtime/storage sign-off on migrations `0038` and `0039`, fencing and
       rollback.
 - [ ] Security/privacy sign-off on content separation, permission checks,
       events and retention.

@@ -1,0 +1,71 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t06a",
+      "attemptId": "attempt-t06a",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t06a",
+      "attemptId": "attempt-t06a",
+      "ordinal": 1,
+      "eventType": "error",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "errorCode": "authentication",
+      "safeMessage": "Authentication failed.",
+      "retryable": false,
+      "statusClass": "client_error"
+    },
+    {
+      "invocationId": "invocation-t06b",
+      "attemptId": "attempt-t06b",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t06b",
+      "attemptId": "attempt-t06b",
+      "ordinal": 1,
+      "eventType": "error",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "errorCode": "rate-limited",
+      "safeMessage": "Rate limit exceeded.",
+      "retryable": true,
+      "statusClass": "rate_limited",
+      "retryAfterSeconds": 30
+    },
+    {
+      "invocationId": "invocation-t06c",
+      "attemptId": "attempt-t06c",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t06c",
+      "attemptId": "attempt-t06c",
+      "ordinal": 1,
+      "eventType": "error",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "errorCode": "endpoint-policy",
+      "safeMessage": "Endpoint policy denied this request.",
+      "retryable": false,
+      "statusClass": "client_error"
+    }
+  ]
+}

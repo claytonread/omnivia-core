@@ -2211,6 +2211,12 @@ def test_m2_18b_the_reopened_durable_jobs_guard_changes_and_keeps_the_old_predic
     """M2-18: dropped and recreated, not merely re-declared -- the stored SQL text
     differs from what `0007` left behind, and the difference is additive: the
     complete old authority predicate is reproduced byte for byte inside the new one.
+
+    The comparison is of the schema immediately before `0008` against the schema
+    immediately after it, so both catalogues stop there. Running on past `0008`
+    would apply later migrations -- including the rebuilds that copy a table
+    forward -- against a schema deliberately missing one of their predecessors,
+    which validates an incomplete schema rather than this migration's own change.
     """
     without = sqlite3.connect(":memory:")
     with_eight = sqlite3.connect(":memory:")
@@ -2218,6 +2224,8 @@ def test_m2_18b_the_reopened_durable_jobs_guard_changes_and_keeps_the_old_predic
         for connection in (without, with_eight):
             connection.executescript(phase0_baseline_sql())
         for migration in load_migrations():
+            if migration.version > MIGRATION_VERSION:
+                break
             if migration.version != MIGRATION_VERSION:
                 without.executescript(migration.sql)
             with_eight.executescript(migration.sql)

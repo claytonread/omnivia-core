@@ -1,0 +1,7 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "reason": "unauthorized_cursor",
+  "graphRevision": 12,
+  "resnapshotCursor": "cursor-fresh-0100"
+}

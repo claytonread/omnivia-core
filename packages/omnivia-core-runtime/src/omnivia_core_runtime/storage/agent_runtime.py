@@ -1,12 +1,9 @@
-"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203, RT-205, RT-206, RT-207).
+"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203).
 
 Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait`, `RuntimeEvent` (migration
 0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019),
 `PolicySnapshot` and `BudgetSnapshot` (migration 0021), `Approval` and
-`CapabilityGrant` (migration 0022), `EffectIntent`, the dispatch outbox, `EffectReceipt`
-and `EffectSettlement` (migration 0023), the late reconciliation of an effect settled
-`unknown` (migration 0024), the one stop command a run is given and the workspace's
-emergency admission-stop ledger (migration 0025), and nothing above them. There is
+`CapabilityGrant` (migration 0022), and nothing above them. There is
 no command envelope, no `ResolveWait` handling, no admission decision and no status
 machine here: RT-104 owns the command/event-append transaction, and this module gives it
 the writes and reads to build one out of.
@@ -35,14 +32,14 @@ Two boundary decisions, stated rather than papered over:
 
 * Reads return the generated contract records -- `RunStep`, `Attempt`, `Wait`,
   `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, `PolicySnapshot`,
-  `BudgetSnapshot`, `Approval`, `CapabilityGrant`, `EffectIntent`, `EffectReceipt`,
-  `EffectSettlement` -- because each can be materialised honestly from what 0018, 0019,
-  0021, 0022 and 0023 store.
-* A whole `Run` still cannot be. 0023 completes the effect family, so every *array* the
-  accepted aggregate requires is now stored, but `Run.policy` and `Run.budget` are not
-  optional there and a run admitted before 0021 -- or one whose decisions were never
-  recorded -- has neither. `read_run` therefore keeps returning :class:`RunSnapshot`,
-  whose `policy` and `budget` are optional, rather than a `Run` with two fields invented.
+  `BudgetSnapshot`, `Approval`, `CapabilityGrant` -- because each can be materialised
+  honestly from what 0018, 0019, 0021 and 0022 store.
+* A whole `Run` still cannot be. 0022 gives `read_run` the run's approvals and
+  capability grants on top of 0021's latest policy and budget, but the accepted
+  aggregate also requires the effect family, whose store belongs to RT-203's successor.
+  `read_run` therefore keeps returning :class:`RunSnapshot`, whose `policy` and `budget`
+  are optional because a run admitted before 0021 -- or one whose decisions were never
+  recorded -- has neither, rather than a `Run` with the remaining fields invented.
 
 A policy or budget snapshot, and a capability grant, is stored as the complete canonical
 v1 wire document plus the digest and byte length of exactly those bytes. The digest
@@ -72,21 +69,6 @@ may be remains the `WaitResolutionPolicy` seam's decision; what is checked here 
 shape of the identifier, the immutable correlation to the request and its wait, and the
 deadlines a decision must fall inside.
 
-An effect is four facts, not one row edited four times: the intent declared before
-anything acts, the outbox record of each dispatch request produced from it, the one
-observation it receives, and the one final answer. *No effect before intent* is
-structural rather than policed -- every one of the other three names its intent by
-foreign key, so none of them can exist without a committed intent row. Idempotency is
-logical and one level below the application's: the `idempotency_key` is the effect's
-identity, and whether a second delivery under it is a replay or a conflict is
-`classify_effect_replay`'s answer, asked before an insert is issued. The outbox is a
-table rather than a query because the crash window is a fact: an intent with no receipt
-and no dispatch record was never handed out and settles `not_committed`, while one with
-a dispatch record and no receipt settles `unknown`, and without the record the two would
-be indistinguishable. What *decides* a settlement from those facts is
-:mod:`~service.effect_transaction`, which also holds the one rule this module cannot
-state -- that a dispatch request is produced only from a durably committed intent.
-
 A missing `omnivia_blob_objects` row for an artifact's content address is an
 availability fact, not a reason to refuse or hide the artifact's own metadata:
 :func:`read_blob_availability` reports it as unavailable, and every artifact read
@@ -112,7 +94,6 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     ATTEMPT_STATUS_RUNNING,
-    IDEMPOTENCY_REPLAY,
     RUN_TERMINAL_STATUSES,
     WAIT_STATUS_PENDING,
     ApiError,
@@ -124,9 +105,6 @@ from omnivia_core.contracts.v1 import (
     CleanupReceipt,
     ContractDecodeError,
     ContractSemanticError,
-    EffectIntent,
-    EffectReceipt,
-    EffectSettlement,
     EvidenceItem,
     ExternalReference,
     PolicySnapshot,
@@ -134,16 +112,11 @@ from omnivia_core.contracts.v1 import (
     RunStep,
     RuntimeEvent,
     Wait,
-    classify_effect_replay,
-    permits_new_effect,
     to_canonical_json,
     validate_approval,
     validate_budget_snapshot,
     validate_budget_snapshot_progression,
     validate_capability_grant,
-    validate_effect_intent,
-    validate_effect_receipt,
-    validate_effect_settlement,
     validate_policy_snapshot,
     validate_policy_snapshot_progression,
 )
@@ -178,29 +151,6 @@ _CAPABILITY_GRANT_COLUMNS: Final = (
     "grant_digest, grant_byte_length"
 )
 
-#: One `EffectIntent`, `EffectReceipt` and `EffectSettlement` row, in the order the row
-#: helpers read them. Effects are stored as columns rather than as a stored document,
-#: unlike a snapshot or a grant: every field of all three records is a canonical scalar
-#: this database already indexes or correlates on, so there is nothing a stored document
-#: would carry that a column does not, and a document would put the same fact in two
-#: places with no rule about which wins.
-_EFFECT_INTENT_COLUMNS: Final = (
-    "effect_intent_id, run_id, run_step_id, attempt_id, capability_id, "
-    "capability_grant_id, effect_kind, idempotency_key, request_digest, declared_at_us"
-)
-_EFFECT_RECEIPT_COLUMNS: Final = (
-    "effect_receipt_id, run_id, effect_intent_id, observed_at_us, response_digest, "
-    "source_kind, source_id, source_workspace_id"
-)
-_EFFECT_SETTLEMENT_COLUMNS: Final = (
-    "effect_settlement_id, run_id, effect_intent_id, outcome, settled_at_us, reason, "
-    "audit_ref, effect_receipt_id"
-)
-_EFFECT_RECONCILIATION_COLUMNS: Final = (
-    "effect_reconciliation_id, run_id, effect_intent_id, effect_settlement_id, "
-    "outcome, reconciled_at_us, reason, audit_ref, effect_receipt_id"
-)
-
 #: One `Approval`, joined from the request 0022 stores and the decision and comment it
 #: may later receive. `LEFT JOIN` twice rather than three reads, because pending and
 #: decided are the same record read at two instants and one query says so.
@@ -209,16 +159,6 @@ _APPROVAL_COLUMNS: Final = (
     "a.assigned_to, a.escalated_to, a.expires_at_us, d.decision, d.decided_at_us, "
     "d.decided_by, d.audit_ref, c.comment"
 )
-_RUN_STOP_COLUMNS: Final = (
-    "run_stop_id, run_id, stop_reason, running_work, requested_at_us, audit_ref, "
-    "superseded_by_run_id"
-)
-
-_ADMISSION_STOP_COLUMNS: Final = (
-    "sequence, admission_stop_id, state, running_work, effective_at_us, reason, "
-    "audit_ref"
-)
-
 _APPROVAL_SOURCE: Final = (
     "omnivia_runtime_approvals a "
     "LEFT JOIN omnivia_runtime_approval_decisions d "
@@ -234,17 +174,6 @@ def _timestamp(value: int) -> str:
     if milliseconds == 0:
         return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
-
-
-def runtime_timestamp(value: int) -> str:
-    """One microsecond instant as the canonical `Timestamp` every read renders it as.
-
-    The published spelling of :func:`_timestamp`, for a composition that holds a
-    microsecond instant and has to build a contract record out of it. One renderer, so a
-    record written by a caller and the same record read back here are the same value
-    rather than two spellings of it.
-    """
-    return _timestamp(value)
 
 
 def _digest(document: str) -> str:
@@ -408,97 +337,13 @@ class StoredCapabilityGrant:
 
 
 @dataclass(frozen=True, slots=True)
-class EffectReconciliation:
-    """The one late, explicit answer an `unknown` `EffectSettlement` is finally given.
-
-    A local record rather than a contract one, for the reason :class:`RunSnapshot` is
-    local: accepted v1 has `EffectIntent`, `EffectReceipt` and `EffectSettlement` and no
-    reconciliation shape, and publishing one as if it were canonical would be this
-    package inventing a record the contract does not have. Every field is either a field
-    an `EffectSettlement` already has or the identifier of the settlement being
-    reconciled, so nothing here is new vocabulary -- it is the same four things a
-    settlement says, said about a settlement.
-
-    It never replaces the settlement it names. 0023's `unknown` row stays exactly as
-    written, because the fact that the effect was once uncertain is itself part of the
-    record, and 0024 stores this beside it as a separate immutable fact.
-    """
-
-    workspace_id: str
-    effect_reconciliation_id: str
-    run_id: str
-    effect_intent_id: str
-    effect_settlement_id: str
-    outcome: str
-    reconciled_at: str
-    reason: str
-    audit_reference: str
-    effect_receipt_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RunStop:
-    """The one stop command a run is given, and nothing about what it became.
-
-    A local record rather than a contract one, for the reason
-    :class:`EffectReconciliation` is local: accepted v1 has `RunStatus` and no stop
-    command, so publishing one as if it were canonical would be this package inventing a
-    record the contract does not have. Nothing here is a status -- what the run finally
-    becomes is derived from this command plus the run's own open work and recorded on the
-    event stream, where a run's status has always lived.
-
-    `stop_reason` is why, `running_work` is what is to happen to the attempts and waits
-    already open, and neither has a default: an implicit answer to "and what about the
-    work in flight?" is exactly the answer an operator has to give explicitly.
-    `superseded_by_run_id` names the successor of a `superseded` stop and is `None` for
-    the other two, because a supersession that cannot say what replaced the run is
-    indistinguishable from a cancellation.
-    """
-
-    workspace_id: str
-    run_stop_id: str
-    run_id: str
-    stop_reason: str
-    running_work: str
-    requested_at: str
-    audit_reference: str
-    superseded_by_run_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class AdmissionStop:
-    """One entry of a workspace's emergency admission-stop ledger.
-
-    A ledger entry rather than a flag, so engaging and releasing are both durable facts
-    with instants and audit references rather than a boolean somebody flipped. The entry
-    with the highest `sequence` is the one in force.
-
-    `running_work` states the policy the whole workspace is stopping under and is present
-    exactly on an `engaged` entry: releasing a stop declares nothing about work, so a
-    released entry carries no policy rather than a meaningless repeat of the last one.
-    """
-
-    workspace_id: str
-    sequence: int
-    admission_stop_id: str
-    state: str
-    effective_at: str
-    reason: str
-    audit_reference: str
-    running_work: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class RunSnapshot:
     """What RT-102, RT-103, RT-202 and RT-203 can honestly report about one canonical run.
 
-    Deliberately not a `Run`. `approvals` and `capability_grants` are what 0022 records,
-    `effect_intents`, `effect_receipts` and `effect_settlements` are what 0023 records,
-    and `effect_reconciliations` is what 0024 records; each is an empty tuple for a run
-    that has none, which is an answer rather than a gap. The last has no counterpart on
-    the accepted aggregate at all -- reporting it here rather than folding it into
-    `effect_settlements` is what keeps an effect's `unknown` settlement and the answer it
-    was later given two facts instead of one overwritten one.
+    Deliberately not a `Run`. The contract's aggregate also requires the effect family,
+    which has no store yet, and filling it in to satisfy a type would report data nobody
+    recorded. `approvals` and `capability_grants` are what 0022 records and are empty
+    tuples for a run that has neither, which is an answer rather than a gap.
     `policy` and `budget` are the run's latest
     stored revisions and are optional for the same reason: a run admitted before
     migration 0021, or one whose decisions were never recorded, has neither, and `None`
@@ -529,19 +374,8 @@ class RunSnapshot:
     approvals: tuple[Approval, ...]
     capability_grants: tuple[CapabilityGrant, ...]
     correlations: tuple[ExternalReference, ...]
-    effect_intents: tuple[EffectIntent, ...] = ()
-    effect_receipts: tuple[EffectReceipt, ...] = ()
-    effect_settlements: tuple[EffectSettlement, ...] = ()
-    effect_reconciliations: tuple[EffectReconciliation, ...] = ()
     policy: PolicySnapshot | None = None
     budget: BudgetSnapshot | None = None
-    stop: RunStop | None = None
-    """The stop command this run was given, or `None` for a run nobody stopped.
-
-    Reported beside the history rather than folded into `status`, because the two answer
-    different questions: `status` is what the run is, and this is what was asked of it and
-    why. A run stopped and then terminalized keeps both, so "cancelled" never has to be
-    read as "cancelled for some reason nobody wrote down"."""
 
 
 # --- writes -------------------------------------------------------------------
@@ -1213,323 +1047,6 @@ class RuntimeWriter:
             ),
         )
 
-    def declare_effect_intent(self, intent: EffectIntent) -> EffectIntent:
-        """Declare one effect before anything acts on it, idempotently.
-
-        *No effect before intent*, from the writing end: this is the only way an intent
-        row comes to exist, and a dispatch record, a receipt and a settlement all name
-        one by foreign key, so nothing downstream of here can be recorded without it.
-
-        Two rules are checked before a statement is issued, both the accepted contract's
-        own. `validate_effect_intent` proves the intent acts through a grant actually
-        issued to this run *for the capability it invokes* -- the grants are read from
-        this database rather than taken from the caller, so a caller cannot supply the
-        authority it is being checked against. And `permits_new_effect` proves the run is
-        running: an admitted run has not started, a waiting one is suspended, a terminal
-        one is finished, and an `uncertain` one owes a reconciliation before it acts
-        again.
-
-        Idempotency is logical and one level below the application's, exactly as the
-        contract states it. The `idempotency_key` is the effect's identity, so a second
-        declaration under a key this workspace already holds is answered from the stored
-        intent -- `classify_effect_replay` is what says whether it is the same effect
-        delivered again or two different requests claiming one identity, and a conflict
-        raises rather than inserting a second row. The stored record is returned in both
-        cases, so a caller retrying after a crash acts on the effect that was actually
-        declared rather than on the one it just rebuilt.
-        """
-        grants = tuple(
-            issued.grant
-            for issued in read_run_capability_grants(
-                self.connection, workspace_id=self.workspace_id, run_id=intent.run_id
-            )
-        )
-        validate_effect_intent(
-            intent,
-            run_id=intent.run_id,
-            workspace_id=self.workspace_id,
-            grants=grants,
-        )
-        status = _latest_run_status(
-            self.connection, workspace_id=self.workspace_id, run_id=intent.run_id
-        )
-        if not permits_new_effect(status):
-            raise StorageError(
-                f"run {intent.run_id!r} is {status!r} and may declare no new effect; "
-                "only a running run may"
-            )
-        declared = _effect_intent_by_key(
-            self.connection,
-            workspace_id=self.workspace_id,
-            idempotency_key=intent.idempotency_key,
-        )
-        if declared is not None:
-            if classify_effect_replay(declared, intent) != IDEMPOTENCY_REPLAY:
-                raise StorageError(
-                    f"idempotency key {intent.idempotency_key!r} already names a "
-                    "different effect; the same key over a different request is a "
-                    "conflict, never a replay"
-                )
-            return declared
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_effect_intents "
-            "(workspace_id, effect_intent_id, run_id, run_step_id, attempt_id, "
-            "capability_id, capability_grant_id, effect_kind, idempotency_key, "
-            "request_digest, declared_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self.workspace_id,
-                intent.effect_intent_id,
-                intent.run_id,
-                intent.run_step_id,
-                intent.attempt_id,
-                intent.capability_id,
-                intent.capability_grant_id,
-                intent.effect_kind,
-                intent.idempotency_key,
-                intent.request_digest,
-                _instant_us(intent.declared_at),
-            ),
-        )
-        return intent
-
-    def record_effect_dispatch(
-        self, *, effect_intent_id: str, requested_at_us: int
-    ) -> int:
-        """Record that a dispatch request was produced for one intent, and number it.
-
-        The outbox entry, and the reason the outbox is a table rather than a query. An
-        intent with no receipt and no row here was never handed out, so it settles
-        `not_committed`; one with no receipt and a row here may or may not have landed,
-        so it settles `unknown`. Without the record the two are indistinguishable and
-        every unreceipted effect would have to settle `unknown`.
-
-        Numbered contiguously from one within its intent, so a redelivery after a crash
-        is counted rather than overwritten. The number is allocated inside the
-        transaction rather than taken from the caller, for the reason
-        :meth:`append_run_event` allocates its sequence there.
-        """
-        number = self._next_sequence(
-            "SELECT COALESCE(MAX(dispatch_number), 0) + 1 "
-            "FROM omnivia_runtime_effect_dispatches "
-            "WHERE workspace_id = ? AND effect_intent_id = ?",
-            (self.workspace_id, effect_intent_id),
-        )
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_effect_dispatches "
-            "(workspace_id, effect_intent_id, dispatch_number, requested_at_us) "
-            "VALUES (?, ?, ?, ?)",
-            (self.workspace_id, effect_intent_id, number, requested_at_us),
-        )
-        return number
-
-    def record_effect_receipt(self, receipt: EffectReceipt) -> EffectReceipt:
-        """Retain the one observation an intended effect receives, idempotently.
-
-        Validated against the intents this run actually declared -- read from this
-        database, never supplied -- so a receipt naming no declared intent, or one
-        observed before its intent was declared, is refused as the contract's own
-        `ContractSemanticError` rather than stored as evidence of something nobody
-        authorized. The provider-side reference, when there is one, is retained as
-        subordinate correlation: it identifies the effect elsewhere and never establishes
-        here that it happened.
-
-        At-least-once delivery is answered by comparison, not by a second row. A
-        redelivery of the same observation returns the stored receipt and writes nothing;
-        a *different* observation of the same effect is refused, because two disagreeing
-        answers about one effect is a contradiction and this seam fails closed on one
-        rather than choosing which to believe. A receipt for an effect that was never
-        dispatched, and one arriving after the effect was settled `not_committed`, are
-        0023's guards -- restating them here would be a second copy that could disagree.
-        """
-        intents = read_run_effect_intents(
-            self.connection, workspace_id=self.workspace_id, run_id=receipt.run_id
-        )
-        validate_effect_receipt(
-            receipt,
-            run_id=receipt.run_id,
-            workspace_id=self.workspace_id,
-            intents=intents,
-        )
-        stored = read_effect_receipt_for_intent(
-            self.connection,
-            workspace_id=self.workspace_id,
-            effect_intent_id=receipt.effect_intent_id,
-        )
-        if stored is not None:
-            # The stored instant, respelled: a receipt is materialised from a
-            # microsecond column, so `...:40.000Z` and `...:40Z` are one fact written
-            # two ways and comparing the spellings would refuse an exact redelivery.
-            observed = replace(
-                receipt, observed_at=_timestamp(_instant_us(receipt.observed_at))
-            )
-            if observed != stored:
-                raise StorageError(
-                    f"effect {receipt.effect_intent_id!r} is already observed; a second, "
-                    "different observation of one effect is a contradiction"
-                )
-            return stored
-        reference = receipt.external_reference
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_effect_receipts "
-            "(workspace_id, effect_receipt_id, run_id, effect_intent_id, "
-            "observed_at_us, response_digest, source_kind, source_id, "
-            "source_workspace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self.workspace_id,
-                receipt.effect_receipt_id,
-                receipt.run_id,
-                receipt.effect_intent_id,
-                _instant_us(receipt.observed_at),
-                receipt.response_digest,
-                None if reference is None else reference.source_kind,
-                None if reference is None else reference.source_id,
-                None if reference is None else reference.workspace_id,
-            ),
-        )
-        return receipt
-
-    def settle_effect(self, settlement: EffectSettlement) -> None:
-        """Record the one final answer an intended effect receives.
-
-        Validated against the intents and receipts this run actually holds, read from
-        this database rather than supplied, so a `committed` settlement cannot be
-        asserted without a stored observation behind it and cannot borrow another
-        effect's receipt as proof of this one. `not_committed` and `unknown` name no
-        receipt at all, because carrying one would claim and deny the same observation.
-
-        One settlement per intent, of any outcome: 0023 keys the row on the intent, so a
-        second answer has nowhere to live under any spelling and re-settling is
-        structurally impossible rather than merely refused. `unknown` is the honest third
-        answer and not a failure -- and it stays exactly as written, because
-        :meth:`reconcile_effect` records the answer it later receives as a fact of its
-        own rather than as an amendment to this one.
-        """
-        intents = read_run_effect_intents(
-            self.connection, workspace_id=self.workspace_id, run_id=settlement.run_id
-        )
-        receipts = read_run_effect_receipts(
-            self.connection, workspace_id=self.workspace_id, run_id=settlement.run_id
-        )
-        validate_effect_settlement(
-            settlement,
-            run_id=settlement.run_id,
-            workspace_id=self.workspace_id,
-            intents=intents,
-            receipts=receipts,
-        )
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_effect_settlements "
-            "(workspace_id, effect_settlement_id, run_id, effect_intent_id, outcome, "
-            "settled_at_us, reason, audit_ref, effect_receipt_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self.workspace_id,
-                settlement.effect_settlement_id,
-                settlement.run_id,
-                settlement.effect_intent_id,
-                settlement.outcome,
-                _instant_us(settlement.settled_at),
-                settlement.reason,
-                settlement.audit_reference,
-                settlement.effect_receipt_id,
-            ),
-        )
-
-    def reconcile_effect(self, reconciliation: EffectReconciliation) -> None:
-        """Record the one late answer an effect settled `unknown` is finally given.
-
-        Deliberately thin. Every rule a reconciliation has is a rule about rows this
-        database already holds -- the settlement being `unknown` and belonging to this
-        intent, the receipt a `committed` answer names being for the same intent and
-        observed no later than the reconciliation, the absence of any receipt or dispatch
-        behind a `not_committed` one -- and 0024 states all of them as guards on the
-        insert. Restating them here would be a second copy that could disagree, which is
-        the reason :meth:`record_effect_receipt` does not restate 0023's either.
-
-        The decision itself is not made here and the outcome is not this method's to
-        choose: :func:`~service.effect_reconciliation.decide_reconciliation` derives it
-        from the retained evidence, and this writes down what it derived.
-        """
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_effect_reconciliations "
-            "(workspace_id, effect_reconciliation_id, run_id, effect_intent_id, "
-            "effect_settlement_id, outcome, reconciled_at_us, reason, audit_ref, "
-            "effect_receipt_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self.workspace_id,
-                reconciliation.effect_reconciliation_id,
-                reconciliation.run_id,
-                reconciliation.effect_intent_id,
-                reconciliation.effect_settlement_id,
-                reconciliation.outcome,
-                _instant_us(reconciliation.reconciled_at),
-                reconciliation.reason,
-                reconciliation.audit_reference,
-                reconciliation.effect_receipt_id,
-            ),
-        )
-
-    def request_run_stop(self, stop: RunStop) -> None:
-        """Record the one stop command a run is given, exactly once.
-
-        Deliberately thin, for :meth:`reconcile_effect`'s reason. Every rule a stop has is
-        a rule about rows this database already holds -- the run existing, the run not
-        having already finished, the instant not preceding the admission, a `superseded`
-        stop naming a successor of this same workspace, and the running-work policy
-        agreeing with an engaged emergency stop -- and 0025 states all of them as guards
-        on the insert.
-
-        It writes no status. What the run becomes is
-        :func:`~service.runtime_stop.decide_stop_settlement`'s answer, appended to the
-        event stream by the caller in this same transaction.
-        """
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_run_stops "
-            "(workspace_id, run_stop_id, run_id, stop_reason, running_work, "
-            "requested_at_us, audit_ref, superseded_by_run_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self.workspace_id,
-                stop.run_stop_id,
-                stop.run_id,
-                stop.stop_reason,
-                stop.running_work,
-                _instant_us(stop.requested_at),
-                stop.audit_reference,
-                stop.superseded_by_run_id,
-            ),
-        )
-
-    def record_admission_stop(self, entry: AdmissionStop) -> int:
-        """Append one entry to this workspace's admission-stop ledger, and return it.
-
-        The sequence is allocated from the ledger inside the transaction rather than taken
-        from the caller, for the reason :meth:`append_run_event` allocates its own: two
-        concurrent appends cannot agree on a number the guard would then have to reject.
-        `entry.sequence` is therefore ignored and the allocated one returned.
-        """
-        sequence = self._next_sequence(
-            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM omnivia_runtime_admission_stops "
-            "WHERE workspace_id = ?",
-            (self.workspace_id,),
-        )
-        self.connection.execute(
-            "INSERT INTO omnivia_runtime_admission_stops "
-            "(workspace_id, sequence, admission_stop_id, state, running_work, "
-            "effective_at_us, reason, audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self.workspace_id,
-                sequence,
-                entry.admission_stop_id,
-                entry.state,
-                entry.running_work,
-                _instant_us(entry.effective_at),
-                entry.reason,
-                entry.audit_reference,
-            ),
-        )
-        return sequence
-
     def _append_approval_comment(self, approval: Approval) -> None:
         """The one comment fact an approval carries, when it carries one.
 
@@ -2012,117 +1529,6 @@ def issue_capability_grant(
         fencing_generation=fencing_generation,
     ) as writer:
         writer.issue_capability_grant(grant)
-
-
-def declare_effect_intent(
-    connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
-    *,
-    workspace_id: str,
-    fencing_generation: int,
-    intent: EffectIntent,
-) -> EffectIntent:
-    """Declare one effect intent, in its own fenced transaction."""
-    with runtime_writer(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ) as writer:
-        return writer.declare_effect_intent(intent)
-
-
-def record_effect_dispatch(
-    connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
-    *,
-    workspace_id: str,
-    fencing_generation: int,
-    effect_intent_id: str,
-    requested_at_us: int,
-) -> int:
-    """Record one dispatch of an intent, in its own fenced transaction."""
-    with runtime_writer(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ) as writer:
-        return writer.record_effect_dispatch(
-            effect_intent_id=effect_intent_id, requested_at_us=requested_at_us
-        )
-
-
-def record_effect_receipt(
-    connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
-    *,
-    workspace_id: str,
-    fencing_generation: int,
-    receipt: EffectReceipt,
-) -> EffectReceipt:
-    """Retain one effect receipt, in its own fenced transaction."""
-    with runtime_writer(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ) as writer:
-        return writer.record_effect_receipt(receipt)
-
-
-def settle_effect(
-    connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
-    *,
-    workspace_id: str,
-    fencing_generation: int,
-    settlement: EffectSettlement,
-) -> None:
-    """Record the one settlement of an effect, in its own fenced transaction."""
-    with runtime_writer(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ) as writer:
-        writer.settle_effect(settlement)
-
-
-def reconcile_effect(
-    connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
-    *,
-    workspace_id: str,
-    fencing_generation: int,
-    reconciliation: EffectReconciliation,
-) -> None:
-    """Record the one reconciliation of an effect, in its own fenced transaction."""
-    with runtime_writer(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ) as writer:
-        writer.reconcile_effect(reconciliation)
-
-
-def record_admission_stop(
-    connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
-    *,
-    workspace_id: str,
-    fencing_generation: int,
-    entry: AdmissionStop,
-) -> int:
-    """Append one admission-stop ledger entry, in its own fenced transaction."""
-    with runtime_writer(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ) as writer:
-        return writer.record_admission_stop(entry)
 
 
 # --- reads --------------------------------------------------------------------
@@ -2711,317 +2117,6 @@ def read_run_capability_grants(
     )
 
 
-def _latest_run_status(
-    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> str | None:
-    """The status in force at this run's latest event, or `None` for no such run.
-
-    Read from the stream rather than from a column beside it, for the reason
-    :class:`RunSnapshot` states: the event stream is where a run's status lives, so
-    there is no second copy to fall out of step with it.
-    """
-    row = connection.execute(
-        "SELECT run_status FROM omnivia_runtime_events "
-        "WHERE workspace_id = ? AND run_id = ? ORDER BY sequence DESC LIMIT 1",
-        (workspace_id, run_id),
-    ).fetchone()
-    return None if row is None else str(row[0])
-
-
-def _effect_intent_from_row(workspace_id: str, row: tuple[Any, ...]) -> EffectIntent:
-    return EffectIntent(
-        workspace_id=workspace_id,
-        effect_intent_id=str(row[0]),
-        run_id=str(row[1]),
-        run_step_id=str(row[2]),
-        attempt_id=str(row[3]),
-        capability_id=str(row[4]),
-        capability_grant_id=str(row[5]),
-        effect_kind=str(row[6]),
-        idempotency_key=str(row[7]),
-        request_digest=str(row[8]),
-        declared_at=_timestamp(int(row[9])),
-    )
-
-
-def _effect_intent_by_key(
-    connection: sqlite3.Connection, *, workspace_id: str, idempotency_key: str
-) -> EffectIntent | None:
-    """The effect this logical key already names, when this workspace holds one.
-
-    The effect-level counterpart of :func:`read_run_id_by_logical_key`, and the read
-    :meth:`RuntimeWriter.declare_effect_intent` decides a replay from. It answers "which
-    intent", never "is this a replay": that is `classify_effect_replay`'s answer, and
-    duplicating it here would be a second rule to keep in step.
-    """
-    row = connection.execute(
-        f"SELECT {_EFFECT_INTENT_COLUMNS} FROM omnivia_runtime_effect_intents "
-        "WHERE workspace_id = ? AND idempotency_key = ?",
-        (workspace_id, idempotency_key),
-    ).fetchone()
-    return None if row is None else _effect_intent_from_row(workspace_id, row)
-
-
-def read_effect_intent(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_intent_id: str
-) -> EffectIntent | None:
-    """One declared intent by identifier, or `None` when this workspace holds none."""
-    row = connection.execute(
-        f"SELECT {_EFFECT_INTENT_COLUMNS} FROM omnivia_runtime_effect_intents "
-        "WHERE workspace_id = ? AND effect_intent_id = ?",
-        (workspace_id, effect_intent_id),
-    ).fetchone()
-    return None if row is None else _effect_intent_from_row(workspace_id, row)
-
-
-def read_run_effect_intents(
-    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> tuple[EffectIntent, ...]:
-    """Every effect this run declared, in declaration order then identifier order."""
-    rows = connection.execute(
-        f"SELECT {_EFFECT_INTENT_COLUMNS} FROM omnivia_runtime_effect_intents "
-        "WHERE workspace_id = ? AND run_id = ? "
-        "ORDER BY declared_at_us, effect_intent_id",
-        (workspace_id, run_id),
-    ).fetchall()
-    return tuple(_effect_intent_from_row(workspace_id, row) for row in rows)
-
-
-def read_effect_dispatch_count(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_intent_id: str
-) -> int:
-    """How many times a dispatch request has been produced for this intent.
-
-    Zero is a load-bearing answer rather than an absence: an intent never handed out
-    cannot have landed, which is what lets :func:`~service.effect_transaction.
-    decide_settlement` answer `not_committed` instead of `unknown`.
-    """
-    row = connection.execute(
-        "SELECT COUNT(*) FROM omnivia_runtime_effect_dispatches "
-        "WHERE workspace_id = ? AND effect_intent_id = ?",
-        (workspace_id, effect_intent_id),
-    ).fetchone()
-    if row is None:  # pragma: no cover - an aggregate always returns one row
-        raise StorageError("a dispatch count returned no row")
-    return int(row[0])
-
-
-def _effect_receipt_from_row(workspace_id: str, row: tuple[Any, ...]) -> EffectReceipt:
-    reference: ExternalReference | None = None
-    if row[5] is not None:
-        reference = ExternalReference(
-            source_kind=str(row[5]),
-            source_id=str(row[6]),
-            workspace_id=str(row[7]),
-        )
-    return EffectReceipt(
-        workspace_id=workspace_id,
-        effect_receipt_id=str(row[0]),
-        run_id=str(row[1]),
-        effect_intent_id=str(row[2]),
-        observed_at=_timestamp(int(row[3])),
-        response_digest=str(row[4]),
-        external_reference=reference,
-    )
-
-
-def read_effect_receipt(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_receipt_id: str
-) -> EffectReceipt | None:
-    """One retained receipt by identifier, or `None` when this workspace holds none."""
-    row = connection.execute(
-        f"SELECT {_EFFECT_RECEIPT_COLUMNS} FROM omnivia_runtime_effect_receipts "
-        "WHERE workspace_id = ? AND effect_receipt_id = ?",
-        (workspace_id, effect_receipt_id),
-    ).fetchone()
-    return None if row is None else _effect_receipt_from_row(workspace_id, row)
-
-
-def read_effect_receipt_for_intent(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_intent_id: str
-) -> EffectReceipt | None:
-    """The one observation this intent received, or `None` while it has none."""
-    row = connection.execute(
-        f"SELECT {_EFFECT_RECEIPT_COLUMNS} FROM omnivia_runtime_effect_receipts "
-        "WHERE workspace_id = ? AND effect_intent_id = ?",
-        (workspace_id, effect_intent_id),
-    ).fetchone()
-    return None if row is None else _effect_receipt_from_row(workspace_id, row)
-
-
-def read_run_effect_receipts(
-    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> tuple[EffectReceipt, ...]:
-    """Every observation this run retained, in observation then identifier order."""
-    rows = connection.execute(
-        f"SELECT {_EFFECT_RECEIPT_COLUMNS} FROM omnivia_runtime_effect_receipts "
-        "WHERE workspace_id = ? AND run_id = ? "
-        "ORDER BY observed_at_us, effect_receipt_id",
-        (workspace_id, run_id),
-    ).fetchall()
-    return tuple(_effect_receipt_from_row(workspace_id, row) for row in rows)
-
-
-def _effect_settlement_from_row(
-    workspace_id: str, row: tuple[Any, ...]
-) -> EffectSettlement:
-    return EffectSettlement(
-        workspace_id=workspace_id,
-        effect_settlement_id=str(row[0]),
-        run_id=str(row[1]),
-        effect_intent_id=str(row[2]),
-        outcome=str(row[3]),
-        settled_at=_timestamp(int(row[4])),
-        reason=str(row[5]),
-        audit_reference=str(row[6]),
-        effect_receipt_id=None if row[7] is None else str(row[7]),
-    )
-
-
-def read_effect_settlement(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_settlement_id: str
-) -> EffectSettlement | None:
-    """One settlement by identifier, or `None` when this workspace holds none."""
-    row = connection.execute(
-        f"SELECT {_EFFECT_SETTLEMENT_COLUMNS} FROM omnivia_runtime_effect_settlements "
-        "WHERE workspace_id = ? AND effect_settlement_id = ?",
-        (workspace_id, effect_settlement_id),
-    ).fetchone()
-    return None if row is None else _effect_settlement_from_row(workspace_id, row)
-
-
-def read_effect_settlement_for_intent(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_intent_id: str
-) -> EffectSettlement | None:
-    """The one final answer this intent received, or `None` while it is unsettled."""
-    row = connection.execute(
-        f"SELECT {_EFFECT_SETTLEMENT_COLUMNS} FROM omnivia_runtime_effect_settlements "
-        "WHERE workspace_id = ? AND effect_intent_id = ?",
-        (workspace_id, effect_intent_id),
-    ).fetchone()
-    return None if row is None else _effect_settlement_from_row(workspace_id, row)
-
-
-def read_run_effect_settlements(
-    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> tuple[EffectSettlement, ...]:
-    """Every effect this run settled, in settlement then identifier order."""
-    rows = connection.execute(
-        f"SELECT {_EFFECT_SETTLEMENT_COLUMNS} FROM omnivia_runtime_effect_settlements "
-        "WHERE workspace_id = ? AND run_id = ? "
-        "ORDER BY settled_at_us, effect_settlement_id",
-        (workspace_id, run_id),
-    ).fetchall()
-    return tuple(_effect_settlement_from_row(workspace_id, row) for row in rows)
-
-
-def _effect_reconciliation_from_row(
-    workspace_id: str, row: tuple[Any, ...]
-) -> EffectReconciliation:
-    return EffectReconciliation(
-        workspace_id=workspace_id,
-        effect_reconciliation_id=str(row[0]),
-        run_id=str(row[1]),
-        effect_intent_id=str(row[2]),
-        effect_settlement_id=str(row[3]),
-        outcome=str(row[4]),
-        reconciled_at=_timestamp(int(row[5])),
-        reason=str(row[6]),
-        audit_reference=str(row[7]),
-        effect_receipt_id=None if row[8] is None else str(row[8]),
-    )
-
-
-def read_effect_reconciliation_for_intent(
-    connection: sqlite3.Connection, *, workspace_id: str, effect_intent_id: str
-) -> EffectReconciliation | None:
-    """The one late answer this intent received, or `None` while it has none.
-
-    `None` is not "still uncertain": an intent that was never settled `unknown` has no
-    reconciliation to hold and never will. What an effect finally came to is this answer
-    when there is one and its settlement's otherwise, which is why both reads exist and
-    neither hides the other.
-    """
-    row = connection.execute(
-        f"SELECT {_EFFECT_RECONCILIATION_COLUMNS} "
-        "FROM omnivia_runtime_effect_reconciliations "
-        "WHERE workspace_id = ? AND effect_intent_id = ?",
-        (workspace_id, effect_intent_id),
-    ).fetchone()
-    return None if row is None else _effect_reconciliation_from_row(workspace_id, row)
-
-
-def read_run_effect_reconciliations(
-    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> tuple[EffectReconciliation, ...]:
-    """Every effect this run reconciled, in reconciliation then identifier order."""
-    rows = connection.execute(
-        f"SELECT {_EFFECT_RECONCILIATION_COLUMNS} "
-        "FROM omnivia_runtime_effect_reconciliations "
-        "WHERE workspace_id = ? AND run_id = ? "
-        "ORDER BY reconciled_at_us, effect_reconciliation_id",
-        (workspace_id, run_id),
-    ).fetchall()
-    return tuple(_effect_reconciliation_from_row(workspace_id, row) for row in rows)
-
-
-def read_run_stop(
-    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> RunStop | None:
-    """The stop command this run was given, or `None` for a run nobody stopped.
-
-    `None` is an answer rather than a gap, and it is not "not stopped yet": a run reaches
-    a terminal status by finishing as well as by being stopped, and reading no stop for a
-    cancelled run would be a contradiction rather than an absence.
-    """
-    row = connection.execute(
-        f"SELECT {_RUN_STOP_COLUMNS} FROM omnivia_runtime_run_stops "
-        "WHERE workspace_id = ? AND run_id = ?",
-        (workspace_id, run_id),
-    ).fetchone()
-    if row is None:
-        return None
-    return RunStop(
-        workspace_id=workspace_id,
-        run_stop_id=str(row[0]),
-        run_id=str(row[1]),
-        stop_reason=str(row[2]),
-        running_work=str(row[3]),
-        requested_at=_timestamp(int(row[4])),
-        audit_reference=str(row[5]),
-        superseded_by_run_id=None if row[6] is None else str(row[6]),
-    )
-
-
-def read_admission_stop(
-    connection: sqlite3.Connection, *, workspace_id: str
-) -> AdmissionStop | None:
-    """The admission-stop ledger entry in force, or `None` for a ledger with none.
-
-    The latest entry whatever its state, not the latest *engaged* one: a released stop is
-    the fact that admission is open again, and hiding it behind `None` would make "never
-    stopped" and "stopped and released" the same answer. Whether admission is actually
-    denied is `state`, which every caller has to read anyway.
-    """
-    row = connection.execute(
-        f"SELECT {_ADMISSION_STOP_COLUMNS} FROM omnivia_runtime_admission_stops "
-        "WHERE workspace_id = ? ORDER BY sequence DESC LIMIT 1",
-        (workspace_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    return AdmissionStop(
-        workspace_id=workspace_id,
-        sequence=int(row[0]),
-        admission_stop_id=str(row[1]),
-        state=str(row[2]),
-        running_work=None if row[3] is None else str(row[3]),
-        effective_at=_timestamp(int(row[4])),
-        reason=str(row[5]),
-        audit_reference=str(row[6]),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class BlobAvailability:
     """Whether `omnivia_blob_objects` currently holds the bytes an artifact addresses.
@@ -3224,21 +2319,8 @@ def read_run(
                 workspace_id=workspace_id,
             ),
         ),
-        effect_intents=read_run_effect_intents(
-            connection, workspace_id=workspace_id, run_id=run_id
-        ),
-        effect_receipts=read_run_effect_receipts(
-            connection, workspace_id=workspace_id, run_id=run_id
-        ),
-        effect_settlements=read_run_effect_settlements(
-            connection, workspace_id=workspace_id, run_id=run_id
-        ),
-        effect_reconciliations=read_run_effect_reconciliations(
-            connection, workspace_id=workspace_id, run_id=run_id
-        ),
         policy=None if policy is None else policy.snapshot,
         budget=None if budget is None else budget.snapshot,
-        stop=read_run_stop(connection, workspace_id=workspace_id, run_id=run_id),
     )
 
 
@@ -3257,12 +2339,9 @@ def read_workspace_run_ids(
 
 
 __all__ = [
-    "AdmissionStop",
     "BlobAvailability",
-    "EffectReconciliation",
     "RunAdmission",
     "RunSnapshot",
-    "RunStop",
     "RuntimeWriter",
     "StoredBudgetSnapshot",
     "StoredCapabilityGrant",
@@ -3276,24 +2355,15 @@ __all__ = [
     "append_run_event",
     "append_run_step",
     "close_wait",
-    "declare_effect_intent",
     "finish_attempt",
     "issue_capability_grant",
     "open_wait",
-    "read_admission_stop",
     "read_approval",
     "read_artifact",
     "read_blob_availability",
     "read_budget_snapshot",
     "read_capability_grant",
     "read_cleanup_receipt",
-    "read_effect_dispatch_count",
-    "read_effect_intent",
-    "read_effect_receipt",
-    "read_effect_receipt_for_intent",
-    "read_effect_reconciliation_for_intent",
-    "read_effect_settlement",
-    "read_effect_settlement_for_intent",
     "read_evidence_item",
     "read_policy_snapshot",
     "read_run",
@@ -3302,10 +2372,6 @@ __all__ = [
     "read_run_budget_snapshots",
     "read_run_capability_grants",
     "read_run_cleanup_receipts",
-    "read_run_effect_intents",
-    "read_run_effect_receipts",
-    "read_run_effect_reconciliations",
-    "read_run_effect_settlements",
     "read_run_events",
     "read_run_evidence",
     "read_run_id_by_job",
@@ -3313,19 +2379,12 @@ __all__ = [
     "read_run_policy_snapshots",
     "read_run_sequence",
     "read_run_steps",
-    "read_run_stop",
     "read_run_waits",
     "read_workspace_run_ids",
-    "reconcile_effect",
-    "record_admission_stop",
     "record_approval_decision",
-    "record_effect_dispatch",
-    "record_effect_receipt",
     "record_step_status",
     "request_approval",
-    "runtime_timestamp",
     "runtime_writer",
-    "settle_effect",
     "start_attempt",
     "transaction_local_writer",
 ]

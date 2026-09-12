@@ -143,6 +143,12 @@ _VOCABULARY_CONSTANTS = {
     "CleanupOutcome": "CLEANUP_OUTCOMES",
     "RunDefinitionKind": "RUN_DEFINITION_KINDS",
     "WorktreeLeaseLifecycle": "WORKTREE_LEASE_LIFECYCLES",
+    "WorkflowRunState": "WORKFLOW_RUN_STATES",
+    "WorkflowStepRoute": "WORKFLOW_STEP_ROUTES",
+    "WorkflowControlAction": "WORKFLOW_CONTROL_ACTIONS",
+    "WorkflowControlDisposition": "WORKFLOW_CONTROL_DISPOSITIONS",
+    "WorkflowCompletionOutcome": "WORKFLOW_COMPLETION_OUTCOMES",
+    "WorkflowResumeDiagnostic": "WORKFLOW_RESUME_DIAGNOSTICS",
 }
 
 
@@ -180,7 +186,7 @@ def test_resolve_wait_is_not_a_job_control_and_publishes_no_operation() -> None:
     assert set(JobControl.__dataclass_fields__) == {"cancellation", "recovery"}
     assert not any("job" in field for field in ResolveWait.__dataclass_fields__)
     operations = {entry.name for entry in OPERATION_CATALOGUE}
-    assert len(operations) == 20
+    assert len(operations) == 27
     assert "job.retry" in operations
     assert "job.resume" not in operations
     assert not any(name.startswith("runtime.") for name in operations)

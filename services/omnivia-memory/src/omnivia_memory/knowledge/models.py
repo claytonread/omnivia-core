@@ -10,7 +10,7 @@ Deprecated: import these from ``omnivia_core.knowledge.models`` instead.
 # The `attr-defined` ignore covers only the intentionally preserved incidental
 # bindings this leaf's historical namespace still has to resolve (`Any`, `Enum`,
 # `annotations`, `dataclass`, `field`). No other error code is suppressed.
-from omnivia_core.knowledge.models import (  # type: ignore[attr-defined]
+from omnivia_core.knowledge.models import (  # type: ignore[attr-defined,unused-ignore]
     BUILTIN_GRAPH_NODE_KINDS,
     BUILTIN_GRAPH_RELATIONS,
     BUILTIN_OBJECT_KINDS,
