@@ -1570,24 +1570,34 @@ def test_the_installed_stores_agree_with_the_native_reader_on_real_windows(
 ) -> None:
     """`restrict_to_owner`'s `icacls` writer and `owner_private`'s native reader,
     proved to agree through the two stores that depend on both of them."""
-    credentials = store(tmp_path)
+    # `tmp_path` itself is not a trusted root: a hosted Windows runner's pytest
+    # temp directory can inherit broad SYSTEM/Administrators write ACEs, and
+    # both stores prove their root with the parent policy before creating
+    # anything beneath it. Establish a real owner-private root with the same
+    # writer the stores rely on, rather than assuming pytest handed us one.
+    root = tmp_path / "installation"
+    root.mkdir()
+    assert owner_private.restrict_to_owner(root, directory=True) is True
+    assert owner_private.owner_private_directory(root) is True
+
+    credentials = store(root)
     credentials.store(REFERENCE, Credential(SECRET))
     assert credentials.resolve(REFERENCE).reveal() == SECRET
     assert credentials.health(REFERENCE) == "present"
 
-    descriptor = os.open(stored_file(tmp_path), os.O_RDONLY)
+    descriptor = os.open(stored_file(root), os.O_RDONLY)
     try:
         metadata = os.fstat(descriptor)
         assert owner_private.owner_private_file(metadata, descriptor) is True
     finally:
         os.close(descriptor)
-    assert owner_private.owner_private_directory(directory(tmp_path)) is True
+    assert owner_private.owner_private_directory(directory(root)) is True
 
-    configuration = configs(tmp_path)
+    configuration = configs(root)
     assert configuration.write(HOST, DOCUMENT) is True
     assert configuration.read(HOST) == DOCUMENT
     assert configuration.health(HOST) == "present"
-    assert owner_private.owner_private_directory(config_directory(tmp_path)) is True
+    assert owner_private.owner_private_directory(config_directory(root)) is True
 
     credentials.remove(REFERENCE)
     assert credentials.health(REFERENCE) == "absent"
