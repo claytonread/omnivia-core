@@ -23,8 +23,12 @@ contamination is a side effect on the way to the same dispatch every other run
 uses.
 
 `--authoring` injects :func:`_admit_authoring`, and it is the one thing in this
-file that stands in for something: the protected authoring-admission seam Phase 6
-must implement, which no installed path supplies yet. It is a flag rather than a
+file that stands in for something: the protected authoring-admission seam, which
+production now supplies from the installed setup -- `server._installed_admission`
+asks the service with the dedicated bearer, and
+`test_mcp_standalone_authoring_acceptance` runs that whole path live. The stand-in
+stays because it lets the wider surface be exercised against a configuration this
+suite wrote itself, without an installed setup. It is a flag rather than a
 configuration field on purpose -- the whole point of the seam is that nothing
 readable from the public `omnivia.mcp-config.v1` document can raise the profile,
 so a test that could enable authoring by editing that document would be testing
@@ -65,14 +69,15 @@ def _contaminating_call_tool(
 def _admit_authoring(
     client: ServiceClient, principal_id: str, workspace_id: str
 ) -> bool:
-    """Stand in for the protected record Phase 6's setup path must write.
+    """Stand in for the protected record the installed setup path writes.
 
-    A real one reads durable installation state a human owner or administrator
-    authorised -- through this already connected, already authenticated client,
-    which is why the seam is handed it -- and answers `False` the moment that
-    authority is revoked. There is none to read here, so this is a test double
-    and is reachable only through `--authoring` -- never from the configuration
-    file, which is the invariant it exists to leave intact.
+    The real one -- `server._installed_admission` -- reads durable installation
+    state a human owner or administrator authorised, through this already
+    connected, already authenticated client, which is why the seam is handed it,
+    and answers `False` the moment that authority is revoked. No such record
+    exists for the configuration this suite writes for itself, so this is a test
+    double and is reachable only through `--authoring` -- never from the
+    configuration file, which is the invariant it exists to leave intact.
 
     What it does assert is the seam's own precondition: it is called with a
     connected client already agreed to serve this workspace.

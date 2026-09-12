@@ -11,6 +11,14 @@ does: it runs as a separate process reached only over a socket, which is the
 arrangement in which "MCP does not import the runtime" is proven rather than
 asserted.
 
+**The other caller wants the opposite, and gets it from the same three steps.**
+`test_mcp_standalone_authoring_acceptance` runs R004 section 13.B's journey,
+which forbids pre-seeded application data of any kind and begins with a host
+nobody has configured. `serving(seed=False, configure=False)` is that: the same
+registered workspace and the same real service, with the seeding pass and the
+MCP provisioning below both skipped, so the only writer that workspace ever has
+is the MCP surface under test.
+
 **The workspace is registered, not invented.** It is created by dispatching the
 canonical `workspace.create` request through a real
 :class:`~omnivia_core_runtime.service.installation_host.InstallationAuthorityCoordinator`
@@ -965,7 +973,7 @@ def _create_workspace(
     return WorkspaceCreateResult.from_wire(response.result).workspace
 
 
-def build(root: Path) -> GovernedWorkspace:
+def build(root: Path, *, seed: bool = True) -> GovernedWorkspace:
     """Create a registered workspace under `root` and seed it, then hand it back closed.
 
     The layout is the managed-local convention the service itself assumes:
@@ -978,6 +986,13 @@ def build(root: Path) -> GovernedWorkspace:
     Seeding happens here, while the workspace is offline and this process is its
     only writer, and the connection is closed before this returns: the workspace
     has exactly one exclusive writer, and the next one is that service.
+
+    `seed=False` skips that pass entirely and returns the workspace exactly as
+    the installation bootstrap left it: migrated, registered, and holding no
+    evidence, no governed record and no job. That is the only state R004 section
+    13.B's standalone journey may start from -- it forbids pre-seeding
+    application data through any path at all -- so the flag is the whole of how
+    this file stays out of that journey's way.
     """
     installation = InstallationLayout(root=(root / "installation-state").resolve())
     descriptor = _create_workspace(
@@ -987,12 +1002,13 @@ def build(root: Path) -> GovernedWorkspace:
         root=(root / WORKSPACE_STORAGE_DIRECTORY / descriptor.workspace_id).resolve()
     )
 
-    holder = _take_ownership(workspace.database_path, descriptor.workspace_id)
-    try:
-        _seed_evidence_chain(holder)
-        _seed_governed_truth(holder)
-    finally:
-        holder.connection.close()
+    if seed:
+        holder = _take_ownership(workspace.database_path, descriptor.workspace_id)
+        try:
+            _seed_evidence_chain(holder)
+            _seed_governed_truth(holder)
+        finally:
+            holder.connection.close()
 
     return GovernedWorkspace(
         workspace=workspace,
@@ -1035,6 +1051,11 @@ class GovernedService:
     here and there is no field it could be in.** It was handed over once, written
     into this installation's protected store, and dropped; what a configuration
     names is the reference, and the server reads the material for itself.
+
+    All three are `None` when :func:`serving` was asked not to configure MCP at
+    all. That is not a missing value: it is an installation on which no host has
+    been set up, which is where the installed setup command's own journey has to
+    begin.
     """
 
     endpoint_uri: str
@@ -1048,13 +1069,13 @@ class GovernedService:
     created_at: str
     created_at_canonical: str
     #: The opaque name the service filed this host's bearer under.
-    credential_reference: str
+    credential_reference: str | None = None
     #: The dedicated principal that bearer resolves to. Nothing chose it here:
     #: `mcp.configure` mints it inside the write transaction.
-    principal_id: str
+    principal_id: str | None = None
     #: The exposure profile the setup records, and therefore the ceiling a
     #: configuration written from it may state.
-    profile: str
+    profile: str | None = None
     #: The authenticated loopback HTTP endpoint, when :func:`serving` was given
     #: an `http_credential`. `None` otherwise.
     http_endpoint: str | None = None
@@ -1235,7 +1256,11 @@ def _provision_mcp_principal(
 
 @contextmanager
 def serving(
-    *, http_credential: str | None = None, profile: str = RESTRICTED_PROFILE
+    *,
+    http_credential: str | None = None,
+    profile: str = RESTRICTED_PROFILE,
+    seed: bool = True,
+    configure: bool = True,
 ) -> Iterator[GovernedService]:
     """Create and seed a governed workspace, serve it, provision MCP, tear down.
 
@@ -1256,6 +1281,13 @@ def serving(
     six every read-side test expects, and `authoring` for the one test that
     needs the wider surface.
 
+    `seed=False` serves the workspace exactly as the installation bootstrap left
+    it, and `configure=False` provisions no MCP principal at all. Together they
+    are the starting state R004 section 13.B requires -- an empty workspace on an
+    installation where no host is set up -- so a caller can run the real
+    `omnivia mcp configure` for itself and have that command be the thing under
+    test rather than a step this fixture already took.
+
     With `http_credential`, the same process also serves authenticated HTTP on a
     loopback port through :data:`_HTTP_EMBEDDER`, so one service -- one lease,
     one workspace state -- answers both the local socket and HTTP.
@@ -1264,7 +1296,7 @@ def serving(
     # Outside `tmp_path`: R004-15 caps a local endpoint at 86 encoded bytes and
     # pytest's `tmp_path` nests deep enough to exceed it.
     socket_directory = Path(tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir()))
-    built = build(root)
+    built = build(root, seed=seed)
     endpoint = endpoint_for_path(socket_directory / "s.sock")
     service_argv = [
         "--workspace",
@@ -1327,8 +1359,12 @@ def serving(
         # After readiness, because only the live service can mint authority, and
         # before the yield, because every managed-local configuration below names
         # the reference this returns.
-        setup = _provision_mcp_principal(
-            built.installation.root, built.workspace_id, profile
+        setup = (
+            _provision_mcp_principal(
+                built.installation.root, built.workspace_id, profile
+            )
+            if configure
+            else None
         )
         yield GovernedService(
             endpoint_uri=endpoint.url,
@@ -1339,9 +1375,9 @@ def serving(
             database=built.workspace.database_path,
             created_at=built.created_at,
             created_at_canonical=built.created_at_canonical,
-            credential_reference=setup.credential_reference,
-            principal_id=setup.principal_id,
-            profile=setup.profile,
+            credential_reference=None if setup is None else setup.credential_reference,
+            principal_id=None if setup is None else setup.principal_id,
+            profile=None if setup is None else setup.profile,
             http_endpoint=http_endpoint,
         )
     finally:

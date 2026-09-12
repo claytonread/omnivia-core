@@ -17,13 +17,15 @@ this module stands in for the server, the transport or the handshake.
 **The authoring inventory is the one thing this module cannot reach over the
 wire.** A child settles on `authoring` only when the *service* answers that a
 human recorded authoring intent for exactly its principal and workspace, and that
-row is written by `mcp.configure`, which refuses a workspace that is not in the
-installation's authorised inventory. The live fixture migrates a workspace rather
-than creating one through the installation service, so it has no such row and no
-credential this module could file would earn one. The eleven are therefore
-asserted at the seam where the wire's answer arrives -- what `_qualification`
-returned -- and the *restricted* half of the same rule is proved live, by a child
-that really does ask the protected authority and really is told no.
+row is written by `mcp.configure`. The credential this module files is its own:
+:data:`SECRET`, put straight into the protected store under :data:`PRINCIPAL`,
+which no `mcp.configure` ever issued and which therefore no protected authoring
+record names. The eleven are so asserted at the seam where the wire's answer
+arrives -- what `_qualification` returned -- and the *restricted* half of the
+same rule is proved live, by a child that really does ask the protected authority
+and really is told no. The live authoring path is proved end to end in
+`test_mcp_standalone_authoring_acceptance`, which runs the real `omnivia mcp
+configure` and gets a child that really is admitted to the wider profile.
 
 The other injected tests are the two things a live installation cannot show: a
 peer answering as something other than this build, and what the child is told on
