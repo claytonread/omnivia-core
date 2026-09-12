@@ -216,6 +216,17 @@
       "sha256": "5eb74bfce6c2d1f4b357207e3256636c75b99dfdd225e6ab6e56697221127e73",
       "introduced_commit": "9c6a83ea966e8aa4456bed6f05e0a00693069d17",
       "accepted_commit": null
+    },
+    {
+      "number": 37,
+      "filename": "0037_evidence_source_identity.sql",
+      "owner": "Evidence Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 36,
+      "sha256": "e87d50b044fa0867ba2ae666ed1c1c6d4de9fccafb03c567d219e77ba66a0305",
+      "introduced_commit": "3af63bf61045e1066b46ebdc9942eeb321ff07d7",
+      "accepted_commit": null
     }
   ]
 }

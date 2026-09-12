@@ -60,7 +60,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # Chat compaction/waits/agent-run candidate. 0034 is the durable Chat
 # generation-text/transport-event candidate. 0035 is the materialized T-0688
 # Workflow Runtime hardening candidate. 0036 is the materialized T-0693 Workflow
-# Runtime cancellation-lineage candidate.
+# Runtime cancellation-lineage candidate. 0037 is the materialized evidence
+# source-identity candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -86,6 +87,7 @@ EXPECTED_ALLOCATION = (
         "Workflow Runtime",
         "candidate",
     ),
+    (37, "0037_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -120,6 +122,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     34: "84fabceec3f832f7e2e40fe1e6794f98786e134e",
     35: "0ca4ddfa6fc37cec315e640e32ffe6f3a4c3d462",
     36: "9c6a83ea966e8aa4456bed6f05e0a00693069d17",
+    37: "3af63bf61045e1066b46ebdc9942eeb321ff07d7",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
