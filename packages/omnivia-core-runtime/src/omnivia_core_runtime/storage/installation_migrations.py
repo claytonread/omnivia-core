@@ -35,6 +35,9 @@ PINNED_INSTALLATION_MIGRATIONS: dict[str, str] = {
     "0001_installation_authority.sql": (
         "d7a7bf5c79d5e52aceae2e319668b6d799012845f2bb1fc4867643e914650d07"
     ),
+    "0002_mcp_principals_and_authoring_intent.sql": (
+        "3cb8651338ff5f978ec49a503f3fc625993cf9acff5278cb98eaecc9e107c64f"
+    ),
 }
 
 
@@ -96,11 +99,34 @@ def load_installation_migrations() -> tuple[InstallationMigration, ...]:
     return tuple(migrations)
 
 
-def canonical_installation_schema_fingerprint() -> SchemaFingerprint:
-    """Build the expected schema solely from the pinned installation artifacts."""
+def canonical_installation_schema_fingerprint(
+    applied_versions: int | None = None,
+) -> SchemaFingerprint:
+    """Build the expected schema solely from the pinned installation artifacts.
+
+    `applied_versions` names how much of the chain to replay, and exists so a
+    catalogue that is legitimately behind the head can still be held to an exact
+    schema rather than to no schema at all. The default is the whole chain.
+
+    A partially or manually applied migration is what this makes detectable. Every
+    statement in these artifacts is `IF NOT EXISTS`, so replaying one over a
+    catalogue where somebody has already created its tables by hand succeeds
+    silently and the result fingerprints as a clean head -- drift accepted rather
+    than refused. Comparing the *pre-migration* fingerprint against the prefix the
+    ledger claims closes that: an object that exists without a ledger row is a
+    mismatch before anything is applied.
+    """
+    migrations = load_installation_migrations()
+    if applied_versions is not None:
+        if not 0 <= applied_versions <= len(migrations):
+            raise InstallationMigrationError(
+                "installation schema prefix is outside the pinned chain "
+                f"(pinned={len(migrations)}, requested={applied_versions})"
+            )
+        migrations = migrations[:applied_versions]
     connection = sqlite3.connect(":memory:")
     try:
-        for migration in load_installation_migrations():
+        for migration in migrations:
             execute_script(connection, migration.sql)
         return fingerprint_schema(connection)
     finally:
@@ -125,7 +151,13 @@ def apply_initial_installation_schema(
     owner_instance_id: str,
     now_us: int,
 ) -> None:
-    """Materialise generation one and its ledger inside the caller's transaction."""
+    """Materialise generation one and its ledger inside the caller's transaction.
+
+    The *whole* pinned chain, and a ledger row for every artifact in it. A fresh
+    catalogue reaches the head in one transaction rather than being created at
+    version one and then immediately migrated, so there is no window in which a new
+    installation exists at a version this build no longer serves.
+    """
     if fingerprint_schema(connection).tables:
         raise InstallationMigrationError(
             "installation bootstrap requires an empty catalogue database"
@@ -163,6 +195,117 @@ def apply_initial_installation_schema(
             ),
         )
     connection.execute(f"PRAGMA user_version = {len(migrations)}")
+
+
+def _applied_installation_prefix(
+    connection: sqlite3.Connection, migrations: tuple[InstallationMigration, ...]
+) -> int:
+    """How much of the pinned chain this catalogue has already applied, or a refusal.
+
+    "How much" is deliberately a prefix length rather than a set of versions. A
+    ledger that skipped a version, reordered two, recorded a name or checksum that
+    is not the pinned one, or recorded a version this build does not have at all is
+    not a catalogue that is merely behind -- it is one whose history this build
+    cannot account for, and the only safe answer is to refuse rather than to work
+    out which of its rows to trust.
+
+    `user_version` is checked against the same prefix, because the two are
+    independent statements of the same fact and a disagreement means one of them
+    was written by something other than this migrator.
+    """
+    ledger = connection.execute(
+        "SELECT version, name, checksum FROM omnivia_installation_schema_migrations "
+        "ORDER BY version"
+    ).fetchall()
+    if len(ledger) > len(migrations):
+        raise InstallationMigrationError(
+            "installation migration ledger records more migrations than this build "
+            f"pins (pinned={len(migrations)}, recorded={len(ledger)})"
+        )
+    expected = [
+        (migration.version, migration.name, migration.checksum)
+        for migration in migrations[: len(ledger)]
+    ]
+    if [tuple(row) for row in ledger] != expected:
+        raise InstallationMigrationError(
+            "installation migration ledger differs from pinned artifacts"
+        )
+
+    user_version = connection.execute("PRAGMA user_version").fetchone()
+    actual_version = 0 if user_version is None else int(user_version[0])
+    if actual_version != len(ledger):
+        raise InstallationMigrationError(
+            "installation schema version disagrees with its migration ledger "
+            f"(ledger={len(ledger)}, user_version={actual_version})"
+        )
+    return len(ledger)
+
+
+def apply_pending_installation_migrations(
+    connection: sqlite3.Connection,
+    *,
+    installation_id: str,
+    owner_instance_id: str,
+    fencing_generation: int,
+    now_us: int,
+) -> tuple[InstallationMigration, ...]:
+    """Advance an existing catalogue to the pinned head, or refuse to touch it.
+
+    One transaction for the whole remaining chain, not one per migration. The
+    installation catalogue is a single small file opened by a single owner, so
+    there is no partial-progress state worth preserving and every reason to make
+    the advance atomic: a crash leaves a catalogue at the version it was already
+    serving, with its ledger, its `user_version` and its schema still agreeing.
+
+    Nothing is applied until the catalogue proves it is exactly the article the
+    recorded prefix describes -- ledger, `user_version` and schema fingerprint all
+    checked first, so a hand-applied or half-applied migration is refused rather
+    than absorbed by the `IF NOT EXISTS` in every artifact. Each applied artifact
+    records its own ledger row under the caller's current owner and fencing
+    generation, which the schema's own INSERT trigger then re-proves against the
+    state row inside this same transaction.
+    """
+    migrations = load_installation_migrations()
+    applied = _applied_installation_prefix(connection, migrations)
+
+    actual_fingerprint = fingerprint_schema(connection)
+    expected_fingerprint = canonical_installation_schema_fingerprint(applied)
+    if not actual_fingerprint.matches(expected_fingerprint):
+        raise InstallationMigrationError(
+            "installation schema does not match the migrations it records as applied "
+            f"(expected={expected_fingerprint.digest}, "
+            f"actual={actual_fingerprint.digest})"
+        )
+
+    pending = migrations[applied:]
+    if not pending:
+        return ()
+
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for migration in pending:
+            execute_script(connection, migration.sql)
+            connection.execute(
+                "INSERT INTO omnivia_installation_schema_migrations "
+                "(version, name, checksum, installation_id, fencing_generation, "
+                "applied_by_owner, applied_at_us) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    migration.version,
+                    migration.name,
+                    migration.checksum,
+                    installation_id,
+                    fencing_generation,
+                    owner_instance_id,
+                    now_us,
+                ),
+            )
+        connection.execute(f"PRAGMA user_version = {len(migrations)}")
+        connection.execute("COMMIT")
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    return pending
 
 
 def verify_installation_schema(connection: sqlite3.Connection) -> None:
@@ -220,6 +363,7 @@ __all__ = [
     "InstallationMigration",
     "InstallationMigrationError",
     "apply_initial_installation_schema",
+    "apply_pending_installation_migrations",
     "canonical_installation_schema_fingerprint",
     "installation_schema_present",
     "load_installation_migrations",
