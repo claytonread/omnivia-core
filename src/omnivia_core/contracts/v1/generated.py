@@ -227,6 +227,8 @@ __all__ = [
     "ErrorCode",
     "ErrorResponseEnvelope",
     "EvidenceArtifact",
+    "EvidenceCaptureInput",
+    "EvidenceCaptureResult",
     "EvidenceChecksum",
     "EvidenceDisposition",
     "EvidenceId",
@@ -4195,6 +4197,114 @@ class ApiError:
             retry_class=field_retry_class,
             retry_after_ms=field_retry_after_ms,
             details=field_details,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCaptureInput:
+    """Input for `evidence.capture`: one caller-supplied UTF-8 text or Markdown artifact to
+    record synchronously as immutable L0 evidence in the selected workspace, for small direct
+    submissions such as notes, excerpts, and model-visible source material. Workspace-scoped:
+    the workspace is the request envelope's selected workspace; this payload never carries a
+    second, independent workspace identifier, nor any path, URL, credential, principal,
+    grant, parser, layer, governance, or storage option. Carries exactly one of
+    `text`/`content_base64`; enforcing that exclusivity, the strict base64/UTF-8 decode, and
+    the decoded-byte bound is a semantic-validation concern, not a wire-shape one.
+    """
+
+    source_native_id: Identifier
+    media_type: MediaType
+    text: str | None = None
+    content_base64: str | None = None
+    source_version: Identifier | None = None
+    event_at: Timestamp | None = None
+    observed_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["source_native_id"] = self.source_native_id
+        wire["media_type"] = self.media_type
+        if self.text is not None:
+            wire["text"] = self.text
+        if self.content_base64 is not None:
+            wire["content_base64"] = self.content_base64
+        if self.source_version is not None:
+            wire["source_version"] = self.source_version
+        if self.event_at is not None:
+            wire["event_at"] = self.event_at
+        if self.observed_at is not None:
+            wire["observed_at"] = self.observed_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceCaptureInput") -> EvidenceCaptureInput:
+        """Decode a wire payload into a EvidenceCaptureInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_source_native_id = _decode_str(
+            _require_field(mapping, "source_native_id", path),
+            f"{path}.source_native_id",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_text: str | None = None
+        if "text" in mapping:
+            raw_text = mapping["text"]
+            if raw_text is None:
+                raise ContractDecodeError(
+                    f"{path}.text: null is not a valid value"
+                )
+            field_text = _decode_str(raw_text, f"{path}.text")
+        field_content_base64: str | None = None
+        if "content_base64" in mapping:
+            raw_content_base64 = mapping["content_base64"]
+            if raw_content_base64 is None:
+                raise ContractDecodeError(
+                    f"{path}.content_base64: null is not a valid value"
+                )
+            field_content_base64 = _decode_str(raw_content_base64, f"{path}.content_base64")
+        field_source_version: Identifier | None = None
+        if "source_version" in mapping:
+            raw_source_version = mapping["source_version"]
+            if raw_source_version is None:
+                raise ContractDecodeError(
+                    f"{path}.source_version: null is not a valid value"
+                )
+            field_source_version = _decode_str(raw_source_version, f"{path}.source_version")
+        field_event_at: Timestamp | None = None
+        if "event_at" in mapping:
+            raw_event_at = mapping["event_at"]
+            if raw_event_at is None:
+                raise ContractDecodeError(
+                    f"{path}.event_at: null is not a valid value"
+                )
+            field_event_at = _decode_str(raw_event_at, f"{path}.event_at")
+        field_observed_at: Timestamp | None = None
+        if "observed_at" in mapping:
+            raw_observed_at = mapping["observed_at"]
+            if raw_observed_at is None:
+                raise ContractDecodeError(
+                    f"{path}.observed_at: null is not a valid value"
+                )
+            field_observed_at = _decode_str(raw_observed_at, f"{path}.observed_at")
+        return cls(
+            source_native_id=field_source_native_id,
+            media_type=field_media_type,
+            text=field_text,
+            content_base64=field_content_base64,
+            source_version=field_source_version,
+            event_at=field_event_at,
+            observed_at=field_observed_at,
         )
 
 
@@ -8300,6 +8410,81 @@ class EvidenceSearchInput:
             include_tombstoned=field_include_tombstoned,
             limit=field_limit,
             page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCaptureResult:
+    """Result of `evidence.capture`: the stored evidence artifact's identity and stable source.
+    `capture_disposition` is `created` for the first committed capture and `already_captured`
+    for a same-source, identical-claims capture resolved under the existing collision rules;
+    a replay of the original idempotency key returns this stored canonical result and never
+    rewrites it.
+    """
+
+    evidence_id: EvidenceId
+    source: SourceReference
+    media_type: MediaType
+    content_checksum: EvidenceChecksum
+    content_length_bytes: int
+    capture_disposition: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["source"] = self.source.to_wire()
+        wire["media_type"] = self.media_type
+        wire["content_checksum"] = self.content_checksum
+        wire["content_length_bytes"] = self.content_length_bytes
+        wire["capture_disposition"] = self.capture_disposition
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EvidenceCaptureResult"
+    ) -> EvidenceCaptureResult:
+        """Decode a wire payload into a EvidenceCaptureResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_source = SourceReference.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        field_content_length_bytes = _decode_int(
+            _require_field(mapping, "content_length_bytes", path),
+            f"{path}.content_length_bytes",
+        )
+        field_capture_disposition = _decode_str(
+            _require_field(mapping, "capture_disposition", path),
+            f"{path}.capture_disposition",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+            source=field_source,
+            media_type=field_media_type,
+            content_checksum=field_content_checksum,
+            content_length_bytes=field_content_length_bytes,
+            capture_disposition=field_capture_disposition,
         )
 
 
@@ -14285,6 +14470,63 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "stale_projection",
             "token_limit_exceeded",
             "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="evidence.capture",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceCaptureInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceCaptureResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "projection_unavailable",
+            "rate_limited",
+            "size_limit_exceeded",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

@@ -748,13 +748,14 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the twelve, explicitly, with a mismatch failing closed for each of them."""
+    """Exactly the thirteen, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
         "workspace.create",
         "memory.create",
         "import.start",
+        "evidence.capture",
         "job.cancel",
         "job.retry",
         "knowledge.propose",
@@ -765,7 +766,7 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 12
+    assert len(MUTATION_PURPOSES) == 13
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -1543,7 +1544,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     assert len(shipped) == 6
     # None of the seventeen unserved operations, mutating or not.
     assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 21
+    assert len(APPLICATION_OPERATIONS - shipped) == 22
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
@@ -1730,6 +1731,7 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "workspace.create": "installation_administrator",
         "memory.create": "workspace_contributor",
         "import.start": "workspace_contributor",
+        "evidence.capture": "workspace_contributor",
         "job.cancel": "workspace_contributor",
         "job.retry": "workspace_contributor",
         "knowledge.propose": "workspace_contributor",
