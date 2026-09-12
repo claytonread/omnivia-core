@@ -162,6 +162,9 @@ class FakeSecurityApi:
         user: bytes = OWNER_SID,
         dacl_present: bool = True,
         security_error: int = 0,
+        initialize_acl_fails: bool = False,
+        add_ace_fails: bool = False,
+        set_named_security_info_result: int = 0,
     ) -> None:
         self.acl = ctypes.create_string_buffer(b"".join(aces) or b"\0")
         self.addresses: list[int] = []
@@ -177,6 +180,12 @@ class FakeSecurityApi:
         self.security_error = security_error
         self.freed: list[object] = []
         self.closed: list[object] = []
+        self.initialize_acl_fails = initialize_acl_fails
+        self.add_ace_fails = add_ace_fails
+        self.set_named_security_info_result = set_named_security_info_result
+        self.initialized_acls: list[tuple[int, int]] = []
+        self.added_aces: list[tuple[int, bytes]] = []
+        self.set_calls: list[tuple[str, int, int, bytes, bytes]] = []
 
     def get_osfhandle(self, descriptor: int) -> int:
         return 500 + descriptor
@@ -257,6 +266,27 @@ class FakeSecurityApi:
     def LocalFree(self, memory: Any) -> int:
         self.freed.append(memory.value)
         return 0
+
+    def InitializeAcl(self, acl: Any, length: int, revision: int) -> int:
+        self.initialized_acls.append((length, revision))
+        return 0 if self.initialize_acl_fails else 1
+
+    def AddAccessAllowedAce(self, acl: Any, revision: int, mask: int, sid: Any) -> int:
+        self.added_aces.append((mask, bytes(sid.raw)))
+        return 0 if self.add_ace_fails else 1
+
+    def SetNamedSecurityInfoW(
+        self,
+        name: str,
+        kind: int,
+        wanted: int,
+        owner: Any,
+        group: Any,
+        dacl: Any,
+        sacl: Any,
+    ) -> int:
+        self.set_calls.append((name, kind, wanted, bytes(owner.raw), bytes(dacl.raw)))
+        return self.set_named_security_info_result
 
 
 def test_the_windows_ace_walk_reads_each_grantee_and_mask_out_of_real_memory() -> None:
@@ -381,6 +411,118 @@ def test_the_native_windows_proof_reads_a_real_descriptor(tmp_path: Path) -> Non
 def test_the_native_windows_proof_fails_closed_on_an_unusable_descriptor() -> None:
     with pytest.raises(OSError):
         owner_private._windows_owner_only(-1)
+
+
+# --- restricting a newly created object to its owner alone --------------------
+#
+# `restrict_to_owner` is what stands in for a POSIX `mkdir`/`mkstemp` mode on
+# Windows, where there are no mode bits and creation hands the object whatever
+# DACL its parent's inheritance and the caller's token supply. Exercised here
+# with the native calls doubled, the same way the rest of this file exercises
+# the Windows branch from a host that cannot run it for real.
+
+
+def test_the_owner_only_acl_carries_a_single_ace_for_the_owner() -> None:
+    api = FakeSecurityApi([])
+    acl = owner_private._owner_only_acl(api, OWNER_SID)
+    assert acl is not None
+    assert api.initialized_acls == [
+        (owner_private._OWNER_ONLY_ACL_BYTES, owner_private._ACL_REVISION)
+    ]
+    assert api.added_aces == [(owner_private._OWNER_FULL_ACCESS, OWNER_SID)]
+
+
+def test_the_owner_only_acl_fails_closed_when_it_cannot_be_initialized() -> None:
+    api = FakeSecurityApi([], initialize_acl_fails=True)
+    assert owner_private._owner_only_acl(api, OWNER_SID) is None
+    assert api.added_aces == []
+
+
+def test_the_owner_only_acl_fails_closed_when_the_ace_cannot_be_added() -> None:
+    api = FakeSecurityApi([], add_ace_fails=True)
+    assert owner_private._owner_only_acl(api, OWNER_SID) is None
+
+
+def test_windows_restrict_to_owner_sets_the_owner_and_a_protected_dacl_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeSecurityApi([])
+    monkeypatch.setattr(owner_private, "_SECURITY_API", api)
+    assert owner_private._windows_restrict_to_owner(Path("/anywhere")) is True
+    assert len(api.set_calls) == 1
+    name, kind, wanted, owner, dacl = api.set_calls[0]
+    assert name == str(Path("/anywhere"))
+    assert kind == owner_private._SE_FILE_OBJECT
+    assert wanted == (
+        owner_private._OWNER_SECURITY_INFORMATION
+        | owner_private._DACL_SECURITY_INFORMATION
+        | owner_private._PROTECTED_DACL_SECURITY_INFORMATION
+    )
+    assert owner == OWNER_SID
+    assert len(dacl) == owner_private._OWNER_ONLY_ACL_BYTES
+
+
+def test_windows_restrict_to_owner_fails_closed_on_a_nonzero_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeSecurityApi([], set_named_security_info_result=5)
+    monkeypatch.setattr(owner_private, "_SECURITY_API", api)
+    assert owner_private._windows_restrict_to_owner(Path("/anywhere")) is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"initialize_acl_fails": True},
+        {"add_ace_fails": True},
+    ],
+    ids=["initialize-acl", "add-ace"],
+)
+def test_windows_restrict_to_owner_fails_closed_when_the_acl_cannot_be_built(
+    kwargs: dict[str, bool], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = FakeSecurityApi([], **kwargs)
+    monkeypatch.setattr(owner_private, "_SECURITY_API", api)
+    assert owner_private._windows_restrict_to_owner(Path("/anywhere")) is False
+    assert api.set_calls == []
+
+
+def test_windows_restrict_to_owner_fails_closed_when_a_native_call_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken() -> owner_private._SecurityApi:
+        raise OSError("the security API could not be loaded")
+
+    monkeypatch.setattr(owner_private, "_security_api", broken)
+    assert owner_private._windows_restrict_to_owner(Path("/anywhere")) is False
+
+
+def test_restrict_to_owner_is_a_no_op_success_off_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        owner_private,
+        "_windows_restrict_to_owner",
+        lambda _p: pytest.fail("the native path must not run off Windows"),
+    )
+    assert owner_private.restrict_to_owner(Path("/anywhere")) is True
+
+
+@pytest.mark.parametrize("restricted", [True, False])
+def test_restrict_to_owner_delegates_to_the_windows_path_when_forced(
+    restricted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    seen: list[Path] = []
+
+    def fake(path: Path) -> bool:
+        seen.append(path)
+        return restricted
+
+    monkeypatch.setattr(owner_private, "_windows_restrict_to_owner", fake)
+    target = Path("/anywhere")
+    assert owner_private.restrict_to_owner(target) is restricted
+    assert seen == [target]
 
 
 # --- the Windows reparse and named-directory policy ---------------------------
@@ -801,6 +943,62 @@ def test_the_owner_only_proof_is_taken_before_a_byte_is_written(
     assert owner_private.write_owner_private(path, b"{}") is False
     assert not path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_new_directory_is_restricted_before_its_own_proof_is_trusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows stand-in for a `mkdir` mode runs before the directory is used.
+
+    Forced here because the native call cannot run on this host: what is
+    exercised is the ordering and the fail-closed behaviour, not the Win32 call
+    itself, which `test_owner_private.py`'s restriction tests cover directly.
+    """
+    calls: list[Path] = []
+
+    def fake(path: Path) -> bool:
+        calls.append(path)
+        return True
+
+    monkeypatch.setattr(owner_private, "restrict_to_owner", fake)
+    path = tmp_path / "private" / "document.json"
+    assert owner_private.write_owner_private(path, b"{}") is True
+    assert calls[0] == path.parent
+
+
+def test_a_directory_that_cannot_be_restricted_is_never_written_into(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory this call created but could not restrict is left empty.
+
+    The same leftover a directory that fails the ordinary owner-private proof
+    already produces: no document is ever written into it, whatever else is
+    true of the directory itself.
+    """
+    monkeypatch.setattr(owner_private, "restrict_to_owner", lambda _p: False)
+    path = tmp_path / "private" / "document.json"
+    assert owner_private.write_owner_private(path, b"{}") is False
+    assert list((tmp_path / "private").iterdir()) == []
+
+
+def test_a_temporary_file_that_cannot_be_restricted_is_removed_unwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restriction is asked of the directory and then, separately, of the file."""
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    calls: list[Path] = []
+
+    def fake(path: Path) -> bool:
+        calls.append(path)
+        return path.is_dir()
+
+    monkeypatch.setattr(owner_private, "restrict_to_owner", fake)
+    path = directory / "document.json"
+    assert owner_private.write_owner_private(path, b"{}") is False
+    assert not path.exists()
+    assert list(directory.iterdir()) == []
+    assert len(calls) == 1 and calls[0].suffix == ".partial"
 
 
 def test_a_short_write_is_a_refusal_rather_than_a_truncated_document(

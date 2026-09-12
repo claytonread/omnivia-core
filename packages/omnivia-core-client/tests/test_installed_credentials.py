@@ -426,6 +426,26 @@ def test_the_credential_store_takes_the_same_pathname_walk(
 
 
 @POSIX_ONLY
+def test_the_credential_store_also_refuses_a_component_it_cannot_restrict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The credential store takes the identical pathname walk, not a copy of it.
+
+    Forced here for the reason the walk itself is forced: this host has
+    ``dir_fd`` and would otherwise never take the branch Windows takes, where a
+    freshly created component's mode is not a promise the filesystem keeps and
+    is restricted explicitly instead. What is exercised is that the credential
+    store shares that decision with the configuration store rather than
+    duplicating -- or omitting -- it.
+    """
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    monkeypatch.setattr(installed_credentials, "restrict_to_owner", lambda _p: False)
+    with pytest.raises(CredentialUnavailableError):
+        store(tmp_path).store(REFERENCE, Credential(SECRET))
+    assert not directory(tmp_path).exists()
+
+
+@POSIX_ONLY
 def test_the_credential_store_survives_a_round_trip_through_the_pathname_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1324,6 +1344,98 @@ def test_the_pathname_form_creates_no_component_through_an_unproved_parent(
         (CONFIGURATION_STORE_DIRECTORY[0], 0o755),
         (CONFIGURATION_STORE_DIRECTORY[1], 0o700),
     ]
+
+
+def test_the_pathname_form_restricts_each_created_component_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every component this call creates is restricted before the next is made.
+
+    Not merely proved once the whole chain exists: `restrict_to_owner` runs
+    immediately after each successful `mkdir`, one component at a time, in the
+    same order `mkdir` itself is called in.
+    """
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    restricted: list[str] = []
+    real = installed_credentials.restrict_to_owner
+
+    def watched(path: Path) -> bool:
+        restricted.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(installed_credentials, "restrict_to_owner", watched)
+    assert configs(tmp_path).write(HOST, DOCUMENT) is True
+    # The temporary file is restricted too, after the two directories; only the
+    # directory order is this test's subject.
+    assert [name for name in restricted if not name.endswith(".partial")] == list(
+        CONFIGURATION_STORE_DIRECTORY
+    )
+
+
+def test_the_pathname_form_does_not_restrict_a_component_it_did_not_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-existing shared directory is proved, not re-restricted.
+
+    Only a component this call brought into existence has its mode overridden;
+    one that was already there -- ``runtime/``, created by an earlier
+    installation step -- is left exactly as it was found.
+    """
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    (tmp_path / CONFIGURATION_STORE_DIRECTORY[0]).mkdir(mode=0o755)
+    restricted: list[str] = []
+    real = installed_credentials.restrict_to_owner
+
+    def watched(path: Path) -> bool:
+        restricted.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(installed_credentials, "restrict_to_owner", watched)
+    assert configs(tmp_path).write(HOST, DOCUMENT) is True
+    assert [name for name in restricted if not name.endswith(".partial")] == [
+        CONFIGURATION_STORE_DIRECTORY[1]
+    ]
+
+
+def test_a_component_that_cannot_be_restricted_ends_the_walk_before_the_next_is_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restriction failing on one component stops the next from being created.
+
+    A directory this call cannot pin down to this user alone must not become the
+    parent of another one: the chain ends here, not with a leaf created beneath
+    an unrestricted -- and therefore unproved -- parent.
+    """
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    monkeypatch.setattr(installed_credentials, "restrict_to_owner", lambda _p: False)
+    assert configs(tmp_path).write(HOST, DOCUMENT) is False
+    assert (tmp_path / CONFIGURATION_STORE_DIRECTORY[0]).is_dir()
+    assert not (
+        tmp_path / CONFIGURATION_STORE_DIRECTORY[0] / CONFIGURATION_STORE_DIRECTORY[1]
+    ).exists()
+
+
+def test_the_pathname_form_restricts_the_temporary_file_before_a_byte_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows stand-in for a `mkstemp` mode runs before the write, too.
+
+    A temporary that cannot be restricted is removed unwritten, the previous
+    document is left exactly as it was, and no partial file survives.
+    """
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    config = configs(tmp_path)
+    assert config.write(HOST, DOCUMENT) is True
+
+    def refuse_only_the_temporary(path: Path) -> bool:
+        return path.suffix != ".partial"
+
+    monkeypatch.setattr(
+        installed_credentials, "restrict_to_owner", refuse_only_the_temporary
+    )
+    assert config.write(HOST, REWRITTEN) is False
+    assert config.read(HOST) == DOCUMENT
+    assert [p.name for p in config_directory(tmp_path).iterdir()] == [f"{HOST}.json"]
 
 
 def test_the_pathname_form_refuses_when_the_chain_stops_proving_before_the_rename(

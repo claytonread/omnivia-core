@@ -92,8 +92,21 @@ the same directory afterwards. Nothing is created through a parent that has not
 just been proved -- there is no ``mkdir(parents=True)`` here, only one component
 at a time below a chain that proved out -- and nothing is renamed over or
 unlinked when the chain cannot be proved, so a substituted component ends the
-operation instead of redirecting it. On top of that the leaf keeps the
-owner-and-DACL proof taken from its *open handle* in
+operation instead of redirecting it.
+
+A component this module creates fresh is not merely proved afterwards, either.
+There are no mode bits on Windows, so the mode ``mkdir`` and ``mkstemp`` are
+given here is not a promise the filesystem keeps -- what a newly created
+directory or file actually gets is whatever DACL its parent's inheritance and
+the caller's token supply, which an elevated token can make owned by
+``BUILTIN\\Administrators`` rather than this process's own user. Every
+component this module creates, and the temporary file underneath the leaf, is
+handed to :func:`~omnivia_core_client.owner_private.restrict_to_owner`
+immediately after creation and before anything is written into it or created
+below it, which sets its owner and DACL to this user alone rather than trusting
+what creation happened to inherit -- and fails the operation closed, before the
+proof below ever runs, if that could not be done. On top of that the leaf keeps
+the owner-and-DACL proof taken from its *open handle* in
 :func:`~omnivia_core_client.owner_private.owner_private_file`, which refuses a
 reparse point for the same reason ``O_NOFOLLOW`` refuses a symlink -- what is
 open is not what the attacker substituted, and the proof is taken on the handle
@@ -133,6 +146,7 @@ from omnivia_core_client.owner_private import (
     owner_private_file,
     owner_writable_only,
     read_owner_private,
+    restrict_to_owner,
     same_file,
 )
 
@@ -506,7 +520,12 @@ def _proved_chain(
     the whole of what an attacker who owns a name above the store wants.
 
     A ``mkdir`` that loses a race is not a failure; the proof at the end decides,
-    and it decides on what is actually there.
+    and it decides on what is actually there. A ``mkdir`` that wins the race is
+    handed to :func:`~omnivia_core_client.owner_private.restrict_to_owner` before
+    this loop goes on to create anything beneath it, because the mode just given
+    to ``mkdir`` is not a promise Windows keeps: a component this call could not
+    restrict to this user alone ends the walk here rather than being created into
+    further.
     """
     if create:
         for index in range(len(names)):
@@ -520,10 +539,20 @@ def _proved_chain(
                 return None
             target = root.joinpath(*names[: index + 1])
             if _lstat(str(target), None) is None:
+                created = True
                 try:
                     target.mkdir(_LAYOUT_MODES[index])
                 except OSError:
-                    pass
+                    # Losing a race to create it is not a failure; the proof at
+                    # the end decides, and it decides on what is actually there.
+                    created = False
+                if created and not restrict_to_owner(target):
+                    # A component this call just made could not be restricted to
+                    # this user alone. Stopping here, rather than falling through
+                    # to the proof below, is what keeps a child from ever being
+                    # created beneath a directory whose security could not be
+                    # pinned down.
+                    return None
     return owner_private_chain(root, names)
 
 
@@ -568,10 +597,12 @@ def _write_by_path(
     ``mkstemp``, not a name this module composes: it creates with ``O_EXCL`` and
     mode ``0o600`` in one call, so there is no instant at which the file exists
     and is readable, and no name an attacker could have pre-created as a reparse
-    point. The proof is taken on the descriptor it returns, before a byte is
-    written, and the chain is proved again before the rename -- a chain that
-    stopped proving between the two must not be published into -- and once more
-    after it.
+    point. On Windows that mode is not kept by the filesystem, so
+    :func:`~omnivia_core_client.owner_private.restrict_to_owner` is called on the
+    fresh name first, before a byte is written and before the descriptor's own
+    proof runs; either way the proof is taken on the descriptor it returns, and
+    the chain is proved again before the rename -- a chain that stopped proving
+    between the two must not be published into -- and once more after it.
     """
     before = _proved_chain(root, names, create=True)
     if before is None:
@@ -583,10 +614,12 @@ def _write_by_path(
         descriptor, temporary = tempfile.mkstemp(
             dir=str(directory), suffix=_PARTIAL_SUFFIX
         )
-        metadata = os.fstat(descriptor)
-        failed = not owner_private_file(metadata, descriptor) or not _write_all(
-            descriptor, material
-        )
+        failed = not restrict_to_owner(Path(temporary))
+        if not failed:
+            metadata = os.fstat(descriptor)
+            failed = not owner_private_file(metadata, descriptor) or not _write_all(
+                descriptor, material
+            )
         if not failed:
             os.fsync(descriptor)
     except (OSError, ValueError):
