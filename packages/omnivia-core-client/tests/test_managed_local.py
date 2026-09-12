@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import shutil
+import stat
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -24,17 +28,65 @@ WORKSPACE_ID = "ws-managed-client-01"
 SECRET = "secret-child-output-and-endpoint"
 
 
-def config(root: Path) -> InstallationServiceConfig:
+def config(root: Path, workspace_id: str = WORKSPACE_ID) -> InstallationServiceConfig:
     return InstallationServiceConfig(
         installation_state=(root / "installation-state").resolve(),
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
     )
 
 
-def initialise(root: Path) -> None:
+def initialise(root: Path, workspace_id: str = WORKSPACE_ID) -> None:
+    """Lay down the fixed legacy layout: the one bootstrap workspace.
+
+    The manifest carries ``workspace_id`` because that fixed path is the same
+    for every ``workspace_id`` a caller could name -- only the manifest's own
+    claim tells the two apart, and that claim is what authorises a start.
+    """
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
+    (workspace / "workspace.json").write_text(
+        json.dumps({"workspace_id": workspace_id}), encoding="utf-8"
+    )
+
+
+def initialise_registered(root: Path, workspace_id: str = WORKSPACE_ID) -> Path:
+    """Lay down the deterministic registered layout `workspace.create` mints."""
+    workspace = root / "workspaces" / workspace_id
+    workspace.mkdir(parents=True)
     (workspace / "workspace.json").write_text("{}", encoding="utf-8")
+    return workspace
+
+
+def registered_socket_directory(root: Path, workspace_id: str = WORKSPACE_ID) -> Path:
+    run_directory = root / "run" / "workspaces" / workspace_id
+    uid = str(os.getuid()) if hasattr(os, "getuid") else "posix"
+    key = os.path.normcase(os.path.abspath(str(run_directory)))
+    digest = hashlib.sha256(f"{uid}\0{key}".encode()).hexdigest()[:24]
+    return managed_local._POSIX_TEMP_ROOT / f"omnivia-core-{uid}-{digest}"
+
+
+def registered_endpoint(root: Path, workspace_id: str = WORKSPACE_ID) -> str:
+    return f"unix://{registered_socket_directory(root, workspace_id)}/s.sock"
+
+
+@pytest.fixture(autouse=True)
+def _clean_registered_socket_directories() -> Iterator[None]:
+    """Remove any owner-private socket directory a test caused to be created.
+
+    ``connect_managed_local`` creates these under the platform temp root, not
+    under ``tmp_path``, precisely so the socket path stays short -- so nothing
+    pytest already cleans up removes them, and a leftover one would otherwise
+    accumulate outside every test's own sandbox. A symlink a test planted there
+    is removed by name rather than ``rmtree``, which refuses to descend through
+    a top-level symlink and would otherwise leave it behind.
+    """
+    before = set(managed_local._POSIX_TEMP_ROOT.glob("omnivia-core-*"))
+    yield
+    for created in set(managed_local._POSIX_TEMP_ROOT.glob("omnivia-core-*")) - before:
+        if created.is_symlink() or created.is_file():
+            created.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(created, ignore_errors=True)
 
 
 def result(status: str = "started", **extra: object) -> str:
@@ -308,3 +360,398 @@ def test_a_start_that_does_not_publish_a_live_service_is_refused(
         connect_managed_local(config(tmp_path), deadline=deadline)
     assert len(seen) == 2
     assert seen[0][1] is seen[1][1] is deadline
+
+
+def test_a_registered_workspace_launches_at_its_catalogued_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workspace `workspace.create` minted restarts at its own layout.
+
+    This is the crash-recovery path a killed registered workspace needs:
+    without it, `--workspace` named the fixed legacy directory regardless of
+    ``workspace_id``, and a registered workspace's service could never be
+    relaunched once killed.
+    """
+    initialise_registered(tmp_path)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connected = connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    assert connected.status == "started"
+    [(argv, _timeout)] = seen_launches
+    assert argv == [
+        "/fixed/omnivia-core-service",
+        "--managed-start",
+        "--workspace",
+        str(tmp_path / "workspaces" / WORKSPACE_ID),
+        "--installation-state",
+        str(tmp_path / "installation-state"),
+        "--endpoint",
+        registered_endpoint(tmp_path),
+        "--managed-start-log",
+        str(tmp_path / "run" / "workspaces" / WORKSPACE_ID / "service.log"),
+    ]
+
+
+def test_legacy_layout_is_still_reached_when_nothing_is_registered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-registration installation's one bootstrap workspace still starts.
+
+    No ``workspaces/<workspace_id>`` directory exists at all here -- only the
+    fixed legacy layout does -- and the launch must still reach it at the
+    unkeyed paths it always used.
+    """
+    initialise(tmp_path)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connected = connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    assert connected.status == "started"
+    [(argv, _timeout)] = seen_launches
+    assert argv == [
+        "/fixed/omnivia-core-service",
+        "--managed-start",
+        "--workspace",
+        str(tmp_path / "workspace"),
+        "--installation-state",
+        str(tmp_path / "installation-state"),
+        "--endpoint",
+        f"unix://{tmp_path}/run/s.sock",
+        "--managed-start-log",
+        str(tmp_path / "run" / "service.log"),
+    ]
+
+
+def test_a_registered_manifest_wins_over_a_stray_legacy_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registered layout is tried first: both cannot both be authoritative."""
+    initialise(tmp_path)
+    initialise_registered(tmp_path)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    [(argv, _timeout)] = seen_launches
+    assert argv[argv.index("--workspace") + 1] == str(
+        tmp_path / "workspaces" / WORKSPACE_ID
+    )
+
+
+def test_registered_workspaces_never_share_a_socket_or_a_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two concurrently managed workspaces get two independent run directories."""
+    first_id, second_id = "ws-one", "ws-two"
+    initialise_registered(tmp_path, first_id)
+    initialise_registered(tmp_path, second_id)
+    connects(monkeypatch, [None, client(), None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    first_connected = connect_managed_local(
+        config(tmp_path, first_id), deadline=Deadline.after(30)
+    )
+    second_connected = connect_managed_local(
+        config(tmp_path, second_id), deadline=Deadline.after(30)
+    )
+    assert first_connected.status == second_connected.status == "started"
+
+    [(first_argv, _), (second_argv, _)] = seen_launches
+
+    def endpoint_and_log(argv: list[str]) -> tuple[str, str]:
+        return (
+            argv[argv.index("--endpoint") + 1],
+            argv[argv.index("--managed-start-log") + 1],
+        )
+
+    first_endpoint, first_log = endpoint_and_log(first_argv)
+    second_endpoint, second_log = endpoint_and_log(second_argv)
+    assert first_endpoint != second_endpoint
+    assert first_log != second_log
+    assert first_endpoint == registered_endpoint(tmp_path, first_id)
+    assert second_endpoint == registered_endpoint(tmp_path, second_id)
+    assert first_id in first_log
+    assert second_id in second_log
+
+
+def test_an_uninitialised_workspace_id_creates_nothing_at_either_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither layout has a manifest for this ``workspace_id``: fail closed."""
+    home = tmp_path / "home"
+    home.mkdir()
+    connects(monkeypatch, [None])
+    before = sorted(home.rglob("*"))
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(home), deadline=Deadline.after(30))
+    assert sorted(home.rglob("*")) == before == []
+
+
+def test_a_registered_directory_with_no_manifest_falls_back_to_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare ``workspaces/<id>`` directory with no manifest is not a workspace.
+
+    Only a manifest -- never a directory's mere existence -- authorises a
+    layout, so an empty registered directory must not be preferred over a
+    legacy layout that does hold one.
+    """
+    (tmp_path / "workspaces" / WORKSPACE_ID).mkdir(parents=True)
+    initialise(tmp_path)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    [(argv, _timeout)] = seen_launches
+    assert argv[argv.index("--workspace") + 1] == str(tmp_path / "workspace")
+
+
+def test_a_mismatched_workspace_id_is_refused_even_with_other_workspaces_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registered sibling workspace does not authorise a different one."""
+    initialise_registered(tmp_path, "ws-other")
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local,
+        "_invoke",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unregistered workspace_id reached the launcher"
+        ),
+    )
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(
+            config(tmp_path, WORKSPACE_ID), deadline=Deadline.after(30)
+        )
+
+
+@pytest.mark.parametrize(
+    "workspace_id",
+    [
+        "..",
+        "../escaped",
+        "a/b",
+        "/etc/passwd",
+        "..\\escaped",
+    ],
+)
+def test_a_traversal_shaped_workspace_id_is_refused_before_construction(
+    workspace_id: str,
+) -> None:
+    """`InstallationServiceConfig` itself refuses these: this module never sees one.
+
+    ``workspace_id`` is validated where the configuration is written --
+    :meth:`InstallationServiceConfig.__post_init__` calls
+    :func:`~omnivia_core_client.discovery.descriptor_path`, which requires the
+    public ``WorkspaceId`` pattern -- so a value shaped like a traversal never
+    reaches :func:`connect_managed_local` or :func:`_resolve_installation` for
+    it to resist.
+    """
+    with pytest.raises(ValueError):
+        InstallationServiceConfig(
+            installation_state=Path("/does/not/matter"), workspace_id=workspace_id
+        )
+
+
+@pytest.mark.parametrize("workspace_id", ["a..", "a...b", "a:b", "a.b.c"])
+def test_an_admitted_workspace_id_still_resolves_inside_the_workspaces_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_id: str
+) -> None:
+    """A `WorkspaceId` that is a single path segment cannot escape ``workspaces``.
+
+    Every character the pattern admits (``.``, ``:``, ``_``, ``-``) is still
+    one component with no path separator, so joining it under
+    ``<home>/workspaces`` can only ever name a direct child of that directory
+    -- never a sibling or an ancestor -- regardless of how many dots it holds.
+    """
+    initialise_registered(tmp_path, workspace_id)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connect_managed_local(
+        config(tmp_path, workspace_id), deadline=Deadline.after(30)
+    )
+
+    [(argv, _timeout)] = seen_launches
+    launched_workspace = Path(argv[argv.index("--workspace") + 1])
+    assert launched_workspace.parent == tmp_path / "workspaces"
+    assert launched_workspace == tmp_path / "workspaces" / workspace_id
+
+
+def write_legacy_manifest(root: Path, content: str) -> None:
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "workspace.json").write_text(content, encoding="utf-8")
+
+
+def refuse_locate_service() -> str | None:
+    pytest.fail("a refused start reached locate_service")
+
+
+def refuse_invoke(*_args: Any, **_kwargs: Any) -> str:
+    pytest.fail("a refused start reached the launcher")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not-json",
+        json.dumps(["not", "an", "object", WORKSPACE_ID]),
+        json.dumps({}),
+        json.dumps({"workspace_id": "some-other-workspace"}),
+        json.dumps(
+            {
+                "workspace_id": WORKSPACE_ID,
+                "filler": "x" * managed_local._LEGACY_MANIFEST_MAXIMUM_BYTES,
+            }
+        ),
+        "x" * (managed_local._LEGACY_MANIFEST_MAXIMUM_BYTES + 1),
+    ],
+    ids=[
+        "malformed",
+        "not-an-object",
+        "missing-workspace-id",
+        "mismatched-workspace-id",
+        "well-shaped-but-oversized",
+        "malformed-and-oversized",
+    ],
+)
+def test_an_unauthorised_legacy_manifest_never_reaches_the_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    """Only a bounded, valid, identity-matching manifest authorises the legacy
+    layout: `<home>/workspace` is the same path for every `workspace_id`, so
+    nothing about locating it says which workspace it is."""
+    write_legacy_manifest(tmp_path, content)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(managed_local, "locate_service", refuse_locate_service)
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_legacy_workspace_directory_with_no_manifest_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "workspace").mkdir(parents=True)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(managed_local, "locate_service", refuse_locate_service)
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_legacy_manifest_naming_a_different_workspace_id_still_launches_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A correctly identified manifest still authorises its own workspace_id."""
+    other_id = "ws-legacy-alt-02"
+    initialise(tmp_path, other_id)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connected = connect_managed_local(
+        config(tmp_path, other_id), deadline=Deadline.after(30)
+    )
+
+    assert connected.status == "started"
+    assert len(seen_launches) == 1
+
+
+def test_a_registered_endpoint_uses_an_owner_private_socket_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The socket sits inside its own directory, not a bare shared-/tmp name."""
+    initialise_registered(tmp_path)
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    [(argv, _timeout)] = seen_launches
+    endpoint = argv[argv.index("--endpoint") + 1]
+    directory = registered_socket_directory(tmp_path)
+    assert endpoint == f"unix://{directory}/s.sock"
+    assert directory.parent == managed_local._POSIX_TEMP_ROOT
+    assert len(str(directory / "s.sock")) < 100
+
+
+def test_the_socket_directory_is_created_owner_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise_registered(tmp_path)
+    directory = registered_socket_directory(tmp_path)
+    assert not directory.exists()
+    connects(monkeypatch, [None, client()])
+    launcher(monkeypatch)
+
+    connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    assert directory.is_dir()
+    assert not directory.is_symlink()
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+def _plant_symlinked_socket_directory(directory: Path, tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere-socket-dir"
+    elsewhere.mkdir(mode=0o700)
+    directory.symlink_to(elsewhere, target_is_directory=True)
+
+
+def _plant_world_writable_socket_directory(directory: Path, tmp_path: Path) -> None:
+    directory.mkdir(mode=0o777)
+    directory.chmod(0o777)
+
+
+def _plant_socket_directory_as_a_file(directory: Path, tmp_path: Path) -> None:
+    directory.write_bytes(b"not a directory")
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        _plant_symlinked_socket_directory,
+        _plant_world_writable_socket_directory,
+        _plant_socket_directory_as_a_file,
+    ],
+    ids=["symlink", "world-writable", "not-a-directory"],
+)
+def test_a_hostile_preexisting_socket_directory_refuses_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, plant: Any
+) -> None:
+    initialise_registered(tmp_path)
+    directory = registered_socket_directory(tmp_path)
+    plant(directory, tmp_path)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local, "locate_service", lambda: "/fixed/omnivia-core-service"
+    )
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_socket_directory_not_owned_by_this_user_refuses_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The native owner verdict is load-bearing, not just the mode check."""
+    initialise_registered(tmp_path)
+    directory = registered_socket_directory(tmp_path)
+    directory.mkdir(mode=0o700)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local, "locate_service", lambda: "/fixed/omnivia-core-service"
+    )
+    monkeypatch.setattr(managed_local, "owner_private_directory", lambda _path: False)
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
