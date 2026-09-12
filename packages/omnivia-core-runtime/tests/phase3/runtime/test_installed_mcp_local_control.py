@@ -949,7 +949,13 @@ def test_a_control_followed_by_a_second_frame_is_refused(tmp_path: Path) -> None
         try:
             client.connect(harness.endpoint.name)
             client.sendall(frame + frame)
-            assert client.recv(1) == b"", "pipelined traffic received a response"
+            try:
+                response = client.recv(1)
+            except ConnectionResetError:
+                # Linux may reset when the server closes with the unread second
+                # frame; that is the same refusal outcome as EOF: no response.
+                response = b""
+            assert response == b"", "pipelined traffic received a response"
         finally:
             client.close()
 
