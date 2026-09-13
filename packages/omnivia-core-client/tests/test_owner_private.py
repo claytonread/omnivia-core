@@ -720,7 +720,12 @@ def test_windows_directory_preparation_applies_and_verifies_one_owner_dacl(
     calls: list[list[str]] = []
     monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
     monkeypatch.setattr(owner_private, "_windows_owner_sid_text", lambda: "S-1-5-21-7")
-    monkeypatch.setattr(owner_private, "owner_private_directory", lambda path: path == directory)
+    monkeypatch.setattr(
+        owner_private, "_windows_acl_facts_by_name", lambda _path: (False, ())
+    )
+    monkeypatch.setattr(
+        owner_private, "owner_private_directory", lambda path: path == directory
+    )
 
     def run(arguments: list[str], **_kwargs: object) -> object:
         calls.append(arguments)
@@ -736,6 +741,64 @@ def test_windows_directory_preparation_applies_and_verifies_one_owner_dacl(
     ]
 
 
+def test_windows_file_preparation_sets_owner_and_one_owner_dacl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "material.partial"
+    path.write_bytes(b"")
+    descriptor = os.open(path, os.O_RDWR)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_windows_owner_sid_text", lambda: "S-1-5-21-7")
+    monkeypatch.setattr(
+        owner_private, "_windows_acl_facts_by_name", lambda _path: (False, ())
+    )
+    monkeypatch.setattr(
+        owner_private, "owner_private_file", lambda _m, fd: fd == descriptor
+    )
+
+    def run(arguments: list[str], **_kwargs: object) -> object:
+        calls.append(arguments)
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(owner_private.subprocess, "run", run)
+    try:
+        assert owner_private.prepare_owner_private_file(path, descriptor) is True
+    finally:
+        os.close(descriptor)
+    assert [arguments[2:-1] for arguments in calls] == [
+        ["/setowner", "*S-1-5-21-7"],
+        ["/reset"],
+        ["/inheritance:r", "/grant:r", "*S-1-5-21-7:F"],
+    ]
+
+
+def test_windows_preparation_does_not_require_write_owner_when_owner_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "new-store"
+    directory.mkdir()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_windows_owner_sid_text", lambda: "S-1-5-21-7")
+    monkeypatch.setattr(
+        owner_private, "_windows_acl_facts_by_name", lambda _path: (True, ())
+    )
+    monkeypatch.setattr(owner_private, "owner_private_directory", lambda _path: True)
+
+    def run(arguments: list[str], **_kwargs: object) -> object:
+        calls.append(arguments)
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(owner_private.subprocess, "run", run)
+
+    assert owner_private.prepare_owner_private_directory(directory) is True
+    assert [arguments[2:-1] for arguments in calls] == [
+        ["/reset"],
+        ["/inheritance:r", "/grant:r", "*S-1-5-21-7:(OI)(CI)F"],
+    ]
+
+
 def test_windows_directory_preparation_fails_closed_on_a_security_tool_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -744,6 +807,9 @@ def test_windows_directory_preparation_fails_closed_on_a_security_tool_error(
     verified: list[Path] = []
     monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
     monkeypatch.setattr(owner_private, "_windows_owner_sid_text", lambda: "S-1-5-21-7")
+    monkeypatch.setattr(
+        owner_private, "_windows_acl_facts_by_name", lambda _path: (False, ())
+    )
     monkeypatch.setattr(
         owner_private,
         "owner_private_directory",

@@ -95,7 +95,14 @@ jobs:
         # acceptance gate runs these too, but on one operating system, which cannot
         # tell whether the Windows control exists. `-rs` prints what a platform
         # could not provide rather than letting it vanish into a green row.
-        run: python -m pytest tests/runtime_contract packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py packages/omnivia-core-client/tests/test_owner_private.py packages/omnivia-core-client/tests/test_installed_credentials.py -q -rs
+        run: python -m pytest tests/runtime_contract packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py -q -rs
+
+      - name: Run client owner-private tests
+        # The client suites contain adversarial POSIX fixtures that intentionally
+        # create mode-only trees. Select the native cases here: they exercise the
+        # real Windows owner and DACL APIs and the two installed-store journeys.
+        # The expression is empty on POSIX, where the complete suites execute.
+        run: python -m pytest packages/omnivia-core-client/tests/test_owner_private.py packages/omnivia-core-client/tests/test_installed_credentials.py ${{ runner.os == 'Windows' && '-k native_windows' || '' }} -q -rs
 
       - name: Qualify isolated-wheel MCP and CLI executables
         # Cross-platform by construction: this Python driver creates two clean

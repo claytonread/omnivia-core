@@ -66,6 +66,7 @@ __all__ = [
     "owner_private_file",
     "owner_writable_only",
     "prepare_owner_private_directory",
+    "prepare_owner_private_file",
     "read_owner_private",
     "same_file",
     "write_owner_private",
@@ -96,6 +97,7 @@ _MINIMUM_SID_BYTES: Final = 8
 #: Children inherit the one permitted principal rather than the broader ACL of
 #: the directory above the protected store.
 _WINDOWS_DIRECTORY_RIGHTS: Final = "(OI)(CI)F"
+_WINDOWS_FILE_RIGHTS: Final = "F"
 
 #: Every access right that lets a holder change what a directory contains, or
 #: change who may.
@@ -752,9 +754,12 @@ def write_owner_private(path: Path, content: bytes) -> bool:
             dir=str(directory), suffix=_PARTIAL_SUFFIX
         )
         metadata = os.fstat(descriptor)
-        failed = not owner_private_file(metadata, descriptor) or not _write_all(
-            descriptor, content
+        prepared = (
+            prepare_owner_private_file(Path(temporary), descriptor)
+            if _IS_WINDOWS
+            else owner_private_file(metadata, descriptor)
         )
+        failed = not prepared or not _write_all(descriptor, content)
         if not failed:
             os.fsync(descriptor)
     except (OSError, ValueError):
@@ -838,16 +843,27 @@ def _windows_owner_sid_text() -> str | None:
     return None
 
 
-def _restrict_windows_directory(path: Path) -> bool:
-    """Apply one protected, inheritable owner-only DACL to ``path``."""
+def _restrict_windows_object(path: Path, *, directory: bool) -> bool:
+    """Apply one protected owner-only DACL to a file or directory."""
     owner = _windows_owner_sid_text()
     if owner is None:
         return False
-    for arguments in (
-        ("/setowner", f"*{owner}"),
+    try:
+        owner_matches, _ = _windows_acl_facts_by_name(path)
+    except Exception:  # noqa: BLE001 -- preparation must fail closed.
+        return False
+    rights = _WINDOWS_DIRECTORY_RIGHTS if directory else _WINDOWS_FILE_RIGHTS
+    commands = [
         ("/reset",),
-        ("/inheritance:r", "/grant:r", f"*{owner}:{_WINDOWS_DIRECTORY_RIGHTS}"),
-    ):
+        ("/inheritance:r", "/grant:r", f"*{owner}:{rights}"),
+    ]
+    # An owner can rewrite its DACL but does not inherently hold WRITE_OWNER.
+    # Avoid asking for that privilege when the native proof already says the
+    # object has the required owner. Elevated tokens whose default owner is the
+    # Administrators group still take the explicit owner-normalisation path.
+    if not owner_matches:
+        commands.insert(0, ("/setowner", f"*{owner}"))
+    for arguments in commands:
         try:
             completed = subprocess.run(
                 [_system32("icacls.exe"), str(path), *arguments, "/q"],
@@ -884,7 +900,7 @@ def prepare_owner_private_directory(path: Path) -> bool:
     if not stat.S_ISDIR(metadata.st_mode) or not not_a_reparse_point(metadata):
         return False
     if _IS_WINDOWS:
-        if not _restrict_windows_directory(path):
+        if not _restrict_windows_object(path, directory=True):
             return False
     else:
         try:
@@ -892,6 +908,51 @@ def prepare_owner_private_directory(path: Path) -> bool:
         except OSError:
             return False
     return owner_private_directory(path)
+
+
+def prepare_owner_private_file(path: Path, descriptor: int) -> bool:
+    """Restrict a new file and prove its name still identifies ``descriptor``.
+
+    A protected Windows directory gives a new file an owner-only inherited DACL,
+    but an elevated token may still make the file's owner Administrators rather
+    than its token user. The reader deliberately refuses that mismatch. Reduce the
+    file explicitly before a byte is written, then prove the descriptor and path
+    still identify the same regular, non-reparse object.
+    """
+    if (
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or descriptor < 0
+        or not path.name
+    ):
+        return False
+    before = _lstat(path, None)
+    opened = _fstat(descriptor)
+    if (
+        before is None
+        or opened is None
+        or not same_file(before, opened)
+        or not stat.S_ISREG(opened.st_mode)
+        or not not_a_reparse_point(opened)
+    ):
+        return False
+    if _IS_WINDOWS:
+        if not _restrict_windows_object(path, directory=False):
+            return False
+    else:
+        try:
+            os.fchmod(descriptor, 0o600)
+        except OSError:
+            return False
+    after_path = _lstat(path, None)
+    after_open = _fstat(descriptor)
+    return (
+        after_path is not None
+        and after_open is not None
+        and same_file(before, after_path)
+        and same_file(opened, after_open)
+        and owner_private_file(after_open, descriptor)
+    )
 
 
 def owner_private_directory_metadata(metadata: os.stat_result) -> bool:

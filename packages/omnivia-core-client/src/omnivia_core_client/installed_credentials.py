@@ -133,6 +133,7 @@ from omnivia_core_client.owner_private import (
     owner_private_file,
     owner_writable_only,
     prepare_owner_private_directory,
+    prepare_owner_private_file,
     read_owner_private,
     same_file,
 )
@@ -611,9 +612,12 @@ def _write_by_path(
             dir=str(directory), suffix=_PARTIAL_SUFFIX
         )
         metadata = os.fstat(descriptor)
-        failed = not owner_private_file(metadata, descriptor) or not _write_all(
-            descriptor, material
+        prepared = (
+            prepare_owner_private_file(Path(temporary), descriptor)
+            if _IS_WINDOWS
+            else owner_private_file(metadata, descriptor)
         )
+        failed = not prepared or not _write_all(descriptor, material)
         if not failed:
             os.fsync(descriptor)
     except (OSError, ValueError):

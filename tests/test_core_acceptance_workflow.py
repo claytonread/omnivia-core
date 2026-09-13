@@ -849,14 +849,16 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
         "test_windows_named_pipe.py -q -rs"
         in _commands(_step(steps, "Run Windows named-pipe client parity"))
     )
-    trust_command = " ".join(
-        _commands(_step(steps, "Run trusted-runtime trust and path-safety tests"))
+    client_command = " ".join(
+        _commands(_step(steps, "Run client owner-private tests"))
     )
-    assert "packages/omnivia-core-client/tests/test_owner_private.py" in trust_command
+    assert "packages/omnivia-core-client/tests/test_owner_private.py" in client_command
     assert (
         "packages/omnivia-core-client/tests/test_installed_credentials.py"
-        in trust_command
+        in client_command
     )
+    assert "runner.os == 'Windows'" in client_command
+    assert "-k native_windows" in client_command
     assert "python scripts/check-platform-lock-coverage.py" in _commands(
         _step(steps, "Assert this platform's lock case actually ran")
     )
