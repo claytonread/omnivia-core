@@ -194,4 +194,3 @@ coordinator call. Revert Stage 2 code as a forward commit. No database downgrade
 is required. Existing Stage 2 profile-bearing governed records remain opaque,
 versioned evidence. Candidate overlays expire and are never admitted or added to
 live retrieval by this implementation.
-

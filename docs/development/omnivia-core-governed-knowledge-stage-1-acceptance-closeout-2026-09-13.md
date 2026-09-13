@@ -61,4 +61,3 @@ to reverse. Existing governed records carrying the Stage 1 profile versions
 remain opaque, immutable content and are not deleted or reinterpreted by a code
 rollback. Historical results retain their original selection and delivery
 references subject to current permission and retention policy.
-
