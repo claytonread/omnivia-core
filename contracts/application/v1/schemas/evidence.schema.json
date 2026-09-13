@@ -172,6 +172,85 @@
       },
       "required": ["evidence", "page"],
       "unevaluatedProperties": false
+    },
+    "EvidenceCaptureInput": {
+      "title": "EvidenceCaptureInput",
+      "description": "Input for `evidence.capture`: one caller-supplied UTF-8 text or Markdown artifact to record synchronously as immutable L0 evidence in the selected workspace, for small direct submissions such as notes, excerpts, and model-visible source material. Workspace-scoped: the workspace is the request envelope's selected workspace; this payload never carries a second, independent workspace identifier, nor any path, URL, credential, principal, grant, parser, layer, governance, or storage option. Carries exactly one of `text`/`content_base64`; enforcing that exclusivity, the strict base64/UTF-8 decode, and the decoded-byte bound is a semantic-validation concern, not a wire-shape one.",
+      "type": "object",
+      "properties": {
+        "source_native_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Caller-chosen opaque identifier of this submission within the existing source-identity domain."
+        },
+        "media_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType",
+          "description": "Media type of the submitted content. Restricted to `text/plain` or `text/markdown`; parameters such as `charset=` are forbidden -- enforcing that allowlist is a semantic-validation concern, not a wire-shape one."
+        },
+        "text": {
+          "type": "string",
+          "description": "UTF-8 text form of the content. Exactly one of `text`/`content_base64` is required."
+        },
+        "content_base64": {
+          "type": "string",
+          "description": "Strict RFC 4648 base64 of UTF-8 bytes. Exactly one of `text`/`content_base64` is required."
+        },
+        "source_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Optional provenance claim in the existing identifier domain. Does not permit overwrite or create a second identity version."
+        },
+        "event_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Optional canonical event-time claim. When `observed_at` is also present, `event_at` must not be later -- a semantic-validation concern, not a wire-shape one."
+        },
+        "observed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Optional canonical observation-time claim."
+        }
+      },
+      "required": ["source_native_id", "media_type"],
+      "unevaluatedProperties": false
+    },
+    "EvidenceCaptureResult": {
+      "title": "EvidenceCaptureResult",
+      "description": "Result of `evidence.capture`: the stored evidence artifact's identity and stable source. `capture_disposition` is `created` for the first committed capture and `already_captured` for a same-source, identical-claims capture resolved under the existing collision rules; a replay of the original idempotency key returns this stored canonical result and never rewrites it.",
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId",
+          "description": "Stable identifier of the stored evidence artifact."
+        },
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceReference",
+          "description": "The persisted source reference. `kind` is always `direct_submission` for this operation -- enforcing that is a semantic-validation concern, not a wire-shape one."
+        },
+        "media_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType",
+          "description": "Media type of the stored content."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum",
+          "description": "Checksum of the decoded content, computed over the decoded bytes before persistence. The digest is always lowercase hexadecimal -- enforcing that is a semantic-validation concern, not a wire-shape one."
+        },
+        "content_length_bytes": {
+          "type": "integer",
+          "description": "Length of the decoded content in bytes.",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "capture_disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Whether this call created a new evidence artifact (`created`) or resolved to an existing one under the collision rules (`already_captured`) -- enforcing that closed vocabulary is a semantic-validation concern, not a wire-shape one."
+        }
+      },
+      "required": [
+        "evidence_id",
+        "source",
+        "media_type",
+        "content_checksum",
+        "content_length_bytes",
+        "capture_disposition"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

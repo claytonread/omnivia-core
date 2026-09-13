@@ -2,7 +2,7 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 27-operation catalogue, composed from
+application surface is the exact frozen 28-operation catalogue, composed from
 seven separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
@@ -67,6 +67,7 @@ from omnivia_core_runtime.service.http_transport import (
     HttpTransportError,
     parse_http_endpoint,
 )
+from omnivia_core_runtime.service.import_execution import ImportJobExecutor
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
 )
@@ -74,6 +75,9 @@ from omnivia_core_runtime.service.managed_start import (
     ManagedStartStatus,
     managed_start,
     render_result,
+)
+from omnivia_core_runtime.service.mcp_control import (
+    AuthenticatedApplicationDispatch,
 )
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
@@ -760,7 +764,15 @@ def main(
             fencing_generation=started.generation,
             now_us=time.time_ns() // 1000,
         )
-        open_search_projection(started.connection, workspace_id=started.workspace_id)
+        # The blob root is this workspace's own, taken off the layout this process was
+        # launched with. It is what lets the index carry each text artifact's content
+        # as well as its identity, and it is the same root `evidence.capture`'s own
+        # post-commit barrier re-materialises from.
+        open_search_projection(
+            started.connection,
+            workspace_id=started.workspace_id,
+            blobs_root=started.layout.blobs_path,
+        )
 
         dispatcher = Dispatcher.for_service_operations(
             Grant(
@@ -801,7 +813,36 @@ def main(
         # the probe router and the application dispatcher rather than growing its own:
         # there is one object, and neither transport knows the other exists.
         router = _router_for(started, application)
-        server = LocalSocketServer(router=router, endpoint=endpoint)
+        # The two seams the local control wrapper needs, and nothing more. Both are
+        # the installation authority coordinator, which answers from its own store
+        # when this process owns the catalogue and forwards to whoever does when it
+        # does not -- so a follower workspace service administers and authenticates
+        # through the authoritative live process rather than opening its database.
+        # HTTP is deliberately not given either: this slice adds no HTTP behaviour.
+        #
+        # The seam service-owned work runs on, and the only one in this process that
+        # holds the connection, the identity and the current generation together
+        # without also holding a caller's transaction open. `import.start` settles a
+        # job and answers; this executes it, between requests, on the thread that
+        # already owns the writable connection. See `ImportJobExecutor` for why the
+        # work is bounded and why it never raises into the accept loop.
+        executor = ImportJobExecutor(
+            connection=started.connection,
+            identity=started.identity,
+            workspace_id=started.workspace_id,
+            fencing_generation=started.generation,
+            clock=started.clock,
+            blobs_root=started.layout.blobs_path,
+        )
+        server = LocalSocketServer(
+            router=router,
+            authenticated=AuthenticatedApplicationDispatch(
+                seam=installation_authority, dispatcher=application
+            ),
+            mcp_administration=installation_authority,
+            service_work=executor.run_pending,
+            endpoint=endpoint,
+        )
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
         if http_bind is not None:

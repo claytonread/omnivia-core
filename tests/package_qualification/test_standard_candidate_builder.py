@@ -747,3 +747,88 @@ def test_lifecycle_records_the_backup_mechanism_and_a_computed_restore_identity(
     assert result["private_paths_recorded"] is False
     assert result["secrets_recorded"] is False
     assert str(tmp_path) not in json.dumps(result)
+
+
+#: The first-party lines of the freeze a clean V06-7 install of this tree
+#: retained (`metadata/qualification-result.json`), with the MCP SDK beside them.
+_CLEAN_FREEZE = [
+    "mcp==2.0.0",
+    "omnivia-core-cli==0.1.0",
+    "omnivia-core-client==0.1.0",
+    "omnivia-core-mcp==0.1.0",
+    "omnivia-core-runtime==0.1.0",
+    "omnivia-core==0.1.0",
+]
+
+
+class _Completed:
+    def __init__(self, stdout: str = "") -> None:
+        self.stdout = stdout
+
+
+def test_architecture_gate_clean_install_mcp_without_desktop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Architecture v0.6 s21 g16: a clean install runs Core and connects MCP hosts,
+    with nothing from Desktop or Dev.
+
+    The live proof is `scripts/build-standard-candidate.py`, which the three
+    `Phase 2 platform` rows run: five wheels offline into a fresh virtual
+    environment, then the journey runs Core from the installed entry points and
+    drives a full MCP session from every host profile -- the Claude Desktop and
+    Claude Code configuration forms included. This test holds the two gates that
+    make a pass mean that: the install is refused unless its first-party set is
+    exactly the five Standard distributions, and the journey is refused unless
+    every host profile connected and called all six tools.
+
+    `_offline_qualification` is driven for real, with only process launches
+    stubbed, so the ordering is proven rather than read: a freeze carrying a
+    Desktop distribution is refused before the journey is ever started.
+    """
+    module = _module()
+    module._require_core_only_installation(_CLEAN_FREEZE)
+    for extra in ("omnivia-desktop==0.1.0", "omnivia_dev==0.1.0", "omnivia-platform==1"):
+        with pytest.raises(module.CandidateError):
+            module._require_core_only_installation([*_CLEAN_FREEZE, extra])
+    with pytest.raises(module.CandidateError):
+        module._require_core_only_installation(
+            [line for line in _CLEAN_FREEZE if not line.startswith("omnivia-core-mcp")]
+        )
+
+    module._require_host_interoperability(_accepted_result())
+    assert {"claude_desktop", "claude_code"} <= module.HOST_FAMILIES
+    for family in ("claude_desktop", "claude_code"):
+        result = _accepted_result()
+        result["mcp"]["hosts"][family]["connected"] = False  # type: ignore[index]
+        with pytest.raises(module.CandidateError):
+            module._require_host_interoperability(result)
+
+    launched: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> _Completed:
+        launched.append([str(part) for part in command])
+        if command[1:4] == ["-m", "pip", "freeze"]:
+            return _Completed("\n".join([*_CLEAN_FREEZE, "omnivia-desktop==0.1.0"]))
+        return _Completed()
+
+    class _NoVenv:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def create(self, _path: Path) -> None:
+            pass
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(module.venv, "EnvBuilder", _NoVenv)
+    with pytest.raises(module.CandidateError, match="five Standard distributions"):
+        module._offline_qualification(tmp_path, tmp_path, tmp_path)
+    install, freeze = launched
+    # Compared as text: the resolving-install guard in
+    # `tests/compatibility/test_root_facade_distribution.py` reads list literals.
+    assert " ".join(install[1:4]) == "-m pip install"
+    assert "--no-index" in install
+    assert set(install[-5:]) == set(module.FIRST_PARTY_NAMES)
+    assert freeze[1:4] == ["-m", "pip", "freeze"]
+    assert not any(
+        str(module.JOURNEY) in part for command in launched for part in command
+    )

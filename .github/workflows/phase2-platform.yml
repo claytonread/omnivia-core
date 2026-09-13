@@ -97,6 +97,14 @@ jobs:
         # could not provide rather than letting it vanish into a green row.
         run: python -m pytest tests/runtime_contract packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py -q -rs
 
+      - name: Run client owner-private tests
+        # The client suites contain adversarial POSIX fixtures that intentionally
+        # create mode-only trees. Select the native cases here: they exercise the
+        # real Windows owner and DACL APIs and the two installed-store journeys.
+        # The driver runs the complete suites on POSIX and the native cases on
+        # Windows without conditionally suppressing any matrix step.
+        run: python scripts/check-client-owner-private.py
+
       - name: Qualify isolated-wheel MCP and CLI executables
         # Cross-platform by construction: this Python driver creates two clean
         # environments, installs wheels only, and invokes the actual console

@@ -48,6 +48,7 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACCEPTANCE_WORKFLOW = WORKFLOW_DIR / "core-acceptance.yml"
 PERFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-performance-report.yml"
 PHASE2_WORKFLOW = WORKFLOW_DIR / "phase2-platform.yml"
+CLIENT_OWNER_PRIVATE_CHECK = REPO_ROOT / "scripts" / "check-client-owner-private.py"
 TLS_CONFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-tls-conformance.yml"
 CONFORMANCE_TREE = REPO_ROOT / "conformance"
 TLS_SUITE = CONFORMANCE_TREE / "tls" / "test_tls_conformance.py"
@@ -849,6 +850,17 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
         "test_windows_named_pipe.py -q -rs"
         in _commands(_step(steps, "Run Windows named-pipe client parity"))
     )
+    assert _commands(_step(steps, "Run client owner-private tests")) == (
+        "python scripts/check-client-owner-private.py",
+    )
+    client_check = CLIENT_OWNER_PRIVATE_CHECK.read_text(encoding="utf-8")
+    assert "packages/omnivia-core-client/tests/test_owner_private.py" in client_check
+    assert (
+        "packages/omnivia-core-client/tests/test_installed_credentials.py"
+        in client_check
+    )
+    assert 'os.name == "nt"' in client_check
+    assert 'arguments.extend(("-k", "native_windows"))' in client_check
     assert "python scripts/check-platform-lock-coverage.py" in _commands(
         _step(steps, "Assert this platform's lock case actually ran")
     )

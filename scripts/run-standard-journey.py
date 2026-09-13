@@ -4,11 +4,12 @@
 The caller supplies only an evidence directory.  This program finds the three
 installed console scripts beside its interpreter, creates a temporary workspace,
 starts the real service, writes and approves one source-cited record through the
-CLI, then drives the installed MCP server once for each named client profile --
-Claude Desktop, Claude Code, Codex and the official Python SDK -- calling every
-advertised tool from each.  It finally kills the first service, proves
-managed-local crash recovery, and stops the replacement.  Only a redacted result
-transcript is retained.
+CLI, then provisions a restricted MCP setup through the same installed CLI's
+`mcp configure` before it drives the installed MCP server once for each named
+client profile -- Claude Desktop, Claude Code, Codex and the official Python SDK
+-- calling every advertised tool from each.  It finally kills the first service,
+proves managed-local crash recovery, and stops the replacement.  Only a redacted
+result transcript is retained.
 
 The program intentionally imports no OmniVia package.  Running from an isolated
 virtual environment therefore proves the public executables and their wire
@@ -55,6 +56,10 @@ SOURCE_ID: Final = f"standalone-source-1-{QUERY_TOKEN}"
 
 PRINCIPAL: Final = "local-user"
 
+#: The display name the journey's own registered workspace is minted with.
+#: Fixed, like every other value this journey submits.
+WORKSPACE_DISPLAY_NAME: Final = "Standard journey"
+
 #: The server key inside every host configuration.  Opaque and fixed: a host
 #: configuration this program writes never carries a credential, a bearer token
 #: or a real endpoint, only this name and the launch it round-trips.
@@ -66,6 +71,20 @@ SERVER_KEY: Final = "omnivia-core"
 #: field a later schema adds -- is refused rather than ignored: a configuration
 #: this journey cannot account for in full is not one it has qualified.
 ACCEPTED_ENTRY_FIELDS: Final = frozenset({"command", "args"})
+
+#: The bare console-script name the installed CLI's `mcp configure` snippet
+#: names as its launch command -- the name a real host resolves through its own
+#: `PATH`, and not the resolved path this journey uses to start the server for
+#: its own probes.
+_MCP_CONSOLE_NAME: Final = "omnivia-core-mcp"
+
+#: The host word and profile this journey provisions through the installed
+#: owner CLI rather than writing by hand. `claude-code` is one of the accepted
+#: `HOST_PROFILES`; `restricted` is the one profile whose declared purposes --
+#: `knowledge_retrieval` and `workspace_inspection` -- cover every one of the
+#: six tools this journey calls, so the restricted setup is the whole test.
+_CONFIGURE_HOST: Final = "claude-code"
+_CONFIGURE_PROFILE: Final = "restricted"
 
 
 @dataclass(frozen=True)
@@ -215,10 +234,10 @@ def _identity(record: Mapping[str, Any], label: str) -> tuple[str, str]:
     return record_id, version
 
 
-def _endpoint(directory: Path) -> str:
+def _endpoint(directory: Path, name: str = "core.sock") -> str:
     if os.name == "nt":
         return f"pipe://omnivia-standard-{uuid.uuid4().hex}"
-    return f"unix://{directory / 'core.sock'}"
+    return f"unix://{directory / name}"
 
 
 def _start_service(
@@ -423,6 +442,90 @@ def _cli(
     return _run(arguments)
 
 
+def _workspace_format_version(descriptor: Mapping[str, Any]) -> str | None:
+    """The workspace-format version a `WorkspaceDescriptor` wire document carries."""
+    compatibility = descriptor.get("compatibility")
+    version = (
+        compatibility.get("workspace_format_version")
+        if isinstance(compatibility, Mapping)
+        else None
+    )
+    return version if isinstance(version, str) else None
+
+
+def _register_workspace(
+    service: Path, cli: Path, installation: Path, root: Path
+) -> tuple[str, Path, Mapping[str, Any]]:
+    """Mint one registered workspace through the installed owner CLI.
+
+    `service --init` bootstraps an installation and a first workspace, but a
+    bootstrapped workspace is not in the installation's authorised inventory --
+    `mcp configure` refuses a workspace that is not in it. Only
+    `workspace.create` puts one there, so the bootstrap workspace exists only
+    to give the installation a service that can answer `workspace create`; the
+    journey itself never captures into it, governs anything in it, or
+    configures MCP against it. It is stopped as soon as it has answered, so
+    the workspace the rest of this journey runs in is served by exactly one
+    process throughout.
+    """
+    bootstrap_workspace = root / "bootstrap-workspace"
+    initialized = _run(
+        [
+            str(service),
+            "--workspace",
+            str(bootstrap_workspace),
+            "--installation-state",
+            str(installation),
+            "--init",
+        ]
+    )
+    _require_status(initialized, 0, "bootstrap workspace initialization")
+    init_result = _document(initialized.stdout, "bootstrap workspace initialization")
+    bootstrap = init_result.get("workspace")
+    bootstrap_id = (
+        bootstrap.get("workspace_id") if isinstance(bootstrap, dict) else None
+    )
+    if not isinstance(bootstrap_id, str):
+        raise JourneyError("bootstrap workspace initialization omitted its identity")
+
+    bootstrap_descriptor = installation / "runtime" / bootstrap_id / "service.json"
+    bootstrap_process = _start_service(
+        service, bootstrap_workspace, installation, _endpoint(root, "bootstrap.sock")
+    )
+    try:
+        _wait_for_descriptor(bootstrap_descriptor, bootstrap_process)
+        created = _success(
+            _cli(
+                cli,
+                installation,
+                bootstrap_id,
+                ("workspace", "create"),
+                payload={"display_name": WORKSPACE_DISPLAY_NAME},
+                idempotency_key="standard-workspace-create-1",
+            ),
+            "CLI workspace create",
+        )
+    finally:
+        if bootstrap_process.poll() is None:
+            _stop_pid(bootstrap_process.pid, graceful=True)
+            try:
+                bootstrap_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                bootstrap_process.kill()
+                bootstrap_process.wait(timeout=10)
+
+    minted = created.get("workspace")
+    if not isinstance(minted, dict):
+        raise JourneyError("CLI workspace create omitted its workspace")
+    workspace_id = minted.get("workspace_id")
+    if not isinstance(workspace_id, str):
+        raise JourneyError("CLI workspace create answered without an identity")
+    workspace = root / "workspaces" / workspace_id
+    if not workspace.is_dir():
+        raise JourneyError("the registered workspace is not where it belongs")
+    return workspace_id, workspace, minted
+
+
 def _system32(program: str) -> str:
     """An absolute path to a Windows system tool.
 
@@ -496,27 +599,111 @@ def _restrict(path: Path) -> None:
         raise JourneyError(_RESTRICTION_FAILED)
 
 
-def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "format": "omnivia.mcp-config.v1",
-                "principal_id": PRINCIPAL,
-                "allowed_workspace_ids": [workspace_id],
-                "default_workspace_id": workspace_id,
-                "allowed_purposes": [
-                    "workspace_inspection",
-                    "knowledge_retrieval",
-                ],
-                "mutation_enabled": False,
-                "service_mode": "managed_local",
-                "installation_state": str(installation),
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+def _configured_path(text: str) -> Path:
+    """The protected configuration path a successful `mcp configure` snippet names.
+
+    Parsed as strictly as a host's own configuration file is in
+    `_accepted_launch`: no top-level key but `mcpServers`, no server but
+    `omnivia-core`, no entry field beyond `command` and `args`, and `command`
+    naming the installed MCP executable by the console-script name a real host
+    resolves through its own `PATH` -- never a path this journey composed.
+    """
+    rejection = JourneyError(
+        "CLI mcp configure did not print an accepted host snippet"
     )
-    _restrict(path)
+    try:
+        document = json.loads(text)
+    except ValueError as error:
+        raise rejection from error
+    if not isinstance(document, dict) or set(document) != {"mcpServers"}:
+        raise rejection
+    table = document["mcpServers"]
+    if not isinstance(table, dict) or set(table) != {SERVER_KEY}:
+        raise rejection
+    entry = table[SERVER_KEY]
+    if not isinstance(entry, dict) or set(entry) != ACCEPTED_ENTRY_FIELDS:
+        raise rejection
+    command, arguments = entry["command"], entry["args"]
+    if command != _MCP_CONSOLE_NAME:
+        raise rejection
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 2
+        or arguments[0] != "--config"
+        or not isinstance(arguments[1], str)
+        or not arguments[1]
+    ):
+        raise rejection
+    return Path(arguments[1])
+
+
+def _mcp_admin(
+    cli: Path, installation: Path, arguments: Sequence[str]
+) -> subprocess.CompletedProcess[str]:
+    return _run(
+        [str(cli), "--installation-state", str(installation), "mcp", *arguments]
+    )
+
+
+def _provision_restricted_mcp(cli: Path, installation: Path, workspace_id: str) -> Path:
+    """Provision one restricted MCP setup through the installed owner CLI.
+
+    `mcp configure` is the only way an accepted configuration -- carrying the
+    `credential_reference` the installed MCP server now requires -- ever comes
+    to exist; nothing in this journey writes that document by hand any more.
+    The resulting protected path is read from the printed snippet, the same
+    way a real host would read it, and `mcp status` is then asked to confirm
+    the whole setup -- durable grant, local credential and written
+    configuration, and the accepted six-tool manifest -- settled before this
+    journey trusts the path at all.
+    """
+    configured = _mcp_admin(
+        cli,
+        installation,
+        (
+            "configure",
+            "--host",
+            _CONFIGURE_HOST,
+            "--workspace",
+            workspace_id,
+            "--profile",
+            _CONFIGURE_PROFILE,
+        ),
+    )
+    _require_status(configured, 0, "CLI mcp configure")
+    if configured.stderr:
+        raise JourneyError("CLI mcp configure wrote an unexpected diagnostic")
+    path = _configured_path(configured.stdout)
+    expected_path = (
+        installation / "runtime" / ".installed-mcp" / f"{_CONFIGURE_HOST}.json"
+    )
+    if not path.is_absolute() or path != expected_path:
+        raise JourneyError(
+            "CLI mcp configure named an unexpected configuration path"
+        )
+
+    status = _mcp_admin(
+        cli, installation, ("status", "--host", _CONFIGURE_HOST, "--json")
+    )
+    _require_status(status, 0, "CLI mcp status")
+    if status.stderr:
+        raise JourneyError("CLI mcp status wrote an unexpected diagnostic")
+    document = _document(status.stdout, "CLI mcp status")
+    hosts = document.get("hosts")
+    row = hosts[0] if isinstance(hosts, list) and len(hosts) == 1 else None
+    if (
+        not isinstance(row, dict)
+        or row.get("host") != _CONFIGURE_HOST
+        or row.get("service") != "reachable"
+        or row.get("configuration") != "present"
+        or row.get("credential") != "present"
+        or row.get("grant") != "active"
+        or row.get("profile") != _CONFIGURE_PROFILE
+        or row.get("workspace_id") != workspace_id
+        or row.get("advertised_tool_count") != 6
+    ):
+        raise JourneyError("CLI mcp status did not report a settled restricted setup")
+    return path
 
 
 def _exception_leaves(error: BaseException) -> list[BaseException]:
@@ -816,30 +1003,12 @@ def run(output: Path) -> dict[str, Any]:
         prefix="omnivia-standard-journey-", dir=temporary_parent
     ) as temporary:
         root = Path(temporary)
-        workspace = root / "workspace"
         installation = root / "installation-state"
         endpoint = _endpoint(root)
 
-        initialized = _run(
-            [
-                str(service),
-                "--workspace",
-                str(workspace),
-                "--installation-state",
-                str(installation),
-                "--init",
-            ]
+        workspace_id, workspace, registered_workspace = _register_workspace(
+            service, cli, installation, root
         )
-        _require_status(initialized, 0, "workspace initialization")
-        init_result = _document(initialized.stdout, "workspace initialization")
-        initialized_workspace = init_result.get("workspace")
-        workspace_id = (
-            initialized_workspace.get("workspace_id")
-            if isinstance(initialized_workspace, dict)
-            else None
-        )
-        if not isinstance(workspace_id, str):
-            raise JourneyError("workspace initialization omitted its identity")
 
         source = root / "standalone-source.txt"
         source.write_text(
@@ -1018,8 +1187,7 @@ def run(output: Path) -> dict[str, Any]:
             if not isinstance(records, list) or not records:
                 raise JourneyError("CLI knowledge search did not find the approved record")
 
-            config = root / "omnivia-mcp.json"
-            _write_mcp_configuration(config, installation, workspace_id)
+            config = _provision_restricted_mcp(cli, installation, workspace_id)
             hosts = root / "host-configurations"
             hosts.mkdir()
             mcp_result = _host_interoperability(
@@ -1069,11 +1237,7 @@ def run(output: Path) -> dict[str, Any]:
                 ],
                 "workspace": {
                     "initialized": True,
-                    "format": (
-                        initialized_workspace.get("workspace_format_version")
-                        if isinstance(initialized_workspace, dict)
-                        else None
-                    ),
+                    "format": _workspace_format_version(registered_workspace),
                     "identity_preserved": approved_id == record_id,
                 },
                 "versions": {

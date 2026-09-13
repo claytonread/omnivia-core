@@ -116,7 +116,7 @@ class DocumentRouter:
 
         request = RequestEnvelope.from_wire(mapping)
         response = (self.dispatch if dispatch is None else dispatch)(request)
-        _require_answering_response(request, response)
+        require_answering_response(request, response)
         return response
 
 
@@ -137,10 +137,17 @@ def _require_object(document: object) -> Mapping[str, object]:
     return document
 
 
-def _require_answering_response(
+def require_answering_response(
     request: RequestEnvelope, response: ResponseEnvelope
 ) -> None:
     """Refuse an injected response that does not answer `request`.
+
+    Public, and the narrowest thing this module exports: the authenticated
+    local-control path dispatches a `RequestEnvelope` without going through
+    :meth:`DocumentRouter.route`, and the correlation invariant is the router's
+    only obligation that does not depend on having chosen a branch. Exported
+    rather than re-implemented there, because two copies of "what makes a
+    response answer a request" is exactly how one of them drifts.
 
     `ResponseMetadata` requires `request_id` and `correlation_id`, and the public
     semantics are that they are the request's own -- that is the whole basis on
@@ -177,4 +184,5 @@ __all__ = [
     "DocumentRouter",
     "ProtocolError",
     "RoutedResult",
+    "require_answering_response",
 ]

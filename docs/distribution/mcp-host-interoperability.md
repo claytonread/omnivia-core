@@ -8,7 +8,53 @@ each host is configured, and what the candidate retains as evidence.
 The executable proof is `scripts/run-standard-journey.py`, run inside the
 offline installed-wheel environment by `scripts/build-standard-candidate.py`.
 
-## What this proves, and what it does not
+## Two different gates, and only one of them is met
+
+There are two separate questions about host interoperability, and this document
+answers one of them. Keeping them apart is the point of this section.
+
+| | **Standard journey** (met) | **Real-host qualification** (not met) |
+|---|---|---|
+| Question | does each host's *configuration shape* round-trip to the accepted launch, and does the server that launch starts answer a standards-conformant client identically? | do the installed *host applications* discover the inventory and complete the workflow? |
+| Client | the official Model Context Protocol Python SDK | Claude Code and Codex CLI themselves |
+| Host applications | not installed, never executed | installed, executed |
+| Profile covered | `restricted` only — the six-tool manifest | both `restricted` and `authoring` |
+| Evidence | `mcp.hosts` in `standalone-journey-result.json`, gated by `scripts/build-standard-candidate.py` | none checked in |
+| Status | **passing**, and everything below describes it | **outstanding** |
+
+The rest of this document is about the first column. Nothing in it is evidence
+for the second, and no statement here should be read as saying a real host has
+passed.
+
+### What real-host qualification requires, and what exists today
+
+R004 section 13.I requires, for both Claude Code and Codex CLI on a clean
+supported macOS account: install Core from the release artifact; configure each
+profile using the documented host settings; verify `initialize` and tool
+discovery; execute the empty-workspace and import journeys; exercise same-key
+recovery after an intentionally interrupted response; verify stdout remains
+valid protocol traffic; restart the host and the Core service and repeat the
+observation; and revoke authoring and prove the mutation tools disappear or fail
+closed according to the documented restart model. The baseline named at
+specification time is Claude Code 2.1.269, Codex CLI 0.146.0, and macOS 26.5.2
+build 25F84 on arm64, or an explicitly approved release replacement recorded
+with the results.
+
+**No such record exists in this repository.** There is no qualification
+document, no retained redacted host transcript, and no script in `scripts/` that
+drives a real host application — `scripts/run-standard-journey.py` drives the
+SDK. Section 13.I is explicit that SDK-only simulations are supplemental and
+cannot satisfy that gate, and this document does not claim otherwise. Until a
+checked-in record proves it, the honest statement about Claude Code and Codex is
+that their **configuration forms** are qualified and their **applications** are
+not.
+
+The journey also still fixes the six-tool manifest (`len(tools) != 6` is a
+failure), so it covers the `restricted` profile alone. The `authoring` eleven
+are proved in-tree by `packages/omnivia-core-mcp/tests/`, not by this journey
+and not by any installed host.
+
+## What the Standard journey proves, and what it does not
 
 For each named profile the journey writes that host's own native configuration
 document, reads it back, parses it, and starts the real server from the launch
@@ -36,6 +82,16 @@ parameters in code, and it is the profile that proves no Claude-specific
 assumption is embedded in the server: the same six tools answer a client
 configured without any Claude configuration format in the path.
 
+Three vocabularies now use these words, and they are not the same vocabulary:
+
+- **Host profile**, here: one of the four *configuration forms* above. A name
+  for a file shape, not for a process.
+- **`--host`**, in `omnivia mcp configure|status|revoke`: `claude-code` or
+  `codex`, the two hosts an installation writes a protected configuration for.
+  `claude_desktop` and `official_python_sdk` are not values of it.
+- **Exposure profile**, in `omnivia.mcp-config.v1` and `tools/list`:
+  `restricted` or `authoring`, which decides the advertised inventory.
+
 ## Accepted configuration
 
 Claude Desktop and Claude Code both read an `mcpServers` object:
@@ -59,6 +115,14 @@ placeholders are absolute local paths supplied by the installation; no
 credential, bearer token, endpoint or private path appears in a published
 example, and the configuration the server itself reads
 (`omnivia.mcp-config.v1`) is owner-private and named only by `--config`.
+
+`omnivia mcp configure` prints the same two shapes for an owner to paste, and
+spells the Codex table header `[mcp_servers.omnivia-core]` without quoting the
+bare key. That is the same TOML table as the quoted `[mcp_servers."omnivia-core"]`
+this journey writes; the two documents are not describing different accepted
+forms. The CLI is the source of the snippet an installation should actually use,
+because only it knows the configuration path — see
+[the MCP package README](../../packages/omnivia-core-mcp/README.md).
 
 ## One fresh session per profile
 

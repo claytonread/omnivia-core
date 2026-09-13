@@ -583,6 +583,24 @@ def _require_host_interoperability(result: Mapping[str, Any]) -> None:
             raise rejected
 
 
+def _require_core_only_installation(freeze: Sequence[str]) -> None:
+    """Refuse a clean install whose first-party set is not exactly the five.
+
+    The journey then runs Core and connects every MCP host profile from this
+    environment, so an extra first-party distribution -- Desktop, Dev, or
+    anything else -- would let that evidence lean on something the Standard
+    profile does not ship.
+    """
+    installed = {
+        _normalized(re.split(r"[=<>!~ @]", line, maxsplit=1)[0]) for line in freeze
+    }
+    first_party = {name for name in installed if name.startswith("omnivia")}
+    if first_party != {_normalized(name) for name in FIRST_PARTY_NAMES}:
+        raise CandidateError(
+            "the clean installation is not exactly the five Standard distributions"
+        )
+
+
 def _offline_qualification(
     wheelhouse: Path, evidence: Path, temporary: Path
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -615,6 +633,7 @@ def _offline_qualification(
         for line in installed.stdout.splitlines()
         if line.strip() and not line.lower().startswith(("pip==", "setuptools=="))
     )
+    _require_core_only_installation(freeze)
     _run(
         [str(python), str(JOURNEY), "--output", str(evidence)],
         cwd=temporary,

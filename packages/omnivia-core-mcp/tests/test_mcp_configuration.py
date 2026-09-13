@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import dataclasses
 import json
 import os
@@ -11,13 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from omnivia_core_client import CredentialReference
-from omnivia_core_mcp import configuration
+from omnivia_core_client import CredentialReference, owner_private
 from omnivia_core_mcp.configuration import (
     CONFIGURATION_FORMAT,
     MAXIMUM_CONFIGURATION_BYTES,
     McpConfiguration,
     McpConfigurationError,
+    effective_profile,
     parse_configuration,
     read_configuration,
 )
@@ -199,6 +198,128 @@ def test_configuration_repr_redacts_private_values() -> None:
     assert "core.default" not in rendered
 
 
+# --- the effective exposure profile ---------------------------------------------
+#
+# Two conditions, both required and neither sufficient: `mutation_enabled` is the
+# ceiling the public document sets, and the injected admission is the floor only
+# protected state can raise. The seam has no implementation in this repository --
+# it is what Phase 6's installed setup path must supply -- so every test here
+# injects one, and the *absence* of an injection is itself a case below because
+# that is what production is.
+
+WORKSPACE = "workspace-alpha"
+PRINCIPAL = "local-user"
+
+#: Stands in for the connected `ServiceClient` `server.connect` hands the seam.
+#:
+#: A bare sentinel because this module's whole interest in it is that it arrives
+#: unchanged: nothing in `effective_profile` reads it, dials it or unwraps it, and
+#: a real client here would let an implementation that started touching it pass.
+#: The authority suite is where the connection itself is under test.
+CLIENT: Any = object()
+
+
+def admits(answer: object) -> Any:
+    """A protected admission that records what it was asked, and about whom."""
+
+    def admission(client: Any, principal_id: str, workspace_id: str) -> Any:
+        asked.append((client, principal_id, workspace_id))
+        return answer
+
+    asked: list[tuple[Any, str, str]] = []
+    admission.asked = asked  # type: ignore[attr-defined]
+    return admission
+
+
+def test_mutation_enabled_false_or_absent_is_restricted_whatever_admission_says() -> (
+    None
+):
+    """The ceiling is checked first and is never negotiated.
+
+    A protected record of authoring intent does not widen a configuration that
+    does not permit authoring, and an absent field is the same as a false one --
+    which is what makes every existing installed configuration restricted
+    without being rewritten. The admission is not even consulted: there is no
+    question to ask once the ceiling has answered.
+    """
+    document = managed_document()
+    del document["mutation_enabled"]
+    for config in (
+        parse_configuration(document),
+        parse_configuration(managed_document()),
+    ):
+        admission = admits(True)
+        assert (
+            effective_profile(config, CLIENT, WORKSPACE, authoring_admission=admission)
+            == "restricted"
+        )
+        assert admission.asked == []
+
+
+def test_mutation_enabled_true_alone_is_still_restricted() -> None:
+    """The upgrade rule, and the one that matters most: editing the public
+    configuration file is not evidence of anything.
+
+    This is also the production default. `server.main` injects no admission, so a
+    legacy or hand-written `mutation_enabled: true` raises a ceiling over an empty
+    room and the installed server advertises the read-only six.
+    """
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    assert config.mutation_enabled is True
+    assert effective_profile(config, CLIENT, WORKSPACE) == "restricted"
+
+
+def test_authoring_needs_the_ceiling_and_the_protected_admission_together() -> None:
+    """Both, and the admission is asked with exactly three things: the connected
+    client, this principal and this workspace -- not a name from a tool call,
+    which is why the profile is settled at startup where no such name exists.
+
+    The client goes first and arrives untouched. That is what lets Phase 6 read
+    its protected record through the authority this session already established,
+    instead of opening the installation database or dialling again."""
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    admission = admits(True)
+    assert (
+        effective_profile(config, CLIENT, WORKSPACE, authoring_admission=admission)
+        == "authoring"
+    )
+    assert admission.asked == [(CLIENT, PRINCIPAL, WORKSPACE)]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [False, None, "true", 1, ["authoring"]],
+    ids=["denied", "no-answer", "truthy-string", "truthy-int", "truthy-list"],
+)
+def test_anything_but_a_true_admission_is_a_denial(answer: object) -> None:
+    """`is True`, not truthiness. A seam that answered with a record, a reason or
+    a status code has not said yes, and reading a non-empty value as consent is
+    how a protected boundary becomes an accident."""
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    assert (
+        effective_profile(config, CLIENT, WORKSPACE, authoring_admission=admits(answer))
+        == "restricted"
+    )
+
+
+def test_an_admission_that_raises_fails_closed() -> None:
+    """A protected authority that could not be consulted has confirmed nothing.
+
+    Widening the surface because a lookup broke would widen it for exactly the
+    reason it should not, so the refusal is silent here and loud nowhere: the
+    server simply advertises the narrow inventory.
+    """
+
+    def broken(_client: Any, _principal_id: str, _workspace_id: str) -> bool:
+        raise RuntimeError("/private/installation-state/mcp-principals.sqlite")
+
+    config = parse_configuration(managed_document(mutation_enabled=True))
+    assert (
+        effective_profile(config, CLIENT, WORKSPACE, authoring_admission=broken)
+        == "restricted"
+    )
+
+
 def test_a_private_regular_file_is_read_by_explicit_absolute_path(
     tmp_path: Path,
 ) -> None:
@@ -247,7 +368,7 @@ def test_an_owner_mismatch_is_refused(
 ) -> None:
     path = write_config(tmp_path / "mcp.json", managed_document())
     real_effective_user = os.geteuid()
-    monkeypatch.setattr(configuration.os, "geteuid", lambda: real_effective_user + 1)
+    monkeypatch.setattr(owner_private.os, "geteuid", lambda: real_effective_user + 1)
     with pytest.raises(McpConfigurationError):
         read_configuration(path)
 
@@ -256,7 +377,7 @@ def test_a_replacement_during_the_read_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = write_config(tmp_path / "mcp.json", managed_document())
-    original = configuration._same_file
+    original = owner_private.same_file
     comparisons = 0
 
     def disagree_after_open(first: os.stat_result, second: os.stat_result) -> bool:
@@ -264,7 +385,7 @@ def test_a_replacement_during_the_read_is_refused(
         comparisons += 1
         return comparisons == 1 and original(first, second)
 
-    monkeypatch.setattr(configuration, "_same_file", disagree_after_open)
+    monkeypatch.setattr(owner_private, "same_file", disagree_after_open)
     with pytest.raises(McpConfigurationError):
         read_configuration(path)
 
@@ -273,11 +394,11 @@ def test_windows_requires_an_owner_only_acl_verdict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = write_config(tmp_path / "mcp.json", managed_document())
-    monkeypatch.setattr(configuration, "_IS_WINDOWS", True)
-    monkeypatch.setattr(configuration, "_windows_owner_only", lambda descriptor: False)
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_windows_owner_only", lambda d: False)
     with pytest.raises(McpConfigurationError):
         read_configuration(path)
-    monkeypatch.setattr(configuration, "_windows_owner_only", lambda descriptor: True)
+    monkeypatch.setattr(owner_private, "_windows_owner_only", lambda d: True)
     assert read_configuration(path).service_mode == "managed_local"
 
 
@@ -285,273 +406,15 @@ def test_windows_acl_verifier_errors_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = write_config(tmp_path / "mcp.json", managed_document())
-    monkeypatch.setattr(configuration, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
 
     def broken(_descriptor: int) -> bool:
         raise RuntimeError("C:/private/credential-store")
 
-    monkeypatch.setattr(configuration, "_windows_owner_only", broken)
+    monkeypatch.setattr(owner_private, "_windows_owner_only", broken)
     with pytest.raises(McpConfigurationError) as raised:
         read_configuration(path)
     assert_payload_free(raised.value, "C:/private/credential-store", str(path))
-
-
-@pytest.mark.parametrize(
-    ("owner_matches", "aces", "owner_only"),
-    [
-        # An owner-only file: every access-allowed ACE names the owner.
-        (True, ((0, True),), True),
-        (True, ((1, False), (0, True)), True),
-        # A present but empty DACL denies everyone, which is narrower still.
-        (True, (), True),
-        # An absent or NULL DACL grants everyone everything.
-        (True, None, False),
-        # The file is owner-only for somebody who is not this process's user.
-        (False, ((0, True),), False),
-        (False, None, False),
-        # An access-allowed ACE naming another principal widens the reach.
-        (True, ((0, False),), False),
-        (True, ((0, True), (0, False)), False),
-        # Unrecognised access-allowed forms: object, callback, callback-object,
-        # compound. Their grantee is not where this reader looks for it.
-        (True, ((5, True),), False),
-        (True, ((9, True),), False),
-        (True, ((11, True),), False),
-        (True, ((4, True),), False),
-    ],
-)
-def test_the_windows_owner_only_dacl_policy(
-    owner_matches: bool, aces: tuple[tuple[int, bool], ...] | None, owner_only: bool
-) -> None:
-    assert configuration._owner_only_dacl(owner_matches, aces) is owner_only
-
-
-def windows_sid(*subauthorities: int) -> bytes:
-    """One well-formed binary SID: revision, count, authority, subauthorities."""
-    return bytes([1, len(subauthorities), 0, 0, 0, 0, 0, 5]) + b"".join(
-        value.to_bytes(4, "little") for value in subauthorities
-    )
-
-
-def windows_ace(kind: int, sid: bytes, *, size: int | None = None) -> bytes:
-    """One ACE: `ACE_HEADER`, `ACCESS_MASK`, then the trustee SID inline."""
-    declared = len(sid) + 8 if size is None else size
-    return (
-        bytes([kind, 0])
-        + declared.to_bytes(2, "little")
-        + (0x1F01FF).to_bytes(4, "little")
-        + sid
-    )
-
-
-OWNER_SID = windows_sid(21, 1, 2, 3, 1001)
-OTHER_SID = windows_sid(21, 1, 2, 3, 1002)
-
-
-class FakeSecurityApi:
-    """A Win32 double that lays its ACL out in real memory.
-
-    Only the API is faked. The decoder under test still walks raw addresses,
-    reads `ACE_HEADER` fields at their true offsets, and copies each SID out of
-    that memory -- the part that cannot otherwise run off Windows.
-    """
-
-    def __init__(
-        self,
-        aces: list[bytes],
-        *,
-        owner: bytes = OWNER_SID,
-        user: bytes = OWNER_SID,
-        dacl_present: bool = True,
-        security_error: int = 0,
-    ) -> None:
-        self.acl = ctypes.create_string_buffer(b"".join(aces) or b"\0")
-        self.addresses: list[int] = []
-        offset = 0
-        for encoded in aces:
-            self.addresses.append(ctypes.addressof(self.acl) + offset)
-            offset += len(encoded)
-        self.owner = ctypes.create_string_buffer(owner)
-        self.user = ctypes.create_string_buffer(user)
-        self.token_user = configuration._TokenUser()
-        self.token_user.User.Sid = ctypes.addressof(self.user)
-        self.dacl_present = dacl_present
-        self.security_error = security_error
-        self.freed: list[object] = []
-        self.closed: list[object] = []
-
-    def get_osfhandle(self, descriptor: int) -> int:
-        return 500 + descriptor
-
-    def GetSecurityInfo(
-        self,
-        handle: int,
-        kind: int,
-        wanted: int,
-        owner: Any,
-        group: Any,
-        dacl: Any,
-        sacl: Any,
-        security: Any,
-    ) -> int:
-        owner.value = ctypes.addressof(self.owner)
-        dacl.value = ctypes.addressof(self.acl) if self.dacl_present else None
-        security.value = 0xD0D0
-        return self.security_error
-
-    def GetCurrentProcess(self) -> int:
-        return 7
-
-    def OpenProcessToken(self, process: int, access: int, token: Any) -> int:
-        token.value = 0x7070
-        return 1
-
-    def GetTokenInformation(
-        self, token: Any, kind: int, buffer: Any, size: int, needed: Any
-    ) -> int:
-        needed.value = ctypes.sizeof(self.token_user)
-        if buffer is None:
-            return 0
-        ctypes.memmove(buffer, ctypes.byref(self.token_user), needed.value)
-        return 1
-
-    def IsValidSid(self, sid: int) -> int:
-        return 1
-
-    def GetLengthSid(self, sid: int) -> int:
-        return 8 + 4 * ctypes.string_at(sid + 1, 1)[0]
-
-    def GetAclInformation(
-        self, acl: int, information: Any, size: int, kind: int
-    ) -> int:
-        information.AceCount = len(self.addresses)
-        return 1
-
-    def GetAce(self, acl: int, index: int, ace: Any) -> int:
-        ace.value = self.addresses[index]
-        return 1
-
-    def CloseHandle(self, handle: Any) -> int:
-        self.closed.append(handle.value)
-        return 1
-
-    def LocalFree(self, memory: Any) -> int:
-        self.freed.append(memory.value)
-        return 0
-
-
-def test_the_windows_ace_walk_reads_each_grantee_out_of_real_memory() -> None:
-    api = FakeSecurityApi(
-        [
-            windows_ace(0, OWNER_SID),
-            windows_ace(1, OTHER_SID),
-            windows_ace(0, OTHER_SID),
-            windows_ace(9, OWNER_SID),
-        ]
-    )
-    assert configuration._dacl_aces(api, 1, OWNER_SID) == (
-        (0, True),
-        (1, False),
-        (0, False),
-        (9, False),
-    )
-
-
-def test_a_null_dacl_is_reported_as_no_dacl_rather_than_an_empty_one() -> None:
-    assert configuration._dacl_aces(FakeSecurityApi([]), None, OWNER_SID) is None
-    assert configuration._dacl_aces(FakeSecurityApi([]), 1, OWNER_SID) == ()
-
-
-def test_an_ace_declaring_less_room_than_its_sid_needs_is_refused() -> None:
-    api = FakeSecurityApi([windows_ace(0, OWNER_SID, size=8)])
-    with pytest.raises(OSError):
-        configuration._dacl_aces(api, 1, OWNER_SID)
-
-
-@pytest.mark.parametrize(
-    ("api", "owner_only"),
-    [
-        (FakeSecurityApi([windows_ace(0, OWNER_SID)]), True),
-        (
-            FakeSecurityApi([windows_ace(0, OWNER_SID), windows_ace(0, OTHER_SID)]),
-            False,
-        ),
-        (FakeSecurityApi([windows_ace(0, OWNER_SID)], user=OTHER_SID), False),
-        (FakeSecurityApi([], dacl_present=False), False),
-    ],
-)
-def test_the_windows_verdict_from_end_to_end_native_facts(
-    api: FakeSecurityApi, owner_only: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(configuration, "_SECURITY_API", api)
-    assert configuration._windows_owner_only(3) is owner_only
-    assert api.freed == [0xD0D0]
-    assert api.closed == [0x7070]
-
-
-def test_the_security_descriptor_and_token_are_released_when_the_walk_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    api = FakeSecurityApi([windows_ace(0, OWNER_SID, size=8)])
-    monkeypatch.setattr(configuration, "_SECURITY_API", api)
-    with pytest.raises(OSError):
-        configuration._windows_owner_only(3)
-    assert api.freed == [0xD0D0]
-    assert api.closed == [0x7070]
-
-
-def test_a_security_info_error_still_releases_an_allocated_descriptor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    api = FakeSecurityApi([], security_error=5)
-    monkeypatch.setattr(configuration, "_SECURITY_API", api)
-    with pytest.raises(OSError):
-        configuration._windows_owner_only(3)
-    assert api.freed == [0xD0D0]
-    assert api.closed == []
-
-
-def test_the_windows_verifier_decides_only_from_the_native_facts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for facts, expected in (
-        ((True, ((0, True),)), True),
-        ((True, ((0, False),)), False),
-        ((True, None), False),
-        ((False, ((0, True),)), False),
-    ):
-        monkeypatch.setattr(configuration, "_windows_acl_facts", lambda _d, f=facts: f)
-        assert configuration._windows_owner_only(7) is expected
-
-
-@pytest.mark.skipif(os.name != "nt", reason="the native proof is Windows-only")
-def test_the_native_windows_proof_reads_a_real_descriptor(tmp_path: Path) -> None:
-    path = write_config(tmp_path / "mcp.json", managed_document())
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        # The owner verdict is not asserted: an elevated process creates files
-        # owned by Administrators, so it is host policy, not a property of this
-        # code. What is asserted is that the whole native path completes, hands
-        # back well-formed facts, and stays stable when repeated -- a leaked or
-        # double-freed handle or descriptor would not survive the second call.
-        owner_matches, aces = configuration._windows_acl_facts(descriptor)
-        assert isinstance(owner_matches, bool)
-        assert aces is not None and all(
-            isinstance(kind, int) and isinstance(grants_owner, bool)
-            for kind, grants_owner in aces
-        )
-        assert configuration._windows_acl_facts(descriptor) == (owner_matches, aces)
-        assert configuration._windows_owner_only(descriptor) is (
-            configuration._owner_only_dacl(owner_matches, aces)
-        )
-    finally:
-        os.close(descriptor)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="the native proof is Windows-only")
-def test_the_native_windows_proof_fails_closed_on_an_unusable_descriptor() -> None:
-    with pytest.raises(OSError):
-        configuration._windows_owner_only(-1)
 
 
 @pytest.mark.parametrize(
@@ -614,3 +477,91 @@ def test_the_public_model_accepts_only_tuple_authority_sets() -> None:
             endpoint=None,
             credential_reference=None,
         )
+
+
+# --- the managed-local credential reference ------------------------------------
+#
+# A `managed_local` configuration written by the installed setup path names the
+# credential this installation filed for this host. It is a *name*: the document
+# still carries no material, no store location and no path to one.
+
+
+def test_a_managed_configuration_may_name_the_installed_credential() -> None:
+    config = parse_configuration(
+        managed_document(credential_reference="omcp-0123456789abcdef")
+    )
+    assert config.service_mode == "managed_local"
+    assert config.credential_reference == CredentialReference("omcp-0123456789abcdef")
+    assert config.installation_state == INSTALLATION_STATE
+    assert config.endpoint is None
+
+
+def test_a_managed_configuration_without_a_reference_is_still_accepted() -> None:
+    """The shape every installation had before the setup path existed.
+
+    Read, and reaching its service -- but authenticating nothing, which is why
+    the profile rule below can never let it author.
+    """
+    assert parse_configuration(managed_document()).credential_reference is None
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "",
+        "has space",
+        "../../etc/passwd",
+        "a/b",
+        "..",
+        "eyHeader.payload.signature",
+        "x" * 300,
+        7,
+        None,
+        ["omcp-0123456789abcdef"],
+    ],
+)
+def test_an_unsafe_credential_reference_fails_closed_before_initialization(
+    reference: object,
+) -> None:
+    """Unsafe credential configuration is refused where it is read.
+
+    Not carried to a store lookup that would have to decide what an inadmissible
+    name means, and not deferred to the first call: `read_configuration` is what
+    runs before MCP initialization, so a document like this advertises no tool at
+    all rather than advertising tools it cannot authenticate.
+    """
+    with pytest.raises(McpConfigurationError):
+        parse_configuration(managed_document(credential_reference=reference))
+
+
+def test_a_managed_configuration_still_refuses_an_endpoint() -> None:
+    """A reference is admitted; a second service location is not."""
+    with pytest.raises(McpConfigurationError):
+        parse_configuration(
+            managed_document(
+                credential_reference="omcp-0123456789abcdef",
+                endpoint="https://core.example",
+            )
+        )
+
+
+def test_direct_construction_of_a_managed_reference_revalidates() -> None:
+    config = parse_configuration(
+        managed_document(credential_reference="omcp-0123456789abcdef")
+    )
+    assert (
+        dataclasses.replace(config, credential_reference=None).credential_reference
+        is None
+    )
+    with pytest.raises(McpConfigurationError):
+        dataclasses.replace(config, credential_reference="omcp-plain-string")  # type: ignore[arg-type]
+    with pytest.raises(McpConfigurationError):
+        dataclasses.replace(config, endpoint="https://core.example:443")
+
+
+def test_a_referenced_managed_configuration_still_redacts_its_repr() -> None:
+    config = parse_configuration(
+        managed_document(credential_reference="omcp-0123456789abcdef")
+    )
+    assert repr(config) == "McpConfiguration(<redacted>)"
+    assert "omcp-0123456789abcdef" not in repr(config)

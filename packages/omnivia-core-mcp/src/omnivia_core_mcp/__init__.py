@@ -1,7 +1,11 @@
 """omnivia-core-mcp: the Model Context Protocol server for OmniVia Core.
 
-A stdio MCP server that gives an AI host read-only access to one local OmniVia
-Core workspace, over the official Model Context Protocol Python SDK v2.
+A stdio MCP server that gives an AI host access to one local OmniVia Core
+workspace, over the official Model Context Protocol Python SDK v2, under one of
+two fixed profiles: ``restricted``, six read tools, which is the default and
+every fallback; and ``authoring``, those six plus three mutations and two job
+reads, reachable only when a protected record of a human owner's explicit
+authoring intent admits exactly this principal and this workspace.
 
 **Three MCP modules, three separable decisions:**
 
@@ -26,9 +30,10 @@ and on the official ``mcp`` SDK. It does not depend on ``omnivia-core-cli``, on
 implementation -- and it owns no workspace lease and opens no storage.
 
 **What this server will not do**, by construction rather than by policy: create a
-workspace, stop a service it started, expose a lifecycle or administrative
-operation, accept a caller-supplied filesystem path, or call anything absent from
-the manifest.
+workspace, stop a service it started, expose a lifecycle, governance or
+administrative operation, cancel or retry a job, accept a caller-supplied
+filesystem path, URL, credential, parser choice or runtime flag, or call anything
+absent from the manifest.
 
 **The call path is complete.** Owner resolution 005 R005-01 moved
 :class:`~omnivia_core_client.LocalIpcTransport` into ``omnivia-core-client``, and

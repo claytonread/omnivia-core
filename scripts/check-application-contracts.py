@@ -1197,6 +1197,15 @@ _GOV_MUT: tuple[str, ...] = tuple(
 #: version it refreshes and retries.
 _CHAT_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 _IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceeded")))
+#: `evidence.capture`'s own profile: a same-source, identical-claims capture resolves
+#: to `already_captured` rather than erroring, but any claim mismatch against an
+#: existing source identity is a ``conflict``; the retrieval barrier makes the capture
+#: transaction observe the search projection, so it can also fail with
+#: ``projection_unavailable``/``stale_projection``, and the 1 MiB decoded-byte bound
+#: makes ``size_limit_exceeded`` reachable the same way ``import.start`` reaches it.
+_EVIDENCE_CAPTURE: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "projection_unavailable", "stale_projection", "size_limit_exceeded"))
+)
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1231,6 +1240,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "GRAPH_READ": _GRAPH_READ,
     "CONTEXT_READ": _CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
+    "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1269,7 +1279,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 27 application operations, in the frozen code-point order. Runtime
+#: The exact 28 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1296,6 +1306,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",
         "context-pack", "ContextPackBuild", "CONTEXT_READ", False,
+    ),
+    "evidence.capture": FrozenOperation(
+        "workspace", ("memory:write",), "create", "evidence.write",
+        "evidence", "EvidenceCapture", "EVIDENCE_CAPTURE", False,
     ),
     "evidence.search": FrozenOperation(
         "workspace", ("memory:read",), "none", "evidence.read",

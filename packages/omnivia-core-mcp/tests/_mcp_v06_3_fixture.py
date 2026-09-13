@@ -1,13 +1,52 @@
-"""One governed workspace, written the accepted way, for the MCP end-to-end suite.
+"""One governed workspace, created and served the accepted way, for the MCP suite.
 
-**Why this file exists at all.** `test_mcp_stdio_end_to_end` calls six tools and
-has to be able to say what each one should come back with. Nothing in the MCP
-distribution can create that state -- it is read-only by construction -- so the
-state has to be built by the runtime, in this process, before the service is
-started. This module is the only place in this package's tests that imports
-`omnivia_core_runtime`, and the MCP server under test never does: it runs as a
-separate process reached only over a socket, which is the arrangement in which
-"MCP does not import the runtime" is proven rather than asserted.
+**Why this file exists at all.** `test_mcp_stdio_end_to_end` calls the exposed
+tools and has to be able to say what each one should come back with. The MCP
+distribution creates no workspace and seeds no fact -- it exposes reads and, in
+the wider profile, a handful of writes, none of which can bootstrap an
+installation -- so the state has to be built by the runtime, in this process,
+before the service is started. This module is the only place in this package's
+tests that imports `omnivia_core_runtime`, and the MCP server under test never
+does: it runs as a separate process reached only over a socket, which is the
+arrangement in which "MCP does not import the runtime" is proven rather than
+asserted.
+
+**The other callers want the opposite, and get it from the same three steps.**
+`test_mcp_standalone_authoring_acceptance` runs R004 section 13.B's journey,
+which forbids pre-seeded application data of any kind and begins with a host
+nobody has configured. `serving(seed=False, configure=False)` is that: the same
+registered workspace and the same real service, with the seeding pass and the
+MCP provisioning below both skipped, so the only writer that workspace ever has
+is the MCP surface under test. `test_mcp_import_job_acceptance` runs section
+13.D's import journey on that same empty workspace plus exactly one thing MCP
+cannot make for itself -- `serving(seed=False, stage=True, configure=False)`
+adds the verified staged source R004 section 8.3 requires an import to name, and
+nothing else. `test_mcp_recovery_acceptance` runs section 13.F's recovery cases
+on that same empty workspace and needs two more things from this file:
+:meth:`GovernedService.restart`, which really stops the service and really
+starts it again so a commit has to survive a process lifetime; and
+:func:`settlement`, a read-only count of the coordinator's own ledger, which is
+the one durable fact about a replay that no exposed tool can answer.
+
+**The workspace is registered, not invented.** It is created by dispatching the
+canonical `workspace.create` request through a real
+:class:`~omnivia_core_runtime.service.installation_host.InstallationAuthorityCoordinator`
+-- the production installation authority, started here in-process and closed
+again before anything else runs -- so the workspace this suite serves is one the
+installation catalogue actually holds. That matters for more than tidiness:
+`mcp.configure` refuses a workspace outside the installation's authorised
+inventory, so a workspace merely migrated onto disk could never be given a
+dedicated MCP principal, and every managed-local configuration below would have
+to name a credential nothing issued.
+
+**The MCP principal is issued by the service, never minted here.** Once the
+service is ready, :func:`serving` connects to it as an ordinary client and calls
+the public `mcp_configure` local control, exactly as `omnivia mcp configure`
+does. The bearer that comes back is written straight into this installation's
+:class:`~omnivia_core_client.InstalledCredentialStore` under the reference the
+service chose, and dropped. What the yielded :class:`GovernedService` carries is
+the redacted half of that setup -- the reference, the principal and the profile
+-- which is all a trusted configuration document is allowed to hold.
 
 **Every write goes through the accepted fenced writer.** `fenced_transaction`
 validates the lease, the generation and the mutation guard on entry and again
@@ -41,16 +80,29 @@ from __future__ import annotations
 import json
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
+from omnivia_core_client import (
+    Credential,
+    CredentialReference,
+    Deadline,
+    InstallationServiceConfig,
+    InstalledCredentialStore,
+    McpSetupView,
+    ServiceClient,
+    local_control_transport,
+    mcp_configure,
+)
 from omnivia_core_runtime.ownership.discovery import discover
 from omnivia_core_runtime.ownership.fencing import fenced_transaction, open_guard
 from omnivia_core_runtime.ownership.identity import (
@@ -58,38 +110,85 @@ from omnivia_core_runtime.ownership.identity import (
     ServiceInstanceIdentity,
     SystemClock,
 )
-from omnivia_core_runtime.ownership.lease import acquire_lease
+from omnivia_core_runtime.ownership.lease import LeaseRecord, acquire_lease, read_lease
+from omnivia_core_runtime.service.authorization import Grant
+from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.installation import WORKSPACE_CREATE_OPERATION
+from omnivia_core_runtime.service.installation_host import (
+    InstallationAuthorityCoordinator,
+)
+from omnivia_core_runtime.service.main import (
+    LOCAL_PRINCIPAL,
+    WORKSPACE_STORAGE_DIRECTORY,
+)
+from omnivia_core_runtime.service.mutation import WORKSPACE_ADMINISTRATION_PURPOSE
+from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
+from omnivia_core_runtime.service.probes import ServiceFacts
 from omnivia_core_runtime.service.transport import endpoint_for_path
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
-from omnivia_core_runtime.storage.legacy import migrate_legacy_database
-from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
+from omnivia_core_runtime.workspace.manifest_store import read_manifest
 
-from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
+from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    CapabilityRequirement,
+    ClientIdentity,
+    RequestEnvelope,
+    RequestMetadata,
+    ServiceEndpointDescriptor,
+    SuccessResponseEnvelope,
+    WorkspaceCreateResult,
+    WorkspaceDescriptor,
+    get_operation_metadata,
+)
 
-#: The workspace every MCP call in the suite is answered from.
-WORKSPACE_ID = "ws-mcp-end-to-end-01"
+#: The display name `workspace.create` is asked for, and the one
+#: `workspace.inspect` must answer with. The workspace *identifier* is not a
+#: constant any more and must not become one: the installation mints it, and a
+#: fixture that pinned it would be asserting against a value nothing registered.
 WORKSPACE_NAME = "MCP end to end"
 
-#: The workspace's creation instant *as the manifest stores it*: the offset form
-#: `datetime.now(UTC).isoformat()` writes, which is what `workspace.create` puts in
-#: every real workspace's `workspace.json`. The fixture deliberately stores that
-#: spelling rather than the canonical one, because a fixture written with a literal
-#: `Z` is a workspace this build never creates -- and while it was written that way,
-#: the suite could not see that a real installed wheel emits `+00:00` in structured
-#: content and is refused by the official client against the advertised
-#: `workspace.inspect` output schema, whose `Timestamp` is a pattern over the string.
-WORKSPACE_CREATED_AT = "2026-08-07T00:00:00+00:00"
+#: The MCP host this installation is configured for. One of the service's own
+#: closed `McpHost` words -- there is no third, and a name outside that
+#: vocabulary is refused before a principal is minted.
+MCP_HOST = "claude-code"
 
-#: The same instant in the Application Contract's own spelling -- what
-#: `workspace.inspect` must answer with, having canonicalized the manifest's value at
-#: the application boundary. Two constants rather than one on purpose: an assertion
-#: against a single constant would follow the manifest wherever it was respelled and
-#: would stop being an assertion about the wire.
-WORKSPACE_CREATED_AT_CANONICAL = "2026-08-07T00:00:00Z"
+#: The two profiles `mcp.configure` knows, spelled as the service's own
+#: `McpProfile` spells them. `serving()` asks for the restricted one unless a
+#: caller says otherwise: the restricted six are what every read-side test in
+#: the suite expects, and the wider profile is an explicit act here for the same
+#: reason it is one in production -- authoring intent is recorded, never
+#: inferred.
+RESTRICTED_PROFILE = "restricted"
+AUTHORING_PROFILE = "authoring"
+
+#: The whole budget for one local control, dialling included. Generous: these
+#: run against a service that has only just reported ready, and a fixture that
+#: failed on a slow host would look like a broken authority rather than a busy
+#: one.
+_CONTROL_TIMEOUT_SECONDS = 60.0
+
+#: The installed CLI's own entry point, reached through this interpreter so the
+#: worktree's distributions are the ones under test. A string rather than an
+#: import even here, where importing it would be allowed: a console script
+#: resolved from `PATH` would be whichever `omnivia` a developer happens to have
+#: installed, and an in-process import would not be the installed command at all.
+_CLI_ENTRY = "from omnivia_core_cli.main import main; raise SystemExit(main())"
+
+#: The whole budget for one installed command. Generous for the same reason the
+#: control budget is: `mcp configure` qualifies a real MCP child against a
+#: service that has only just reported ready.
+_CLI_TIMEOUT_SECONDS = 600.0
+
 SERVICE_INSTANCE = "svc-mcp-1"
 SEED_INSTANCE = "svc-mcp-seed-1"
+CREATE_INSTANCE = "svc-mcp-create-1"
+
+#: What the seeding pass names itself as in the workspace lease row. A workspace
+#: fact rather than an installation one -- the catalogue's own installation id is
+#: minted by the store and never appears here -- and the service replaces the
+#: whole row at the next acquisition anyway.
 INSTALLATION_ID = "inst-mcp-e2e"
 
 #: The one token every seeded fact carries and nothing else in the workspace
@@ -134,6 +233,33 @@ DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 DIGEST_C = "sha256:" + "c" * 64
 DIGEST_D = "sha256:" + "d" * 64
+#: The staged import source's own blob. A digest of its own rather than
+#: :data:`DIGEST_A` so `stage=True` and `seed=True` can both be asked for
+#: without the second insert colliding with the first on the blob's primary key.
+DIGEST_E = "sha256:" + "e" * 64
+
+#: The one already-staged import source :func:`build` writes when asked, and the
+#: exact descriptor `import.start` will match it on -- `require_staged_import_source`
+#: compares the staging handle, the kind, the checksum, the byte count, the media
+#: type and the (absent) source version, and accepts only a `verified` staging
+#: whose blob agrees about the bytes. A module constant rather than something the
+#: caller composes: a test that spelled its own descriptor could disagree with the
+#: staged row in a way that reads as `import.start` refusing rather than as the
+#: fixture staging the wrong thing.
+#:
+#: **Staging is deliberately on this side of the boundary.** R004 section 8.3 puts
+#: it outside the MCP milestone -- the handle must already have been produced by an
+#: installed, trusted Core path, and `import_start` accepts no archive, path or URL
+#: to produce one from -- so the suite's trusted fixture produces it and the MCP
+#: surface only ever names it.
+STAGED_SOURCE_REF = "stg-ovmcpstaged-1"
+STAGED_SOURCE: dict[str, object] = {
+    "staged_source_ref": STAGED_SOURCE_REF,
+    "source_kind": "archive",
+    "content_checksum": DIGEST_E,
+    "content_length_bytes": 4096,
+    "media_type": "application/zip",
+}
 
 # --- table names, as 0008 and 0009 declare them -------------------------------
 
@@ -141,7 +267,6 @@ BLOBS = "omnivia_blob_objects"
 INTEGRITY = "omnivia_blob_integrity_events"
 STAGED = "omnivia_staged_sources"
 EVIDENCE = "omnivia_evidence_artifacts"
-LABELS = "omnivia_evidence_permission_labels"
 PROVENANCE = "omnivia_evidence_provenance_events"
 EVENT_REFERENCES = "omnivia_evidence_event_references"
 NORMALIZED_RECORDS = "omnivia_normalized_source_records"
@@ -158,11 +283,24 @@ SEALS = "omnivia_governed_version_seals"
 
 @dataclass(frozen=True)
 class GovernedWorkspace:
-    """A seeded workspace on disk, and the facts a caller needs to serve it."""
+    """A registered, seeded workspace on disk, and what a caller needs to serve it.
+
+    `created_at` is the instant the manifest on disk stores -- the offset form
+    `datetime.now(UTC).isoformat()` writes, which is what the production
+    bootstrap puts in every real workspace's `workspace.json`.
+    `created_at_canonical` is the Application Contract's own spelling of the same
+    instant, read off the `workspace.create` answer. Both are carried rather than
+    one derived from the other: `workspace.inspect` must canonicalize at the
+    application boundary, and an assertion against a single value would follow
+    the manifest wherever it was respelled and stop being an assertion about the
+    wire.
+    """
 
     workspace: WorkspaceLayout
     installation: InstallationLayout
     workspace_id: str
+    created_at: str
+    created_at_canonical: str
 
 
 @dataclass(frozen=True)
@@ -172,6 +310,7 @@ class _Holder:
     connection: sqlite3.Connection
     identity: ServiceInstanceIdentity
     generation: int
+    workspace_id: str
 
 
 def _insert(connection: sqlite3.Connection, table: str, row: dict[str, object]) -> None:
@@ -182,7 +321,7 @@ def _insert(connection: sqlite3.Connection, table: str, row: dict[str, object]) 
     )
 
 
-def _take_ownership(path: Path) -> _Holder:
+def _take_ownership(path: Path, workspace_id: str) -> _Holder:
     """Open the workspace as its owner: lease first, then the mutation guard.
 
     The same order `ServiceRunner` uses, and for the same reason -- ADR-037
@@ -203,7 +342,7 @@ def _take_ownership(path: Path) -> _Holder:
         connection,
         identity,
         clock=SystemClock(),
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         holds_storage_lock=True,
         lock_mechanism="flock",
     )
@@ -211,10 +350,10 @@ def _take_ownership(path: Path) -> _Holder:
         connection,
         identity,
         clock=SystemClock(),
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         fencing_generation=lease.fencing_generation,
     )
-    return _Holder(connection, identity, lease.fencing_generation)
+    return _Holder(connection, identity, lease.fencing_generation, workspace_id)
 
 
 # --- L0 evidence ---------------------------------------------------------------
@@ -231,14 +370,14 @@ def _seed_evidence_chain(holder: _Holder) -> None:
     with fenced_transaction(
         holder.connection,
         holder.identity,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=holder.workspace_id,
         fencing_generation=holder.generation,
     ):
         _insert(
             holder.connection,
             BLOBS,
             {
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "content_digest": DIGEST_A,
                 "content_length_bytes": 1024,
                 "created_at_us": BASE_US,
@@ -250,7 +389,7 @@ def _seed_evidence_chain(holder: _Holder) -> None:
             INTEGRITY,
             {
                 "integrity_event_id": "bie-0001",
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "content_digest": DIGEST_A,
                 "integrity_sequence": 1,
                 "outcome": "verified",
@@ -262,7 +401,7 @@ def _seed_evidence_chain(holder: _Holder) -> None:
             STAGED,
             {
                 "staged_source_ref": "stg-0001",
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "source_kind": "filesystem.archive",
                 "declared_checksum": DIGEST_A,
                 "content_length_bytes": 1024,
@@ -271,7 +410,7 @@ def _seed_evidence_chain(holder: _Holder) -> None:
                 "original_metadata_json": '{"kind":"archive"}',
                 "original_metadata_digest": DIGEST_C,
                 "staging_outcome": "verified",
-                "blob_workspace_id": WORKSPACE_ID,
+                "blob_workspace_id": holder.workspace_id,
                 "blob_content_digest": DIGEST_A,
                 "recorded_at_us": BASE_US + 3,
             },
@@ -289,7 +428,7 @@ def _seed_evidence_chain(holder: _Holder) -> None:
             {
                 "normalized_record_id": "nrc-0001",
                 "evidence_id": "evd-0001",
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "evidence_blob_digest": DIGEST_A,
                 "record_sequence": 1,
                 "record_type": "message",
@@ -308,7 +447,7 @@ def _seed_evidence_chain(holder: _Holder) -> None:
                 "normalized_span_id": "nsp-0001",
                 "normalized_record_id": "nrc-0001",
                 "evidence_id": "evd-0001",
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "span_sequence": 1,
                 "span_kind": "byte_range",
                 "span_pointer": "/body/0",
@@ -326,6 +465,72 @@ def _seed_evidence_chain(holder: _Holder) -> None:
         )
 
 
+def _stage_import_source(holder: _Holder) -> None:
+    """One verified staged source and the blob it resolves to, and nothing else.
+
+    The whole of what `import.start` needs and none of what a workspace holding
+    application data would have: a blob object, the integrity pass that verified
+    it, and the `verified` staging row naming both. No evidence artifact, no
+    normalized record, no governed version -- so a workspace built with
+    `stage=True` and `seed=False` holds one staging handle and no application
+    data at all, which is the state R004 section 13.D's import journey starts
+    from.
+
+    The three rows are one unit because 0008 makes them one: a `verified` staging
+    must name a blob, the reference is composite over digest *and* length, and
+    the integrity event is how "verification happened" is a recorded fact rather
+    than a column somebody set.
+    """
+    with fenced_transaction(
+        holder.connection,
+        holder.identity,
+        workspace_id=holder.workspace_id,
+        fencing_generation=holder.generation,
+    ):
+        _insert(
+            holder.connection,
+            BLOBS,
+            {
+                "workspace_id": holder.workspace_id,
+                "content_digest": DIGEST_E,
+                "content_length_bytes": STAGED_SOURCE["content_length_bytes"],
+                "created_at_us": BASE_US,
+                "verified_at_us": BASE_US + 1,
+            },
+        )
+        _insert(
+            holder.connection,
+            INTEGRITY,
+            {
+                "integrity_event_id": "bie-staged-1",
+                "workspace_id": holder.workspace_id,
+                "content_digest": DIGEST_E,
+                "integrity_sequence": 1,
+                "outcome": "verified",
+                "checked_at_us": BASE_US + 2,
+            },
+        )
+        _insert(
+            holder.connection,
+            STAGED,
+            {
+                "staged_source_ref": STAGED_SOURCE_REF,
+                "workspace_id": holder.workspace_id,
+                "source_kind": STAGED_SOURCE["source_kind"],
+                "declared_checksum": DIGEST_E,
+                "content_length_bytes": STAGED_SOURCE["content_length_bytes"],
+                "media_type": STAGED_SOURCE["media_type"],
+                "computed_checksum": DIGEST_E,
+                "original_metadata_json": '{"kind":"archive"}',
+                "original_metadata_digest": DIGEST_C,
+                "staging_outcome": "verified",
+                "blob_workspace_id": holder.workspace_id,
+                "blob_content_digest": DIGEST_E,
+                "recorded_at_us": BASE_US + 3,
+            },
+        )
+
+
 def _artifact(
     holder: _Holder, evidence_id: str, *, native_id: str, locator: str, at: int
 ) -> None:
@@ -334,13 +539,22 @@ def _artifact(
     The provenance row is not decoration: `validate_evidence_artifact` refuses an
     artifact whose provenance history is empty, so an artifact seeded without one
     could never be returned and every claim about it would be vacuous.
+
+    **No permission label is attached, and that absence is the point.** The
+    dedicated MCP principal `mcp.configure` mints holds an empty evidence-label
+    grant -- configuring a host grants no extra read authority, which is the
+    whole of what makes it safe to hand to one -- so a labelled artifact would be
+    filtered out of every answer this suite asks about, and the only way to see
+    it would be to widen that principal. Label-based denial is the runtime ACL
+    suites' subject, not this one's; what these tests have to be able to observe
+    is that a legitimately readable artifact reaches the MCP client unchanged.
     """
     _insert(
         holder.connection,
         EVIDENCE,
         {
             "evidence_id": evidence_id,
-            "workspace_id": WORKSPACE_ID,
+            "workspace_id": holder.workspace_id,
             "source_kind": "filesystem.archive",
             "source_native_id": native_id,
             "source_locator": locator,
@@ -367,7 +581,7 @@ def _artifact(
         {
             "provenance_event_id": f"prv-{evidence_id}-1",
             "evidence_id": evidence_id,
-            "workspace_id": WORKSPACE_ID,
+            "workspace_id": holder.workspace_id,
             "provenance_sequence": 1,
             "actor_id": "actor-1",
             "actor_kind": "service",
@@ -384,7 +598,7 @@ def _artifact(
             "event_reference_id": f"ref-{evidence_id}-1",
             "provenance_event_id": f"prv-{evidence_id}-1",
             "evidence_id": evidence_id,
-            "workspace_id": WORKSPACE_ID,
+            "workspace_id": holder.workspace_id,
             "reference_ordinal": 1,
             "source_kind": "filesystem.archive",
             "source_native_id": native_id,
@@ -393,33 +607,25 @@ def _artifact(
             "span_end_offset": 10,
         },
     )
-    _insert(
-        holder.connection,
-        LABELS,
-        {
-            "label_event_id": f"lbl-{evidence_id}-1",
-            "evidence_id": evidence_id,
-            "workspace_id": WORKSPACE_ID,
-            "label_sequence": 1,
-            "label_action": "attached",
-            "permission_label": "group.engineering",
-            "recorded_at_us": at,
-        },
-    )
 
 
 # --- L2 governed truth ---------------------------------------------------------
 
 
-def _audit_row(audit_ref: str) -> dict[str, object]:
+def _audit_row(workspace_id: str, audit_ref: str) -> dict[str, object]:
     """The M1 audit event one sealed lineage correlates to.
 
     0009's requirement rather than this file's: the seal trigger refuses an
     assembly whose correlation names no audit row.
+
+    `workspace_id` is threaded through every row builder below rather than read
+    off a module constant: the workspace is minted by the installation at
+    creation time, so there is no identifier this file could have known in
+    advance.
     """
     return {
         "audit_ref": audit_ref,
-        "workspace_id": WORKSPACE_ID,
+        "workspace_id": workspace_id,
         "principal_id": "principal-1",
         "operation": "knowledge.record",
         "purpose": "governance",
@@ -433,6 +639,7 @@ def _audit_row(audit_ref: str) -> dict[str, object]:
 
 
 def _assembly_row(
+    workspace_id: str,
     assembly_id: str,
     version_id: str,
     record_id: str,
@@ -446,7 +653,7 @@ def _assembly_row(
     recorded_at_us: int,
 ) -> dict[str, object]:
     return {
-        "workspace_id": WORKSPACE_ID,
+        "workspace_id": workspace_id,
         "assembly_id": assembly_id,
         "governed_record_id": record_id,
         "governed_record_version_id": version_id,
@@ -483,6 +690,7 @@ def _assembly_row(
 
 
 def _event_row(
+    workspace_id: str,
     event_id: str,
     assembly_id: str,
     version_id: str,
@@ -495,7 +703,7 @@ def _event_row(
     predecessor_version_id: str | None = None,
 ) -> dict[str, object]:
     return {
-        "workspace_id": WORKSPACE_ID,
+        "workspace_id": workspace_id,
         "provenance_event_id": event_id,
         "assembly_id": assembly_id,
         "governed_record_version_id": version_id,
@@ -521,9 +729,11 @@ def _event_row(
     }
 
 
-def _link_row(event_id: str, assembly_id: str, ordinal: int = 1) -> dict[str, object]:
+def _link_row(
+    workspace_id: str, event_id: str, assembly_id: str, ordinal: int = 1
+) -> dict[str, object]:
     return {
-        "workspace_id": WORKSPACE_ID,
+        "workspace_id": workspace_id,
         "assembly_id": assembly_id,
         "provenance_event_id": event_id,
         "link_ordinal": ordinal,
@@ -535,10 +745,15 @@ def _link_row(event_id: str, assembly_id: str, ordinal: int = 1) -> dict[str, ob
 
 
 def _seal_row(
-    assembly_id: str, version_id: str, *, audit_ref: str, sealed_at_us: int
+    workspace_id: str,
+    assembly_id: str,
+    version_id: str,
+    *,
+    audit_ref: str,
+    sealed_at_us: int,
 ) -> dict[str, object]:
     return {
-        "workspace_id": WORKSPACE_ID,
+        "workspace_id": workspace_id,
         "seal_id": f"seal-{assembly_id}",
         "assembly_id": assembly_id,
         "governed_record_version_id": version_id,
@@ -577,7 +792,7 @@ def _seal(
             holder.connection,
             RELATION_ENDPOINTS,
             {
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "assembly_id": assembly_id,
                 "provenance_event_id": event_id,
                 "correlation_kind": "m1_audit",
@@ -594,14 +809,14 @@ def _seal(
     with fenced_transaction(
         holder.connection,
         holder.identity,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=holder.workspace_id,
         fencing_generation=holder.generation,
     ):
         _insert(
             holder.connection,
             GOVERNED_RECORDS,
             {
-                "workspace_id": WORKSPACE_ID,
+                "workspace_id": holder.workspace_id,
                 "governed_record_id": record_id,
                 "record_type": record_type,
                 "domain_scope": DOMAIN_SCOPE,
@@ -613,6 +828,7 @@ def _seal(
             holder.connection,
             ASSEMBLIES,
             _assembly_row(
+                holder.workspace_id,
                 candidate_assembly,
                 candidate_version,
                 record_id,
@@ -630,6 +846,7 @@ def _seal(
             holder.connection,
             GOVERNED_EVENTS,
             _event_row(
+                holder.workspace_id,
                 proposed,
                 candidate_assembly,
                 candidate_version,
@@ -638,7 +855,9 @@ def _seal(
             ),
         )
         _insert(
-            holder.connection, EVIDENCE_LINKS, _link_row(proposed, candidate_assembly)
+            holder.connection,
+            EVIDENCE_LINKS,
+            _link_row(holder.workspace_id, proposed, candidate_assembly),
         )
         if endpoint is not None:
             asserted = f"ev-{candidate_assembly}-asserted"
@@ -646,6 +865,7 @@ def _seal(
                 holder.connection,
                 GOVERNED_EVENTS,
                 _event_row(
+                    holder.workspace_id,
                     asserted,
                     candidate_assembly,
                     candidate_version,
@@ -657,13 +877,14 @@ def _seal(
             _insert(
                 holder.connection,
                 EVIDENCE_LINKS,
-                _link_row(asserted, candidate_assembly, 2),
+                _link_row(holder.workspace_id, asserted, candidate_assembly, 2),
             )
             write_endpoint(candidate_assembly, asserted)
         _insert(
             holder.connection,
             SEALS,
             _seal_row(
+                holder.workspace_id,
                 candidate_assembly,
                 candidate_version,
                 audit_ref=audit_ref,
@@ -675,6 +896,7 @@ def _seal(
             holder.connection,
             ASSEMBLIES,
             _assembly_row(
+                holder.workspace_id,
                 governed_assembly,
                 governed_version,
                 record_id,
@@ -692,6 +914,7 @@ def _seal(
             holder.connection,
             GOVERNED_EVENTS,
             _event_row(
+                holder.workspace_id,
                 accepted,
                 governed_assembly,
                 governed_version,
@@ -703,7 +926,9 @@ def _seal(
             ),
         )
         _insert(
-            holder.connection, EVIDENCE_LINKS, _link_row(accepted, governed_assembly)
+            holder.connection,
+            EVIDENCE_LINKS,
+            _link_row(holder.workspace_id, accepted, governed_assembly),
         )
         if endpoint is not None:
             asserted = f"ev-{governed_assembly}-asserted"
@@ -711,6 +936,7 @@ def _seal(
                 holder.connection,
                 GOVERNED_EVENTS,
                 _event_row(
+                    holder.workspace_id,
                     asserted,
                     governed_assembly,
                     governed_version,
@@ -723,13 +949,14 @@ def _seal(
             _insert(
                 holder.connection,
                 EVIDENCE_LINKS,
-                _link_row(asserted, governed_assembly, 2),
+                _link_row(holder.workspace_id, asserted, governed_assembly, 2),
             )
             write_endpoint(governed_assembly, asserted)
         _insert(
             holder.connection,
             SEALS,
             _seal_row(
+                holder.workspace_id,
                 governed_assembly,
                 governed_version,
                 audit_ref=audit_ref,
@@ -747,11 +974,15 @@ def _seed_governed_truth(holder: _Holder) -> None:
     with fenced_transaction(
         holder.connection,
         holder.identity,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=holder.workspace_id,
         fencing_generation=holder.generation,
     ):
         for number in range(1, 4):
-            _insert(holder.connection, AUDIT_EVENTS, _audit_row(f"audit-{number}"))
+            _insert(
+                holder.connection,
+                AUDIT_EVENTS,
+                _audit_row(holder.workspace_id, f"audit-{number}"),
+            )
 
     _seal(
         holder,
@@ -783,51 +1014,183 @@ def _seed_governed_truth(holder: _Holder) -> None:
 # --- the whole workspace -------------------------------------------------------
 
 
-def build(root: Path) -> GovernedWorkspace:
-    """Migrate a workspace under `root` and seed it, then hand it back closed.
+def _create_workspace(
+    installation_root: Path, storage_root: Path
+) -> WorkspaceDescriptor:
+    """Create one registered workspace through the real installation authority.
 
-    The connection is closed before this returns: the workspace has exactly one
-    exclusive writer, and the next one is the service the caller is about to
-    start.
+    The production path, in this process and nothing simulated in it: the
+    coordinator opens (and, first time, creates) the machine-local catalogue,
+    takes its lifetime lock, elects itself the owner and serves the installation
+    application surface, and the canonical `workspace.create` request below is
+    dispatched through that surface. So the identifier, the target directory, the
+    durable allocation claim, the bootstrap and the catalogue row are all the
+    installation's own -- which is what later lets `mcp.configure` find this
+    workspace in the authorised inventory it refuses to configure outside of.
+
+    The coordinator is closed before this returns. It holds the catalogue lock
+    for as long as it is open, and the service the caller is about to start has
+    to be able to win that same election for itself.
     """
-    legacy = root / "legacy" / "source.sqlite"
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    materialise_phase0_baseline(legacy)
-
-    workspace = WorkspaceLayout(root=root / "workspace")
-    installation = InstallationLayout(root=root / "installation-state")
-    installation.create(WORKSPACE_ID)
-    migrate_legacy_database(
-        legacy,
-        workspace,
-        installation,
-        WorkspaceManifest(
-            workspace_id=WORKSPACE_ID,
-            created_at=WORKSPACE_CREATED_AT,
-            name=WORKSPACE_NAME,
-            compatibility=CoreCompatibility(
-                workspace_format_version="1", min_core_version="0.1.0"
-            ),
+    coordinator = InstallationAuthorityCoordinator(
+        installation_root=installation_root,
+        workspace_storage_root=storage_root,
+        core_version="0.1.0",
+        clock=SystemClock(),
+        owner_instance_id=CREATE_INSTANCE,
+        principal_id=LOCAL_PRINCIPAL,
+        probe=Dispatcher.for_service_operations(
+            Grant(
+                principal=LOCAL_PRINCIPAL,
+                workspaces=frozenset(),
+                operations=frozenset(SERVICE_OPERATIONS),
+            )
         ),
-        service_instance_id=SERVICE_INSTANCE,
+        facts=SimpleNamespace(
+            probe_facts=lambda: ServiceFacts(
+                observed_at="2026-08-12T00:00:00Z",
+                health_status="pass",
+                readiness_status="pass",
+                discovery_status="pass",
+            )
+        ),
+    )
+    try:
+        entry = get_operation_metadata(WORKSPACE_CREATE_OPERATION)
+        request_id = "req-mcp-fixture-create"
+        response = coordinator.start().dispatch(
+            RequestEnvelope(
+                operation=WORKSPACE_CREATE_OPERATION,
+                metadata=RequestMetadata(
+                    request_id=request_id,
+                    correlation_id=request_id,
+                    trace_id=request_id,
+                    api_version=CONTRACT_VERSION,
+                    client=ClientIdentity(id="mcp-fixture", version="0.1.0"),
+                    scopes=tuple(entry.scope.required_scopes),
+                    purpose=WORKSPACE_ADMINISTRATION_PURPOSE,
+                    idempotency_key="mcp-fixture-create-001",
+                    required_capabilities=(
+                        CapabilityRequirement(
+                            id=entry.required_capability.id,
+                            minimum_version=entry.required_capability.minimum_version,
+                            required=True,
+                        ),
+                    ),
+                ),
+                input={"display_name": WORKSPACE_NAME},
+            )
+        )
+    finally:
+        coordinator.close()
+    assert isinstance(response, SuccessResponseEnvelope), response
+    return WorkspaceCreateResult.from_wire(response.result).workspace
+
+
+def build(root: Path, *, seed: bool = True, stage: bool = False) -> GovernedWorkspace:
+    """Create a registered workspace under `root` and seed it, then hand it back closed.
+
+    The layout is the managed-local convention the service itself assumes:
+    `installation-state/` is the trusted root, and a server-minted workspace
+    lands under its sibling `workspaces/` -- which is exactly where
+    `service.main` points its own installation authority, so the service the
+    caller starts next joins the installation this workspace was created in
+    rather than a second one beside it.
+
+    Seeding happens here, while the workspace is offline and this process is its
+    only writer, and the connection is closed before this returns: the workspace
+    has exactly one exclusive writer, and the next one is that service.
+
+    `seed=False` skips that pass entirely and returns the workspace exactly as
+    the installation bootstrap left it: migrated, registered, and holding no
+    evidence, no governed record and no job. That is the only state R004 section
+    13.B's standalone journey may start from -- it forbids pre-seeding
+    application data through any path at all -- so the flag is the whole of how
+    this file stays out of that journey's way.
+
+    `stage=True` adds :func:`_stage_import_source` and nothing else, so
+    `seed=False, stage=True` is that same empty workspace plus the one staged
+    handle section 13.D's import journey has to be able to name. A staging handle
+    is not application data: it is what a trusted installed path leaves behind
+    for an import to read, and MCP has no tool that could produce one.
+    """
+    installation = InstallationLayout(root=(root / "installation-state").resolve())
+    descriptor = _create_workspace(
+        installation.root, (root / WORKSPACE_STORAGE_DIRECTORY).resolve()
+    )
+    workspace = WorkspaceLayout(
+        root=(root / WORKSPACE_STORAGE_DIRECTORY / descriptor.workspace_id).resolve()
     )
 
-    holder = _take_ownership(workspace.database_path)
-    try:
-        _seed_evidence_chain(holder)
-        _seed_governed_truth(holder)
-    finally:
-        holder.connection.close()
+    if seed or stage:
+        holder = _take_ownership(workspace.database_path, descriptor.workspace_id)
+        try:
+            if seed:
+                _seed_evidence_chain(holder)
+                _seed_governed_truth(holder)
+            if stage:
+                _stage_import_source(holder)
+        finally:
+            holder.connection.close()
 
     return GovernedWorkspace(
-        workspace=workspace, installation=installation, workspace_id=WORKSPACE_ID
+        workspace=workspace,
+        installation=installation,
+        workspace_id=descriptor.workspace_id,
+        created_at=read_manifest(workspace).created_at,
+        created_at_canonical=descriptor.created_at,
     )
 
 
 # --- the service that owns it --------------------------------------------------
 
 
-@dataclass(frozen=True)
+def _spawn(argv: tuple[str, ...], log_path: Path) -> subprocess.Popen[bytes]:
+    """Start one service process with its whole output appended to `log_path`.
+
+    Appended rather than truncated: a workspace served twice -- stopped after a
+    commit and started again, which is what R004 section 13.F's recovery case
+    asks for -- has two services' diagnostics to account for, and the first
+    one's is the half that says why the second had work to recover.
+
+    A file, not two pipes, and for the same two reasons `managed_start._spawn`
+    gives its own child one. Nothing here reads a pipe: the service outlives
+    every call in the module, so a `PIPE` nobody drains is a write that blocks
+    the whole process once the kernel buffer fills -- and a blocked service
+    still holds the workspace lease and the storage lock, so a later `connect`
+    cannot start a replacement either and spends its entire
+    `MANAGED_START_TIMEOUT_SECONDS` budget failing to. `process.wait()` in
+    :func:`_stop` is the same hazard at teardown, where the standard library
+    documents it. The second reason is the one that made this failure unreadable
+    in CI: the service's own diagnostic -- the sentence it writes when it stops
+    -- went into a pipe that was closed unread, so a hosted run could say a call
+    had failed and never say why.
+    """
+    with log_path.open("ab") as log:
+        return subprocess.Popen(list(argv), stdout=log, stderr=subprocess.STDOUT)
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Ask one service to stop, and make sure it has, before returning.
+
+    The ladder every caller here wants: nothing if it has already exited,
+    `SIGTERM` and a bounded wait otherwise, and a kill if that wait runs out --
+    followed by re-raising, because a service that had to be killed released its
+    lease uncleanly and a caller about to read that lease, or to start a
+    successor on the same workspace, must not be told it stopped normally.
+    """
+    if process.poll() is not None:
+        return
+    process.send_signal(signal.SIGTERM)
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+        process.kill()
+        process.wait(timeout=10)
+        raise
+
+
+@dataclass
 class GovernedService:
     """A running `omnivia-core-service` and the facts a caller needs to reach it.
 
@@ -849,13 +1212,120 @@ class GovernedService:
     module shares this one process, so "the tool answered with an error" and
     "the service this module started is no longer answering anyone" are the same
     observation over the wire, and only the two fields below can tell them apart.
+
+    **`process` is the one field that moves, which is why this is not frozen.**
+    :meth:`restart` stops the service and serves the same workspace from a new
+    process -- the real stop and start R004 section 13.F's recovery case asks
+    for, not a reconnection -- and `argv` is the command line it starts again
+    from. Everything else here is settled when the workspace is created and is
+    the same service's whichever process is currently serving it.
+
+    `credential_reference`, `principal_id` and `profile` are the redacted half of
+    the setup this service issued for :data:`MCP_HOST` -- the three facts a
+    trusted `omnivia.mcp-config.v1` document is built from. **The bearer is not
+    here and there is no field it could be in.** It was handed over once, written
+    into this installation's protected store, and dropped; what a configuration
+    names is the reference, and the server reads the material for itself.
+
+    All three are `None` when :func:`serving` was asked not to configure MCP at
+    all. That is not a missing value: it is an installation on which no host has
+    been set up, which is where the installed setup command's own journey has to
+    begin.
     """
 
     endpoint_uri: str
     workspace_id: str
     installation_state: Path
+    #: The command line this service is served from, and started again from.
+    argv: tuple[str, ...]
     process: subprocess.Popen[bytes]
     log: Path
+    database: Path
+    #: The instant the workspace manifest on disk stores, and the same instant in
+    #: the Application Contract's own spelling, as `workspace.create` answered.
+    created_at: str
+    created_at_canonical: str
+    #: The opaque name the service filed this host's bearer under.
+    credential_reference: str | None = None
+    #: The dedicated principal that bearer resolves to. Nothing chose it here:
+    #: `mcp.configure` mints it inside the write transaction.
+    principal_id: str | None = None
+    #: The exposure profile the setup records, and therefore the ceiling a
+    #: configuration written from it may state.
+    profile: str | None = None
+    #: The authenticated loopback HTTP endpoint, when :func:`serving` was given
+    #: an `http_credential`. `None` otherwise.
+    http_endpoint: str | None = None
+
+    def descriptor(self) -> ServiceEndpointDescriptor:
+        """The descriptor the service currently publishes for its workspace."""
+        found = discover(
+            InstallationLayout(root=self.installation_state).runtime_for(
+                self.workspace_id
+            )
+        )
+        assert found is not None, f"no published descriptor: {self.diagnosis()}"
+        return found
+
+    def await_ready(self) -> ServiceEndpointDescriptor:
+        """Block until the current process publishes a ready descriptor.
+
+        Polled rather than awaited on an event: readiness is a fact about
+        another process, published as a file, and there is no handle this side
+        could wait on. A service that exits instead fails here immediately with
+        what it wrote, rather than at the end of the budget.
+        """
+        deadline = time.monotonic() + 60
+        found = None
+        while time.monotonic() < deadline:
+            assert self.process.poll() is None, (
+                f"the service exited instead of serving: {self.diagnosis()}"
+            )
+            found = discover(
+                InstallationLayout(root=self.installation_state).runtime_for(
+                    self.workspace_id
+                )
+            )
+            if found is not None and found.ready:
+                return found
+            time.sleep(0.05)
+        raise AssertionError(f"the service never became ready: {self.diagnosis()}")
+
+    def stop(self) -> None:
+        """Stop the service, if it is running, and wait for it to be gone."""
+        _stop(self.process)
+
+    def restart(self) -> ServiceEndpointDescriptor:
+        """Stop this service and serve the same workspace from a new process.
+
+        A real stop and a real start, in that order and with the first waited
+        for: the workspace's lease and storage lock are released by a process
+        that exits, so a successor that overlapped it could not acquire them.
+        What comes back is the new process's own published descriptor, whose
+        `fencing_generation` is the acquisition after the one that stopped --
+        which is how a caller can tell this from a reconnection.
+        """
+        self.stop()
+        self.process = _spawn(self.argv, self.log)
+        return self.await_ready()
+
+    def stop_and_read_lease(self) -> LeaseRecord:
+        """Stop the service, then read the lease row it leaves behind.
+
+        After, not during: the service holds the database in exclusive locking
+        mode for its whole life, so no other process can read the row while it
+        runs. What the stopped service leaves is still the whole ownership story
+        -- the holder's instance, process evidence and fencing generation, which
+        `acquire_lease` bumps on every acquisition.
+        """
+        self.stop()
+        connection = open_database(self.database, OpenMode.READ_ONLY)
+        try:
+            lease = read_lease(connection)
+        finally:
+            connection.close()
+        assert lease is not None, f"no lease row: {self.diagnosis()}"
+        return lease
 
     def diagnosis(self) -> str:
         """What the service is doing now, and everything it has ever written.
@@ -876,81 +1346,312 @@ class GovernedService:
         return f"the service is {state}; it wrote {said!r}"
 
 
+#: The read operations the HTTP embedder's session grants: the six the MCP
+#: exposure manifest allow-lists, stated here rather than imported so this file
+#: stays independent of the package under test.
+_HTTP_GRANTED_OPERATIONS = (
+    "workspace.inspect",
+    "evidence.search",
+    "knowledge.search",
+    "memory.search",
+    "graph.traverse",
+    "context_pack.build",
+)
+
+#: A test-only embedder of the service's own `main()`. `omnivia-core-service`
+#: supplies no credential resolver by design, so authenticated HTTP is reachable
+#: only through an embedder that injects one (see `service/main.py`'s `main`).
+#: This is the smallest such embedder: it accepts exactly one bearer secret,
+#: `argv[1]`, and resolves it to the same `local_owner_session` shape the local
+#: socket serves reads under, for the operations above. Everything else -- the
+#: workspace, the lease, the router and the listener -- is the production path.
+_HTTP_EMBEDDER = """
+import sys
+from pathlib import Path
+from omnivia_core_runtime.ownership.discovery import discover
+from omnivia_core_runtime.service.application import local_owner_session
+from omnivia_core_runtime.service.main import LOCAL_PRINCIPAL, main
+
+secret, runtime, workspace_id, operations, *argv = sys.argv[1:]
+
+def resolve(presented):
+    if presented != secret:
+        return None
+    descriptor = discover(Path(runtime))
+    if descriptor is None:
+        return None
+    return local_owner_session(
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=descriptor.installation_id,
+        workspace_id=workspace_id,
+        operations=frozenset(operations.split(",")),
+    )
+
+sys.exit(main(argv, resolve_credential=resolve))
+"""
+
+
+def installed_cli(
+    installation_state: Path, *argv: str
+) -> subprocess.CompletedProcess[str]:
+    """Run one installed command against `installation_state`, and hand it back whole.
+
+    How the installed CLI is reached, in one place, for the same reason the
+    runtime import is: a module that spelled the invocation for itself would be
+    free to reach a different `omnivia` than the rest of the suite does, and the
+    property every acceptance module rests on is that the command under test is
+    this worktree's.
+
+    Nothing is asserted and nothing is parsed here. The exit code, stdout and
+    stderr go back untouched, because what they have to mean is the caller's
+    claim -- a redacted host snippet, a health document, a revocation line --
+    and a helper that decided any of that for them would be answering the
+    question the test is asking.
+    """
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CLI_ENTRY,
+            "--installation-state",
+            str(installation_state),
+            *argv,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=_CLI_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+
+#: How one idempotency key's durable settlement is counted, as five independent
+#: `SELECT COUNT(*)`s. The claim is the only row that stores the caller's key
+#: (`0007` indexes `(workspace_id, principal_id, operation, idempotency_key)`
+#: uniquely); everything else is reached from it by `claim_id` or `audit_ref`.
+#: Written out rather than expressed as one join so a count that is wrong names
+#: which table it is wrong in.
+_CLAIMS = "SELECT claim_id FROM omnivia_idempotency_claims WHERE idempotency_key = ?"
+_SETTLEMENT_COUNTS = {
+    "claims": f"SELECT COUNT(*) FROM ({_CLAIMS})",
+    "outcomes": (
+        "SELECT COUNT(*) FROM omnivia_idempotency_outcomes "
+        f"WHERE claim_id IN ({_CLAIMS})"
+    ),
+    "audit_events": (
+        "SELECT COUNT(*) FROM omnivia_application_audit_events WHERE audit_ref IN ("
+        "SELECT audit_ref FROM omnivia_idempotency_claims WHERE idempotency_key = ?)"
+    ),
+    "executed": (
+        "SELECT COUNT(*) FROM omnivia_mutation_executions "
+        f"WHERE execution_kind = 'executed' AND claim_id IN ({_CLAIMS})"
+    ),
+    "replayed": (
+        "SELECT COUNT(*) FROM omnivia_mutation_executions "
+        f"WHERE execution_kind = 'replayed' AND claim_id IN ({_CLAIMS})"
+    ),
+}
+
+
+def settlement(database: Path, idempotency_key: str) -> dict[str, int]:
+    """How many durable settlement rows one idempotency key has. Read-only.
+
+    The half of "no duplicate settlement" that no tool can answer. MCP exposes
+    the business effect -- an artifact, a candidate record -- so a duplicate
+    *there* is visible through `evidence_search` and `memory_search` and is
+    asserted that way. The coordinator's own ledger is deliberately not exposed
+    to any principal, so a test that has to say a replay settled nothing new has
+    to read it, and this is the one place in the suite allowed to.
+
+    **Read-only, and only while the service is stopped.** The database is opened
+    `READ_ONLY` and nothing here writes; and the service holds it in exclusive
+    locking mode for its whole life, so a caller must stop it first -- the same
+    precondition :meth:`GovernedService.stop_and_read_lease` has.
+
+    What the five counts mean, per `0007` and `0013`: one `claims` row and one
+    `outcomes` row are the settled mutation; one `audit_events` row is its M1
+    audit; one `executed` row is the single run of the domain code. `replayed`
+    is expected to *grow*, once per same-key repeat, because an honest replay
+    runs no domain code but does durably spend the fresh grant it presented --
+    so it is reported rather than required to stay at zero.
+    """
+    connection = open_database(database, OpenMode.READ_ONLY)
+    try:
+        return {
+            name: int(connection.execute(sql, (idempotency_key,)).fetchone()[0])
+            for name, sql in _SETTLEMENT_COUNTS.items()
+        }
+    finally:
+        connection.close()
+
+
+def _free_loopback_port() -> int:
+    """A port the kernel just handed out on 127.0.0.1, released for the service.
+
+    The service's own `HttpBind` accepts port 0 but publishes no HTTP URL, so a
+    caller that has to dial it must choose the port first.
+    """
+    # ponytail: another process can take the port between this release and the
+    # service's bind; the service then exits and `serving` fails with its log.
+    # Low-risk and test-only; a retry would mean relaunching on a fresh workspace.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _provision_mcp_principal(
+    installation_state: Path, workspace_id: str, profile: str
+) -> McpSetupView:
+    """Ask the live service for this host's dedicated MCP principal, and file it.
+
+    The production sequence, in the production order, through the public client:
+    connect to the running service, call the `mcp.configure` local control, and
+    write the bearer it hands back straight into this installation's
+    :class:`~omnivia_core_client.InstalledCredentialStore` under the reference
+    the service chose. Exactly what `omnivia mcp configure` does, minus the
+    host-native snippet and the compensation ladder, neither of which a fixture
+    has anything to do with.
+
+    **The bearer is never returned, printed or kept.** It exists as a local name
+    for the two statements between receiving it and storing it, and what goes
+    back to the caller is the redacted setup view -- which has no field a secret
+    could be in.
+
+    Only the freshly provisioned branch is admitted: this runs once per service,
+    against an installation created moments earlier, so a configure that found
+    the requested state already live would mean something else had configured
+    this host and there would be no material to file.
+    """
+    client = ServiceClient.connect(
+        InstallationServiceConfig(
+            installation_state=installation_state, workspace_id=workspace_id
+        ),
+        deadline=Deadline.after(_CONTROL_TIMEOUT_SECONDS),
+    )
+    result = mcp_configure(
+        local_control_transport(client),
+        host=MCP_HOST,
+        workspace_id=workspace_id,
+        profile=profile,
+        # Derived from the profile rather than taken separately, for the reason
+        # `omnivia mcp configure` derives it: choosing the authoring profile *is*
+        # the explicit act, and the store refuses the two disagreeing anyway.
+        authoring_intent=profile == AUTHORING_PROFILE,
+        deadline=Deadline.after(_CONTROL_TIMEOUT_SECONDS),
+    )
+    secret = result.reveal()
+    assert result.rotated and secret is not None, "configure minted no credential"
+    InstalledCredentialStore(installation_state).store(
+        CredentialReference(result.setup.credential_reference), Credential(secret)
+    )
+    del secret
+    return result.setup
+
+
 @contextmanager
-def serving() -> Iterator[GovernedService]:
-    """Seed a governed workspace, serve it, and tear both down.
+def serving(
+    *,
+    http_credential: str | None = None,
+    profile: str = RESTRICTED_PROFILE,
+    seed: bool = True,
+    stage: bool = False,
+    configure: bool = True,
+) -> Iterator[GovernedService]:
+    """Create and seed a governed workspace, serve it, provision MCP, tear down.
 
     The service is the workspace's exclusive writer from here on, and it is the
     authoritative answerer for every call made against the yielded endpoint:
     nothing in this module answers a request, and no MCP-side double exists to.
     `serve` also builds and activates the `evidence.search` FTS projection before
     the endpoint binds, which is why seeding writes rows and not a projection.
+
+    **The service owns the installation authority for the whole yielded
+    lifetime.** Its normal startup elects itself owner of the catalogue this
+    workspace was created in -- the temporary coordinator in :func:`build` is
+    long closed by then -- so the `mcp.configure` call below is answered by the
+    live authoritative process, and so is every authentication of the bearer it
+    issues.
+
+    `profile` is what that setup records: `restricted` by default, which is the
+    six every read-side test expects, and `authoring` for the one test that
+    needs the wider surface.
+
+    `seed=False` serves the workspace exactly as the installation bootstrap left
+    it, and `configure=False` provisions no MCP principal at all. Together they
+    are the starting state R004 section 13.B requires -- an empty workspace on an
+    installation where no host is set up -- so a caller can run the real
+    `omnivia mcp configure` for itself and have that command be the thing under
+    test rather than a step this fixture already took.
+
+    `stage=True` adds the one verified staged import source section 13.D's
+    journey names, and nothing else. It is orthogonal to `seed`: section 13.D
+    asks for a staged handle, not for seeded application data.
+
+    With `http_credential`, the same process also serves authenticated HTTP on a
+    loopback port through :data:`_HTTP_EMBEDDER`, so one service -- one lease,
+    one workspace state -- answers both the local socket and HTTP.
     """
     root = Path(tempfile.mkdtemp(prefix="ovm-workspace-"))
     # Outside `tmp_path`: R004-15 caps a local endpoint at 86 encoded bytes and
     # pytest's `tmp_path` nests deep enough to exceed it.
     socket_directory = Path(tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir()))
-    built = build(root)
+    built = build(root, seed=seed, stage=stage)
     endpoint = endpoint_for_path(socket_directory / "s.sock")
-
-    # A file, not two pipes, and for the same two reasons `managed_start._spawn`
-    # gives its own child one. Nothing here reads a pipe: the service outlives
-    # every call in the module, so a `PIPE` nobody drains is a write that blocks
-    # the whole process once the kernel buffer fills -- and a blocked service
-    # still holds the workspace lease and the storage lock, so a later
-    # `connect` cannot start a replacement either and spends its entire
-    # `MANAGED_START_TIMEOUT_SECONDS` budget failing to. `process.wait()` below
-    # is the same hazard at teardown, where the standard library documents it.
-    # The second reason is the one that made this failure unreadable in CI: the
-    # service's own diagnostic -- the sentence it writes when it stops -- went
-    # into a pipe that was closed unread, so a hosted run could say a call had
-    # failed and never say why.
-    log_path = root / "service.log"
-    with log_path.open("wb") as log:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "omnivia_core_runtime.service.main",
-                "--workspace",
-                str(built.workspace.root),
-                "--installation-state",
-                str(built.installation.root),
-                "--endpoint",
-                endpoint.url,
-            ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
-    service = GovernedService(
+    service_argv = [
+        "--workspace",
+        str(built.workspace.root),
+        "--installation-state",
+        str(built.installation.root),
+        "--endpoint",
         endpoint.url,
-        built.workspace_id,
-        built.installation.root,
-        process,
-        log_path,
+    ]
+    http_endpoint = None
+    if http_credential is None:
+        command = [sys.executable, "-m", "omnivia_core_runtime.service.main"]
+    else:
+        http_endpoint = f"http://127.0.0.1:{_free_loopback_port()}"
+        service_argv += ["--http-endpoint", http_endpoint]
+        command = [
+            sys.executable,
+            "-c",
+            _HTTP_EMBEDDER,
+            http_credential,
+            str(built.installation.runtime_for(built.workspace_id)),
+            built.workspace_id,
+            ",".join(_HTTP_GRANTED_OPERATIONS),
+        ]
+
+    log_path = root / "service.log"
+    argv = (*command, *service_argv)
+    service = GovernedService(
+        endpoint_uri=endpoint.url,
+        workspace_id=built.workspace_id,
+        installation_state=built.installation.root,
+        argv=argv,
+        process=_spawn(argv, log_path),
+        log=log_path,
+        database=built.workspace.database_path,
+        created_at=built.created_at,
+        created_at_canonical=built.created_at_canonical,
+        http_endpoint=http_endpoint,
     )
     try:
-        deadline = time.monotonic() + 60
-        found = None
-        while time.monotonic() < deadline:
-            assert process.poll() is None, (
-                f"the service exited instead of serving: {service.diagnosis()}"
+        service.await_ready()
+        # After readiness, because only the live service can mint authority, and
+        # before the yield, because every managed-local configuration below names
+        # the reference this returns.
+        if configure:
+            setup = _provision_mcp_principal(
+                built.installation.root, built.workspace_id, profile
             )
-            found = discover(built.installation.runtime_for(built.workspace_id))
-            if found is not None and found.ready:
-                break
-            time.sleep(0.05)
-        assert found is not None and found.ready, (
-            f"the service never became ready: {service.diagnosis()}"
-        )
+            service.credential_reference = setup.credential_reference
+            service.principal_id = setup.principal_id
+            service.profile = setup.profile
         yield service
     finally:
-        if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
-            try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
-                process.kill()
-                process.wait(timeout=10)
+        # `service.process`, never the one started above: a caller may have
+        # restarted the service, and the process to stop is whichever one is
+        # serving now.
+        with suppress(subprocess.TimeoutExpired):  # pragma: no cover - on a hang
+            service.stop()
         shutil.rmtree(socket_directory, ignore_errors=True)
         shutil.rmtree(root, ignore_errors=True)

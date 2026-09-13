@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "omnivia-core-mcp"
 version = "0.1.0"
-description = "Model Context Protocol server for OmniVia Core: a curated, read-only, allow-listed tool surface over a local workspace service."
+description = "Model Context Protocol server for OmniVia Core: a curated, allow-listed tool surface over a local workspace service, in two fixed profiles -- six read tools by default, and eleven only under an explicit, separately recorded authoring opt-in."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
