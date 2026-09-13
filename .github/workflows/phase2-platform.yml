@@ -101,8 +101,9 @@ jobs:
         # The client suites contain adversarial POSIX fixtures that intentionally
         # create mode-only trees. Select the native cases here: they exercise the
         # real Windows owner and DACL APIs and the two installed-store journeys.
-        # The expression is empty on POSIX, where the complete suites execute.
-        run: python -m pytest packages/omnivia-core-client/tests/test_owner_private.py packages/omnivia-core-client/tests/test_installed_credentials.py ${{ runner.os == 'Windows' && '-k native_windows' || '' }} -q -rs
+        # The driver runs the complete suites on POSIX and the native cases on
+        # Windows without conditionally suppressing any matrix step.
+        run: python scripts/check-client-owner-private.py
 
       - name: Qualify isolated-wheel MCP and CLI executables
         # Cross-platform by construction: this Python driver creates two clean
