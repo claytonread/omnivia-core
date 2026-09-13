@@ -95,7 +95,7 @@ jobs:
         # acceptance gate runs these too, but on one operating system, which cannot
         # tell whether the Windows control exists. `-rs` prints what a platform
         # could not provide rather than letting it vanish into a green row.
-        run: python -m pytest tests/runtime_contract packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py -q -rs
+        run: python -m pytest tests/runtime_contract packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py packages/omnivia-core-client/tests/test_owner_private.py packages/omnivia-core-client/tests/test_installed_credentials.py -q -rs
 
       - name: Qualify isolated-wheel MCP and CLI executables
         # Cross-platform by construction: this Python driver creates two clean

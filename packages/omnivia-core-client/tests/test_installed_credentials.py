@@ -1495,3 +1495,38 @@ def test_the_two_forms_agree_on_what_is_written(tmp_path: Path) -> None:
             assert store.read(HOST) == DOCUMENT
             assert store.health(HOST) == "present"
             assert store.remove(HOST) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows protected stores")
+def test_native_windows_pathname_chain_prepares_a_fresh_installation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "installation-state"
+    root.mkdir()
+
+    chain = installed_credentials._proved_chain(
+        root, STORE_DIRECTORY, create=True
+    )
+
+    assert chain is not None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows protected stores")
+def test_native_windows_credential_store_round_trips(tmp_path: Path) -> None:
+    root = tmp_path / "installation-state"
+    root.mkdir()
+    keeper = store(root)
+
+    keeper.store(REFERENCE, Credential(SECRET))
+
+    assert keeper.resolve(REFERENCE).reveal() == SECRET
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows protected stores")
+def test_native_windows_configuration_store_round_trips(tmp_path: Path) -> None:
+    root = tmp_path / "installation-state"
+    root.mkdir()
+    keeper = configs(root)
+
+    assert keeper.write(HOST, DOCUMENT) is True
+    assert keeper.read(HOST) == DOCUMENT
