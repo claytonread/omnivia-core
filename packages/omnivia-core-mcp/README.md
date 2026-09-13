@@ -85,14 +85,13 @@ the next call rather than at the next restart, and a reference this installation
 cannot produce a usable credential for refuses startup rather than falling back.
 
 A managed-local document with **no** reference is the pre-setup shape. The
-console entry point upgrades it before MCP initialization through the service's
-protected local control: it chooses only an unused/revoked host slot (or a
-matching interrupted restricted setup), provisions a dedicated restricted
-principal with `authoring_intent: false`, stores the one-time bearer privately,
-and atomically replaces the owner-private document with one workspace and
-`mutation_enabled: false`. A legacy true byte never becomes authoring consent.
-If no safe slot exists or publication cannot settle, startup refuses with a
-fixed diagnostic and leaves either a rolled-back or resumable state. A direct
+console entry point may finish a matching interrupted restricted setup before
+MCP initialization, but only when exactly one active restricted setup and its
+protected bearer already exist. Migration never creates a grant or guesses a
+host. It atomically narrows the document to one workspace and
+`mutation_enabled: false`; a legacy true byte never becomes authoring consent.
+Otherwise startup refuses with a fixed diagnostic directing the user to the
+explicit `omnivia mcp configure --host ...` action. A direct
 library caller that bypasses the entry point is still refused by `connect`.
 There is no unauthenticated fallback, because the local endpoint would admit one
 as the service's own principal.

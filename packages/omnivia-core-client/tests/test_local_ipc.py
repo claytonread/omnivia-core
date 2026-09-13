@@ -18,6 +18,7 @@ mirror of `local_ipc.py` being the only source module that imports one.
 
 from __future__ import annotations
 
+import base64
 import shutil
 import socket
 import tempfile
@@ -136,7 +137,9 @@ def _worst_case_capture_request() -> RequestEnvelope:
         input={
             "source_native_id": "worst-json-escape",
             "media_type": "text/plain",
-            "text": "\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+            "content_base64": base64.b64encode(
+                b"\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+            ).decode("ascii"),
         },
     )
     decode_evidence_capture_input(request.input)
@@ -475,7 +478,7 @@ def test_exactly_one_frame_is_written_and_nothing_follows_it(
     assert peer.received == encode_frame(codec.encode_request(request))
 
 
-def test_local_ipc_writes_the_worst_case_valid_capture_as_one_frame(
+def test_local_ipc_writes_the_compact_worst_case_capture_as_one_frame(
     scripted_peer: object,
 ) -> None:
     request = _worst_case_capture_request()

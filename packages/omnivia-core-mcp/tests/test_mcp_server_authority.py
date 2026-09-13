@@ -19,6 +19,7 @@ object these tests build.
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ import mcp_types as types
 import pytest
 from mcp import Client
 from omnivia_core_client import (
+    MAXIMUM_JSON_BYTES,
     AuthenticatedLocalTransport,
     AuthoringAdmissionResult,
     CancellationToken,
@@ -47,6 +49,7 @@ from omnivia_core_client import (
     ServiceClient,
     TransportError,
     authenticated_client,
+    encode_frame,
 )
 from omnivia_core_mcp import server
 from omnivia_core_mcp.configuration import McpConfiguration, parse_configuration
@@ -856,8 +859,9 @@ def test_a_mutation_dispatches_the_nested_input_and_the_key_in_the_metadata(
 ) -> None:
     """The wrapper is a call shape, not a payload: it is unwrapped here.
 
-    `input` becomes the request's input unchanged -- no outer key survives into
-    it -- and `idempotency_key` becomes `RequestMetadata.idempotency_key`, which
+    `input` becomes the canonical request input -- no outer key survives into
+    it and capture text takes its equivalent compact base64 form -- while
+    `idempotency_key` becomes `RequestMetadata.idempotency_key`, which
     is where the contract puts it and where the service's durable mutation
     coordinator looks. A key left in the payload would be an undeclared field the
     operation contract refuses; a key dropped would make every submission a new
@@ -871,9 +875,41 @@ def test_a_mutation_dispatches_the_nested_input_and_the_key_in_the_metadata(
 
     (request,) = transport.calls
     assert request.operation == tool_name
-    assert request.input == arguments["input"]
+    expected = dict(arguments["input"])
+    if tool_name == "evidence.capture":
+        text = expected.pop("text")
+        expected["content_base64"] = base64.b64encode(text.encode("utf-8")).decode(
+            "ascii"
+        )
+    assert request.input == expected
     assert "idempotency_key" not in request.input
     assert request.metadata.idempotency_key == arguments["idempotency_key"]
+
+
+def test_maximum_escaped_text_capture_uses_compact_form_within_ovc1_v1() -> None:
+    content = "\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+    transport = RecordingTransport()
+    result = call(
+        "evidence_capture",
+        {
+            "input": {
+                "source_native_id": "worst-json-escape",
+                "media_type": "text/plain",
+                "text": content,
+            },
+            "idempotency_key": "k-frame-capacity",
+        },
+        connected=authoring_session(transport),
+    )
+
+    assert result.is_error is False
+    (request,) = transport.calls
+    assert "text" not in request.input
+    assert (
+        base64.b64decode(request.input["content_base64"], validate=True)
+        == content.encode()
+    )
+    assert len(encode_frame(codec.encode_request(request))) <= 8 + MAXIMUM_JSON_BYTES
 
 
 @pytest.mark.parametrize("tool_name", ["job_get", "job_events"])
@@ -1108,7 +1144,11 @@ def test_capture_size_refusal_is_classified_by_core_and_relayed_by_mcp(
     """MCP prevalidation must not replace Core's canonical typed size branch."""
 
     def too_large(request: RequestEnvelope) -> ResponseEnvelope:
-        assert request.input == payload
+        expected = dict(payload)
+        text = expected.pop("text", None)
+        if isinstance(text, str):
+            expected["content_base64"] = base64.b64encode(text.encode()).decode("ascii")
+        assert request.input == expected
         return ErrorResponseEnvelope(
             metadata=response_metadata(request),
             error=ApiError(

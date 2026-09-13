@@ -12,6 +12,7 @@ it proves nothing about the encoder.
 
 from __future__ import annotations
 
+import base64
 import json
 import traceback
 from pathlib import Path
@@ -193,8 +194,8 @@ def test_header_is_four_magic_bytes_and_a_four_byte_length() -> None:
     assert HEADER_BYTES == len(MAGIC) + LENGTH_BYTES == 8
 
 
-def test_maximum_json_payload_is_eight_mebibytes() -> None:
-    assert MAXIMUM_JSON_BYTES == 8 * 1024 * 1024 == 8388608
+def test_maximum_json_payload_is_four_mebibytes() -> None:
+    assert MAXIMUM_JSON_BYTES == 4 * 1024 * 1024 == 4194304
 
 
 def test_frame_format_identifier_is_frozen() -> None:
@@ -246,8 +247,8 @@ def test_encode_then_decode_round_trips() -> None:
     assert decode_frame(encode_frame(payload)) == payload
 
 
-def test_worst_case_valid_capture_envelope_fits_the_finite_frame_ceiling() -> None:
-    """A one-MiB control-character body expands sixfold in canonical JSON."""
+def test_compact_form_of_a_worst_case_capture_fits_the_frozen_frame_ceiling() -> None:
+    """Base64 carries the same one-MiB body without changing OVC1 v1."""
     entry = get_operation_metadata("evidence.capture")
     required = entry.required_capability
     request = RequestEnvelope(
@@ -273,7 +274,9 @@ def test_worst_case_valid_capture_envelope_fits_the_finite_frame_ceiling() -> No
         input={
             "source_native_id": "worst-json-escape",
             "media_type": "text/plain",
-            "text": "\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+            "content_base64": base64.b64encode(
+                b"\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+            ).decode("ascii"),
         },
     )
     document = codec.encode_request(request)
@@ -281,7 +284,6 @@ def test_worst_case_valid_capture_envelope_fits_the_finite_frame_ceiling() -> No
 
     frame = encode_frame(document)
 
-    assert HEADER_BYTES + 6 * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES < len(frame)
     assert len(frame) <= HEADER_BYTES + MAXIMUM_JSON_BYTES
     assert codec.decode_request(decode_frame(frame)) == request
 
@@ -972,7 +974,7 @@ def test_a_wrong_magic_diagnostic_does_not_echo_the_observed_bytes() -> None:
 def test_manifest_states_the_frozen_format_facts() -> None:
     assert MANIFEST["format"] == FRAME_FORMAT == "omnivia.ovc1.v1"
     assert MANIFEST["magic_hex"] == MAGIC_HEX == "4f564331"
-    assert MANIFEST["maximum_json_bytes"] == MAXIMUM_JSON_BYTES == 8388608
+    assert MANIFEST["maximum_json_bytes"] == MAXIMUM_JSON_BYTES == 4194304
     assert MANIFEST["header_bytes"] == HEADER_BYTES
     assert MANIFEST["protocol_version"] == "1.0"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import traceback
 from pathlib import Path
@@ -50,7 +51,7 @@ def _frame(body: bytes, *, magic: bytes = MAGIC, declared: int | None = None) ->
 def test_runtime_recomputes_every_accepted_canonical_fixture_vector() -> None:
     assert MAGIC == b"OVC1"
     assert HEADER_BYTES == 8
-    assert MAXIMUM_JSON_BYTES == 8 * 1024 * 1024
+    assert MAXIMUM_JSON_BYTES == 4 * 1024 * 1024
 
     for vector in ACCEPTED:
         payload = vector["payload"]
@@ -104,7 +105,7 @@ def test_eight_mibibyte_body_is_inclusive_and_one_byte_more_is_refused() -> None
         encode_frame(oversized)
 
 
-def test_runtime_frames_the_worst_case_valid_capture_envelope() -> None:
+def test_runtime_frames_the_compact_form_of_a_worst_case_capture_envelope() -> None:
     entry = get_operation_metadata("evidence.capture")
     required = entry.required_capability
     request = RequestEnvelope(
@@ -130,7 +131,9 @@ def test_runtime_frames_the_worst_case_valid_capture_envelope() -> None:
         input={
             "source_native_id": "worst-json-escape",
             "media_type": "text/plain",
-            "text": "\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+            "content_base64": base64.b64encode(
+                b"\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+            ).decode("ascii"),
         },
     )
     document = codec.encode_request(request)
@@ -138,7 +141,6 @@ def test_runtime_frames_the_worst_case_valid_capture_envelope() -> None:
 
     frame = encode_frame(document)
 
-    assert HEADER_BYTES + 6 * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES < len(frame)
     assert len(frame) <= HEADER_BYTES + MAXIMUM_JSON_BYTES
     assert codec.decode_request(decode_frame(frame)) == request
 

@@ -136,7 +136,7 @@
     },
     {
       "name": "oversized_declared_body",
-      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: 8388609"],
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: 4194305"],
       "body": {"text": ""},
       "expect_status": 413
     },

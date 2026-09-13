@@ -10,7 +10,7 @@ length               4  unsigned big-endian ``uint32``: the JSON byte count
 JSON             *len*  exactly those canonical UTF-8 bytes, nothing after them
 ===============  =====  ==========================================================
 
-The JSON payload is at most :data:`MAXIMUM_JSON_BYTES` (8 MiB, inclusive), and
+The JSON payload is at most :data:`MAXIMUM_JSON_BYTES` (4 MiB, inclusive), and
 its root is always a JSON object.
 
 **This module is pure.** It turns a mapping into bytes and bytes back into a
@@ -123,18 +123,14 @@ HEADER_BYTES: Final = 8
 """``MAGIC`` plus the length field. A reader needs exactly this many bytes
 before it knows how many more to expect."""
 
-MAXIMUM_JSON_BYTES: Final = 8 * 1024 * 1024
-"""Largest JSON payload a frame may carry, 8388608 bytes, **inclusive**.
-
-The ceiling admits the worst canonical-JSON expansion of a contract-valid 1 MiB
-``evidence.capture`` text body plus its bounded request envelope while retaining a
-finite allocation bound at every transport reader.
+MAXIMUM_JSON_BYTES: Final = 4 * 1024 * 1024
+"""Largest JSON payload a frame may carry, 4194304 bytes, **inclusive**.
 
 A bound rather than no bound, because a length field is a promise from a peer
 and a reader that trusts it allocates whatever it is told to. Refusing an
 over-large frame is how a malfunctioning or hostile local peer fails as one
 bad frame instead of as memory exhaustion somewhere else entirely. The limit is
-part of the frozen format: both peers must agree on it, or one will send frames
+part of the frozen v1 format: both peers must agree on it, or one will send frames
 the other structurally cannot accept."""
 
 CANONICAL_JSON_ALGORITHM: Final = "rfc8785"

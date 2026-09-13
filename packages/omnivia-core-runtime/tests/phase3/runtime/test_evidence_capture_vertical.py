@@ -634,22 +634,21 @@ def test_closed_capture_input_rejects_every_undeclared_field_before_a_write(
     assert count(owned, AUDIT) == 0
 
 
-def test_tokenless_content_is_refused_before_any_durable_effect(
+def test_tokenless_content_is_captured_and_searchable_by_source_identity(
     owned: Served,
     router: ApplicationDispatcher,
 ) -> None:
-    response = refusal(
+    result = captured(
         router.dispatch(
             capture_request(
                 request_id="req-tokenless", key="idem-tokenless", text="!!!"
             )
         )
     )
-    assert response.error.code == "invalid_request"
-    assert count(owned, ARTIFACTS) == 0
-    assert count(owned, BLOBS) == 0
-    assert count(owned, AUDIT) == 0
-    assert list(owned.layout.blobs_path.rglob("*")) == []
+    assert count(owned, ARTIFACTS) == 1
+    assert count(owned, BLOBS) == 1
+    assert count(owned, AUDIT) == 1
+    assert found(router, "note-1") == (result.evidence_id,)
 
 
 def test_unicode_content_is_visible_through_the_production_tokenizer(

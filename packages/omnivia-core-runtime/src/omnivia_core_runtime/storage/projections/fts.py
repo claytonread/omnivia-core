@@ -137,7 +137,7 @@ PROJECTION_KIND: Final = "evidence.search"
 #: is built with. Both are recorded on every run so a build made under one profile is
 #: distinguishable from a build made under another rather than silently comparable.
 SCHEMA_VERSION: Final = "0012"
-PROFILE_VERSION: Final = "fts5.unicode61.nodiacritics.1"
+PROFILE_VERSION: Final = "fts5.unicode61.nodiacritics.2"
 
 #: The tokenizer, stated once. `remove_diacritics 0` is the load-bearing half: with
 #: removal on, `unicode61` folds combining marks away by its own internal table, and the
@@ -754,7 +754,7 @@ def build_search_projection(
                 activated=False,
             )
 
-        run_id, epoch, state, run_checkpoint = plan
+        run_id, epoch, state, run_checkpoint, compatible = plan
         if state == "running":
             _append_documents(
                 connection,
@@ -781,7 +781,7 @@ def build_search_projection(
             now_us=now_us,
         )
         _reclaim(connection, identity, fence=fence, keep_run_id=run_id)
-        if run_checkpoint == checkpoint:
+        if run_checkpoint == checkpoint and compatible:
             return BuildOutcome(
                 run_id=run_id,
                 epoch=epoch,
@@ -852,7 +852,7 @@ def _plan_run(
     fence: tuple[str, int],
     checkpoint: str,
     now_us: int,
-) -> tuple[str, int, str, str] | None:
+) -> tuple[str, int, str, str, bool] | None:
     """The run this build should be advancing, or `None` when there is nothing to do.
 
     "In flight" means *declared and not yet activated*, and it deliberately includes
@@ -882,7 +882,8 @@ def _plan_run(
     workspace_id, generation = fence
     with authorised(connection, mutations=False, ddl=False) as fenced:
         in_flight = fenced.execute(
-            "SELECT r.run_id, r.target_epoch, r.source_checkpoint, r.state "
+            "SELECT r.run_id, r.target_epoch, r.source_checkpoint, r.state, "
+            "       r.schema_version, r.profile_version "
             "FROM omnivia_projection_runs r "
             "WHERE r.workspace_id = ? AND r.projection_id = ? "
             "  AND r.state IN ('running', 'succeeded') "
@@ -894,20 +895,31 @@ def _plan_run(
             (workspace_id, PROJECTION_ID),
         ).fetchone()
         ledger = fenced.execute(
-            "SELECT active_epoch, active_source_checkpoint FROM omnivia_projection_ledger "
-            "WHERE projection_id = ?",
-            (PROJECTION_ID,),
+            "SELECT l.active_epoch, l.active_source_checkpoint, "
+            "       r.schema_version, r.profile_version "
+            "FROM omnivia_projection_ledger l "
+            "LEFT JOIN omnivia_projection_runs r "
+            "  ON r.workspace_id = ? AND r.projection_id = l.projection_id "
+            " AND r.run_id = l.active_run_id "
+            "WHERE l.projection_id = ?",
+            (workspace_id, PROJECTION_ID),
         ).fetchone()
 
-    if in_flight is not None and (
-        str(in_flight[2]) == checkpoint or str(in_flight[3]) == "succeeded"
-    ):
-        return (
-            str(in_flight[0]),
-            int(in_flight[1]),
-            str(in_flight[3]),
-            str(in_flight[2]),
-        )
+    in_flight_compatible = in_flight is not None and (
+        str(in_flight[4]) == SCHEMA_VERSION and str(in_flight[5]) == PROFILE_VERSION
+    )
+    if in_flight is not None:
+        state = str(in_flight[3])
+        if state == "succeeded" or (
+            in_flight_compatible and str(in_flight[2]) == checkpoint
+        ):
+            return (
+                str(in_flight[0]),
+                int(in_flight[1]),
+                state,
+                str(in_flight[2]),
+                in_flight_compatible,
+            )
 
     if in_flight is not None:
         with fenced_transaction(
@@ -933,7 +945,10 @@ def _plan_run(
     active_checkpoint = (
         str(ledger[1]) if ledger is not None and ledger[1] is not None else None
     )
-    if in_flight is None and active_checkpoint == checkpoint:
+    active_compatible = ledger is not None and (
+        str(ledger[2]) == SCHEMA_VERSION and str(ledger[3]) == PROFILE_VERSION
+    )
+    if in_flight is None and active_checkpoint == checkpoint and active_compatible:
         return None
 
     epoch = active_epoch + 1
@@ -958,7 +973,7 @@ def _plan_run(
                 _next_us(connection, workspace_id, now_us),
             ),
         )
-    return run_id, epoch, "running", checkpoint
+    return run_id, epoch, "running", checkpoint, True
 
 
 def _completed_run_evidence(

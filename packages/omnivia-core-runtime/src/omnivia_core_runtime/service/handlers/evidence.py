@@ -157,8 +157,8 @@ from omnivia_core_runtime.storage.retrieval import (
     AuthorizedFrontier,
     ProjectedFrontier,
     authorized_frontier,
+    first_query_token,
     local_owner_label_grant,
-    query_tokens,
     rank_projected,
 )
 from omnivia_core_runtime.workspace.blob_publication import (
@@ -497,7 +497,7 @@ class EvidenceHandlers:
         """
         submitted = self._decode(context)
         content = _content_bytes(submitted)
-        witness = _lexical_witness(content)
+        witness = _lexical_witness(content, submitted.source_native_id)
         checksum = f"sha256:{hashlib.sha256(content).hexdigest()}"
         length = len(content)
 
@@ -826,12 +826,18 @@ def _content_bytes(submitted: EvidenceCaptureInput) -> bytes:
     return content
 
 
-def _lexical_witness(content: bytes) -> str:
-    """One bounded content-derived query token, or a refusal before persistence."""
-    tokens = query_tokens(content.decode("utf-8"))
-    if not tokens:
-        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_CAPTURE)
-    return tokens[0]
+def _lexical_witness(content: bytes, source_native_id: str) -> str:
+    """One bounded production query token without narrowing valid content.
+
+    Prefer content so the barrier exercises content lookup whenever the document
+    has a lexical term. Punctuation-only content is still a valid immutable
+    capture: ``content_indexed`` attests that its bytes were composed into the
+    projection, and its required source identifier supplies the production
+    search witness. ``first_query_token`` stops after one bounded token, so a
+    token-dense one-MiB document does not become hundreds of thousands of Python
+    objects merely to validate the post-commit barrier.
+    """
+    return first_query_token(content.decode("utf-8")) or source_native_id
 
 
 def _microseconds(value: str | None) -> int | None:

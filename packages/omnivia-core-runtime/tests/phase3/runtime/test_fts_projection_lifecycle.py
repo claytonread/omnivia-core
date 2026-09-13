@@ -410,6 +410,26 @@ def test_lb_l6_a_second_build_at_the_same_checkpoint_does_nothing(
     assert scalar(owned, "SELECT COUNT(*) FROM omnivia_projection_runs") == 1
 
 
+def test_lb_l6_a_changed_token_profile_rebuilds_at_the_same_checkpoint(
+    owned: m2.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = build(owned)
+    monkeypatch.setattr(fts, "PROFILE_VERSION", "fts5.unicode61.nodiacritics.next")
+
+    second = build(owned, now_us=NOW_US + 1_000)
+
+    assert second.activated is True
+    assert second.epoch == first.epoch + 1
+    assert (
+        scalar(
+            owned,
+            "SELECT profile_version FROM omnivia_projection_runs WHERE run_id = ?",
+            second.run_id,
+        )
+        == "fts5.unicode61.nodiacritics.next"
+    )
+
+
 def test_lb_l7_new_evidence_starts_a_fresh_run_that_supersedes_and_reclaims(
     owned: m2.Owned,
 ) -> None:
@@ -994,6 +1014,7 @@ def test_lb_l25_the_query_tokenizer_agrees_with_the_projections_own(
         'alpha" OR "gamma',
         "a" * 32_769,
         "é" * 20_000,
+        "\ue000" * 20_000,
     ):
         # `projection_text` on the way in on both sides, exactly as materialisation
         # applies it to every document: the claim is that normalization, safe

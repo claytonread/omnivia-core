@@ -13,8 +13,10 @@ installation had before that setup path existed.  It is still *read* -- this
 module parses a document it can describe rather than rejecting it -- but it
 names no dedicated principal. The console entry point passes it through
 :func:`~omnivia_core_mcp.server.upgrade_legacy_configuration`, which uses the
-protected local control to provision restricted authority and atomically
-publishes the reference before calling :func:`~omnivia_core_mcp.server.connect`.
+protected local control only to discover an unambiguous interrupted restricted
+setup whose bearer is already stored, then atomically publishes its reference.
+It never creates authority; otherwise startup directs the user to the explicit
+installed configure command before calling :func:`~omnivia_core_mcp.server.connect`.
 A direct caller that bypasses that entry point still gets a refusal from
 ``connect``. There is never an unauthenticated fallback, because the local
 endpoint would otherwise admit the server as the service's own principal.

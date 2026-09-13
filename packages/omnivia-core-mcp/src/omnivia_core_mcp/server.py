@@ -41,12 +41,12 @@ next call. Nothing above this sees any of it -- `ConnectedSession` and every
 handler still go through `ServiceClient.call`.
 
 **There is no unauthenticated managed-local session, and no way to ask for one.**
-A managed-local configuration that names no credential is migrated at the
-console boundary before :func:`connect`: it receives a dedicated restricted
-principal, the bearer is stored privately, and the trusted document is replaced
-atomically. If no bounded host slot can be used or publication cannot settle
-safely, startup refuses. A configuration naming a credential this installation
-cannot produce also refuses at :func:`connect`. The local endpoint would accept
+A managed-local configuration that names no credential is checked at the
+console boundary before :func:`connect`. Migration may finish publication of
+exactly one already-authorized restricted setup whose bearer is recoverable; it
+never chooses a host or creates authority. Every other legacy state refuses and
+requires the explicit installed configure command. A configuration naming a
+credential this installation cannot produce also refuses at :func:`connect`. The local endpoint would accept
 the plain application path, so neither case may fall back to a session running as
 the service's own identity.
 
@@ -107,6 +107,7 @@ process is decided here.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -126,9 +127,7 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from omnivia_core_client import (
     CLIENT_API_VERSION,
-    CONFIGURATION_HOSTS,
     ClientError,
-    Credential,
     CredentialCache,
     CredentialReference,
     CredentialResolver,
@@ -142,8 +141,6 @@ from omnivia_core_client import (
     connect_managed_local,
     local_control_transport,
     mcp_authoring_admission,
-    mcp_configure,
-    mcp_revoke,
     mcp_status,
     write_owner_private,
 )
@@ -537,27 +534,26 @@ def _installed_credential(
     return store, reference
 
 
-def _legacy_upgrade_host(
+def _resumable_legacy_setup(
     configuration: McpConfiguration,
     store: InstalledCredentialStore,
     setups: tuple[Any, ...],
-) -> str | None:
-    """Choose a bounded host slot without displacing unrelated live authority.
+) -> Any | None:
+    """Return one unambiguous, already-authorized restricted setup to resume.
 
-    A matching active restricted setup with recoverable local material is the
-    resumable state left by an interrupted earlier publication. Otherwise an
-    absent or revoked slot can be provisioned. An active setup for another
-    workspace or for authoring is never rotated implicitly.
+    Legacy configuration carries no trusted host identity. Migration therefore
+    cannot choose a free host slot, mint authority, or guess between two matching
+    slots. It may only finish publication for exactly one active restricted
+    setup whose credential is already present in this installation's protected
+    store -- the recoverable state an interrupted explicit configure can leave.
     """
     workspace_id = configuration.selected_workspace_id
     if workspace_id is None:
         return None
-    by_host = {setup.host: setup for setup in setups}
-    for host in CONFIGURATION_HOSTS:
-        setup = by_host.get(host)
+    matching: list[Any] = []
+    for setup in setups:
         if (
-            setup is not None
-            and setup.status == "active"
+            setup.status == "active"
             and setup.workspace_id == workspace_id
             and setup.profile == RESTRICTED_PROFILE
             and setup.authoring_intent is False
@@ -574,12 +570,8 @@ def _legacy_upgrade_host(
                 except ClientError:
                     healthy = False
             if healthy:
-                return host
-    for host in CONFIGURATION_HOSTS:
-        setup = by_host.get(host)
-        if setup is None or setup.status == "revoked":
-            return host
-    return None
+                matching.append(setup)
+    return matching[0] if len(matching) == 1 else None
 
 
 def _legacy_configuration_document(
@@ -611,45 +603,19 @@ def _legacy_configuration_document(
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _compensate_legacy_upgrade(
-    transport: Any,
-    store: InstalledCredentialStore,
-    *,
-    host: str,
-    reference: CredentialReference | None,
-    deadline: Deadline,
-) -> None:
-    """Revoke first, then remove local material; retain both if revoke is uncertain."""
-    revoked = False
-    try:
-        mcp_revoke(transport, host=host, deadline=deadline)
-        revoked = True
-    except (ClientError, OSError):
-        revoked = False
-    if not revoked or reference is None:
-        return
-    try:
-        store.remove(reference)
-    except ClientError:
-        pass
-
-
 def upgrade_legacy_configuration(
     path: Path, configuration: McpConfiguration
 ) -> McpConfiguration:
-    """Provision a legacy managed-local document as restricted, or fail closed.
+    """Finish one interrupted explicit restricted setup, or fail closed.
 
-    This is the v1.3 path for pre-credential configurations. It never
-    authenticates an application call as the service, never carries a legacy
-    ``mutation_enabled: true`` forward, and never displaces an unrelated live
-    setup. Authority is settled first, the bearer is filed in the protected
-    store second, and the explicit owner-private configuration is atomically
-    replaced last.
-
-    A publication failure compensates in the opposite order: revoke the minted
-    authority, then remove its local bearer. If revocation cannot be confirmed,
-    both halves remain so a later startup can resume instead of leaving an
-    active grant with no recoverable credential.
+    Migration itself never creates or widens a grant. A credential-free legacy
+    document has no host identity, so ordinary startup cannot safely choose a
+    host slot or call ``mcp.configure``. The sole automatic case is an
+    unambiguous active restricted setup for the selected workspace whose bearer
+    is already recoverable from protected storage. That is an interrupted
+    publication, not new authority; this function only publishes its narrowed
+    configuration. Every other legacy document is refused with the instruction
+    to run the explicit installed configure command for the intended host.
     """
     if (
         configuration.service_mode != "managed_local"
@@ -686,26 +652,9 @@ def upgrade_legacy_configuration(
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     store = InstalledCredentialStore(state)
-    host = _legacy_upgrade_host(configuration, store, setups)
-    if host is None:
+    setup = _resumable_legacy_setup(configuration, store, setups)
+    if setup is None:
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
-
-    configured = None
-    try:
-        configured = mcp_configure(
-            control,
-            host=host,
-            workspace_id=workspace_id,
-            profile=RESTRICTED_PROFILE,
-            authoring_intent=False,
-            deadline=deadline,
-        )
-    except (ClientError, OSError):
-        configured = None
-    if configured is None:
-        raise StartupError(_LEGACY_UPGRADE_REFUSED)
-
-    setup = configured.setup
     reference = None
     try:
         reference = CredentialReference(setup.credential_reference)
@@ -713,46 +662,12 @@ def upgrade_legacy_configuration(
         reference = None
     valid_setup = (
         reference is not None
-        and setup.host == host
         and setup.workspace_id == workspace_id
         and setup.profile == RESTRICTED_PROFILE
         and setup.authoring_intent is False
         and setup.status == "active"
     )
     if not valid_setup:
-        if configured.rotated:
-            _compensate_legacy_upgrade(
-                control,
-                store,
-                host=host,
-                reference=reference,
-                deadline=deadline,
-            )
-        raise StartupError(_LEGACY_UPGRADE_REFUSED)
-
-    published_credential = not configured.rotated
-    if configured.rotated:
-        secret = configured.reveal()
-        if secret is not None and reference is not None:
-            try:
-                store.store(reference, Credential(secret))
-                published_credential = True
-            except ClientError:
-                published_credential = False
-            finally:
-                del secret
-    elif reference is not None:
-        published_credential = store.health(reference) == "present"
-
-    if not published_credential or reference is None:
-        if configured.rotated:
-            _compensate_legacy_upgrade(
-                control,
-                store,
-                host=host,
-                reference=reference,
-                deadline=deadline,
-            )
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     document = _legacy_configuration_document(
@@ -761,14 +676,6 @@ def upgrade_legacy_configuration(
         credential_reference=setup.credential_reference,
     )
     if not write_owner_private(path, document):
-        if configured.rotated:
-            _compensate_legacy_upgrade(
-                control,
-                store,
-                host=host,
-                reference=reference,
-                deadline=deadline,
-            )
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     upgraded = None
@@ -789,19 +696,6 @@ def upgrade_legacy_configuration(
         credential_reference=reference,
     )
     if upgraded != expected:
-        # Restore a credential-free restricted shape so another startup still
-        # enters this migration rather than getting stuck on a revoked reference.
-        restored = write_owner_private(
-            path, _legacy_configuration_document(configuration)
-        )
-        if configured.rotated and restored:
-            _compensate_legacy_upgrade(
-                control,
-                store,
-                host=host,
-                reference=reference,
-                deadline=deadline,
-            )
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
     return upgraded
 
@@ -1131,7 +1025,8 @@ def _request(
 
     **A mutation's key travels in the envelope, not in the payload.** The
     advertised wrapper is unwrapped here and nowhere else: `input` becomes the
-    request's `input` unchanged, and `idempotency_key` becomes
+    request's canonical operation input (with capture text represented by its
+    equivalent compact base64 form), and `idempotency_key` becomes
     `RequestMetadata.idempotency_key`, which is where the contract puts it and
     where the service's own durable mutation coordinator looks for it. A read
     carries no key at all. Nothing about a repeat is decided here: this builds a
@@ -1158,6 +1053,7 @@ def _request(
             + f"; its advertised schema declares {sorted(advertised)} and is closed"
         )
     _refuse_uncanonical(exposed, payload)
+    payload = _transport_payload(exposed, payload)
     required = entry.required_capability
     request_id = f"mcp-{uuid.uuid4()}"
     return RequestEnvelope(
@@ -1186,6 +1082,30 @@ def _request(
         ),
         input=payload,
     )
+
+
+def _transport_payload(
+    exposed: ExposedOperation, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Choose the compact equivalent capture representation for Core's wire.
+
+    OVC1 v1's 4 MiB ceiling is frozen. A valid 1 MiB text value can expand to
+    more than that when canonical JSON escapes C0 controls, while the same UTF-8
+    bytes encoded as base64 remain below the ceiling. The evidence contract
+    declares ``text`` and ``content_base64`` as equivalent alternatives, so MCP
+    always sends the deterministic base64 form after validating the caller's
+    original document. This also makes text/base64 retries settle against one
+    canonical input rather than representation-dependent idempotency material.
+    """
+    compact = dict(payload)
+    if exposed.operation != "evidence.capture":
+        return compact
+    value = compact.pop("text", None)
+    if isinstance(value, str):
+        compact["content_base64"] = base64.b64encode(value.encode("utf-8")).decode(
+            "ascii"
+        )
+    return compact
 
 
 def _refuse_reserved(exposed: ExposedOperation, supplied: Mapping[str, Any]) -> None:
@@ -1574,12 +1494,11 @@ def main(argv: list[str] | None = None) -> int:
     credential reference and nothing when it does not.
 
     That is also the upgrade boundary. A managed-local configuration from before
-    the installed setup path existed carries no reference. This entry point
-    upgrades it through the service's protected local control before connecting:
-    it provisions only a restricted principal, stores the one-time bearer, and
-    atomically narrows the document to one workspace with
-    ``mutation_enabled: false``. Unsafe or incomplete publication refuses with a
-    fixed diagnostic and retains a state that can be retried. A document that
+    the installed setup path existed carries no reference. This entry point may
+    finish an interrupted explicit restricted setup when exactly one matching
+    active authority and its protected bearer already exist. It never creates a
+    grant or guesses a host; every other legacy state refuses and requires
+    ``omnivia mcp configure --host ...``. A document that
     already carries a reference still reaches `authoring` only if the protected
     authority admits exactly this principal and this workspace when asked, on
     this startup -- editing `mutation_enabled` alone raises a ceiling over an

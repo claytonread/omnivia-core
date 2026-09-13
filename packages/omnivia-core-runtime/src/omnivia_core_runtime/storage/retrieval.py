@@ -80,8 +80,8 @@ mechanism is required before shared-host, multi-user or Organisation-mode deploy
 from __future__ import annotations
 
 import math
-import re
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Final
 
@@ -458,13 +458,6 @@ BM25_B: Final = 0.75
 #: the *worst* match would sort first. FTS5 clamps at exactly this value; so does this.
 BM25_MINIMUM_IDF: Final = 1e-6
 
-#: One token: a run of Unicode alphanumerics. That is what `unicode61` treats as token
-#: characters with `remove_diacritics 0`, so this splits a query exactly as the
-#: projection's own FTS5 tokenizer split the documents it is matched against.
-#: `test_fts_projection_lifecycle.py` pins the two against each other over a real index
-#: rather than trusting the equivalence, because a drift here is a silent recall bug.
-_TOKEN: Final = re.compile(r"[^\W_]+")
-
 #: FTS5's built-in tokenizers truncate one token at 32 KiB.  A truncation that
 #: lands inside a multibyte code point can make ``fts5vocab`` return text that
 #: Python's SQLite binding cannot decode, while an ASCII token longer than the
@@ -477,30 +470,43 @@ _TOKEN: Final = re.compile(r"[^\W_]+")
 FTS5_SAFE_TOKEN_BYTES: Final = 4 * 1024
 
 
-def _bounded_token_chunks(token: str) -> tuple[str, ...]:
-    """Split one normalized token without ever splitting a UTF-8 code point."""
-    chunks: list[str] = []
+def _unicode61_token_character(character: str) -> bool:
+    """Whether unicode61's default category set treats this scalar as a token."""
+    category = unicodedata.category(character)
+    return category.startswith(("L", "N")) or category == "Co"
+
+
+def _bounded_tokens(normalized: str) -> Iterator[str]:
+    r"""Yield unicode61-equivalent tokens below FTS5's byte ceiling.
+
+    SQLite documents the default token categories as letters, numbers and
+    private-use characters. Python's ``\w`` omits the last group, so using a
+    regular expression here lets a private-use run reach FTS5's 32 KiB
+    truncation even though the query-side tokenizer sees no token at all.
+    """
     current: list[str] = []
     current_bytes = 0
-    for character in token:
+    for character in normalized:
+        if not _unicode61_token_character(character):
+            if current:
+                yield "".join(current)
+                current = []
+                current_bytes = 0
+            continue
         width = len(character.encode("utf-8"))
         if current and current_bytes + width > FTS5_SAFE_TOKEN_BYTES:
-            chunks.append("".join(current))
+            yield "".join(current)
             current = []
             current_bytes = 0
         current.append(character)
         current_bytes += width
     if current:
-        chunks.append("".join(current))
-    return tuple(chunks)
+        yield "".join(current)
 
 
 def projection_text(text: str) -> str:
     """Normalized text with deterministic FTS5-safe boundaries in long tokens."""
-    normalized = normalize_query(text)
-    return _TOKEN.sub(
-        lambda match: " ".join(_bounded_token_chunks(match.group(0))), normalized
-    )
+    return " ".join(_bounded_tokens(normalize_query(text)))
 
 
 def query_tokens(query: str) -> tuple[str, ...]:
@@ -510,7 +516,12 @@ def query_tokens(query: str) -> tuple[str, ...]:
     document, so a match is a property of the text rather than of which side a caller
     happened to type.
     """
-    return tuple(_TOKEN.findall(projection_text(query)))
+    return tuple(_bounded_tokens(normalize_query(query)))
+
+
+def first_query_token(query: str) -> str | None:
+    """Return one projection-equivalent token without materialising the remainder."""
+    return next(_bounded_tokens(normalize_query(query)), None)
 
 
 def rank_projected(
@@ -806,6 +817,7 @@ __all__ = [
     "ProjectedFrontier",
     "authorized_frontier",
     "candidate_set_manifest",
+    "first_query_token",
     "governed_order_key",
     "governed_search_text",
     "local_owner_label_grant",

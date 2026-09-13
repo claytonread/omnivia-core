@@ -286,8 +286,8 @@ def host_snippet(host: str, path: Path) -> str:
     everything else in it.
     """
     if host == "codex":
-        command = json.dumps(MCP_EXECUTABLE)
-        configuration = json.dumps(str(path))
+        command = _toml_basic_string(MCP_EXECUTABLE)
+        configuration = _toml_basic_string(str(path))
         return (
             f"[mcp_servers.omnivia-core]\n"
             f"command = {command}\n"
@@ -307,6 +307,21 @@ def host_snippet(host: str, path: Path) -> str:
         )
         + "\n"
     )
+
+
+def _toml_basic_string(value: str) -> str:
+    """Render one TOML basic string without JSON surrogate escapes.
+
+    JSON and TOML share the escapes emitted here for quotes, backslashes and C0
+    controls.  ``ensure_ascii=False`` is the important distinction from the
+    default JSON renderer: supplementary Unicode remains a real scalar instead
+    of becoming a JSON-only UTF-16 surrogate pair, which TOML correctly rejects.
+    """
+    if any("\ud800" <= character <= "\udfff" for character in value):
+        raise ValueError(
+            "a Codex configuration path must contain Unicode scalar values"
+        )
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 #: How this module reaches the installation-local control endpoint.

@@ -544,6 +544,7 @@ def test_the_codex_snippet_is_toml_and_names_only_the_command_and_the_path(
         Path('/absolute/a "quoted" configuration.json'),
         Path("/absolute/control\ncharacter.json"),
         Path("/absolute/del-\x7f.json"),
+        Path("/absolute/emoji-😀-configuration.json"),
     ],
 )
 def test_every_codex_path_round_trips_through_a_toml_parser(path: Path) -> None:
