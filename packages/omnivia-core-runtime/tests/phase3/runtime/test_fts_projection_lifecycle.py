@@ -1015,6 +1015,51 @@ def fts5_tokens(text: str) -> tuple[str, ...]:
         scratch.close()
 
 
+def test_lb_l25_the_unicode61_table_matches_raw_fts5_for_every_scalar() -> None:
+    """The generated classifier is checked without preprocessing by itself.
+
+    One contentless row per Unicode scalar keeps the oracle independent: SQLite sees
+    each raw character directly, and its vocabulary's document ids say exactly which
+    characters it classified as tokens. Streaming the comparison avoids materializing
+    the million-entry answer in Python. Surrogates are omitted because they are not
+    Unicode scalar values and Python correctly refuses to UTF-8 encode them.
+    """
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.execute(
+            "CREATE VIRTUAL TABLE probe USING fts5("
+            "body, content='', detail=none, "
+            f"tokenize = '{fts.TOKENIZER}')"
+        )
+        scratch.executemany(
+            "INSERT INTO probe(rowid, body) VALUES (?, ?)",
+            (
+                (point + 1, chr(point))
+                for point in range(0x110000)
+                if not 0xD800 <= point <= 0xDFFF
+            ),
+        )
+        scratch.execute(
+            "CREATE VIRTUAL TABLE probe_v USING fts5vocab(probe, instance)"
+        )
+        observed = iter(
+            scratch.execute("SELECT DISTINCT doc FROM probe_v ORDER BY doc ASC")
+        )
+        current = next(observed, None)
+        for point in range(0x110000):
+            if 0xD800 <= point <= 0xDFFF:
+                continue
+            document = point + 1
+            if retrieval_module._unicode61_token_character(chr(point)):
+                assert current == (document,), hex(point)
+                current = next(observed, None)
+            else:
+                assert current != (document,), hex(point)
+        assert current is None
+    finally:
+        scratch.close()
+
+
 def test_lb_l25_the_query_tokenizer_agrees_with_the_projections_own(
     owned: m2.Owned,
 ) -> None:
@@ -1053,8 +1098,8 @@ def test_lb_l25_the_query_tokenizer_agrees_with_the_projections_own(
         "a" * 32_769,
         "é" * 20_000,
         "\ue000" * 20_000,
-        # Adlam was assigned after Unicode 6.1.  Python classifies it as a letter,
-        # while SQLite unicode61 correctly treats it as a separator.
+        # Adlam was assigned after Unicode 6.1 and exercises unicode61's frozen
+        # fallback behavior rather than Python's current category table.
         "alpha\U0001e900\U0001e922omega",
     ):
         # `projection_text` on the way in on both sides, exactly as materialisation
