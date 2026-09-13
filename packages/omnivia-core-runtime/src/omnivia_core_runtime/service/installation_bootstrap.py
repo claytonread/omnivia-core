@@ -45,6 +45,8 @@ from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitResult,
     WorkspaceInitStatus,
     _initialise_workspace,
+    _windows_initialisation_guard,
+    _windows_path_refusal,
     harden_windows_workspace_layout,
 )
 from omnivia_core_runtime.storage.installation_store import (
@@ -97,6 +99,24 @@ def initialise_and_register_managed_local_workspace(
     effect. Only a successful bootstrap -- fresh or already there -- goes on to
     register, and registration is itself idempotent and replay-safe.
     """
+    try:
+        with _windows_initialisation_guard(workspace_root, installation_root):
+            return _initialise_and_register_guarded(
+                workspace_root=workspace_root,
+                installation_root=installation_root,
+                core_version=core_version,
+            )
+    except OSError:
+        return _windows_path_refusal(workspace_root, installation_root)
+
+
+def _initialise_and_register_guarded(
+    *,
+    workspace_root: Path,
+    installation_root: Path,
+    core_version: str,
+) -> WorkspaceInitResult:
+    """Run bootstrap and registration while the Windows namespace stays pinned."""
     result = _initialise_workspace(
         workspace_root=workspace_root,
         installation_root=installation_root,

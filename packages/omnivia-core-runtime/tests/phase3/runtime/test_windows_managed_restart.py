@@ -22,6 +22,7 @@ from omnivia_core_client import (
 from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitRefusal,
     WorkspaceInitStatus,
+    _windows_initialisation_guard,
     initialise_allocated_workspace,
     initialise_workspace,
 )
@@ -116,3 +117,21 @@ def test_windows_init_refuses_a_real_junction_before_writing_through_it(
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
     assert not (redirected / workspace_id).exists()
+
+
+def test_windows_guard_pins_existing_directories_against_rename(
+    tmp_path: Path,
+) -> None:
+    """No-share-delete handles close the lstat-to-use replacement window."""
+    home = tmp_path / "pinned-home"
+    workspace = home / "workspace"
+    installation = home / "installation-state"
+    workspace.mkdir(parents=True)
+    installation.mkdir()
+    moved = tmp_path / "moved-home"
+
+    with _windows_initialisation_guard(workspace, installation), pytest.raises(OSError):
+        home.rename(moved)
+
+    home.rename(moved)
+    moved.rename(home)

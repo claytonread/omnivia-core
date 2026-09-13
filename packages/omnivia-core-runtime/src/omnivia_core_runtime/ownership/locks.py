@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -80,11 +81,19 @@ class _BaseFileLock:
     writer still holds anything.
     """
 
-    def __init__(self, path: Path, role: LockRole, payload: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        role: LockRole,
+        payload: dict[str, object] | None = None,
+        *,
+        opened_handle: IO[bytes] | None = None,
+    ) -> None:
         self._path = path
         self._role = role
         self._payload = payload or {}
         self._state = _LockState()
+        self._opened_handle = opened_handle
 
     @property
     def path(self) -> Path:
@@ -99,6 +108,10 @@ class _BaseFileLock:
         return self._state.held
 
     def _open(self) -> IO[bytes]:
+        if self._opened_handle is not None:
+            handle = self._opened_handle
+            self._opened_handle = None
+            return handle
         self._path.parent.mkdir(parents=True, exist_ok=True)
         return open(self._path, "a+b")
 
@@ -136,7 +149,9 @@ class _BaseFileLock:
 
     def __enter__(self) -> Self:
         if not self.acquire():
-            raise LockUnavailable(f"{self._role.value} is held by another process: {self._path}")
+            raise LockUnavailable(
+                f"{self._role.value} is held by another process: {self._path}"
+            )
         return self
 
     def __exit__(
@@ -260,12 +275,16 @@ class WindowsFileLock(_BaseFileLock):  # pragma: no cover - exercised on Windows
 
 
 def create_lock(
-    path: Path, role: LockRole, payload: dict[str, object] | None = None
+    path: Path,
+    role: LockRole,
+    payload: dict[str, object] | None = None,
+    *,
+    opened_handle: IO[bytes] | None = None,
 ) -> _BaseFileLock:
     """Platform-appropriate lock behind the one interface."""
     if IS_WINDOWS:  # pragma: no cover - selected on Windows CI
-        return WindowsFileLock(path, role, payload)
-    return PosixFileLock(path, role, payload)
+        return WindowsFileLock(path, role, payload, opened_handle=opened_handle)
+    return PosixFileLock(path, role, payload, opened_handle=opened_handle)
 
 
 # --- Filesystem qualification ------------------------------------------------
@@ -283,7 +302,18 @@ class FilesystemVerdict(str, Enum):
 #: Filesystems ADR-037 refuses for direct writable operation. Remote filesystems
 #: without reliable cross-host locking must go through one networked Core Service.
 REFUSED_FILESYSTEMS = frozenset(
-    {"nfs", "nfs4", "smbfs", "cifs", "smb", "sshfs", "fuse.sshfs", "afpfs", "webdav", "ftp"}
+    {
+        "nfs",
+        "nfs4",
+        "smbfs",
+        "cifs",
+        "smb",
+        "sshfs",
+        "fuse.sshfs",
+        "afpfs",
+        "webdav",
+        "ftp",
+    }
 )
 
 #: Local filesystems with lock semantics this project has qualified.
@@ -480,7 +510,9 @@ def qualify_filesystem(
     # replaced by auto-detection.
     name = (detect_filesystem(path) if filesystem is None else filesystem).lower()
 
-    if any(name.startswith(refused) or refused in name for refused in REFUSED_FILESYSTEMS):
+    if any(
+        name.startswith(refused) or refused in name for refused in REFUSED_FILESYSTEMS
+    ):
         return FilesystemQualification(
             verdict=FilesystemVerdict.REFUSED_REMOTE,
             filesystem=name,
@@ -519,13 +551,33 @@ def _locking_works(path: Path) -> bool:
 
     The probe is taken in the nearest existing directory rather than in `path`, so
     qualifying a workspace root that has not been created yet does not create it --
-    and does not leave a probe file inside a tree the caller may still refuse.
+    and does not leave a probe file inside a tree the caller may still refuse. Its
+    name is randomly generated and its descriptor is created exclusively, then
+    handed directly to the lock implementation: no predictable pre-existing name
+    can be opened, truncated, or unlinked through a symbolic link, and concurrent
+    qualifications never contend for one shared probe.
     """
     existing = nearest_existing(path)
     directory = existing if existing.is_dir() else existing.parent
-    probe = directory / ".omnivia-lock-probe"
-    lock = create_lock(probe, LockRole.BOOTSTRAP_MUTEX)
+    descriptor = -1
+    handle: IO[bytes] | None = None
+    probe: Path | None = None
+    identity: tuple[int, int] | None = None
     try:
+        descriptor, name = tempfile.mkstemp(
+            prefix=".omnivia-lock-probe-", dir=directory
+        )
+        probe = Path(name)
+        metadata = os.fstat(descriptor)
+        identity = (metadata.st_dev, metadata.st_ino)
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        descriptor = -1
+        lock = create_lock(
+            probe,
+            LockRole.BOOTSTRAP_MUTEX,
+            opened_handle=handle,
+        )
+        handle = None  # ownership transferred to the lock
         if not lock.acquire():
             return False
         lock.release()
@@ -533,10 +585,17 @@ def _locking_works(path: Path) -> bool:
     except (OSError, LockError):
         return False
     finally:
-        try:
-            probe.unlink(missing_ok=True)
-        except OSError:  # pragma: no cover - platform dependent
-            pass
+        if descriptor >= 0:
+            os.close(descriptor)
+        if handle is not None:
+            handle.close()
+        if probe is not None and identity is not None:
+            try:
+                current = os.lstat(probe)
+                if (current.st_dev, current.st_ino) == identity:
+                    probe.unlink()
+            except OSError:  # pragma: no cover - platform dependent
+                pass
 
 
 __all__ = [

@@ -749,13 +749,10 @@ def test_concurrent_registration_attempts_converge_on_one_workspace(
     """Several equivalent `--init` attempts against an already-registered
     workspace, coordinated to start together.
 
-    Established once, sequentially, before the race: this isolates the
-    catalogue registration contention this repair owns from
-    `ownership.locks.qualify_filesystem`'s own filesystem-qualification probe,
-    which several contenders creating the same fresh root at once can lose
-    among themselves for reasons that have nothing to do with the
-    installation catalogue (a shared, un-namespaced lock-probe file --
-    tracked as follow-up, outside this repair's bounded scope).
+    Established once, sequentially, before the race: this isolates catalogue
+    registration contention from fresh-workspace creation. Filesystem qualification
+    uses a unique, exclusively created probe per contender, so that gate no longer
+    introduces shared-filename contention of its own.
 
     A non-blocking file lock -- the workspace's own storage lock and the
     installation catalogue's lifetime lock, both taken along this path --
@@ -763,10 +760,9 @@ def test_concurrent_registration_attempts_converge_on_one_workspace(
     rather than queueing it, so this is a real race rather than a mocked one.
     Nothing here asserts *which* contender wins or how many transiently lose:
     only the convergence facts that must hold regardless of scheduling. A
-    transient loser may still see the qualification probe's own
-    `UNQUALIFIED_FILESYSTEM` -- it re-probes on every call, established
-    workspace or not -- and that is accepted here for the same reason. What
-    must never appear is `WORKSPACE_REGISTRATION_CONFLICT` or `WRITE_FAILURE`:
+    A transient loser may still see `UNQUALIFIED_FILESYSTEM` if its independent
+    native lock probe genuinely fails. What must never appear is
+    `WORKSPACE_REGISTRATION_CONFLICT` or `WRITE_FAILURE`:
     either would mean two contenders' settlements collided for real, which is
     exactly what the claim/allocation fencing this test exercises exists to
     prevent.

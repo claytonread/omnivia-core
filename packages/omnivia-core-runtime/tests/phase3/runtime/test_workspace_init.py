@@ -206,6 +206,31 @@ def test_windows_init_refuses_a_symlinked_manifest_before_read_or_acl_change(
     assert seen == []
 
 
+@pytest.mark.parametrize("sidecar", ["installation.sqlite-wal", "installation.sqlite-shm"])
+def test_windows_init_refuses_a_symlinked_catalogue_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sidecar: str
+) -> None:
+    catalogue = tmp_path / "installation-state" / "catalogue"
+    catalogue.mkdir(parents=True)
+    outside = tmp_path / "outside-wal"
+    outside.write_bytes(b"must stay unchanged")
+    (catalogue / sidecar).symlink_to(outside)
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"must stay unchanged"
+    assert seen == []
+
+
 #: The lock file every refusal below is decided under.
 LOCK_PAYLOAD = "workspace/locks/storage.lock"
 

@@ -105,11 +105,13 @@ establishes the process.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import stat
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -219,6 +221,15 @@ _WINDOWS_OWNER_CONTROL: Final = os.name == "nt"
 #: stat predicates. The no-follow attribute is what keeps directory creation from
 #: accepting one as a pre-existing component in the workspace chain.
 _FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x400
+
+# Windows handles opened with these flags name the entry itself and deliberately
+# omit FILE_SHARE_DELETE, pinning it against rename/replacement until close.
+_FILE_SHARE_READ: Final = 0x00000001
+_FILE_SHARE_WRITE: Final = 0x00000002
+_OPEN_EXISTING: Final = 3
+_FILE_FLAG_OPEN_REPARSE_POINT: Final = 0x00200000
+_FILE_FLAG_BACKUP_SEMANTICS: Final = 0x02000000
+_INVALID_HANDLE_VALUE: Final = ctypes.c_void_p(-1).value
 
 #: The only top-level entries an installation-state root may hold. Anything else
 #: means this directory is not one of ours, and `InstallationLayout` is the single
@@ -429,12 +440,16 @@ def initialise_workspace(
     substrate out of the database rather than inferring it from the manifest file
     existing.
     """
-    return _initialise_workspace(
-        workspace_root=workspace_root,
-        installation_root=installation_root,
-        core_version=core_version,
-        harden_windows_on_success=True,
-    )
+    try:
+        with _windows_initialisation_guard(workspace_root, installation_root):
+            return _initialise_workspace(
+                workspace_root=workspace_root,
+                installation_root=installation_root,
+                core_version=core_version,
+                harden_windows_on_success=True,
+            )
+    except OSError:
+        return _windows_path_refusal(workspace_root, installation_root)
 
 
 def _initialise_workspace(
@@ -517,6 +532,31 @@ def initialise_allocated_workspace(
     derived ``workspace_root`` before filesystem work began.  A retry either
     finishes that exact target or refuses; it cannot select a replacement.
     """
+    try:
+        with _windows_initialisation_guard(workspace_root, installation_root):
+            return _initialise_allocated_workspace(
+                workspace_root=workspace_root,
+                installation_root=installation_root,
+                target_workspace_id=target_workspace_id,
+                display_name=display_name,
+                core_version=core_version,
+            )
+    except OSError:
+        return _windows_path_refusal(
+            workspace_root,
+            installation_root,
+            workspace_id=target_workspace_id,
+        )
+
+
+def _initialise_allocated_workspace(
+    *,
+    workspace_root: Path,
+    installation_root: Path,
+    target_workspace_id: str,
+    display_name: str,
+    core_version: str,
+) -> WorkspaceInitResult:
     unsafe = _windows_unsafe_initialisation_tree(
         workspace_root,
         installation_root,
@@ -788,6 +828,194 @@ def _windows_path_chain_is_safe(path: Path) -> bool:
     return True
 
 
+def _windows_initialisation_entries(
+    workspace_root: Path, installation_root: Path
+) -> tuple[tuple[Path, bool], ...]:
+    """Known paths touched by bootstrap, with ``True`` for directory entries."""
+    layout = WorkspaceLayout(root=workspace_root)
+    installation = InstallationLayout(root=installation_root)
+    entries: dict[Path, bool] = {}
+    for root in (layout.root, installation.root):
+        absolute = Path(os.path.abspath(os.fspath(root)))
+        for component in reversed((absolute, *absolute.parents)):
+            entries[component] = True
+    for directory in (
+        layout.root,
+        layout.blobs_path,
+        layout.indexes_path,
+        layout.locks_path,
+        installation.root,
+        installation.root / BACKUPS_DIR,
+        installation.root / ATTEMPTS_DIR,
+        installation.root / RUNTIME_DIR,
+        installation.catalogue,
+    ):
+        entries[Path(os.path.abspath(os.fspath(directory)))] = True
+    for file_path in (
+        layout.manifest_path,
+        layout.database_path,
+        layout.database_path.with_name(f"{layout.database_path.name}-wal"),
+        layout.database_path.with_name(f"{layout.database_path.name}-shm"),
+        layout.database_path.with_name(f"{layout.database_path.name}-journal"),
+        layout.locks_path / "storage.lock",
+        installation.installation_database,
+        installation.installation_database.with_name(
+            f"{installation.installation_database.name}-wal"
+        ),
+        installation.installation_database.with_name(
+            f"{installation.installation_database.name}-shm"
+        ),
+        installation.installation_lock,
+    ):
+        entries[Path(os.path.abspath(os.fspath(file_path)))] = False
+    return tuple(
+        sorted(entries.items(), key=lambda item: (len(item[0].parts), str(item[0])))
+    )
+
+
+def _windows_path_refusal(
+    workspace_root: Path,
+    installation_root: Path,
+    *,
+    workspace_id: str | None = None,
+) -> WorkspaceInitResult:
+    """The fixed fail-closed answer for an unsafe or unpinnable Windows path."""
+    return WorkspaceInitResult(
+        status=WorkspaceInitStatus.REFUSED,
+        refusal=WorkspaceInitRefusal.WRITE_FAILURE,
+        reason=(
+            "the Windows workspace or installation path contains an unsafe "
+            "link, reparse point, replaced entry, or filesystem object; nothing "
+            "was written"
+        ),
+        workspace_id=workspace_id,
+        workspace_root=workspace_root,
+        installation_root=installation_root,
+        workspace_format_version=(
+            WORKSPACE_FORMAT_VERSION if workspace_id is not None else None
+        ),
+    )
+
+
+def _windows_path_api() -> Any:
+    """CreateFile/CloseHandle configured for no-follow namespace pinning."""
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        raise OSError("Windows path API is unavailable")
+    try:
+        kernel32 = loader("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        )
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int32
+    except Exception as failure:
+        raise OSError("Windows path API is unavailable") from failure
+    return kernel32
+
+
+def _handle_value(handle: object) -> int | None:
+    value = getattr(handle, "value", handle)
+    return value if isinstance(value, int) else None
+
+
+@contextmanager
+def _windows_initialisation_guard(
+    workspace_root: Path, installation_root: Path
+) -> Iterator[None]:
+    """Pin every existing Windows component against replacement for this call.
+
+    ``CreateFileW`` opens the entry itself (including a reparse point) and omits
+    ``FILE_SHARE_DELETE``. Windows consequently refuses delete, rename, or replace
+    while the handle is held. Components are opened root-to-leaf and their file
+    identities are compared across the open, closing the check/use gap between the
+    Python ``lstat`` verdict and later lock, SQLite, manifest, and ACL operations.
+    """
+    if os.name != "nt":
+        yield
+        return
+
+    api = _windows_path_api()
+    handles: list[object] = []
+    held: set[Path] = set()
+    try:
+        # A component absent on the first scan can appear while earlier handles
+        # are being acquired. Repeat until every then-existing known entry is held;
+        # a continuously changing namespace is a refusal, not a state to guess at.
+        for _attempt in range(4):
+            added = False
+            for path, directory in _windows_initialisation_entries(
+                workspace_root, installation_root
+            ):
+                if path in held:
+                    continue
+                try:
+                    before = os.lstat(path)
+                except FileNotFoundError:
+                    continue
+                if not _existing_windows_path_is_safe(path, directory=directory):
+                    raise OSError("unsafe Windows path component")
+                handle = api.CreateFileW(
+                    str(path),
+                    0,
+                    _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                    None,
+                    _OPEN_EXISTING,
+                    _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+                    None,
+                )
+                value = _handle_value(handle)
+                if value in (None, 0, _INVALID_HANDLE_VALUE):
+                    raise OSError("Windows path component could not be pinned")
+                try:
+                    after = os.lstat(path)
+                    identity = (
+                        before.st_dev,
+                        before.st_ino,
+                        stat.S_IFMT(before.st_mode),
+                    )
+                    observed = (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode))
+                    if identity != observed or not _existing_windows_path_is_safe(
+                        path, directory=directory
+                    ):
+                        raise OSError("Windows path component changed while opening")
+                except BaseException:
+                    api.CloseHandle(handle)
+                    raise
+                handles.append(handle)
+                held.add(path)
+                added = True
+
+            existing: set[Path] = set()
+            for path, directory in _windows_initialisation_entries(
+                workspace_root, installation_root
+            ):
+                try:
+                    os.lstat(path)
+                except FileNotFoundError:
+                    continue
+                if not _existing_windows_path_is_safe(path, directory=directory):
+                    raise OSError("unsafe Windows path component")
+                existing.add(path)
+            if existing <= held:
+                break
+            if not added:
+                raise OSError("Windows path namespace did not stabilise")
+        else:
+            raise OSError("Windows path namespace did not stabilise")
+        yield
+    finally:
+        for handle in reversed(handles):
+            api.CloseHandle(handle)
+
+
 def _windows_unsafe_initialisation_tree(
     workspace_root: Path,
     installation_root: Path,
@@ -806,53 +1034,21 @@ def _windows_unsafe_initialisation_tree(
     if not _WINDOWS_OWNER_CONTROL:
         return None
 
-    layout = WorkspaceLayout(root=workspace_root)
-    installation = InstallationLayout(root=installation_root)
-    directories = (
-        layout.root,
-        layout.blobs_path,
-        layout.indexes_path,
-        layout.locks_path,
-        installation.root,
-        installation.root / BACKUPS_DIR,
-        installation.root / ATTEMPTS_DIR,
-        installation.root / RUNTIME_DIR,
-        installation.catalogue,
-    )
-    files = (
-        layout.manifest_path,
-        layout.database_path,
-        layout.database_path.with_name(f"{layout.database_path.name}-wal"),
-        layout.database_path.with_name(f"{layout.database_path.name}-shm"),
-        layout.database_path.with_name(f"{layout.database_path.name}-journal"),
-        layout.locks_path / "storage.lock",
-        installation.installation_database,
-        installation.installation_lock,
-    )
-    safe = _windows_path_chain_is_safe(layout.root) and _windows_path_chain_is_safe(
-        installation.root
+    safe = _windows_path_chain_is_safe(workspace_root) and _windows_path_chain_is_safe(
+        installation_root
     )
     safe = safe and all(
-        _existing_windows_path_is_safe(path, directory=True) for path in directories
-    )
-    safe = safe and all(
-        _existing_windows_path_is_safe(path, directory=False) for path in files
+        _existing_windows_path_is_safe(path, directory=directory)
+        for path, directory in _windows_initialisation_entries(
+            workspace_root, installation_root
+        )
     )
     if safe:
         return None
-    return WorkspaceInitResult(
-        status=WorkspaceInitStatus.REFUSED,
-        refusal=WorkspaceInitRefusal.WRITE_FAILURE,
-        reason=(
-            "the Windows workspace or installation path contains an unsafe "
-            "link, reparse point, or filesystem object; nothing was written"
-        ),
+    return _windows_path_refusal(
+        workspace_root,
+        installation_root,
         workspace_id=workspace_id,
-        workspace_root=workspace_root,
-        installation_root=installation_root,
-        workspace_format_version=(
-            WORKSPACE_FORMAT_VERSION if workspace_id is not None else None
-        ),
     )
 
 
@@ -883,12 +1079,33 @@ def _ensure_workspace_directory(path: Path) -> None:
         raise OSError(f"created path is not a real directory: {path}")
     try:
         restrict_to_owner(path, directory=True)
+        if not _is_real_directory_no_follow(path):
+            raise OSError(f"created directory was replaced while securing it: {path}")
     except OSError:
         try:
             path.rmdir()
         except OSError:
             pass
         raise
+
+
+def _create_empty_database_file(path: Path) -> None:
+    """Create one empty regular database name atomically and without link-following."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        created = os.fstat(descriptor)
+        if not stat.S_ISREG(created.st_mode):
+            raise OSError("new workspace database is not a regular file")
+    finally:
+        os.close(descriptor)
+    observed = os.lstat(path)
+    if not _is_real_file_no_follow(path) or (observed.st_dev, observed.st_ino) != (
+        created.st_dev,
+        created.st_ino,
+    ):
+        raise OSError("new workspace database was replaced during creation")
 
 
 def _restrict_windows_workspace_layout(
@@ -1116,8 +1333,13 @@ def _bootstrap(
             # the digest every refusal test in this suite compares records mode and
             # content, and a timestamp is neither. Under the lifetime storage lock,
             # so the check and the create cannot be raced apart.
-            if not layout.database_path.exists():
-                layout.database_path.touch()
+            try:
+                os.lstat(layout.database_path)
+            except FileNotFoundError:
+                _create_empty_database_file(layout.database_path)
+            else:
+                if not _is_real_file_no_follow(layout.database_path):
+                    raise OSError("workspace database is not a regular file")
             # Vetted first, through a connection that does not enable WAL. Setting
             # `journal_mode = WAL` rewrites the header of whatever file it opened,
             # so an exclusive open taken *before* the refusal is decided changes a
