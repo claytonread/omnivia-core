@@ -647,6 +647,17 @@ def _control(
     return LocalControlRequest(kind=kind, credential=credential, arguments=arguments)
 
 
+def _assert_closed_without_response(client: socket.socket, message: str) -> None:
+    """Accept either Unix spelling of a close with unread inbound bytes."""
+    try:
+        response = client.recv(1)
+    except ConnectionResetError:
+        # Linux may send RST when the server closes while invalid bytes remain
+        # unread. It is the same protocol result as EOF: no response was emitted.
+        return
+    assert response == b"", message
+
+
 # --- the authoring admission check --------------------------------------------
 
 
@@ -930,7 +941,9 @@ def test_a_non_canonical_control_frame_is_refused_by_the_frame_rules(
         try:
             client.connect(harness.endpoint.name)
             client.sendall(frame)
-            assert client.recv(1) == b"", "non-canonical JSON received a response"
+            _assert_closed_without_response(
+                client, "non-canonical JSON received a response"
+            )
         finally:
             client.close()
 
@@ -949,7 +962,9 @@ def test_a_control_followed_by_a_second_frame_is_refused(tmp_path: Path) -> None
         try:
             client.connect(harness.endpoint.name)
             client.sendall(frame + frame)
-            assert client.recv(1) == b"", "pipelined traffic received a response"
+            _assert_closed_without_response(
+                client, "pipelined traffic received a response"
+            )
         finally:
             client.close()
 
@@ -964,7 +979,9 @@ def test_an_oversized_control_is_refused_before_it_is_buffered(
         try:
             client.connect(harness.endpoint.name)
             client.sendall(header)
-            assert client.recv(1) == b""
+            _assert_closed_without_response(
+                client, "oversized traffic received a response"
+            )
         finally:
             client.close()
 
