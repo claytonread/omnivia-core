@@ -114,6 +114,8 @@ class ServiceSettings:
     core_version: str = "0.1.0"
     endpoint: str | None = None
     probe_filesystem: bool = True
+    expected_manifest_digest: str | None = None
+    required_absent_manifest: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -220,7 +222,11 @@ class ServiceRunner:
 
         # 1. Compatibility first, before anything is acquired, so a refusal has
         #    nothing to unwind.
-        manifest = read_manifest(self.layout)
+        manifest = read_manifest(
+            self.layout,
+            expected_digest=settings.expected_manifest_digest,
+            required_absent_path=settings.required_absent_manifest,
+        )
         self.workspace_id = manifest.workspace_id
         self.workspace_format_ordinal = manifest.compatibility.workspace_format_version
         compatibility = evaluate_compatibility(manifest, settings.core_version)

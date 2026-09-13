@@ -313,6 +313,8 @@ and then:
   --workspace <same canonical folder>
   --installation-state <same installation state>
   --endpoint <Platform-main-generated local endpoint>
+  --expected-manifest-digest <sha256 over the selected workspace.json bytes>
+  [--required-absent-manifest <preferred registered workspace.json>]
   --core-version <same verified release version>
 ```
 
@@ -325,6 +327,10 @@ implementation comment.
 The `--init` stdout document remains the authority for the minted or retained
 `workspace_id`. The `--managed-start` stdout document remains the authority for
 attached/started status and live readiness. Human diagnostics remain on stderr.
+The digest and optional absence guard freeze the caller's final workspace
+selection through both the launcher and the service process; older bootstrap
+consumers may omit them, but a consumer that independently selects a workspace
+should carry both parts of that selection rather than authorize by path twice.
 
 If implementation finds either output contract insufficient, widen it only by
 the repository's versioning rules, with fixtures and a published compatibility

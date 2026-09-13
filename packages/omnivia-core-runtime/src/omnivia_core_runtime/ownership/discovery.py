@@ -179,6 +179,16 @@ def _restrict(path: Path, *, directory: bool) -> None:
         _restrict_windows(path, directory=directory)
 
 
+def restrict_to_owner(path: Path, *, directory: bool) -> None:
+    """Reduce an existing filesystem object to this OS user alone.
+
+    Workspace initialization uses the same hosted Windows mechanism as discovery
+    publication, so the writer and the accepted client's DACL verifier cannot
+    silently drift into incompatible policies.
+    """
+    _restrict(path, directory=directory)
+
+
 def _make_private(runtime_directory: Path) -> None:
     """Create the runtime directory chain and reduce it to owner-only access.
 
@@ -405,4 +415,5 @@ __all__ = [
     "discover",
     "is_compatible",
     "publish",
+    "restrict_to_owner",
 ]

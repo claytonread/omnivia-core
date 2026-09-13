@@ -45,16 +45,18 @@ workspace also gets its own run directory, keyed by ``workspace_id`` under the
 shared run root, so two workspace IDs never contend for one socket or one log;
 the legacy layout keeps the single shared run directory it always had.
 
-**The path and manifest are one authorization.** Every existing directory from
-the installation root down to the chosen workspace must be a real,
-owner-controlled directory, and the manifest is opened no-follow, read through
-that trusted chain under a byte bound, and checked again immediately before the
-launcher is invoked. A manifest carrying ``workspace_id`` must name the requested
-workspace exactly. The pre-registration client historically admitted a valid
-JSON object without that field, so absence remains compatible for the fixed
-legacy path; a present mismatch never is. Re-resolving the two layouts at the
-last use prevents a registered manifest appearing mid-start from racing a
-previous decision to fall back to the legacy workspace.
+**The path and manifest are one authorization snapshot.** Every existing
+directory from the installation root down to the chosen workspace must be a
+real, owner-controlled directory, and the manifest is opened no-follow, read
+through that trusted chain under a byte bound. A manifest carrying
+``workspace_id`` must name the requested workspace exactly. The pre-registration
+client historically admitted a valid JSON object without that field, so absence
+remains compatible for the fixed legacy path; a present mismatch never is.
+Re-resolving the two layouts takes one final selection snapshot; the exact
+selected path and a SHA-256 binding over the manifest bytes are then carried
+through the launcher into the service. A legacy selection also carries the
+preferred registered manifest name that must remain absent around each read, so
+neither process can silently authorize a later path or later bytes.
 
 **No environment variable** (R004-11). The installation root is derived from the
 state root the caller already named, and from nothing ambient.
@@ -654,11 +656,9 @@ def connect_managed_local(
     if run_authorization is None:
         _refuse()
 
-    # Re-run layout selection at the last possible point. This catches a
-    # registered manifest appearing after a legacy fallback, any manifest
-    # replacement, and any directory swap. Because the proved chains are
-    # owner-controlled, an untrusted local principal cannot change a component
-    # in the remaining call boundary before the launcher consumes these paths.
+    # Re-run layout selection before freezing the authorization snapshot. The
+    # manifest digest and, for a legacy fallback, the preferred name whose
+    # absence selected it are carried through both later process boundaries.
     current = _resolve_installation(config)
     run_names, run_proof = run_authorization
     current_run = _directory_proof(installation.home, run_names)
@@ -668,7 +668,16 @@ def connect_managed_local(
         _refuse()
     if socket_directory is not None and not owner_private_directory(socket_directory):
         _refuse()
-    status = _status(_invoke(executable, installation, deadline))
+    manifest_digest = "sha256:" + hashlib.sha256(current.manifest.content).hexdigest()
+    status = _status(
+        _invoke(
+            executable,
+            current.installation,
+            manifest_digest,
+            config.workspace_id,
+            deadline,
+        )
+    )
 
     started = ServiceClient.connect(config, deadline=deadline)
     if started is None:
@@ -797,7 +806,13 @@ def locate_service() -> str | None:
     return str(beside) if beside.is_file() and os.access(beside, os.X_OK) else None
 
 
-def _invoke(executable: str, installation: _Installation, deadline: Deadline) -> str:
+def _invoke(
+    executable: str,
+    installation: _Installation,
+    manifest_digest: str,
+    workspace_id: str,
+    deadline: Deadline,
+) -> str:
     """Run ``omnivia-core-service --managed-start`` and return its stdout.
 
     The result stream is redirected to a temporary file and stderr is discarded,
@@ -814,19 +829,34 @@ def _invoke(executable: str, installation: _Installation, deadline: Deadline) ->
     stdout = b""
     try:
         with tempfile.TemporaryFile() as captured:
+            arguments = [
+                executable,
+                "--managed-start",
+                "--workspace",
+                str(installation.workspace_root),
+                "--installation-state",
+                str(installation.installation_state),
+                "--endpoint",
+                installation.endpoint_uri,
+                "--expected-manifest-digest",
+                manifest_digest,
+                "--managed-start-log",
+                str(installation.log_path),
+            ]
+            if not installation.registered:
+                arguments.extend(
+                    [
+                        "--required-absent-manifest",
+                        str(
+                            installation.home
+                            / _WORKSPACES_DIRECTORY
+                            / workspace_id
+                            / _MANIFEST_NAME
+                        ),
+                    ]
+                )
             completed = subprocess.run(
-                [
-                    executable,
-                    "--managed-start",
-                    "--workspace",
-                    str(installation.workspace_root),
-                    "--installation-state",
-                    str(installation.installation_state),
-                    "--endpoint",
-                    installation.endpoint_uri,
-                    "--managed-start-log",
-                    str(installation.log_path),
-                ],
+                arguments,
                 stdout=captured,
                 stderr=subprocess.DEVNULL,
                 timeout=deadline.remaining_seconds(),

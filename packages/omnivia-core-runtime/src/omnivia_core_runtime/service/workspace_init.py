@@ -106,6 +106,7 @@ establishes the process.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -116,6 +117,7 @@ from typing import Any, Final
 
 from omnivia_core.workspace.compatibility import evaluate_compatibility
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
+from omnivia_core_runtime.ownership.discovery import restrict_to_owner
 from omnivia_core_runtime.ownership.locks import (
     LockRole,
     create_lock,
@@ -206,6 +208,11 @@ WORKSPACE_FORMAT_VERSION: Final = "1"
 #: from the path: the manifest is portable, and putting a user's home directory
 #: into it would carry a machine's filesystem layout wherever the workspace goes.
 DEFAULT_WORKSPACE_NAME: Final = "OmniVia workspace"
+
+#: Kept as a module seam so the Windows policy can be exercised on non-Windows
+#: hosts without mutating ``os.name`` (which would make ``pathlib.Path`` select
+#: an unusable concrete path class midway through a test).
+_WINDOWS_OWNER_CONTROL: Final = os.name == "nt"
 
 #: The only top-level entries an installation-state root may hold. Anything else
 #: means this directory is not one of ours, and `InstallationLayout` is the single
@@ -464,6 +471,7 @@ def initialise_workspace(
         installation_root=installation_root,
         manifest=manifest,
         minted=minted,
+        restrict_parent_on_windows=False,
     )
 
 
@@ -543,6 +551,7 @@ def initialise_allocated_workspace(
         installation_root=installation_root,
         manifest=manifest,
         minted=minted,
+        restrict_parent_on_windows=True,
     )
 
 
@@ -687,12 +696,36 @@ def _new_manifest(
     )
 
 
+def _restrict_windows_workspace_layout(
+    layout: WorkspaceLayout, *, restrict_parent: bool
+) -> None:
+    """Make the managed-client authorization chain writable by this user alone.
+
+    POSIX creation modes already give the accepted client what it needs.  Windows
+    ignores those modes and inherits its parent's DACL, commonly including writable
+    SYSTEM and Administrators ACEs.  The client intentionally refuses that shape,
+    so initialization must establish the matching owner-only DACL on the allocated
+    ``workspaces`` parent, the workspace root, and an existing manifest.  A freshly
+    written manifest inherits the protected root and is checked again after write.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    directories = (
+        (layout.root.parent, layout.root) if restrict_parent else (layout.root,)
+    )
+    for directory in directories:
+        restrict_to_owner(directory, directory=True)
+    if layout.manifest_path.is_file():
+        restrict_to_owner(layout.manifest_path, directory=False)
+
+
 def _bootstrap(
     *,
     layout: WorkspaceLayout,
     installation_root: Path,
     manifest: WorkspaceManifest,
     minted: bool,
+    restrict_parent_on_windows: bool,
 ) -> WorkspaceInitResult:
     """Steps 1 to 6, under the workspace's own lifetime storage lock.
 
@@ -802,6 +835,9 @@ def _bootstrap(
     absent = _absent_directories(layout, installation_root, manifest.workspace_id)
     try:
         layout.root.mkdir(parents=True, exist_ok=True)
+        _restrict_windows_workspace_layout(
+            layout, restrict_parent=restrict_parent_on_windows
+        )
         layout.locks_path.mkdir(exist_ok=True)
         lock = create_lock(
             lock_path, LockRole.LIFETIME_STORAGE, {"holder": LOCK_HOLDER}
@@ -939,6 +975,9 @@ def _bootstrap(
                 # Repair, not rewrite. A missing `blobs/`, `indexes/` or `locks/`
                 # is created; the manifest already on disk is untouched.
                 layout.create_directories()
+            _restrict_windows_workspace_layout(
+                layout, restrict_parent=restrict_parent_on_windows
+            )
             InstallationLayout(root=installation_root).create(manifest.workspace_id)
         except (StorageError, OSError) as failure:
             return _write_failure(layout, manifest, installation_root, failure)

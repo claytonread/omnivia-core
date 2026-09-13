@@ -193,8 +193,15 @@ def test_start_and_reconnect_reuse_the_exact_deadline(
                 str(tmp_path / "installation-state"),
                 "--endpoint",
                 f"unix://{tmp_path}/run/s.sock",
+                "--expected-manifest-digest",
+                "sha256:"
+                + hashlib.sha256(
+                    (tmp_path / "workspace" / "workspace.json").read_bytes()
+                ).hexdigest(),
                 "--managed-start-log",
                 str(tmp_path / "run/service.log"),
+                "--required-absent-manifest",
+                str(tmp_path / "workspaces" / WORKSPACE_ID / "workspace.json"),
             ],
             25.0,
         )
@@ -387,6 +394,11 @@ def test_a_registered_workspace_launches_at_its_catalogued_layout(
         str(tmp_path / "installation-state"),
         "--endpoint",
         registered_endpoint(tmp_path),
+        "--expected-manifest-digest",
+        "sha256:"
+        + hashlib.sha256(
+            (tmp_path / "workspaces" / WORKSPACE_ID / "workspace.json").read_bytes()
+        ).hexdigest(),
         "--managed-start-log",
         str(tmp_path / "run" / "workspaces" / WORKSPACE_ID / "service.log"),
     ]
@@ -418,8 +430,15 @@ def test_legacy_layout_is_still_reached_when_nothing_is_registered(
         str(tmp_path / "installation-state"),
         "--endpoint",
         f"unix://{tmp_path}/run/s.sock",
+        "--expected-manifest-digest",
+        "sha256:"
+        + hashlib.sha256(
+            (tmp_path / "workspace" / "workspace.json").read_bytes()
+        ).hexdigest(),
         "--managed-start-log",
         str(tmp_path / "run" / "service.log"),
+        "--required-absent-manifest",
+        str(tmp_path / "workspaces" / WORKSPACE_ID / "workspace.json"),
     ]
 
 

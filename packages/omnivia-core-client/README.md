@@ -451,6 +451,13 @@ located and run once, its bounded versioned result is read, and the same
 `Deadline` object is used to reconnect. A launcher that reports success while
 nothing is reachable is a failure.
 
+The start authorization is a snapshot, not a pathname checked and then trusted
+later. The client passes `--expected-manifest-digest` over the exact bounded
+manifest bytes it selected; the Runtime launcher validates it and propagates it
+to the service's first manifest read. A legacy fallback also passes
+`--required-absent-manifest` for the preferred registered layout, so a registered
+workspace appearing across either process boundary refuses the legacy start.
+
 This is the one place in the repository that locates or runs a service process;
 the CLI and the MCP server hold no launcher, no path convention and no argv, and
 their packages' own tests assert that. Nothing here creates a workspace, reads an

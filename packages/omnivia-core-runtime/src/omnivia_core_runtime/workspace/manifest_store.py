@@ -13,6 +13,7 @@ open that quietly writes would break that guarantee.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -28,12 +29,30 @@ from omnivia_core.workspace.manifest import (
     validate_manifest,
     validate_raw_manifest,
 )
+from omnivia_core_runtime.ownership.discovery import restrict_to_owner
 from omnivia_core_runtime.workspace.filesystem import fsync_directory
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
 
 class ManifestStoreError(Exception):
     """The manifest could not be read, parsed or validated."""
+
+
+def manifest_digest(payload: bytes) -> str:
+    """The managed-start binding for one exact stored manifest byte sequence."""
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _entry_is_absent(path: Path) -> bool:
+    """Whether ``path`` has no final entry, without following one that is present."""
+    try:
+        os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        # An unreadable or otherwise undecidable name cannot prove absence.
+        return False
+    return False
 
 
 @dataclass(frozen=True)
@@ -81,23 +100,47 @@ def write_manifest(layout: WorkspaceLayout, manifest: WorkspaceManifest) -> Path
     finally:
         os.close(fd)
 
+    # The rename publishes the temporary object's permissions as well as its
+    # bytes. This is redundant with ``0o600`` on POSIX and load-bearing on
+    # Windows, where an existing temp file or inherited DACL ignores that mode.
+    restrict_to_owner(temporary, directory=False)
     os.replace(temporary, target)
     fsync_directory(layout.root)
     return target
 
 
-def read_manifest(layout: WorkspaceLayout) -> WorkspaceManifest:
-    """Read and parse the manifest without writing anything."""
+def read_manifest(
+    layout: WorkspaceLayout,
+    *,
+    expected_digest: str | None = None,
+    required_absent_path: Path | None = None,
+) -> WorkspaceManifest:
+    """Read and parse the manifest without writing anything.
+
+    ``expected_digest`` binds a managed-start authorization to the exact bytes the
+    authorizing client inspected. ``required_absent_path`` carries the other half
+    of a legacy-layout selection: the preferred registered manifest must still be
+    absent while those bytes are consumed. The absence is bracketed around the
+    single read, and the digest is checked before decoding, so the returned model
+    is one coherent authorization snapshot rather than a later pathname lookup.
+    """
     path = layout.manifest_path
+    if required_absent_path is not None and not _entry_is_absent(required_absent_path):
+        raise ManifestStoreError("manifest differs from the managed-start authorization")
     if not path.is_file():
         raise ManifestStoreError(f"no workspace manifest at {path}")
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except OSError as exc:
         raise ManifestStoreError(f"manifest is unreadable: {exc}") from exc
+    if (
+        required_absent_path is not None
+        and not _entry_is_absent(required_absent_path)
+    ) or (expected_digest is not None and manifest_digest(raw) != expected_digest):
+        raise ManifestStoreError("manifest differs from the managed-start authorization")
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManifestStoreError(f"manifest is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ManifestStoreError("manifest must be a JSON object")
@@ -208,6 +251,7 @@ __all__ = [
     "WorkspaceInspection",
     "create_workspace",
     "inspect_workspace",
+    "manifest_digest",
     "read_manifest",
     "write_manifest",
 ]

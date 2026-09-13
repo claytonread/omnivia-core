@@ -453,6 +453,23 @@ def build_parser() -> argparse.ArgumentParser:
             "Defaults to service.log beside the discovery descriptor"
         ),
     )
+    parser.add_argument(
+        "--expected-manifest-digest",
+        default=None,
+        help=(
+            "sha256 binding for the workspace manifest selected by a managed "
+            "client; propagated through --managed-start to the service"
+        ),
+    )
+    parser.add_argument(
+        "--required-absent-manifest",
+        default=None,
+        type=Path,
+        help=(
+            "preferred manifest whose absence selected a legacy managed workspace; "
+            "propagated to the service as part of that authorization snapshot"
+        ),
+    )
     return parser
 
 
@@ -576,11 +593,12 @@ def _managed_start(args: argparse.Namespace) -> int:
     if args.endpoint is None:
         sys.stderr.write("--managed-start needs --endpoint: the address to serve\n")
         return 2
-
     result = managed_start(
         workspace_root=args.workspace,
         installation_root=args.installation_state,
         endpoint_uri=args.endpoint,
+        expected_manifest_digest=args.expected_manifest_digest,
+        required_absent_manifest=args.required_absent_manifest,
         core_version=args.core_version,
         log_path=args.managed_start_log,
     )
@@ -706,6 +724,8 @@ def main(
         installation_root=args.installation_state,
         core_version=args.core_version,
         endpoint=args.endpoint,
+        expected_manifest_digest=args.expected_manifest_digest,
+        required_absent_manifest=args.required_absent_manifest,
     )
     runner = ServiceRunner(settings)
     endpoint = None if args.check_only else _endpoint_to_serve(settings.endpoint)

@@ -52,6 +52,7 @@ fixture is also the only module in this package's tests that imports the runtime
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -1180,13 +1181,33 @@ def test_a_lost_capture_response_replays_after_a_real_service_restart(
                     str(executable),
                     "--managed-start",
                     "--workspace",
-                    str(service.installation_state.parent / "workspace"),
+                    str(
+                        service.installation_state.parent
+                        / "workspaces"
+                        / service.workspace_id
+                    ),
                     "--installation-state",
                     str(service.installation_state),
                     "--endpoint",
                     first_descriptor.endpoint_uri,
+                    "--expected-manifest-digest",
+                    "sha256:"
+                    + hashlib.sha256(
+                        (
+                            service.installation_state.parent
+                            / "workspaces"
+                            / service.workspace_id
+                            / "workspace.json"
+                        ).read_bytes()
+                    ).hexdigest(),
                     "--managed-start-log",
-                    str(service.installation_state.parent / "run" / "service.log"),
+                    str(
+                        service.installation_state.parent
+                        / "run"
+                        / "workspaces"
+                        / service.workspace_id
+                        / "service.log"
+                    ),
                 ],
                 capture_output=True,
                 text=True,

@@ -142,12 +142,20 @@ resolve_runtime(installation_root=<absolute>, trust_anchors=[...],
 
 <same service_path> --managed-start --workspace <same folder>
                --installation-state <same state> --endpoint <local endpoint>
+               [--expected-manifest-digest <sha256:...>]
+               [--required-absent-manifest <preferred manifest path>]
                [--core-version <same release_version>]
   -> stdout: the whole managed-start document; service.ready and
      service.workspace_id are authority, and the id must equal init's
 ```
 
 Three properties worth knowing before writing the adapter:
+
+- **A workspace selection can be carried across both process boundaries.** Pass
+  `--expected-manifest-digest` over the selected `workspace.json` bytes. When a
+  legacy path won only because the registered path was absent, also pass that
+  preferred manifest as `--required-absent-manifest`. The launcher checks both
+  and forwards both to the service's first manifest read.
 
 - **Invoking the verified absolute path binds the child too.** Managed start
   selects `sys.argv[0]` before `PATH`, so the service it spawns is the same

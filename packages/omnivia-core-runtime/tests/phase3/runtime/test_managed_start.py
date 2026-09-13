@@ -33,7 +33,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,12 @@ from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitStatus,
 )
 from omnivia_core_runtime.storage.backup import InstallationLayout
+from omnivia_core_runtime.workspace.layout import WorkspaceLayout
+from omnivia_core_runtime.workspace.manifest_store import (
+    manifest_digest,
+    read_manifest,
+    write_manifest,
+)
 
 WORKSPACE_ID = "ws-managed-start-0001"
 
@@ -148,6 +154,14 @@ def _endpoint(home: Path) -> str:
     return f"unix://{home / 's.sock'}"
 
 
+def _manifest_binding(workspace_root: Path) -> str:
+    return manifest_digest((workspace_root / "workspace.json").read_bytes())
+
+
+def _registered_manifest(home: Path) -> Path:
+    return home / "workspaces" / WORKSPACE_ID / "workspace.json"
+
+
 def _runtime_directory(home: Path) -> Path:
     return InstallationLayout(root=home / "installation-state").runtime_for(WORKSPACE_ID)
 
@@ -171,6 +185,10 @@ def _run(home: Path, *extra: str) -> tuple[int, dict[str, Any], str]:
             str(home / "installation-state"),
             "--endpoint",
             _endpoint(home),
+            "--expected-manifest-digest",
+            _manifest_binding(home / "workspace"),
+            "--required-absent-manifest",
+            str(_registered_manifest(home)),
             *extra,
         ],
         capture_output=True,
@@ -229,6 +247,10 @@ def test_concurrent_starters_converge_on_one_authoritative_service(home: Path) -
                 str(home / "installation-state"),
                 "--endpoint",
                 _endpoint(home),
+                "--expected-manifest-digest",
+                _manifest_binding(home / "workspace"),
+                "--required-absent-manifest",
+                str(_registered_manifest(home)),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -334,6 +356,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--workspace")
 parser.add_argument("--installation-state")
 parser.add_argument("--endpoint")
+parser.add_argument("--expected-manifest-digest")
+parser.add_argument("--required-absent-manifest")
 parser.add_argument("--core-version", default="0.1.0")
 args = parser.parse_args()
 
@@ -409,6 +433,8 @@ def test_a_failed_child_is_cleaned_up_and_leaves_no_false_ready_descriptor(
         workspace_root=home / "workspace",
         installation_root=home / "installation-state",
         endpoint_uri=_endpoint(home),
+        expected_manifest_digest=_manifest_binding(home / "workspace"),
+        required_absent_manifest=_registered_manifest(home),
         timeout_seconds=5.0,
     )
 
@@ -463,6 +489,10 @@ def test_the_result_document_is_versioned_and_shaped(home: Path) -> None:
             str(home / "installation-state"),
             "--endpoint",
             _endpoint(home),
+            "--expected-manifest-digest",
+            _manifest_binding(home / "workspace"),
+            "--required-absent-manifest",
+            str(_registered_manifest(home)),
         ],
         capture_output=True,
         text=True,
@@ -505,12 +535,96 @@ def test_a_missing_workspace_is_a_deterministic_refusal_that_creates_nothing(
         workspace_root=empty,
         installation_root=home / "installation-state",
         endpoint_uri=_endpoint(home),
+        expected_manifest_digest="sha256:" + "0" * 64,
         timeout_seconds=5.0,
     )
 
     assert result.status is ManagedStartStatus.FAILED
     assert result.failure is ManagedStartFailure.MISSING_WORKSPACE
     assert list(empty.iterdir()) == [], "an unbootstrapped workspace was written to"
+    assert _service_pids(home) == []
+
+
+def test_a_manifest_changed_before_the_launcher_reads_it_is_refused(home: Path) -> None:
+    workspace = home / "workspace"
+    layout = WorkspaceLayout(root=workspace)
+    authorized = _manifest_binding(workspace)
+    write_manifest(layout, replace(read_manifest(layout), name="replacement"))
+
+    result = managed_start(
+        workspace_root=workspace,
+        installation_root=home / "installation-state",
+        endpoint_uri=_endpoint(home),
+        expected_manifest_digest=authorized,
+        required_absent_manifest=_registered_manifest(home),
+        timeout_seconds=5.0,
+    )
+
+    assert result.status is ManagedStartStatus.FAILED
+    assert result.failure is ManagedStartFailure.MISSING_WORKSPACE
+    assert _service_pids(home) == []
+
+
+def test_a_manifest_changed_between_launcher_and_service_is_refused(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launcher forwards the binding; its successful read is not the last check."""
+    workspace = home / "workspace"
+    layout = WorkspaceLayout(root=workspace)
+    authorized = _manifest_binding(workspace)
+    module = sys.modules[managed_start.__module__]
+    original_spawn = module._spawn
+
+    def replace_then_spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        write_manifest(layout, replace(read_manifest(layout), name="replacement"))
+        return original_spawn(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_spawn", replace_then_spawn)
+
+    result = managed_start(
+        workspace_root=workspace,
+        installation_root=home / "installation-state",
+        endpoint_uri=_endpoint(home),
+        expected_manifest_digest=authorized,
+        required_absent_manifest=_registered_manifest(home),
+        timeout_seconds=10.0,
+    )
+
+    assert result.status is ManagedStartStatus.FAILED
+    assert result.failure is ManagedStartFailure.SPAWN_FAILURE
+    assert "managed-start authorization" in result.child_output
+    assert _service_pids(home) == []
+
+
+def test_a_registered_manifest_appearing_before_the_service_read_is_refused(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy fallback stays conditional until the service consumes its snapshot."""
+    workspace = home / "workspace"
+    authorized = _manifest_binding(workspace)
+    preferred = _registered_manifest(home)
+    module = sys.modules[managed_start.__module__]
+    original_spawn = module._spawn
+
+    def register_then_spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        preferred.parent.mkdir(parents=True)
+        preferred.write_bytes((workspace / "workspace.json").read_bytes())
+        return original_spawn(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_spawn", register_then_spawn)
+
+    result = managed_start(
+        workspace_root=workspace,
+        installation_root=home / "installation-state",
+        endpoint_uri=_endpoint(home),
+        expected_manifest_digest=authorized,
+        required_absent_manifest=preferred,
+        timeout_seconds=10.0,
+    )
+
+    assert result.status is ManagedStartStatus.FAILED
+    assert result.failure is ManagedStartFailure.SPAWN_FAILURE
+    assert "managed-start authorization" in result.child_output
     assert _service_pids(home) == []
 
 
@@ -522,6 +636,8 @@ def test_a_spawn_that_cannot_serve_is_a_deterministic_spawn_failure(home: Path) 
         # A scheme this platform cannot serve. `service/main.py` refuses it before
         # startup rather than after, which is the exit this reads.
         endpoint_uri="http://127.0.0.1:1",
+        expected_manifest_digest=_manifest_binding(home / "workspace"),
+        required_absent_manifest=_registered_manifest(home),
         timeout_seconds=30.0,
     )
 
@@ -552,6 +668,8 @@ def test_a_held_bootstrap_mutex_times_out_rather_than_failing_or_racing(
             workspace_root=home / "workspace",
             installation_root=home / "installation-state",
             endpoint_uri=_endpoint(home),
+            expected_manifest_digest=_manifest_binding(home / "workspace"),
+            required_absent_manifest=_registered_manifest(home),
             timeout_seconds=2.0,
         )
         waited = time.monotonic() - started
@@ -591,6 +709,10 @@ def test_the_service_not_the_launcher_owns_the_writable_workspace_lease(
             str(home / "installation-state"),
             "--endpoint",
             _endpoint(home),
+            "--expected-manifest-digest",
+            _manifest_binding(home / "workspace"),
+            "--required-absent-manifest",
+            str(_registered_manifest(home)),
         ],
         capture_output=True,
         text=True,
@@ -683,6 +805,8 @@ def _managed_start_selection(
             str(root / "installation-state"),
             "--endpoint",
             selection.endpoint_uri,
+            "--expected-manifest-digest",
+            _manifest_binding(selection.workspace_root),
         ],
         capture_output=True,
         text=True,
@@ -845,6 +969,7 @@ def test_a_service_answering_for_another_workspace_is_not_a_successful_start(
         workspace_root=first.workspace_root,
         installation_root=root / "installation-state",
         endpoint_uri=first.endpoint_uri,
+        expected_manifest_digest=_manifest_binding(first.workspace_root),
         timeout_seconds=2.0,
     )
 

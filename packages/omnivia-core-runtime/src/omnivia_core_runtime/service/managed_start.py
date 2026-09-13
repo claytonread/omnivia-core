@@ -213,6 +213,8 @@ def managed_start(
     workspace_root: Path,
     installation_root: Path,
     endpoint_uri: str,
+    expected_manifest_digest: str | None = None,
+    required_absent_manifest: Path | None = None,
     core_version: str = "0.1.0",
     log_path: Path | None = None,
     timeout_seconds: float = MANAGED_START_TIMEOUT_SECONDS,
@@ -226,7 +228,11 @@ def managed_start(
     """
     layout = WorkspaceLayout(root=workspace_root)
     try:
-        manifest = read_manifest(layout)
+        manifest = read_manifest(
+            layout,
+            expected_digest=expected_manifest_digest,
+            required_absent_path=required_absent_manifest,
+        )
     except ManifestStoreError as refusal:
         # Nothing is created here. `omnivia init` is a separate authorised command
         # and this one starts an existing workspace only.
@@ -299,6 +305,8 @@ def managed_start(
                     runtime_directory=runtime_directory,
                     workspace_id=manifest.workspace_id,
                     endpoint_uri=endpoint_uri,
+                    expected_manifest_digest=expected_manifest_digest,
+                    required_absent_manifest=required_absent_manifest,
                     core_version=core_version,
                     log_path=(
                         runtime_directory / "service.log"
@@ -332,6 +340,8 @@ def _spawn_and_wait(
     runtime_directory: Path,
     workspace_id: str,
     endpoint_uri: str,
+    expected_manifest_digest: str | None,
+    required_absent_manifest: Path | None,
     core_version: str,
     log_path: Path,
     deadline: float,
@@ -360,6 +370,8 @@ def _spawn_and_wait(
             workspace_root=workspace_root,
             installation_root=installation_root,
             endpoint_uri=endpoint_uri,
+            expected_manifest_digest=expected_manifest_digest,
+            required_absent_manifest=required_absent_manifest,
             core_version=core_version,
             log_path=log_path,
         )
@@ -420,6 +432,8 @@ def _spawn(
     workspace_root: Path,
     installation_root: Path,
     endpoint_uri: str,
+    expected_manifest_digest: str | None,
+    required_absent_manifest: Path | None,
     core_version: str,
     log_path: Path,
 ) -> subprocess.Popen[bytes]:
@@ -440,18 +454,27 @@ def _spawn(
     # failure diagnostic cannot be read off a previous attempt.
     log = log_path.open("wb")
     try:
+        arguments = [
+            executable,
+            "--workspace",
+            str(workspace_root),
+            "--installation-state",
+            str(installation_root),
+            "--endpoint",
+            endpoint_uri,
+            "--core-version",
+            core_version,
+        ]
+        if expected_manifest_digest is not None:
+            arguments.extend(
+                ["--expected-manifest-digest", expected_manifest_digest]
+            )
+        if required_absent_manifest is not None:
+            arguments.extend(
+                ["--required-absent-manifest", str(required_absent_manifest)]
+            )
         return subprocess.Popen(
-            [
-                executable,
-                "--workspace",
-                str(workspace_root),
-                "--installation-state",
-                str(installation_root),
-                "--endpoint",
-                endpoint_uri,
-                "--core-version",
-                core_version,
-            ],
+            arguments,
             stdout=log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

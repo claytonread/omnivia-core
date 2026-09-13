@@ -35,6 +35,7 @@ from typing import Any
 
 import pytest
 from omnivia_core_runtime.ownership import locks as locks_module
+from omnivia_core_runtime.service import workspace_init as workspace_init_module
 from omnivia_core_runtime.service.workspace_init import (
     WORKSPACE_FORMAT_VERSION,
     WORKSPACE_INIT_VERSION,
@@ -63,6 +64,59 @@ def _init(home: Path) -> WorkspaceInitResult:
         workspace_root=home / "workspace",
         installation_root=home / "installation-state",
     )
+
+
+def test_windows_allocated_init_restricts_the_restart_authorization_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hosted Windows writer produces the DACL shape the client verifies."""
+    storage = tmp_path / "workspaces"
+    workspace = storage / "ws-allocated-owner-control"
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = initialise_allocated_workspace(
+        workspace_root=workspace,
+        installation_root=tmp_path / "installation-state",
+        target_workspace_id="ws-allocated-owner-control",
+        display_name="Owner controlled",
+    )
+
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert seen == [
+        (storage, True),
+        (workspace, True),
+        (storage, True),
+        (workspace, True),
+        (workspace / "workspace.json", False),
+    ]
+
+
+def test_windows_legacy_init_restricts_the_workspace_but_not_its_trust_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert seen == [
+        (workspace, True),
+        (workspace, True),
+        (workspace / "workspace.json", False),
+    ]
 
 
 #: The lock file every refusal below is decided under.

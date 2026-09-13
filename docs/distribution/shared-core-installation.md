@@ -286,6 +286,13 @@ verified executable. That property is pinned by
 `test_the_exact_invoked_service_spawns_itself_and_never_a_path_substitute`
 against a hostile `omnivia-core-service` placed first on `PATH`.
 
+A consumer that selects a workspace from the filesystem should additionally
+pass `--expected-manifest-digest` over the exact selected `workspace.json` bytes.
+For legacy fallback it should pass the preferred registered manifest path as
+`--required-absent-manifest`. Managed start validates and propagates both to the
+service, so the manifest and precedence decision are consumed as one snapshot
+rather than repeated from mutable pathnames.
+
 The other half of the seam is that a ready answer is about the workspace the
 caller selected. Managed start dials `core.readiness` with the *expected*
 workspace id rather than the advertised descriptor's own claim, and refuses a
