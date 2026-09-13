@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import traceback
 from pathlib import Path
@@ -18,6 +19,17 @@ from omnivia_core_runtime.service.ovc1 import (
     encode_frame,
 )
 
+from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+    CapabilityRequirement,
+    ClientIdentity,
+    RequestEnvelope,
+    RequestMetadata,
+    codec,
+    decode_evidence_capture_input,
+    get_operation_metadata,
+)
 from omnivia_core.contracts.v1.canonical_json import canonical_bytes
 
 FIXTURE_PATH = (
@@ -82,7 +94,7 @@ def test_runtime_refuses_malformed_header_length_truncation_and_trailing_bytes(
         decode_frame(frame)
 
 
-def test_four_mibibyte_body_is_inclusive_and_one_byte_more_is_refused() -> None:
+def test_eight_mibibyte_body_is_inclusive_and_one_byte_more_is_refused() -> None:
     maximum = {"a": "x" * (MAXIMUM_JSON_BYTES - len(b'{"a":""}'))}
     frame = encode_frame(maximum)
     assert len(frame) == HEADER_BYTES + MAXIMUM_JSON_BYTES
@@ -91,6 +103,46 @@ def test_four_mibibyte_body_is_inclusive_and_one_byte_more_is_refused() -> None:
     oversized = {"a": maximum["a"] + "x"}
     with pytest.raises(OVC1Error, match="maximum"):
         encode_frame(oversized)
+
+
+def test_runtime_frames_the_compact_form_of_a_worst_case_capture_envelope() -> None:
+    entry = get_operation_metadata("evidence.capture")
+    required = entry.required_capability
+    request = RequestEnvelope(
+        operation=entry.name,
+        metadata=RequestMetadata(
+            request_id="req-runtime-frame-capacity",
+            correlation_id="cor-runtime-frame-capacity",
+            trace_id="trc-runtime-frame-capacity",
+            api_version=CONTRACT_VERSION,
+            client=ClientIdentity(id="runtime-frame-test", version="1.0.0"),
+            workspace_id="ws-runtime-frame",
+            scopes=tuple(entry.scope.required_scopes),
+            purpose="content_ingestion",
+            idempotency_key="idem-runtime-frame-capacity",
+            required_capabilities=(
+                CapabilityRequirement(
+                    id=required.id,
+                    minimum_version=required.minimum_version,
+                    required=required.required,
+                ),
+            ),
+        ),
+        input={
+            "source_native_id": "worst-json-escape",
+            "media_type": "text/plain",
+            "content_base64": base64.b64encode(
+                b"\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+            ).decode("ascii"),
+        },
+    )
+    document = codec.encode_request(request)
+    decode_evidence_capture_input(document["input"])
+
+    frame = encode_frame(document)
+
+    assert len(frame) <= HEADER_BYTES + MAXIMUM_JSON_BYTES
+    assert codec.decode_request(decode_frame(frame)) == request
 
 
 def test_protocol_failures_do_not_reveal_payload_or_parser_exception_chains() -> None:

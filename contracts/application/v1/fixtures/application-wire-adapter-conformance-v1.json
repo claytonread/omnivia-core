@@ -1089,6 +1089,54 @@
       }
     },
     {
+      "description": "evidence.capture answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "evidence.capture/primary-success",
+      "operation": "evidence.capture",
+      "request": {
+        "input": {
+          "source_native_id": "doc-capture-1",
+          "media_type": "text/plain",
+          "text": "hello world"
+        },
+        "metadata": {
+          "idempotency_key": "idem-evidence.capture",
+          "request_id": "req-evidence.capture-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "evidence.capture"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-evidence.capture",
+          "request_id": "req-evidence.capture-success"
+        },
+        "result": {
+          "evidence_id": "ev-capture-1",
+          "source": {
+            "kind": "direct_submission",
+            "source_id": "doc-capture-1"
+          },
+          "media_type": "text/plain",
+          "content_checksum": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+          "content_length_bytes": 11,
+          "capture_disposition": "created"
+        }
+      }
+    },
+    {
       "description": "evidence.search answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"
@@ -3495,6 +3543,102 @@
         "metadata": {
           "audit_reference": "audit-candidate.reject",
           "request_id": "req-candidate.reject-conflict"
+        }
+      }
+    },
+    {
+      "description": "evidence.capture repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "evidence.capture/primary-success"
+      },
+      "id": "evidence.capture/honest-replay",
+      "operation": "evidence.capture",
+      "request": {
+        "input": {
+          "source_native_id": "doc-capture-1",
+          "media_type": "text/plain",
+          "text": "hello world"
+        },
+        "metadata": {
+          "idempotency_key": "idem-evidence.capture",
+          "request_id": "req-evidence.capture-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "evidence.capture"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-evidence.capture",
+          "request_id": "req-evidence.capture-replay"
+        },
+        "result": {
+          "evidence_id": "ev-capture-1",
+          "source": {
+            "kind": "direct_submission",
+            "source_id": "doc-capture-1"
+          },
+          "media_type": "text/plain",
+          "content_checksum": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+          "content_length_bytes": 11,
+          "capture_disposition": "created"
+        }
+      }
+    },
+    {
+      "description": "evidence.capture reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "evidence.capture/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "evidence.capture/idempotency-conflict",
+      "operation": "evidence.capture",
+      "request": {
+        "input": {
+          "source_native_id": "doc-capture-1",
+          "media_type": "text/plain",
+          "text": "hello world, but different"
+        },
+        "metadata": {
+          "idempotency_key": "idem-evidence.capture",
+          "request_id": "req-evidence.capture-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "evidence.capture"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-evidence.capture",
+          "request_id": "req-evidence.capture-conflict"
         }
       }
     },

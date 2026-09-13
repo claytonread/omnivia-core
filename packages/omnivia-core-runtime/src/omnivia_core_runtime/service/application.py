@@ -86,7 +86,11 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatHandlers,
 )
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
-from omnivia_core_runtime.service.handlers.evidence import evidence_search
+from omnivia_core_runtime.service.handlers.evidence import (
+    EVIDENCE_CAPTURE_OPERATION,
+    EvidenceHandlers,
+    evidence_search,
+)
 from omnivia_core_runtime.service.handlers.governance import (
     GOVERNANCE_FAMILY_OPERATIONS,
     GovernanceHandlers,
@@ -219,10 +223,27 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 
+#: The S3 family is the workspace's *content-ingestion* authority, and `evidence.capture`
+#: belongs to it for a reason that is visible in `MUTATION_PURPOSES` rather than chosen
+#: here: capture and `import.start` are served under the one `content_ingestion` purpose
+#: and require the one `workspace_contributor` role, because bringing outside content
+#: into this workspace is one authority whoever supplies the bytes. Adding capture to
+#: this family therefore widens its session by an operation name and one capability --
+#: `evidence.write@1.0` -- and by no purpose, no role and no scope: `import.start` already
+#: carries `memory:write`.
+#:
+#: It is deliberately *not* in the read family. That family's session is built by
+#: `local_owner_session`, which refuses to grant any operation declaring a side effect,
+#: and a read-only local owner holding a mutation is precisely the failure that
+#: constructor exists to prevent. The seven authority families are unchanged.
 JOB_OBSERVATION_PURPOSE: Final = "job_observation"
+INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = (
+    JOB_FAMILY_OPERATIONS | {EVIDENCE_CAPTURE_OPERATION}
+)
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
+        EVIDENCE_CAPTURE_OPERATION: MUTATION_PURPOSES[EVIDENCE_CAPTURE_OPERATION],
         JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
         JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
@@ -289,9 +310,25 @@ def _narrow_session(
     configured: AuthenticatedSession,
     caller: AuthenticatedSession,
 ) -> AuthenticatedSession:
-    """Intersect caller authority with the endpoint's configured maximum."""
-    if configured.principal_id != caller.principal_id:
-        return AuthenticatedSession(principal_id=caller.principal_id)
+    """Intersect caller authority with the endpoint's configured maximum.
+
+    The configured session is a **policy ceiling**, not an identity. It states the
+    most this endpoint will ever execute -- which workspace, which operations,
+    which scopes, purposes, roles and capability versions -- and every dimension of
+    the caller's own authority is intersected with it, so the result can never
+    exceed either side. The caller's principal is preserved, because the principal
+    is who the request ran as and the audit record has to say so.
+
+    It used to compare the two principal ids first and hand back an empty session
+    when they differed. That read as a safety check and was in fact a fail-closed
+    bug: a dedicated installed-MCP principal is *never* the configured local owner
+    -- `local-user` against a minted `mcp-<host>-<hex>` -- so every authenticated
+    MCP call was narrowed to nothing and refused `workspace_not_granted` before any
+    handler saw it. The check it was standing in for lives where it belongs: the
+    endpoint's own grant, intersected below, and `ServiceBinding`, which refuses a
+    request naming a workspace this endpoint does not serve even if a grant were
+    ever widened.
+    """
     configured_capabilities = {ref.id: ref.version for ref in configured.capabilities}
     capabilities = tuple(
         CapabilityRef(
@@ -519,14 +556,16 @@ def build_memory_registry(handlers: MemoryHandlers) -> ApplicationOperationRegis
 def job_family_session(
     *, principal_id: str, installation_id: str, workspace_id: str
 ) -> AuthenticatedSession:
-    """The distinct S3 workspace-family grant for durable import and job control."""
-    entries = tuple(get_operation_metadata(name) for name in sorted(JOB_FAMILY_OPERATIONS))
+    """The distinct S3 grant for content ingestion, durable import and job control."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(INGESTION_FAMILY_OPERATIONS)
+    )
     return AuthenticatedSession(
         principal_id=principal_id,
         roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
         installations=frozenset({installation_id}),
         workspaces=frozenset({workspace_id}),
-        operations=JOB_FAMILY_OPERATIONS,
+        operations=INGESTION_FAMILY_OPERATIONS,
         scopes=frozenset(
             scope for entry in entries for scope in entry.scope.required_scopes
         ),
@@ -546,9 +585,22 @@ def job_family_session(
     )
 
 
-def build_job_registry(handlers: JobHandlers) -> ApplicationOperationRegistry:
+def build_job_registry(
+    handlers: JobHandlers, evidence: EvidenceHandlers
+) -> ApplicationOperationRegistry:
+    """The content-ingestion family's six handlers, from their two owning modules.
+
+    Two handler objects rather than one: `evidence.capture` is written in the evidence
+    handler family beside `evidence.search`, which is where a reader looks for it and
+    where the projection barrier the two share belongs. What this registry states is the
+    *authority* boundary -- the six operations one session and one binding cover -- and
+    that is a different question from which module implements each of them.
+    """
     registry = ApplicationOperationRegistry()
     registry.register(IMPORT_START_OPERATION, cast(OperationHandler, handlers.import_start))
+    registry.register(
+        EVIDENCE_CAPTURE_OPERATION, cast(OperationHandler, evidence.evidence_capture)
+    )
     registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
     registry.register(JOB_RETRY_OPERATION, cast(OperationHandler, handlers.job_retry))
@@ -849,7 +901,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 27/27 complete.
+    is anything other than 28/28 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1398,24 +1450,32 @@ def build_job_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the exact five-operation S3 family around the existing router."""
+    """Compose the exact six-operation S3 content-ingestion family around the router."""
     session = job_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
         workspace_id=workspace_id,
     )
     binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    resolved_clock = SystemClock() if clock is None else clock
     handlers = JobHandlers(
         service=service,
         session=session,
         binding=binding,
-        clock=SystemClock() if clock is None else clock,
+        clock=resolved_clock,
         allocate_identifier=allocate_identifier,
         token_codec=(
             HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
         ),
     )
-    registry = build_job_registry(handlers)
+    evidence = EvidenceHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=resolved_clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_job_registry(handlers, evidence)
     return ApplicationDispatcher(
         registry=registry,
         session=session,
@@ -1583,9 +1643,11 @@ def build_workflow_application_dispatcher(
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
+    "EVIDENCE_CAPTURE_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GOVERNANCE_FAMILY_PURPOSES",
     "GRAPH_TRAVERSE_OPERATION",
+    "INGESTION_FAMILY_OPERATIONS",
     "INSTALLATION_OPERATION_PURPOSES",
     "JOB_FAMILY_PURPOSES",
     "JOB_OBSERVATION_PURPOSE",

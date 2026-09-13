@@ -44,6 +44,7 @@ from omnivia_core_runtime.service.workspace_init import (
     initialise_allocated_workspace,
     initialise_workspace,
 )
+from omnivia_core_runtime.storage import backup
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
@@ -559,9 +560,10 @@ def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
     An installation-state root that is a regular file reaches it by a route with no
     mocking in it: `_unrecognised_installation_state` returns early because
     `root.is_dir()` is false, and `InstallationLayout.create` then raises
-    `NotADirectoryError` with a whole workspace already on disk. The claim is
-    therefore about the three refusals that decide *whether this workspace is ours
-    to touch*, and this test is what keeps that qualification honest.
+    `FileExistsError` trying to establish the root itself, with a whole workspace
+    already on disk. The claim is therefore about the three refusals that decide
+    *whether this workspace is ours to touch*, and this test is what keeps that
+    qualification honest.
     """
     (tmp_path / "installation-state").write_text("not a directory", encoding="utf-8")
 
@@ -574,6 +576,42 @@ def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
     assert layout.manifest_path.is_file()
     assert layout.database_path.is_file()
     assert layout.blobs_path.is_dir()
+
+
+def test_a_root_this_call_cannot_restrict_is_the_same_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling of the test above: a fresh root, but not an owner-private one.
+
+    `InstallationLayout.create` establishes the installation-state root's
+    owner-only Windows ACL the instant it creates it -- see
+    `packages/omnivia-core-runtime/tests/phase2/test_backup.py` for that
+    mechanism in isolation -- and fails closed exactly like every other
+    creation step this sequence guards when it cannot. Forcing that one step
+    to fail here proves it is bounded the same way: `WRITE_FAILURE`, with a
+    whole workspace already on disk and the bare root itself rolled back --
+    `test_backup.py` proves the rollback mechanism directly; this proves it
+    reaches all the way to the public refusal, and not just the bare root
+    it once left behind.
+
+    The reason string is checked for what it must not carry, too: the
+    installation root never appears in it, unlike the workspace root that
+    every `WRITE_FAILURE` deliberately names.
+    """
+    monkeypatch.setattr(backup, "_restrict_root_to_owner", lambda _path: False)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert backup._ROOT_RESTRICTION_FAILURE in result.reason
+    installation = tmp_path / "installation-state"
+    assert str(installation) not in result.reason
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    assert layout.manifest_path.is_file()
+    assert layout.database_path.is_file()
+    assert layout.blobs_path.is_dir()
+    assert not installation.exists()
 
 
 def test_a_busy_workspace_is_refused_before_any_directory_is_created(
@@ -1250,7 +1288,7 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
         "reason",
         "workspace",
     }
-    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.1"
+    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.2"
     workspace = document["workspace"]
     assert isinstance(workspace, dict)
     assert set(workspace) == {
@@ -1310,6 +1348,21 @@ WORKSPACE_INIT_WIRE_1_1 = {
     },
 }
 
+#: The whole wire vocabulary of `workspace_init_version` 1.2, on the same terms.
+#:
+#: One code more than 1.1 and not one character different anywhere else.
+#: `workspace_registration_conflict` is the state 1.1 had no name for: `--init` now
+#: registers its bootstrapped workspace in the installation catalogue
+#: (`installation_bootstrap.py`), and a workspace id already registered there under
+#: a different path is refused rather than silently re-pointed.
+WORKSPACE_INIT_WIRE_1_2 = {
+    "status": dict(WORKSPACE_INIT_WIRE_1_1["status"]),
+    "refusal": {
+        **WORKSPACE_INIT_WIRE_1_1["refusal"],
+        "WORKSPACE_REGISTRATION_CONFLICT": "workspace_registration_conflict",
+    },
+}
+
 
 def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     """The 1.0 -> 1.1 compatibility claim, as an assertion rather than a comment.
@@ -1323,7 +1376,6 @@ def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     unknown `refusal` as fatal is the case this bump exists to warn, and the bump is
     a minor one because the codes it already understands are untouched.
     """
-    assert WORKSPACE_INIT_VERSION == "1.1"
     assert WORKSPACE_INIT_WIRE_1_1["status"] == WORKSPACE_INIT_WIRE_1_0["status"]
     for name, wire in WORKSPACE_INIT_WIRE_1_0["refusal"].items():
         assert WORKSPACE_INIT_WIRE_1_1["refusal"][name] == wire, (
@@ -1335,8 +1387,28 @@ def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     assert added == {"UNQUALIFIED_FILESYSTEM"}
 
 
+def test_the_published_vocabulary_widened_additively_from_1_1() -> None:
+    """The 1.1 -> 1.2 compatibility claim, on the same terms as the 1.0 -> 1.1 one.
+
+    Kept beside it rather than in place of it: 1.1's fixture is frozen now the same
+    way 1.0's was, so a later packet that renames one of its seven codes or moves a
+    case between them fails here even though the 1.2 fixture beside it would have
+    been edited to agree.
+    """
+    assert WORKSPACE_INIT_VERSION == "1.2"
+    assert WORKSPACE_INIT_WIRE_1_2["status"] == WORKSPACE_INIT_WIRE_1_1["status"]
+    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
+        assert WORKSPACE_INIT_WIRE_1_2["refusal"][name] == wire, (
+            f"{name} changed its wire value; that is a break, not a widening"
+        )
+    added = set(WORKSPACE_INIT_WIRE_1_2["refusal"]) - set(
+        WORKSPACE_INIT_WIRE_1_1["refusal"]
+    )
+    assert added == {"WORKSPACE_REGISTRATION_CONFLICT"}
+
+
 def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
-    """R006-07: the published vocabulary of 1.1, by exact serialised value.
+    """R006-07: the published vocabulary of 1.2, by exact serialised value.
 
     Two hops are checked, because a value can be right in the enum and wrong on
     the wire. First the enums against the fixture above, by dict equality in both
@@ -1350,17 +1422,17 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
     code compared it to `WorkspaceInitRefusal.X.value` and to `WORKSPACE_INIT_VERSION`,
     both of which move with the mutation.
 
-    `1.1` is asserted as a literal for the same reason.
+    `1.2` is asserted as a literal for the same reason.
     """
-    assert WORKSPACE_INIT_VERSION == "1.1"
+    assert WORKSPACE_INIT_VERSION == "1.2"
     assert {
         member.name: member.value for member in WorkspaceInitStatus
-    } == WORKSPACE_INIT_WIRE_1_1["status"]
+    } == WORKSPACE_INIT_WIRE_1_2["status"]
     assert {
         member.name: member.value for member in WorkspaceInitRefusal
-    } == WORKSPACE_INIT_WIRE_1_1["refusal"]
+    } == WORKSPACE_INIT_WIRE_1_2["refusal"]
 
-    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
+    for name, wire in WORKSPACE_INIT_WIRE_1_2["refusal"].items():
         document = WorkspaceInitResult(
             status=WorkspaceInitStatus.REFUSED,
             reason="pinning the wire value",
@@ -1368,7 +1440,7 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
         ).to_dict()
         assert document["refusal"] == wire
         assert document["status"] == "refused"
-        assert document["workspace_init_version"] == "1.1"
+        assert document["workspace_init_version"] == "1.2"
 
 
 def test_a_refusal_code_never_depends_on_its_declaration_position() -> None:

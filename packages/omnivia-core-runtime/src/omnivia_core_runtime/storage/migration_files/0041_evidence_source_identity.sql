@@ -1,0 +1,96 @@
+-- One canonical source identity per evidence artifact in one workspace.
+--
+-- Additive only: one named UNIQUE index and nothing else. No table, column or trigger
+-- is created, altered, replaced or dropped, and this migration performs no DML. Every
+-- earlier migration, 0008's definition of `omnivia_evidence_artifacts` included,
+-- remains byte-immutable.
+--
+-- What the invariant is
+-- --------------------
+--
+-- 0008 gave the artifact table a *non-unique* read path over
+-- `(workspace_id, source_kind, source_native_id)` and no uniqueness over source
+-- identity at all. That was right while capture was the one writer and it read before
+-- it wrote, but "read, decide, insert" is not an invariant: two concurrent captures of
+-- the same source both read nothing and both insert, and the workspace is then holding
+-- two artifacts claiming to be the same source. `evidence.capture` makes that a public
+-- operation, so the rule has to be the database's rather than a caller's.
+--
+-- The identity is the whole tuple 0008 declares -- workspace, kind, native id, locator
+-- and retrieved time -- because those five are what distinguish one capture of a source
+-- from another. Two revisions of one connector document, retrieved at different times,
+-- are different evidence and stay different; two submissions of one document under one
+-- identity are the same evidence and the second is refused.
+--
+-- Why the tuple is written through COALESCE
+-- -----------------------------------------
+--
+-- `source_locator` and `source_retrieved_at_us` are nullable, and in SQL no NULL equals
+-- another NULL. A plain five-column UNIQUE index would therefore enforce nothing at all
+-- for the one shape this slice most needs it for: a direct submission, which carries
+-- neither a locator nor a retrieval time, so every row of
+-- `(workspace_id, 'direct_submission', source_native_id, NULL, NULL)` is distinct from
+-- every other one and concurrent duplicates are admitted silently. Enforcing only the
+-- three non-null columns is the opposite error: it would refuse the connector's second
+-- revision, which is legitimately different evidence.
+--
+-- So each nullable member enters the key through a sentinel that stands for "absent",
+-- and the sentinels are collision-free by storage class rather than by being values
+-- nobody expects to see. 0008 constrains both columns exactly:
+--
+--     CHECK (source_locator IS NULL OR (typeof(source_locator) = 'text' AND ...))
+--     CHECK (source_retrieved_at_us IS NULL OR (typeof(source_retrieved_at_us) = 'integer' AND ...))
+--
+-- A present locator is therefore always TEXT and a present retrieval time always
+-- INTEGER, while `X'00'` is a BLOB. SQLite compares values of different storage classes
+-- as unequal before it ever compares their contents -- INTEGER and REAL sort before
+-- TEXT, TEXT before BLOB -- so no admissible value of either column can collide with
+-- the sentinel standing in for its absence. There is no reserved string, no magic
+-- timestamp and no value a future writer could stumble onto, and if a later migration
+-- ever widened either CHECK, that widening is where this reasoning would have to be
+-- revisited.
+--
+-- Why this is an index and not a trigger
+-- --------------------------------------
+--
+-- A UNIQUE index is evaluated by the writer that is inserting, inside its own
+-- transaction, against the committed state of the table. Two concurrent captures cannot
+-- both pass it, and a caller cannot reason its way around it, because it is not a check
+-- anyone performs. A BEFORE INSERT trigger doing `NOT EXISTS` would be exactly the
+-- read-then-write the invariant exists to replace.
+--
+-- Applying this to a workspace whose legacy rows collide
+-- -----------------------------------------------------
+--
+-- Creating the index over colliding rows fails, and that is the intended behaviour:
+--
+--     UNIQUE constraint failed: index 'omnivia_idx_evidence_artifacts_source_identity'
+--
+-- The migrator runs each migration in one transaction and records the failure in
+-- `omnivia_migration_attempts`, so the workspace is left exactly as it was, at 0040,
+-- with the refusal durably recorded. Nothing here merges, rewrites, deletes or
+-- tombstones an evidence row: this migration contains no DML at all, and evidence is
+-- append-preserved precisely so that no schema change may decide which of two
+-- conflicting captures was the real one. Resolving a collision is an operator act
+-- against a lane that can account for it, not a side effect of migrating.
+--
+-- The colliding tuples are listed by:
+--
+--     SELECT workspace_id, source_kind, source_native_id, source_locator,
+--            source_retrieved_at_us, COUNT(*) AS artifacts,
+--            group_concat(evidence_id) AS evidence_ids
+--       FROM omnivia_evidence_artifacts
+--      GROUP BY workspace_id, source_kind, source_native_id,
+--               COALESCE(source_locator, X'00'), COALESCE(source_retrieved_at_us, X'00')
+--     HAVING COUNT(*) > 1;
+--
+-- which is the same grouping the index builds, so it reports exactly what refused.
+
+CREATE UNIQUE INDEX IF NOT EXISTS omnivia_idx_evidence_artifacts_source_identity
+    ON omnivia_evidence_artifacts (
+        workspace_id,
+        source_kind,
+        source_native_id,
+        COALESCE(source_locator, X'00'),
+        COALESCE(source_retrieved_at_us, X'00')
+    );

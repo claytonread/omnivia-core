@@ -31,15 +31,33 @@ import os
 import re
 import socket
 import threading
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol, Self
 
-from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope, codec
+from omnivia_core.contracts.v1 import (
+    ContractDecodeError,
+    RequestEnvelope,
+    ResponseEnvelope,
+    codec,
+)
 from omnivia_core_runtime.ownership.locks import IS_WINDOWS, LockRole, create_lock
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.local_control import (
+    AuthenticatedDispatch,
+    LocalControlError,
+    LocalControlKind,
+    LocalControlRefusal,
+    LocalControlRequest,
+    McpAdministration,
+    control_error_document,
+    control_result_document,
+    decode_local_control,
+    is_local_control,
+)
 from omnivia_core_runtime.service.ovc1 import (
     HEADER_BYTES,
     MAGIC,
@@ -48,7 +66,11 @@ from omnivia_core_runtime.service.ovc1 import (
     decode_frame,
     encode_frame,
 )
-from omnivia_core_runtime.service.protocol import DocumentRouter
+from omnivia_core_runtime.service.protocol import (
+    DocumentRouter,
+    ProtocolError,
+    require_answering_response,
+)
 
 #: Refuse a frame larger than this rather than buffering without limit. A local
 #: client that sends an unbounded frame is malfunctioning, and treating it as
@@ -615,6 +637,31 @@ class LocalSocketServer:
 
     dispatcher: Dispatcher | None = None
     router: DocumentRouter | None = None
+    authenticated: AuthenticatedDispatch | None = None
+    mcp_administration: McpAdministration | None = None
+    #: Bounded service work to run on this thread, before a request is served and
+    #: again after its response is written.
+    #:
+    #: **Why here and not on a thread of its own.** The service owns one writable
+    #: SQLite connection, and the only two things that touch it are this serving
+    #: thread and the main loop's lease renewal -- which the runner already tolerates
+    #: losing a race against for exactly this reason. Work driven from here therefore
+    #: introduces no second writer and no new class of contention; a worker thread
+    #: would introduce both, and a worker connection would be a second writer on a
+    #: workspace whose whole ownership model says there is one.
+    #:
+    #: **Why twice.** After, because work a request enqueued has to run whether or not
+    #: another request ever arrives, and running it after the response is written is
+    #: what keeps the enqueuing operation asynchronous. Before, because the first
+    #: request after a restart must not be answered from state that startup recovery
+    #: requeued and nothing has yet resumed.
+    #:
+    #: Bounded by whatever is passed: this is the sole accept loop, so a pass that ran
+    #: to exhaustion would be a pass that stops answering.
+    #:
+    #: Whatever it returns is discarded -- a pass reports what it did to its own
+    #: caller's tests, and this loop has nothing to do with the answer.
+    service_work: Callable[[], object] | None = None
     path: Path | None = None
     endpoint: LocalEndpoint | None = None
     timeout: float = DEFAULT_TIMEOUT_SECONDS
@@ -794,6 +841,7 @@ class LocalSocketServer:
                 channel.close()
                 break
             self._active_channel = channel
+            self._run_service_work()
             try:
                 self._handle(channel)
             except Exception:  # noqa: BLE001, S112 - see below
@@ -818,13 +866,39 @@ class LocalSocketServer:
             finally:
                 channel.close()
                 self._active_channel = None
+            if not self._stop.is_set():
+                # Not after a stop was requested. `stop()` waits a bounded moment for
+                # this thread and then stops waiting, so a pass started here would run
+                # on a connection the resource stack is about to close -- contained,
+                # but pointless work standing between a signal and a released lease.
+                self._run_service_work()
+
+    def _run_service_work(self) -> None:
+        """Run one bounded pass of service work, contained like a bad client.
+
+        Contained for the same reason `_handle` is, and it is the same property rather
+        than a second one: this is the sole accept loop, so nothing driven from it may
+        end it. A unit of work that fails is the workspace's problem to record durably
+        -- which is where it is recorded -- not a reason for the service to go deaf.
+        """
+        if self.service_work is None:
+            return
+        try:
+            self.service_work()
+        except Exception:  # noqa: BLE001 - see above
+            return
 
     def _handle(self, channel: _Channel) -> None:
         raw = channel.read_frame()
         if raw is None:
             return
         document = decode_frame(raw)
-        if self.router is not None:
+        if is_local_control(document):
+            # Answered here and nothing below runs. A control is not a request and
+            # not a probe: it names its own kind, so it is never handed to a
+            # decoder that would have to guess which of the two it meant to be.
+            payload: Mapping[str, Any] = self._control(document)
+        elif self.router is not None:
             result = self.router.route(document)
             payload = result.to_wire()
         else:
@@ -838,6 +912,71 @@ class LocalSocketServer:
         # cannot receive a valid response.
         channel.ensure_unary_boundary()
         channel.send_frame(encode_frame(payload))
+
+    def _control(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Answer one local control, as a result document either way.
+
+        A refusal is an *answer* here rather than an exception, because the
+        alternative is the connection dying with no reply and the caller unable to
+        tell an unauthenticated bearer from an unreachable service. Every refusal
+        is a :class:`LocalControlRefusal`, whose message comes from the frozen
+        table, so nothing a caller wrote is rendered into one.
+
+        A seam this server was not given answers ``unsupported`` rather than
+        pretending: an endpoint wired without ``authenticated=`` serves no
+        authenticated call, and saying so is not a disclosure -- the wiring is a
+        property of this build, not of the caller.
+        """
+        kind: LocalControlKind | None = None
+        code = LocalControlError.MALFORMED
+        result: Mapping[str, Any] | None = None
+        try:
+            control = decode_local_control(document)
+            kind = control.kind
+            result = self._answer(control)
+        except LocalControlRefusal as refusal:
+            code = refusal.code
+        except ContractDecodeError:
+            # The wrapped application request did not decode. Its own message
+            # names the field path that failed, which is caller material, so the
+            # reply carries the frozen malformed sentence and nothing from it.
+            code = LocalControlError.MALFORMED
+        except ProtocolError:
+            # The authenticated dispatch answered with a response that does not
+            # correlate to the request it was given. That is a fault on this side
+            # of the wire and the caller is told nothing about it beyond the same
+            # frozen sentence: `ProtocolError`'s own text is routing detail, and
+            # no reply carrying it would help a caller that cannot act on it.
+            code = LocalControlError.MALFORMED
+        if result is None:
+            return control_error_document(kind, code)
+        assert kind is not None
+        return control_result_document(kind, result)
+
+    def _answer(self, control: LocalControlRequest) -> Mapping[str, Any]:
+        """Route one admitted control to the seam its kind names.
+
+        The credential goes to :meth:`AuthenticatedDispatch.dispatch` and is
+        resolved there, on this call, against durable state -- this server holds
+        no session, no principal and no grant between connections, and there is no
+        field on it that could.
+        """
+        if control.kind is LocalControlKind.APPLICATION_CALL:
+            if self.authenticated is None:
+                raise LocalControlRefusal(LocalControlError.UNSUPPORTED)
+            assert control.request is not None
+            request = codec.decode_request(dict(control.request))
+            response = self.authenticated.dispatch(control.credential, request)
+            # The one invariant `DocumentRouter.route` enforces that this path
+            # would otherwise skip: a response whose `request_id` or
+            # `correlation_id` is not the request's own does not answer it, and a
+            # caller that correlated it would be matching somebody else's answer.
+            # Checked with the router's own helper rather than a copy of it.
+            require_answering_response(request, response)
+            return {"response": codec.encode_response(response)}
+        if self.mcp_administration is None:
+            raise LocalControlRefusal(LocalControlError.UNSUPPORTED)
+        return self.mcp_administration.administer(control)
 
     def stop(self) -> None:
         served = self._listener is not None
@@ -940,6 +1079,20 @@ class LocalSocketTransport:
         return self.endpoint
 
     def call(self, request: RequestEnvelope) -> ResponseEnvelope:
+        """One application request, as this transport's own principal."""
+        return codec.decode_response(
+            self.exchange(codec.encode_request(request))
+        )
+
+    def exchange(self, document: Mapping[str, Any]) -> dict[str, Any]:
+        """One document out, one document back, on a fresh connection.
+
+        Split out of :meth:`call` rather than added beside it, because the
+        connect, the frame, the bounded read and the four fixed failures below are
+        the same for every document this endpoint carries. A local control travels
+        this method; it is not a second dial loop with a second set of refusals to
+        keep in step with these.
+        """
         channel: _Channel | None = None
         connect_failure: TransportError | None = None
         try:
@@ -954,7 +1107,7 @@ class LocalSocketTransport:
         raw: bytes | None = None
         failed = False
         try:
-            channel.send_frame(encode_frame(codec.encode_request(request)))
+            channel.send_frame(encode_frame(document))
             raw = channel.read_frame()
         except OSError:
             failed = True
@@ -968,12 +1121,12 @@ class LocalSocketTransport:
             raise TransportError("local service transport call failed")
         if raw is None:
             raise TransportError("service closed the connection without responding")
-        document: dict[str, Any] | None = None
+        answer: dict[str, Any] | None = None
         try:
-            document = decode_frame(raw)
+            answer = decode_frame(raw)
         except OVC1Error:
             pass
-        if document is None:
+        if answer is None:
             # Fixed and non-disclosing, and raised once `except` has exited: `raw`
             # may carry a caller's own document content, and OVC1Error's message
             # is not folded in here, so no text from either reaches a caller. The
@@ -982,7 +1135,7 @@ class LocalSocketTransport:
             # and that error is reachable through `__context__` even when nothing
             # renders it.
             raise TransportError("service response was not a valid OVC1 frame")
-        return codec.decode_response(document)
+        return answer
 
 
 def _connect(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:

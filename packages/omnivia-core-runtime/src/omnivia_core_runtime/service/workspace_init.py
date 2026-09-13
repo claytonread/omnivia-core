@@ -185,7 +185,15 @@ from omnivia_core_runtime.workspace.manifest_store import (
 #: the additive direction rather than a wire break, which is why this is 1.1 and not
 #: 2.0. `test_the_published_vocabulary_widened_additively_from_1_0` is the control:
 #: it pins 1.0's six codes as a subset, by value, independently of the enum.
-WORKSPACE_INIT_VERSION: Final = "1.1"
+#:
+#: **1.2 widens it by one more.** `WORKSPACE_REGISTRATION_CONFLICT` is new, for the
+#: same reason `UNQUALIFIED_FILESYSTEM` was: `--init` now registers the canonical
+#: workspace it bootstraps into the installation catalogue
+#: (`installation_bootstrap.py`), and a workspace id already registered there under a
+#: *different* path is a fact 1.1 had no name for. Every 1.1 status and refusal keeps
+#: its exact string. `test_the_published_vocabulary_widened_additively_from_1_1` is
+#: the control.
+WORKSPACE_INIT_VERSION: Final = "1.2"
 
 #: The workspace format a new workspace is created in. Mirrors
 #: `bootstrap_generation_one`'s own default, and
@@ -311,6 +319,15 @@ class WorkspaceInitRefusal(str, Enum):
     restore the manifest the database's workspace had, or point `--workspace`
     somewhere else -- which is not the remedy for a full disk.
 
+    `WORKSPACE_REGISTRATION_CONFLICT` is `WORKSPACE_INIT_VERSION` 1.2's addition,
+    raised by `installation_bootstrap.py` rather than by this module: this
+    workspace's id is already durably registered in the installation catalogue at a
+    *different* path, so admitting it here would silently re-point an existing
+    authorisation. `WRITE_FAILURE` would be the same misnaming
+    `WORKSPACE_IDENTITY_MISMATCH` was carved out of -- nothing failed to write, and
+    the remedy (pick a different `--installation-state`, or resolve which path the
+    catalogue should authorise) is not "retry".
+
     **`UNRELATED_DIRECTORY` has two arrival points, and the second was misnamed for
     the same reason.** A workspace root holding somebody's files is found by listing
     it, before the lock. A `workspace.sqlite` holding somebody's *tables* is not:
@@ -342,6 +359,7 @@ class WorkspaceInitRefusal(str, Enum):
     WORKSPACE_IDENTITY_MISMATCH = "workspace_identity_mismatch"
     WORKSPACE_BUSY = "workspace_busy"
     WRITE_FAILURE = "write_failure"
+    WORKSPACE_REGISTRATION_CONFLICT = "workspace_registration_conflict"
 
 
 @dataclass(frozen=True)
@@ -712,7 +730,8 @@ def _bootstrap(
     installation-state root that is a regular file reaches it with a whole workspace
     already on disk, by a route with nothing injected in it:
     `_unrecognised_installation_state` returns early because `root.is_dir()` is
-    false, and `InstallationLayout.create` then raises `NotADirectoryError`.
+    false, and `InstallationLayout.create` then raises `FileExistsError` trying to
+    establish the root itself.
     `test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so` holds that
     open. Ordering is what makes the three refusals above cost nothing; it is not a
     transaction, and no ordering turns a failing `mkdir` into one.

@@ -496,27 +496,69 @@ def _restrict(path: Path) -> None:
         raise JourneyError(_RESTRICTION_FAILED)
 
 
-def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "format": "omnivia.mcp-config.v1",
-                "principal_id": PRINCIPAL,
-                "allowed_workspace_ids": [workspace_id],
-                "default_workspace_id": workspace_id,
-                "allowed_purposes": [
-                    "workspace_inspection",
-                    "knowledge_retrieval",
-                ],
-                "mutation_enabled": False,
-                "service_mode": "managed_local",
-                "installation_state": str(installation),
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+#: The installed-administration host and profile this journey provisions. Fixed
+#: to `claude-code`/`restricted`: the protected configuration `configure` writes
+#: is the one file every client family below then reads through its own launch
+#: form, and `restricted` is the six-tool, read-only profile the Standard
+#: distribution ships -- this journey does not exercise `authoring` and must
+#: not broaden mutation authority for this distribution.
+_ADMIN_HOST: Final = "claude-code"
+_ADMIN_PROFILE: Final = "restricted"
+
+
+def _provisioned_configuration(cli: Path, installation: Path, workspace_id: str) -> Path:
+    """Provision this installation's protected MCP setup through the real CLI.
+
+    `omnivia mcp configure` is R004 section 9.2's installed administration path:
+    it mints a dedicated principal at the running service, files the bearer in
+    this installation's owner-private credential store, writes the protected
+    `omnivia.mcp-config.v1` document -- carrying the opaque credential
+    *reference* rather than the bearer -- and, only once its own real MCP
+    handshake against that file has passed, prints the host-native snippet
+    naming where it wrote it. This journey forges neither file: the snippet on
+    stdout is the sole channel back, and only the `--config` path inside it is
+    read out of it. Nothing else this command could print -- and it prints no
+    credential, by construction -- is kept.
+    """
+    completed = _run(
+        [
+            str(cli),
+            "--installation-state",
+            str(installation),
+            "mcp",
+            "configure",
+            "--host",
+            _ADMIN_HOST,
+            "--workspace",
+            workspace_id,
+            "--profile",
+            _ADMIN_PROFILE,
+        ]
     )
-    _restrict(path)
+    _require_status(completed, 0, "MCP administration configure")
+    if completed.stderr:
+        raise JourneyError(
+            "MCP administration configure wrote an unexpected diagnostic"
+        )
+    snippet = _document(completed.stdout, "MCP administration configure")
+    servers = snippet.get("mcpServers")
+    entry = servers.get(SERVER_KEY) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or set(entry) != ACCEPTED_ENTRY_FIELDS:
+        raise JourneyError(
+            "MCP administration configure did not name its configuration"
+        )
+    arguments = entry["args"]
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 2
+        or arguments[0] != "--config"
+        or not isinstance(arguments[1], str)
+        or not arguments[1]
+    ):
+        raise JourneyError(
+            "MCP administration configure did not name its configuration"
+        )
+    return Path(arguments[1])
 
 
 def _exception_leaves(error: BaseException) -> list[BaseException]:
@@ -1018,8 +1060,7 @@ def run(output: Path) -> dict[str, Any]:
             if not isinstance(records, list) or not records:
                 raise JourneyError("CLI knowledge search did not find the approved record")
 
-            config = root / "omnivia-mcp.json"
-            _write_mcp_configuration(config, installation, workspace_id)
+            config = _provisioned_configuration(cli, installation, workspace_id)
             hosts = root / "host-configurations"
             hosts.mkdir()
             mcp_result = _host_interoperability(

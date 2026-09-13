@@ -30,7 +30,9 @@ JSON byte length                   4 bytes, unsigned big-endian uint32
 canonical UTF-8 JSON               exactly that many bytes, nothing after
 ```
 
-- The JSON payload is at most **4 MiB (4194304 bytes), inclusive**.
+- The JSON payload is at most **4 MiB (4194304 bytes), inclusive**. This is part
+  of frozen OVC1 v1; application adapters use a compact equivalent input form
+  when a literal JSON spelling would exceed it.
 - A frame's root is always a **JSON object**.
 - Decoding re-encodes what it parsed and requires the bytes to match exactly,
   so a non-canonical spelling of a valid value is rejected rather than silently

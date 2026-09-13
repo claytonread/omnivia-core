@@ -12,6 +12,7 @@ it proves nothing about the encoder.
 
 from __future__ import annotations
 
+import base64
 import json
 import traceback
 from pathlib import Path
@@ -34,10 +35,18 @@ from omnivia_core_client.framing import (
 )
 
 from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+    CapabilityRequirement,
+    ClientIdentity,
+    RequestEnvelope,
+    RequestMetadata,
     ServiceEndpointDescriptor,
     ServiceProbeRequest,
     ServiceProbeResult,
     codec,
+    decode_evidence_capture_input,
+    get_operation_metadata,
 )
 from omnivia_core.contracts.v1.canonical_json import canonical_bytes
 
@@ -236,6 +245,47 @@ def test_encode_then_decode_round_trips() -> None:
         "text": "hello",
     }
     assert decode_frame(encode_frame(payload)) == payload
+
+
+def test_compact_form_of_a_worst_case_capture_fits_the_frozen_frame_ceiling() -> None:
+    """Base64 carries the same one-MiB body without changing OVC1 v1."""
+    entry = get_operation_metadata("evidence.capture")
+    required = entry.required_capability
+    request = RequestEnvelope(
+        operation=entry.name,
+        metadata=RequestMetadata(
+            request_id="req-frame-capacity",
+            correlation_id="cor-frame-capacity",
+            trace_id="trc-frame-capacity",
+            api_version=CONTRACT_VERSION,
+            client=ClientIdentity(id="frame-capacity-test", version="1.0.0"),
+            workspace_id="ws-frame-capacity",
+            scopes=tuple(entry.scope.required_scopes),
+            purpose="content_ingestion",
+            idempotency_key="idem-frame-capacity",
+            required_capabilities=(
+                CapabilityRequirement(
+                    id=required.id,
+                    minimum_version=required.minimum_version,
+                    required=required.required,
+                ),
+            ),
+        ),
+        input={
+            "source_native_id": "worst-json-escape",
+            "media_type": "text/plain",
+            "content_base64": base64.b64encode(
+                b"\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+            ).decode("ascii"),
+        },
+    )
+    document = codec.encode_request(request)
+    decode_evidence_capture_input(document["input"])
+
+    frame = encode_frame(document)
+
+    assert len(frame) <= HEADER_BYTES + MAXIMUM_JSON_BYTES
+    assert codec.decode_request(decode_frame(frame)) == request
 
 
 def test_canonical_json_sorts_keys_and_uses_compact_separators() -> None:

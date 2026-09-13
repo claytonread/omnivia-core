@@ -39,6 +39,7 @@ from typing import Any
 
 import pytest
 from omnivia_core_client import (
+    MAXIMUM_JSON_BYTES,
     CancellationToken,
     Credential,
     CredentialCache,
@@ -831,7 +832,7 @@ BAD_LENGTHS = [
     ("non_ascii_digit", "\xb2"),
     ("not_a_number", "twelve"),
     ("zero", "0"),
-    ("over_the_maximum", str(4 * 1024 * 1024 + 1)),
+    ("over_the_maximum", str(MAXIMUM_JSON_BYTES + 1)),
 ]
 
 

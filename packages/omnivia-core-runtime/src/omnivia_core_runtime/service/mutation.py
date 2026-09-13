@@ -113,6 +113,11 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "workspace.create": WORKSPACE_ADMINISTRATION_PURPOSE,
         "memory.create": MEMORY_AUTHORING_PURPOSE,
         "import.start": CONTENT_INGESTION_PURPOSE,
+        # Capturing one submitted document and starting an import are the same act of
+        # bringing outside content into this workspace, differing only in who supplies
+        # the bytes, so they are served under the one ingestion purpose rather than a
+        # purpose that would merely restate the operation name.
+        "evidence.capture": CONTENT_INGESTION_PURPOSE,
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
         "chat.command": CHAT_AUTHORING_PURPOSE,
@@ -142,6 +147,9 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "workspace.create": INSTALLATION_ADMINISTRATOR_ROLE,
         "memory.create": WORKSPACE_CONTRIBUTOR_ROLE,
         "import.start": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Contributing content to one workspace: it reviews nothing, administers
+        # nothing, and reaches outside no workspace it does not name.
+        "evidence.capture": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.cancel": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.retry": WORKSPACE_CONTRIBUTOR_ROLE,
         # A chat command authors conversation content in one workspace; it reviews
@@ -464,6 +472,12 @@ def issue_mutation_grant(
     contract function's own value for this request, which is what the grant is bound to.
     Request metadata reaches none of these.
 
+    The two are a ceiling and a caller, not one identity stated twice. `session` bounds
+    what this endpoint will ever issue -- its operations, its roles, its scopes -- and
+    `context` is the authenticated caller the grant is issued *for*, which for an
+    installed-MCP request is a dedicated principal the endpoint does not share an id
+    with. Both are checked, so a grant exists only where the two agree.
+
     The required role is not an argument. It is read from :data:`MUTATION_ROLES` by
     operation, exactly as the purpose is read from :data:`MUTATION_PURPOSES`, so neither
     a caller nor a future handler can name the role its own mutation is checked against.
@@ -485,8 +499,15 @@ def issue_mutation_grant(
     if context.purpose != declared:
         raise MutationDenied(_MESSAGE_PURPOSE_NOT_DECLARED)
 
-    if context.principal_id != session.principal_id:
-        raise MutationDenied(_MESSAGE_NO_GRANT)
+    # The grant is issued *for the authenticated caller*, bounded by `session`, which is
+    # this endpoint's configured ceiling rather than an identity it requires callers to
+    # share. `context.principal_id` is the principal authentication resolved to -- a
+    # claimed one that differs is already refused by the seam -- and it is what every
+    # later check compares against: `execute_mutation` asks the grant to cover
+    # `context.principal_id`, so a grant naming anyone else could not be used at all.
+    # This used to require the two to be equal, which was a fail-closed bug rather than a
+    # check: a dedicated installed-MCP principal is never the endpoint's configured one,
+    # so every authoring mutation was refused here before its role was ever read.
     if operation not in session.operations:
         raise MutationDenied(_MESSAGE_OPERATION_NOT_GRANTED)
     # The role check the whole read-only posture rests on today. `local_owner_session`
@@ -523,7 +544,7 @@ def issue_mutation_grant(
     if (
         scope.operation != operation
         or scope.workspace_id != workspace_id
-        or scope.principal_id != session.principal_id
+        or scope.principal_id != context.principal_id
         or scope.idempotency_key != key
     ):
         raise MutationDenied(_MESSAGE_EQUIVALENCE_MISMATCH)
@@ -539,9 +560,11 @@ def issue_mutation_grant(
     grant = MutationGrant(_SERVER_ISSUER_MARK)
     issued_fields: Mapping[str, object] = {
         "grant_id": f"mgr-{uuid.uuid4()}",
-        # The session's principal, never the claim's -- the same rule the seam applies
-        # one layer up, restated here because this value outlives the request.
-        "principal_id": session.principal_id,
+        # The authenticated principal, never the claim's -- the same rule the seam
+        # applies one layer up, restated here because this value outlives the request.
+        # It is who the mutation ran as, which is what the audit record has to say and
+        # what `execute_mutation` re-checks the grant against.
+        "principal_id": context.principal_id,
         "workspace_id": workspace_id,
         "required_role": required_role,
         # Intersected, never copied. The context's scopes are already a subset of the
@@ -643,6 +666,7 @@ def execute_mutation(
     grant: MutationGrant | None,
     context: AuthorizedApplicationContext,
     equivalence: IdempotencyEquivalence,
+    compatible_equivalences: tuple[IdempotencyEquivalence, ...] = (),
     precondition: PreconditionReader | None = None,
     mutate: DomainMutation,
     validate_result: ResultValidator,
@@ -681,9 +705,13 @@ def execute_mutation(
 
     `equivalence` is the accepted contract function's own output for this request, not a
     second opinion computed here: `idempotency_equivalence()` remains the single
-    authority for what makes two requests the same request. It is cross-checked against
-    the grant and the context below, so an equivalence describing some other request
-    cannot be used to reach this one's stored answer.
+    authority for what makes two requests the same request. A handler may also supply a
+    bounded set of `compatible_equivalences` for legacy wire spellings that the
+    operation itself declares semantically identical. Each is produced by that same
+    contract function, must carry the exact primary scope, and is accepted only when
+    resolving an existing claim; every new claim stores the primary fingerprint. The
+    primary is cross-checked against the grant and context below, so an equivalence
+    describing some other request cannot be used to reach this one's stored answer.
     """
     allocator = allocate_identifier or _allocate_identifier
     if not isinstance(grant, MutationGrant) or not grant.server_issued:
@@ -731,6 +759,14 @@ def execute_mutation(
         or scope.idempotency_key != key
     ):
         raise MutationDenied(_MESSAGE_EQUIVALENCE_MISMATCH)
+    if len(compatible_equivalences) > 2 or any(
+        candidate.scope != scope for candidate in compatible_equivalences
+    ):
+        raise MutationDenied(_MESSAGE_EQUIVALENCE_MISMATCH)
+    accepted_fingerprints = frozenset(
+        (equivalence.fingerprint,)
+        + tuple(candidate.fingerprint for candidate in compatible_equivalences)
+    )
     # The grant names the request it was issued for. A grant for the same operation and
     # scope but a different body, key or precondition is refused here -- before the
     # transaction, and therefore before any handler could run.
@@ -759,7 +795,7 @@ def execute_mutation(
         existing = _find_claim(fenced, grant, key)
         if existing is not None:
             claim_id, stored_digest, original_audit_ref = existing
-            if stored_digest != equivalence.fingerprint:
+            if stored_digest not in accepted_fingerprints:
                 raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
             # An honest replay runs no domain code, but it does spend the fresh grant it
             # was presented with: the row below is what makes that durable, so the grant

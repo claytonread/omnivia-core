@@ -2987,6 +2987,52 @@ export interface ApiError {
 }
 
 /**
+ * Input for `evidence.capture`: one caller-supplied UTF-8 text or Markdown artifact to record
+ * synchronously as immutable L0 evidence in the selected workspace, for small direct submissions
+ * such as notes, excerpts, and model-visible source material. Workspace-scoped: the workspace is
+ * the request envelope's selected workspace; this payload never carries a second, independent
+ * workspace identifier, nor any path, URL, credential, principal, grant, parser, layer,
+ * governance, or storage option. Carries exactly one of `text`/`content_base64`; enforcing that
+ * exclusivity, the strict base64/UTF-8 decode, and the decoded-byte bound is a semantic-
+ * validation concern, not a wire-shape one.
+ */
+export interface EvidenceCaptureInput {
+  /**
+   * Caller-chosen opaque identifier of this submission within the existing source-identity
+   * domain.
+   */
+  readonly source_native_id: Identifier;
+  /**
+   * Media type of the submitted content. Restricted to `text/plain` or `text/markdown`;
+   * parameters such as `charset=` are forbidden -- enforcing that allowlist is a semantic-
+   * validation concern, not a wire-shape one.
+   */
+  readonly media_type: MediaType;
+  /**
+   * UTF-8 text form of the content. Exactly one of `text`/`content_base64` is required.
+   */
+  readonly text?: string;
+  /**
+   * Strict RFC 4648 base64 of UTF-8 bytes. Exactly one of `text`/`content_base64` is required.
+   */
+  readonly content_base64?: string;
+  /**
+   * Optional provenance claim in the existing identifier domain. Does not permit overwrite or
+   * create a second identity version.
+   */
+  readonly source_version?: Identifier;
+  /**
+   * Optional canonical event-time claim. When `observed_at` is also present, `event_at` must
+   * not be later -- a semantic-validation concern, not a wire-shape one.
+   */
+  readonly event_at?: Timestamp;
+  /**
+   * Optional canonical observation-time claim.
+   */
+  readonly observed_at?: Timestamp;
+}
+
+/**
  * The identity of one asynchronous job: what it is, which application operation started it, its
  * immutable audit linkage, and, when applicable, which workspace it runs against.
  */
@@ -4851,6 +4897,44 @@ export interface EvidenceSearchInput {
    * Continuation position from a prior page, when paging.
    */
   readonly page?: PageMetadata;
+}
+
+/**
+ * Result of `evidence.capture`: the stored evidence artifact's identity and stable source.
+ * `capture_disposition` is `created` for the first committed capture and `already_captured` for
+ * a same-source, identical-claims capture resolved under the existing collision rules; a replay
+ * of the original idempotency key returns this stored canonical result and never rewrites it.
+ */
+export interface EvidenceCaptureResult {
+  /**
+   * Stable identifier of the stored evidence artifact.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * The persisted source reference. `kind` is always `direct_submission` for this operation --
+   * enforcing that is a semantic-validation concern, not a wire-shape one.
+   */
+  readonly source: SourceReference;
+  /**
+   * Media type of the stored content.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Checksum of the decoded content, computed over the decoded bytes before persistence. The
+   * digest is always lowercase hexadecimal -- enforcing that is a semantic-validation concern,
+   * not a wire-shape one.
+   */
+  readonly content_checksum: EvidenceChecksum;
+  /**
+   * Length of the decoded content in bytes.
+   */
+  readonly content_length_bytes: number;
+  /**
+   * Whether this call created a new evidence artifact (`created`) or resolved to an existing
+   * one under the collision rules (`already_captured`) -- enforcing that closed vocabulary is
+   * a semantic-validation concern, not a wire-shape one.
+   */
+  readonly capture_disposition: OpenCode;
 }
 
 /**
@@ -7943,6 +8027,42 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "stale_projection",
       "token_limit_exceeded",
       "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "evidence.capture",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

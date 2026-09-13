@@ -72,11 +72,13 @@ from omnivia_core.contracts.v1 import (
     get_operation_metadata,
     is_request_id,
 )
+from omnivia_core_cli import mcp_admin
 from omnivia_core_cli.dispatch import (
     DispatchError,
     dispatch_application,
     dispatch_probe,
 )
+from omnivia_core_cli.mcp_admin import Seams
 from omnivia_core_cli.safe_status import (
     degraded_status,
     incompatible_status,
@@ -88,9 +90,11 @@ from omnivia_core_cli.safe_status import (
 from omnivia_core_cli.surface import (
     APPLICATION_COMMANDS,
     LIFECYCLE_COMMANDS,
+    MCP_COMMANDS,
     PROBE_COMMANDS,
     ApplicationCommand,
     LifecycleCommand,
+    McpCommand,
     exit_code_for,
 )
 
@@ -147,33 +151,34 @@ LIFECYCLE_ADAPTER_VERSION = 2
 #: an exception. `internal_error` is the fail-closed landing place for a code
 #: this module did not declare -- publishing an undeclared one is the defect the
 #: set exists to prevent.
-LIFECYCLE_CODE_FRAMES: Final[
-    Mapping[str, tuple[str | None, str, bool]]
-] = MappingProxyType(
-    {
-        "start_started": ("start", "started", True),
-        "start_attached": ("start", "attached", True),
-        "start_workspace_missing": ("start", "failed", False),
-        "start_incompatible_service": ("start", "failed", False),
-        "start_timeout": ("start", "failed", False),
-        "start_spawn_failed": ("start", "failed", False),
-        "start_not_ready": ("start", "failed", False),
-        "start_failed": ("start", "failed", False),
-        "stop_stopped": ("stop", "stopped", True),
-        "stop_not_running": ("stop", "not_running", True),
-        "stop_service_unreachable": ("stop", "failed", False),
-        "stop_no_process": ("stop", "failed", False),
-        "stop_identity_mismatch": ("stop", "failed", False),
-        "stop_timeout": ("stop", "failed", False),
-        "stop_process_lingering": ("stop", "failed", False),
-        "status_running": ("status", "running", True),
-        "status_not_running": ("status", "not_running", False),
-        "status_unreachable": ("status", "failed", False),
-        "status_incompatible": ("status", "failed", False),
-        "internal_error": (None, "failed", False),
-    }
+LIFECYCLE_CODE_FRAMES: Final[Mapping[str, tuple[str | None, str, bool]]] = (
+    MappingProxyType(
+        {
+            "start_started": ("start", "started", True),
+            "start_attached": ("start", "attached", True),
+            "start_workspace_missing": ("start", "failed", False),
+            "start_incompatible_service": ("start", "failed", False),
+            "start_timeout": ("start", "failed", False),
+            "start_spawn_failed": ("start", "failed", False),
+            "start_not_ready": ("start", "failed", False),
+            "start_failed": ("start", "failed", False),
+            "stop_stopped": ("stop", "stopped", True),
+            "stop_not_running": ("stop", "not_running", True),
+            "stop_service_unreachable": ("stop", "failed", False),
+            "stop_no_process": ("stop", "failed", False),
+            "stop_identity_mismatch": ("stop", "failed", False),
+            "stop_timeout": ("stop", "failed", False),
+            "stop_process_lingering": ("stop", "failed", False),
+            "status_running": ("status", "running", True),
+            "status_not_running": ("status", "not_running", False),
+            "status_unreachable": ("status", "failed", False),
+            "status_incompatible": ("status", "failed", False),
+            "internal_error": (None, "failed", False),
+        }
+    )
 )
 LIFECYCLE_CODES: Final = frozenset(LIFECYCLE_CODE_FRAMES)
+
 
 def _write_lifecycle_document(
     action: str,
@@ -255,9 +260,7 @@ def _selected_target(
     nothing.
     """
     return (
-        resolve_local_target(installation_state, workspace_id)
-        if json_output
-        else None
+        resolve_local_target(installation_state, workspace_id) if json_output else None
     )
 
 
@@ -293,9 +296,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--workspace-id",
-        required=True,
+        default=None,
         metavar="ID",
-        help="the workspace whose service is to be called",
+        help=(
+            "the workspace whose service is to be called. Required for every "
+            "command except the `mcp` administration family, which administers "
+            "this installation rather than calling one workspace's service"
+        ),
     )
     parser.add_argument(
         "--timeout-ms",
@@ -373,11 +380,48 @@ def build_parser() -> argparse.ArgumentParser:
         )
         leaf.set_defaults(**{_COMMAND: lifecycle})
 
+    for administration in MCP_COMMANDS:
+        group, leaf_name = administration.path
+        leaf = leaves(group).add_parser(
+            leaf_name,
+            allow_abbrev=False,
+            help=f"{administration.action} this installation's MCP setup",
+        )
+        # Closed vocabularies, both of them, and `choices` refuses anything else
+        # during the parse. There is no scope, capability, purpose, principal,
+        # path, endpoint or credential flag here and there must not be: every one
+        # of those is the service's to derive or the command's to place.
+        if administration.action == "configure":
+            leaf.add_argument("--host", required=True, choices=mcp_admin.HOSTS)
+            leaf.add_argument(
+                "--workspace",
+                required=True,
+                metavar="ID",
+                type=mcp_admin.workspace_id,
+                help="the one workspace this host's dedicated principal is bound to",
+            )
+            leaf.add_argument("--profile", required=True, choices=mcp_admin.PROFILES)
+        else:
+            leaf.add_argument(
+                "--host",
+                default=None,
+                choices=mcp_admin.HOSTS,
+                help="narrow to one host (default: every host)",
+            )
+        if administration.action == "status":
+            leaf.add_argument(
+                "--json", action="store_true", help="emit the redacted status document"
+            )
+        leaf.set_defaults(**{_COMMAND: administration})
+
     return parser
 
 
 def main(
-    argv: list[str] | None = None, *, connected_client: ServiceClient | None = None
+    argv: list[str] | None = None,
+    *,
+    connected_client: ServiceClient | None = None,
+    mcp_seams: Seams | None = None,
 ) -> int:
     """Run one command and return the process exit status.
 
@@ -398,12 +442,21 @@ def main(
     try:
         arguments = parser.parse_args(argv)
         command = getattr(arguments, _COMMAND)
+        if not isinstance(command, McpCommand) and arguments.workspace_id is None:
+            # `--workspace-id` stopped being an argparse-level requirement so the
+            # `mcp` family could be reached without one; it is still required for
+            # everything else, and still a usage error -- exit 2, before a socket
+            # is opened -- rather than something discovered at the call.
+            parser.error("--workspace-id is required for this command")
         if isinstance(command, ApplicationCommand):
             _check_mutation_metadata(parser, command, arguments)
     except SystemExit as requested:
         # argparse exits rather than returning, and this function is declared to
         # return a status. Both are the same number.
         return requested.code if isinstance(requested.code, int) else 0
+
+    if isinstance(command, McpCommand):
+        return mcp_admin.run(arguments, command.action, seams=mcp_seams)
 
     if isinstance(command, LifecycleCommand):
         return _run_lifecycle(arguments, command, connected_client=connected_client)
@@ -565,7 +618,9 @@ def _run_lifecycle(
         assert client is not None
         readiness = _readiness(client, deadline)
     except CompatibilityError:
-        code = "start_incompatible_service" if action == "start" else "status_incompatible"
+        code = (
+            "start_incompatible_service" if action == "start" else "status_incompatible"
+        )
         return _finish_lifecycle(
             action,
             json_output=json_output,
@@ -628,13 +683,17 @@ def _run_lifecycle(
         code=(
             "status_running"
             if action == "status"
-            else "start_attached" if outcome == "attached" else "start_started"
+            else "start_attached"
+            if outcome == "attached"
+            else "start_started"
         ),
         safe_status=_safe_live_status(target, client, readiness),
         human_stdout=(
             "running\n"
             if action == "status"
-            else "already running\n" if outcome == "attached" else "started\n"
+            else "already running\n"
+            if outcome == "attached"
+            else "started\n"
         ),
     )
 

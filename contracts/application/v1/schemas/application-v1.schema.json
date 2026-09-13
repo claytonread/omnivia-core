@@ -486,6 +486,12 @@
     "EvidenceSearchResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceSearchResult"
     },
+    "EvidenceCaptureInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput"
+    },
+    "EvidenceCaptureResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureResult"
+    },
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },
