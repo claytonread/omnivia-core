@@ -37,6 +37,10 @@ PHASE2_WINDOWS_PIPE_TESTS = (
     "packages/omnivia-core-runtime/tests/phase3/protocol/"
     "test_windows_named_pipe.py"
 )
+PHASE2_WINDOWS_MANAGED_RESTART_TESTS = (
+    "packages/omnivia-core-runtime/tests/phase3/runtime/"
+    "test_windows_managed_restart.py"
+)
 PHASE2_RUNTIME_CONTRACT_TESTS = "tests/runtime_contract"
 PHASE2_TRUSTED_RUNTIME_TESTS = (
     "packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py"
@@ -96,6 +100,7 @@ def phase2_root(tmp_path: Path) -> Path:
     # missing path rather than a tree to scan.
     _write(tmp_path / PHASE2_TESTS / "conftest.py", "")
     _write(tmp_path / PHASE2_WINDOWS_PIPE_TESTS, "")
+    _write(tmp_path / PHASE2_WINDOWS_MANAGED_RESTART_TESTS, "")
     _write(tmp_path / PHASE2_RUNTIME_CONTRACT_TESTS / "conftest.py", "")
     _write(tmp_path / PHASE2_TRUSTED_RUNTIME_TESTS, "")
     return tmp_path
@@ -128,6 +133,7 @@ def test_the_real_workflows_parse_into_their_install_lists_and_test_paths() -> N
     assert phase2.test_paths == (
         PHASE2_TESTS,
         PHASE2_WINDOWS_PIPE_TESTS,
+        PHASE2_WINDOWS_MANAGED_RESTART_TESTS,
         PHASE2_RUNTIME_CONTRACT_TESTS,
         PHASE2_TRUSTED_RUNTIME_TESTS,
     )
