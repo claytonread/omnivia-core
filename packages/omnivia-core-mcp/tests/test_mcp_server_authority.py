@@ -57,6 +57,7 @@ from omnivia_core_mcp.manifest import (
 )
 
 from omnivia_core.contracts.v1 import (
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     ApiError,
     CapabilityRef,
     CapabilitySet,
@@ -1082,6 +1083,55 @@ def test_an_input_the_contract_refuses_never_reaches_the_client(
     assert result.is_error is True
     assert result.structured_content is None
     assert "is not a valid document for" in result.content[0].text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "source_native_id": "oversize-text",
+            "media_type": "text/plain",
+            "text": "a" * (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 1),
+        },
+        {
+            "source_native_id": "oversize-base64",
+            "media_type": "text/plain",
+            "content_base64": "!"
+            * (4 * ((EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3) + 4),
+        },
+    ],
+    ids=["decoded-text", "provably-overlong-base64"],
+)
+def test_capture_size_refusal_is_classified_by_core_and_relayed_by_mcp(
+    payload: dict[str, Any],
+) -> None:
+    """MCP prevalidation must not replace Core's canonical typed size branch."""
+
+    def too_large(request: RequestEnvelope) -> ResponseEnvelope:
+        assert request.input == payload
+        return ErrorResponseEnvelope(
+            metadata=response_metadata(request),
+            error=ApiError(
+                code="size_limit_exceeded",
+                message="capture exceeds its limit",
+                retry_class="non_retryable",
+            ),
+        )
+
+    transport = RecordingTransport(answer=too_large)
+    result = call(
+        "evidence_capture",
+        {"input": payload, "idempotency_key": "k-size"},
+        connected=authoring_session(transport),
+    )
+
+    assert len(transport.calls) == 1
+    assert result.is_error is True
+    relayed = json.loads(
+        result.content[0].text.split("was refused by the service: ", 1)[1]
+    )
+    assert relayed["error"]["code"] == "size_limit_exceeded"
+    assert relayed["error"]["retry_class"] == "non_retryable"
 
 
 #: The secret each mutation carries in a *declared* field below, so the refusal

@@ -30,7 +30,9 @@ JSON byte length                   4 bytes, unsigned big-endian uint32
 canonical UTF-8 JSON               exactly that many bytes, nothing after
 ```
 
-- The JSON payload is at most **4 MiB (4194304 bytes), inclusive**.
+- The JSON payload is at most **8 MiB (8388608 bytes), inclusive**. This admits the
+  worst canonical-JSON escaping of a valid 1 MiB direct capture plus its bounded
+  request envelope while retaining a finite transport allocation ceiling.
 - A frame's root is always a **JSON object**.
 - Decoding re-encodes what it parsed and requires the bytes to match exactly,
   so a non-canonical spelling of a valid value is rejected rather than silently

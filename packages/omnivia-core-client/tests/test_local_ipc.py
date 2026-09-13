@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 from omnivia_core_client import (
     CLIENT_API_VERSION,
+    MAXIMUM_JSON_BYTES,
     CancellationToken,
     Deadline,
     DeadlineExceededError,
@@ -42,12 +43,14 @@ from omnivia_core_client import (
 )
 
 from omnivia_core.contracts.v1 import (
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     CapabilityRequirement,
     ClientIdentity,
     RequestEnvelope,
     RequestMetadata,
     ServiceProbeRequest,
     codec,
+    decode_evidence_capture_input,
     get_operation_metadata,
 )
 
@@ -104,6 +107,40 @@ def _probe_request(request_id: str = "client-frame-1") -> RequestEnvelope:
         ),
         input={},
     )
+
+
+def _worst_case_capture_request() -> RequestEnvelope:
+    """The largest JSON-escaped contract-valid capture the route must carry."""
+    entry = get_operation_metadata("evidence.capture")
+    required = entry.required_capability
+    request = RequestEnvelope(
+        operation=entry.name,
+        metadata=RequestMetadata(
+            request_id="client-capture-capacity",
+            correlation_id="client-capture-capacity",
+            trace_id="client-capture-capacity",
+            api_version=CLIENT_API_VERSION,
+            client=ClientIdentity(id="omnivia-core-client-tests", version="0.1.0"),
+            workspace_id=WORKSPACE_ID,
+            scopes=tuple(entry.scope.required_scopes),
+            purpose="content_ingestion",
+            idempotency_key="idem-client-capture-capacity",
+            required_capabilities=(
+                CapabilityRequirement(
+                    id=required.id,
+                    minimum_version=required.minimum_version,
+                    required=required.required,
+                ),
+            ),
+        ),
+        input={
+            "source_native_id": "worst-json-escape",
+            "media_type": "text/plain",
+            "text": "\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+        },
+    )
+    decode_evidence_capture_input(request.input)
+    return request
 
 
 class ScriptedPeer:
@@ -204,9 +241,9 @@ def scripted_peer() -> Iterator[object]:
         peer.close()
 
 
-
-
-def test_a_reply_with_the_wrong_magic_is_a_protocol_error(scripted_peer: object) -> None:
+def test_a_reply_with_the_wrong_magic_is_a_protocol_error(
+    scripted_peer: object,
+) -> None:
     peer = scripted_peer(b"XXXX" + (4).to_bytes(4, "big") + b"{}\n\n")  # type: ignore[operator]
 
     with pytest.raises(ProtocolError, match="magic"):
@@ -336,7 +373,7 @@ def test_a_reply_declaring_more_than_the_frozen_maximum_is_refused_before_it_is_
     The peer sends the header and nothing else. If the bound were checked after
     the read, this would block until the deadline instead of refusing at once.
     """
-    oversized = (4 * 1024 * 1024 + 1).to_bytes(4, "big")
+    oversized = (MAXIMUM_JSON_BYTES + 1).to_bytes(4, "big")
     peer = scripted_peer(b"OVC1" + oversized)  # type: ignore[operator]
 
     with pytest.raises(ProtocolError, match="maximum"):
@@ -407,7 +444,9 @@ def test_a_well_framed_reply_that_is_not_a_probe_result_is_a_protocol_error(
         )
 
 
-def test_a_peer_that_answers_nothing_runs_out_of_deadline(scripted_peer: object) -> None:
+def test_a_peer_that_answers_nothing_runs_out_of_deadline(
+    scripted_peer: object,
+) -> None:
     peer = scripted_peer(None)  # type: ignore[operator]
 
     with pytest.raises(DeadlineExceededError):
@@ -434,6 +473,22 @@ def test_exactly_one_frame_is_written_and_nothing_follows_it(
         )
 
     assert peer.received == encode_frame(codec.encode_request(request))
+
+
+def test_local_ipc_writes_the_worst_case_valid_capture_as_one_frame(
+    scripted_peer: object,
+) -> None:
+    request = _worst_case_capture_request()
+    expected = encode_frame(codec.encode_request(request))
+    assert len(expected) <= 8 + MAXIMUM_JSON_BYTES
+    peer = scripted_peer(None)  # type: ignore[operator]
+
+    with pytest.raises(DeadlineExceededError):
+        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
+            request, deadline=Deadline.after(2.0)
+        )
+
+    assert peer.received == expected
 
 
 def test_an_endpoint_with_no_listener_is_a_transport_error(tmp_path: Path) -> None:

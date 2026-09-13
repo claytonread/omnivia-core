@@ -41,14 +41,14 @@ next call. Nothing above this sees any of it -- `ConnectedSession` and every
 handler still go through `ServiceClient.call`.
 
 **There is no unauthenticated managed-local session, and no way to ask for one.**
-A managed-local configuration that names no credential, and one naming a
-credential this installation cannot produce, both refuse at :func:`connect` --
-before a service is started and long before MCP initialization -- with one fixed
-sentence that quotes neither. The local endpoint would accept the plain
-application path, so the fallback that used to exist was a session that worked,
-dispatching under whatever identity the service itself runs as; a document that
-predates the installed setup path is now re-run through that setup rather than
-silently borrowing the service's authority.
+A managed-local configuration that names no credential is migrated at the
+console boundary before :func:`connect`: it receives a dedicated restricted
+principal, the bearer is stored privately, and the trusted document is replaced
+atomically. If no bounded host slot can be used or publication cannot settle
+safely, startup refuses. A configuration naming a credential this installation
+cannot produce also refuses at :func:`connect`. The local endpoint would accept
+the plain application path, so neither case may fall back to a session running as
+the service's own identity.
 
 **Authority is the configuration's, never the model's.** The principal, the
 workspace, the allowed purposes, the endpoint and the credential *reference* all
@@ -68,12 +68,13 @@ It asks *after* the service is connected and its descriptor agreed, and hands th
 protected admission seam that connected client, so the implementation reads its
 record through the authority this session already established rather than through
 an installation database or a second connection of its own. The console entry
-point injects that seam only for a configuration that names a credential -- see
-:func:`_installed_admission` -- and the admission it injects requires the
-protected answer to name exactly the configured principal and workspace. A
-managed-local configuration with no reference never reaches a profile at all,
-and a remote one gets no admission and is `restricted` whatever its
-`mutation_enabled` byte says.
+point first migrates a legacy configuration that names no credential, then
+injects that seam for the resulting installed configuration -- see
+:func:`upgrade_legacy_configuration` and :func:`_installed_admission`. The
+admission requires the protected answer to name exactly the configured principal
+and workspace. A direct call to :func:`connect` with no reference never reaches a
+profile at all, and a remote one gets no admission and is `restricted` whatever
+its `mutation_enabled` byte says.
 
 **An authoring call is checked against the canonical contract before it is
 sent.** The advertised wrapper is a call shape and the schema projection is a
@@ -106,6 +107,7 @@ process is decided here.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import uuid
@@ -124,7 +126,9 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from omnivia_core_client import (
     CLIENT_API_VERSION,
+    CONFIGURATION_HOSTS,
     ClientError,
+    Credential,
     CredentialCache,
     CredentialReference,
     CredentialResolver,
@@ -138,6 +142,10 @@ from omnivia_core_client import (
     connect_managed_local,
     local_control_transport,
     mcp_authoring_admission,
+    mcp_configure,
+    mcp_revoke,
+    mcp_status,
+    write_owner_private,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -145,6 +153,7 @@ from omnivia_core.contracts.v1 import (
     ClientIdentity,
     ContractDecodeError,
     ContractSemanticError,
+    EvidenceCaptureSizeLimitError,
     PrincipalClaim,
     RequestEnvelope,
     RequestMetadata,
@@ -191,6 +200,7 @@ __all__ = [
     "connect",
     "main",
     "serve",
+    "upgrade_legacy_configuration",
     "verify_installed_setup",
 ]
 
@@ -321,6 +331,11 @@ _NO_INSTALLED_CREDENTIAL: Final = (
     "the service's own authority"
 )
 _SERVICE_UNAVAILABLE: Final = "the configured service could not be connected"
+_LEGACY_UPGRADE_REFUSED: Final = (
+    "the legacy managed-local MCP configuration could not be upgraded safely. "
+    "Run the installed OmniVia MCP configure command for this host with the "
+    "restricted profile and start the server again"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,6 +535,275 @@ def _installed_credential(
         # is the store's own refusal, and this one must quote nothing at all.
         raise StartupError(_NO_INSTALLED_CREDENTIAL)
     return store, reference
+
+
+def _legacy_upgrade_host(
+    configuration: McpConfiguration,
+    store: InstalledCredentialStore,
+    setups: tuple[Any, ...],
+) -> str | None:
+    """Choose a bounded host slot without displacing unrelated live authority.
+
+    A matching active restricted setup with recoverable local material is the
+    resumable state left by an interrupted earlier publication. Otherwise an
+    absent or revoked slot can be provisioned. An active setup for another
+    workspace or for authoring is never rotated implicitly.
+    """
+    workspace_id = configuration.selected_workspace_id
+    if workspace_id is None:
+        return None
+    by_host = {setup.host: setup for setup in setups}
+    for host in CONFIGURATION_HOSTS:
+        setup = by_host.get(host)
+        if (
+            setup is not None
+            and setup.status == "active"
+            and setup.workspace_id == workspace_id
+            and setup.profile == RESTRICTED_PROFILE
+            and setup.authoring_intent is False
+        ):
+            reference = None
+            try:
+                reference = CredentialReference(setup.credential_reference)
+            except ClientError:
+                reference = None
+            healthy = False
+            if reference is not None:
+                try:
+                    healthy = store.health(reference) == "present"
+                except ClientError:
+                    healthy = False
+            if healthy:
+                return host
+    for host in CONFIGURATION_HOSTS:
+        setup = by_host.get(host)
+        if setup is None or setup.status == "revoked":
+            return host
+    return None
+
+
+def _legacy_configuration_document(
+    configuration: McpConfiguration,
+    *,
+    principal_id: str | None = None,
+    credential_reference: str | None = None,
+) -> bytes:
+    """Return a narrowed legacy document, optionally with dedicated authority."""
+    workspace_id = configuration.selected_workspace_id
+    state = configuration.installation_state
+    if workspace_id is None or state is None:  # pragma: no cover - caller proves both
+        raise ValueError("legacy configuration is not selectable")
+    document: dict[str, Any] = {
+        "allowed_purposes": list(configuration.allowed_purposes),
+        "allowed_workspace_ids": [workspace_id],
+        "default_workspace_id": workspace_id,
+        "format": configuration.format,
+        "installation_state": str(state),
+        # A legacy true value is not informed consent for the expanded surface.
+        "mutation_enabled": False,
+        "principal_id": (
+            configuration.principal_id if principal_id is None else principal_id
+        ),
+        "service_mode": "managed_local",
+    }
+    if credential_reference is not None:
+        document["credential_reference"] = credential_reference
+    return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _compensate_legacy_upgrade(
+    transport: Any,
+    store: InstalledCredentialStore,
+    *,
+    host: str,
+    reference: CredentialReference | None,
+    deadline: Deadline,
+) -> None:
+    """Revoke first, then remove local material; retain both if revoke is uncertain."""
+    revoked = False
+    try:
+        mcp_revoke(transport, host=host, deadline=deadline)
+        revoked = True
+    except (ClientError, OSError):
+        revoked = False
+    if not revoked or reference is None:
+        return
+    try:
+        store.remove(reference)
+    except ClientError:
+        pass
+
+
+def upgrade_legacy_configuration(
+    path: Path, configuration: McpConfiguration
+) -> McpConfiguration:
+    """Provision a legacy managed-local document as restricted, or fail closed.
+
+    This is the v1.3 path for pre-credential configurations. It never
+    authenticates an application call as the service, never carries a legacy
+    ``mutation_enabled: true`` forward, and never displaces an unrelated live
+    setup. Authority is settled first, the bearer is filed in the protected
+    store second, and the explicit owner-private configuration is atomically
+    replaced last.
+
+    A publication failure compensates in the opposite order: revoke the minted
+    authority, then remove its local bearer. If revocation cannot be confirmed,
+    both halves remain so a later startup can resume instead of leaving an
+    active grant with no recoverable credential.
+    """
+    if (
+        configuration.service_mode != "managed_local"
+        or configuration.credential_reference is not None
+    ):
+        return configuration
+    workspace_id = configuration.selected_workspace_id
+    state = configuration.installation_state
+    if workspace_id is None or state is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    deadline = Deadline.after(MANAGED_START_TIMEOUT_SECONDS)
+    connected = None
+    try:
+        connected = connect_managed_local(
+            InstallationServiceConfig(
+                installation_state=state, workspace_id=workspace_id
+            ),
+            deadline=deadline,
+        )
+    except (ClientError, ManagedStartError, OSError):
+        connected = None
+    if connected is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    control = None
+    setups: tuple[Any, ...] | None = None
+    try:
+        control = local_control_transport(connected.client)
+        setups = mcp_status(control, deadline=deadline).setups
+    except (ClientError, OSError):
+        setups = None
+    if control is None or setups is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    store = InstalledCredentialStore(state)
+    host = _legacy_upgrade_host(configuration, store, setups)
+    if host is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    configured = None
+    try:
+        configured = mcp_configure(
+            control,
+            host=host,
+            workspace_id=workspace_id,
+            profile=RESTRICTED_PROFILE,
+            authoring_intent=False,
+            deadline=deadline,
+        )
+    except (ClientError, OSError):
+        configured = None
+    if configured is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    setup = configured.setup
+    reference = None
+    try:
+        reference = CredentialReference(setup.credential_reference)
+    except ClientError:
+        reference = None
+    valid_setup = (
+        reference is not None
+        and setup.host == host
+        and setup.workspace_id == workspace_id
+        and setup.profile == RESTRICTED_PROFILE
+        and setup.authoring_intent is False
+        and setup.status == "active"
+    )
+    if not valid_setup:
+        if configured.rotated:
+            _compensate_legacy_upgrade(
+                control,
+                store,
+                host=host,
+                reference=reference,
+                deadline=deadline,
+            )
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    published_credential = not configured.rotated
+    if configured.rotated:
+        secret = configured.reveal()
+        if secret is not None and reference is not None:
+            try:
+                store.store(reference, Credential(secret))
+                published_credential = True
+            except ClientError:
+                published_credential = False
+            finally:
+                del secret
+    elif reference is not None:
+        published_credential = store.health(reference) == "present"
+
+    if not published_credential or reference is None:
+        if configured.rotated:
+            _compensate_legacy_upgrade(
+                control,
+                store,
+                host=host,
+                reference=reference,
+                deadline=deadline,
+            )
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    document = _legacy_configuration_document(
+        configuration,
+        principal_id=setup.principal_id,
+        credential_reference=setup.credential_reference,
+    )
+    if not write_owner_private(path, document):
+        if configured.rotated:
+            _compensate_legacy_upgrade(
+                control,
+                store,
+                host=host,
+                reference=reference,
+                deadline=deadline,
+            )
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    upgraded = None
+    try:
+        upgraded = read_configuration(path)
+    except McpConfigurationError:
+        upgraded = None
+    expected = McpConfiguration(
+        format=configuration.format,
+        principal_id=setup.principal_id,
+        allowed_workspace_ids=(workspace_id,),
+        default_workspace_id=workspace_id,
+        allowed_purposes=configuration.allowed_purposes,
+        mutation_enabled=False,
+        service_mode="managed_local",
+        installation_state=state,
+        endpoint=None,
+        credential_reference=reference,
+    )
+    if upgraded != expected:
+        # Restore a credential-free restricted shape so another startup still
+        # enters this migration rather than getting stuck on a revoked reference.
+        restored = write_owner_private(
+            path, _legacy_configuration_document(configuration)
+        )
+        if configured.rotated and restored:
+            _compensate_legacy_upgrade(
+                control,
+                store,
+                host=host,
+                reference=reference,
+                deadline=deadline,
+            )
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+    return upgraded
 
 
 def _installed_store(
@@ -944,6 +1228,12 @@ def _refuse_uncanonical(exposed: ExposedOperation, payload: Mapping[str, Any]) -
         return
     try:
         decode(dict(payload))
+    except EvidenceCaptureSizeLimitError:
+        # The Application Contract gives an over-limit capture its own canonical
+        # error code.  Let the service classify it so MCP relays the same typed
+        # response as in-process and local IPC callers instead of replacing it with
+        # this adapter's uncoded preflight refusal.
+        return
     except (ContractDecodeError, ContractSemanticError) as refusal:
         raise ValueError(
             "the input this call carries is not a valid document for "
@@ -1283,19 +1573,22 @@ def main(argv: list[str] | None = None) -> int:
     injects :func:`_installed_admission` when the configuration carries a
     credential reference and nothing when it does not.
 
-    That is the upgrade rule, stated as the code that implements it. A
-    managed-local configuration from before the setup path existed carries no
-    reference, and this entry point does not start on it: :func:`connect` refuses
-    with the one fixed credential sentence, because the alternative is a session
-    calling the local endpoint as the service's own identity. Running the
-    installed setup for this host is what writes the reference. One that does
-    carry a reference still reaches `authoring` only if the protected authority
-    admits exactly this principal and this workspace when asked, on this startup
-    -- editing `mutation_enabled` alone raises a ceiling over an empty room.
+    That is also the upgrade boundary. A managed-local configuration from before
+    the installed setup path existed carries no reference. This entry point
+    upgrades it through the service's protected local control before connecting:
+    it provisions only a restricted principal, stores the one-time bearer, and
+    atomically narrows the document to one workspace with
+    ``mutation_enabled: false``. Unsafe or incomplete publication refuses with a
+    fixed diagnostic and retains a state that can be retried. A document that
+    already carries a reference still reaches `authoring` only if the protected
+    authority admits exactly this principal and this workspace when asked, on
+    this startup -- editing `mutation_enabled` alone raises a ceiling over an
+    empty room.
     """
     args = build_parser().parse_args(argv)
     try:
         configuration = read_configuration(args.config)
+        configuration = upgrade_legacy_configuration(args.config, configuration)
         session = connect(
             configuration, authoring_admission=_installed_admission(configuration)
         )

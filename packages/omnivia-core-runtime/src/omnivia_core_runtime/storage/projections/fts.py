@@ -116,7 +116,7 @@ from omnivia_core_runtime.storage.retrieval import (
     AuthorizedFrontier,
     ProjectedCandidate,
     ProjectedFrontier,
-    normalize_query,
+    projection_text,
 )
 from omnivia_core_runtime.workspace.blob_publication import (
     BlobPublicationRefused,
@@ -365,9 +365,7 @@ class SearchProjection:
             terms = self._terms(candidate.evidence_id)
             if terms is None:
                 raise ProjectionUnavailable(_MESSAGE_MISSING_MATERIAL)
-            projected.append(
-                ProjectedCandidate(candidate=candidate, terms=terms)
-            )
+            projected.append(ProjectedCandidate(candidate=candidate, terms=terms))
         return ProjectedFrontier(
             workspace_id=frontier.workspace_id,
             # Carried verbatim, never recomputed: this is the same set of candidates the
@@ -515,14 +513,13 @@ def open_search_projection(
         )
     with authorised(connection, mutations=True, ddl=False):
         connection.executemany(
-            f"INSERT INTO temp.{INDEX_TABLE} (evidence_id, search_text) "
-            "VALUES (?, ?)",
+            f"INSERT INTO temp.{INDEX_TABLE} (evidence_id, search_text) VALUES (?, ?)",
             # Normalized on the way in, exactly as `normalize_query` normalizes the
             # query, so a match is a property of the text rather than of which side a
             # caller happened to type. The durable row keeps the raw identity surface,
             # which is what makes it comparable with the candidate the read layer builds.
             [
-                (evidence_id, normalize_query(search_text))
+                (evidence_id, projection_text(search_text))
                 for evidence_id, search_text in indexed
             ],
         )
@@ -603,7 +600,10 @@ def _blob_text(blobs_root: Path, digest: str) -> str | None:
         return None
     try:
         status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode) or status.st_size > MAX_INDEXED_CONTENT_BYTES:
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or status.st_size > MAX_INDEXED_CONTENT_BYTES
+        ):
             return None
         chunks: list[bytes] = []
         # Looped rather than one `os.read`, because a short read is a legal thing for
@@ -1123,9 +1123,9 @@ def _validate_run(
         separators=(",", ":"),
         sort_keys=True,
     )
-    validation_digest = "sha256:" + hashlib.sha256(
-        f"{digest}\x1f{report}".encode()
-    ).hexdigest()
+    validation_digest = (
+        "sha256:" + hashlib.sha256(f"{digest}\x1f{report}".encode()).hexdigest()
+    )
 
     with fenced_transaction(
         connection, identity, workspace_id=workspace_id, fencing_generation=generation

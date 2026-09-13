@@ -1413,6 +1413,7 @@ def serving(
     seed: bool = True,
     stage: bool = False,
     configure: bool = True,
+    managed_endpoint: bool = False,
 ) -> Iterator[GovernedService]:
     """Create and seed a governed workspace, serve it, provision MCP, tear down.
 
@@ -1444,15 +1445,32 @@ def serving(
     journey names, and nothing else. It is orthogonal to `seed`: section 13.D
     asks for a staged handle, not for seeded application data.
 
+    `managed_endpoint=True` binds the first service at the installation client's
+    conventional ``<home>/run/s.sock`` address and supplies its conventional
+    ``<home>/workspace`` selection as an alias of the registered workspace. The
+    crash/restart acceptance test needs those identities so a later managed start
+    replaces exactly the service that died, rather than a service deliberately
+    launched at a non-managed fixture address.
+
     With `http_credential`, the same process also serves authenticated HTTP on a
     loopback port through :data:`_HTTP_EMBEDDER`, so one service -- one lease,
     one workspace state -- answers both the local socket and HTTP.
     """
     root = Path(tempfile.mkdtemp(prefix="ovm-workspace-"))
-    # Outside `tmp_path`: R004-15 caps a local endpoint at 86 encoded bytes and
-    # pytest's `tmp_path` nests deep enough to exceed it.
-    socket_directory = Path(tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir()))
+    # Outside pytest's `tmp_path`: R004-15 caps a local endpoint at 86 encoded
+    # bytes. Most tests use an especially short directory. The managed-restart
+    # lane uses the still-bounded home chosen above because that exact
+    # `<home>/run/s.sock` convention is what the client must reproduce.
+    if managed_endpoint:
+        socket_directory = root / "run"
+        socket_directory.mkdir()
+    else:
+        socket_directory = Path(
+            tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir())
+        )
     built = build(root, seed=seed, stage=stage)
+    if managed_endpoint:
+        (root / "workspace").symlink_to(built.workspace.root, target_is_directory=True)
     endpoint = endpoint_for_path(socket_directory / "s.sock")
     service_argv = [
         "--workspace",

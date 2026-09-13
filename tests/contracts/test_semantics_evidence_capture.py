@@ -25,6 +25,9 @@ from omnivia_core.contracts.v1.generated import (
 )
 from omnivia_core.contracts.v1.semantics_evidence import (
     EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+    EvidenceCaptureSizeLimitError,
+    canonical_timestamp_nanoseconds,
+    decode_evidence_capture_input,
     validate_evidence_capture_input,
     validate_evidence_capture_result,
 )
@@ -89,15 +92,34 @@ def test_one_mebibyte_text_is_accepted() -> None:
 
 def test_one_mebibyte_plus_one_text_is_rejected() -> None:
     text = "a" * (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 1)
-    with pytest.raises(ContractSemanticError, match="outside the bounded range"):
+    with pytest.raises(EvidenceCaptureSizeLimitError, match="exceeds the maximum"):
         validate_evidence_capture_input(dataclasses.replace(VALID_INPUT, text=text))
+
+
+def test_multibyte_text_boundary_is_measured_in_utf8_bytes() -> None:
+    at_bound = "é" * (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES // 2)
+    validate_evidence_capture_input(dataclasses.replace(VALID_INPUT, text=at_bound))
+    with pytest.raises(EvidenceCaptureSizeLimitError, match="exceeds the maximum"):
+        validate_evidence_capture_input(
+            dataclasses.replace(VALID_INPUT, text=at_bound + "a")
+        )
 
 
 def test_encoded_oversize_content_base64_is_rejected_before_decoding() -> None:
     """An encoded string too long to decode within the byte bound is refused on its
     encoded length alone -- garbage content proves no base64 decode was attempted."""
     oversized = "!" * (4 * ((EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3) + 4)
-    with pytest.raises(ContractSemanticError, match="exceeds the maximum"):
+    with pytest.raises(EvidenceCaptureSizeLimitError, match="exceeds the maximum"):
+        validate_evidence_capture_input(
+            dataclasses.replace(VALID_INPUT, text=None, content_base64=oversized)
+        )
+
+
+def test_decoded_base64_over_the_boundary_has_the_typed_size_refusal() -> None:
+    oversized = base64.b64encode(
+        b"a" * (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 1)
+    ).decode("ascii")
+    with pytest.raises(EvidenceCaptureSizeLimitError, match="decoded content length"):
         validate_evidence_capture_input(
             dataclasses.replace(VALID_INPUT, text=None, content_base64=oversized)
         )
@@ -155,6 +177,14 @@ def test_unknown_wire_fields_are_dropped_by_the_tolerant_decoder() -> None:
     validate_evidence_capture_input(decoded)
 
 
+def test_the_operation_decoder_rejects_an_unknown_wire_field() -> None:
+    """DTO compatibility stays tolerant while this closed operation stays closed."""
+    payload = VALID_INPUT.to_wire()
+    payload["unexpected_future_field"] = {"nested": True}
+    with pytest.raises(ContractSemanticError, match="closed evidence.capture"):
+        decode_evidence_capture_input(payload)
+
+
 def test_event_at_after_observed_at_is_rejected() -> None:
     with pytest.raises(ContractSemanticError, match="event_at.*is after observed_at"):
         validate_evidence_capture_input(
@@ -174,6 +204,25 @@ def test_event_at_not_after_observed_at_is_accepted() -> None:
             observed_at="2024-01-01T00:00:00Z",
         )
     )
+
+
+def test_timestamp_ordering_preserves_all_nine_fractional_digits() -> None:
+    validate_evidence_capture_input(
+        dataclasses.replace(
+            VALID_INPUT,
+            event_at="2024-01-01T00:00:00.000000001Z",
+            observed_at="2024-01-01T00:00:00.000000002Z",
+        )
+    )
+    with pytest.raises(ContractSemanticError, match="event_at.*is after observed_at"):
+        validate_evidence_capture_input(
+            dataclasses.replace(
+                VALID_INPUT,
+                event_at="2024-01-01T00:00:00.000000002Z",
+                observed_at="2024-01-01T00:00:00.000000001Z",
+            )
+        )
+    assert canonical_timestamp_nanoseconds("1969-12-31T23:59:59.999999999Z") == -1
 
 
 # --------------------------------------------------------------------------
@@ -201,14 +250,18 @@ def test_result_source_with_a_locator_is_rejected() -> None:
             dataclasses.replace(
                 VALID_RESULT,
                 source=SourceReference(
-                    kind="direct_submission", source_id="doc-1", locator="https://example.test"
+                    kind="direct_submission",
+                    source_id="doc-1",
+                    locator="https://example.test",
                 ),
             )
         )
 
 
 def test_result_source_with_retrieved_at_is_rejected() -> None:
-    with pytest.raises(ContractSemanticError, match="source.retrieved_at must be absent"):
+    with pytest.raises(
+        ContractSemanticError, match="source.retrieved_at must be absent"
+    ):
         validate_evidence_capture_result(
             dataclasses.replace(
                 VALID_RESULT,
@@ -253,7 +306,8 @@ def test_result_content_length_bytes_over_the_maximum_is_rejected() -> None:
     with pytest.raises(ContractSemanticError, match="outside the bounded range"):
         validate_evidence_capture_result(
             dataclasses.replace(
-                VALID_RESULT, content_length_bytes=EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 1
+                VALID_RESULT,
+                content_length_bytes=EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 1,
             )
         )
 

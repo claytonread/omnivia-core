@@ -8,13 +8,16 @@ therefore the descriptor read, the transport choice, the version negotiation and
 the liveness probe -- `build_server`, the exposure manifest, the request builder
 and the SDK's stdio transport.
 
-**Nothing stands in for anything.** The probe declares no class: no transport,
-no operation double, no session of its own. It is handed one path -- the trusted
-configuration file the test wrote -- and everything else is derived from that
-document by production code, which is the point. Before V06-6 this passed an
-endpoint and a workspace id on the command line and `build_server` dialled them;
-neither is reachable from here now, because neither is something a host may
-state outside the trusted document.
+**Nothing stands in for anything on the ordinary path.** The probe is handed one
+path -- the trusted configuration file the test wrote -- and everything else is
+derived from that document by production code. One explicit fault mode wraps the
+already-connected production transport: after a named mutation has received and
+decoded Core's reply, it kills that Core process and raises instead of returning
+the reply to MCP. That is the test-only cut needed to prove a commit whose MCP
+response is lost; it does not answer or alter the request. Before V06-6 this
+passed an endpoint and a workspace id on the command line and `build_server`
+dialled them; neither is reachable from here now, because neither is something a
+host may state outside the trusted document.
 
 `--contaminate` makes the server write to `sys.stdout` from inside a live
 handler, so the test can prove that stray output cannot reach the protocol
@@ -39,16 +42,57 @@ restricted six, which is what production does with it.
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import anyio
 import mcp_types as types
-from omnivia_core_client import ServiceClient
+from omnivia_core_client import ServiceClient, TransportError
 from omnivia_core_mcp import server
 from omnivia_core_mcp.configuration import read_configuration
 
 _DISPATCH = server._call_tool
+
+
+@dataclass(frozen=True, slots=True)
+class _DropAfterReplyTransport:
+    """Drop one reply only after the real transport has decoded it completely."""
+
+    transport: Any
+    service_pid: int
+    operation: str = "evidence.capture"
+
+    def call(
+        self,
+        request: Any,
+        *,
+        deadline: Any,
+        cancellation: Any = None,
+    ) -> Any:
+        response = self.transport.call(
+            request, deadline=deadline, cancellation=cancellation
+        )
+        if request.operation == self.operation:
+            os.kill(self.service_pid, signal.SIGKILL)
+            raise TransportError(
+                "the response was lost after the service completed the call"
+            )
+        return response
+
+    def probe(
+        self,
+        request: Any,
+        *,
+        deadline: Any,
+        cancellation: Any = None,
+    ) -> Any:
+        return self.transport.probe(
+            request, deadline=deadline, cancellation=cancellation
+        )
 
 
 def _contaminating_call_tool(
@@ -90,6 +134,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--contaminate", action="store_true")
     parser.add_argument("--authoring", action="store_true")
+    parser.add_argument("--drop-after-reply-pid", type=int)
     arguments = parser.parse_args()
 
     if arguments.contaminate:
@@ -99,10 +144,23 @@ def main() -> None:
         sys.stderr.write("probe: starting with deliberate stdout contamination\n")
         server._call_tool = _contaminating_call_tool
 
-    session = server.connect(
-        read_configuration(Path(arguments.config)),
-        authoring_admission=_admit_authoring if arguments.authoring else None,
+    configuration = read_configuration(Path(arguments.config))
+    admission = (
+        server._installed_admission(configuration)
+        if arguments.drop_after_reply_pid is not None
+        else (_admit_authoring if arguments.authoring else None)
     )
+    session = server.connect(configuration, authoring_admission=admission)
+    if arguments.drop_after_reply_pid is not None:
+        session = replace(
+            session,
+            client=replace(
+                session.client,
+                transport=_DropAfterReplyTransport(
+                    session.client.transport, arguments.drop_after_reply_pid
+                ),
+            ),
+        )
     anyio.run(lambda: server.serve(session=session))
 
 

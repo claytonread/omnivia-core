@@ -34,10 +34,18 @@ from omnivia_core_client.framing import (
 )
 
 from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+    CapabilityRequirement,
+    ClientIdentity,
+    RequestEnvelope,
+    RequestMetadata,
     ServiceEndpointDescriptor,
     ServiceProbeRequest,
     ServiceProbeResult,
     codec,
+    decode_evidence_capture_input,
+    get_operation_metadata,
 )
 from omnivia_core.contracts.v1.canonical_json import canonical_bytes
 
@@ -185,8 +193,8 @@ def test_header_is_four_magic_bytes_and_a_four_byte_length() -> None:
     assert HEADER_BYTES == len(MAGIC) + LENGTH_BYTES == 8
 
 
-def test_maximum_json_payload_is_four_mebibytes() -> None:
-    assert MAXIMUM_JSON_BYTES == 4 * 1024 * 1024 == 4194304
+def test_maximum_json_payload_is_eight_mebibytes() -> None:
+    assert MAXIMUM_JSON_BYTES == 8 * 1024 * 1024 == 8388608
 
 
 def test_frame_format_identifier_is_frozen() -> None:
@@ -236,6 +244,46 @@ def test_encode_then_decode_round_trips() -> None:
         "text": "hello",
     }
     assert decode_frame(encode_frame(payload)) == payload
+
+
+def test_worst_case_valid_capture_envelope_fits_the_finite_frame_ceiling() -> None:
+    """A one-MiB control-character body expands sixfold in canonical JSON."""
+    entry = get_operation_metadata("evidence.capture")
+    required = entry.required_capability
+    request = RequestEnvelope(
+        operation=entry.name,
+        metadata=RequestMetadata(
+            request_id="req-frame-capacity",
+            correlation_id="cor-frame-capacity",
+            trace_id="trc-frame-capacity",
+            api_version=CONTRACT_VERSION,
+            client=ClientIdentity(id="frame-capacity-test", version="1.0.0"),
+            workspace_id="ws-frame-capacity",
+            scopes=tuple(entry.scope.required_scopes),
+            purpose="content_ingestion",
+            idempotency_key="idem-frame-capacity",
+            required_capabilities=(
+                CapabilityRequirement(
+                    id=required.id,
+                    minimum_version=required.minimum_version,
+                    required=required.required,
+                ),
+            ),
+        ),
+        input={
+            "source_native_id": "worst-json-escape",
+            "media_type": "text/plain",
+            "text": "\x00" * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
+        },
+    )
+    document = codec.encode_request(request)
+    decode_evidence_capture_input(document["input"])
+
+    frame = encode_frame(document)
+
+    assert HEADER_BYTES + 6 * EVIDENCE_CAPTURE_MAX_CONTENT_BYTES < len(frame)
+    assert len(frame) <= HEADER_BYTES + MAXIMUM_JSON_BYTES
+    assert codec.decode_request(decode_frame(frame)) == request
 
 
 def test_canonical_json_sorts_keys_and_uses_compact_separators() -> None:
@@ -924,7 +972,7 @@ def test_a_wrong_magic_diagnostic_does_not_echo_the_observed_bytes() -> None:
 def test_manifest_states_the_frozen_format_facts() -> None:
     assert MANIFEST["format"] == FRAME_FORMAT == "omnivia.ovc1.v1"
     assert MANIFEST["magic_hex"] == MAGIC_HEX == "4f564331"
-    assert MANIFEST["maximum_json_bytes"] == MAXIMUM_JSON_BYTES == 4194304
+    assert MANIFEST["maximum_json_bytes"] == MAXIMUM_JSON_BYTES == 8388608
     assert MANIFEST["header_bytes"] == HEADER_BYTES
     assert MANIFEST["protocol_version"] == "1.0"
 

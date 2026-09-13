@@ -81,10 +81,10 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -94,6 +94,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_PROJECTION_UNAVAILABLE,
+    ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_STALE_PROJECTION,
     EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     EVIDENCE_CAPTURE_SOURCE_KIND,
@@ -103,10 +104,12 @@ from omnivia_core.contracts.v1 import (
     ContractSemanticError,
     EvidenceCaptureInput,
     EvidenceCaptureResult,
+    EvidenceCaptureSizeLimitError,
     EvidenceSearchInput,
     EvidenceSearchResult,
     PageMetadata,
     SourceReference,
+    canonical_timestamp_nanoseconds,
     decode_evidence_capture_input,
     decode_evidence_search_input,
     idempotency_equivalence,
@@ -155,6 +158,7 @@ from omnivia_core_runtime.storage.retrieval import (
     ProjectedFrontier,
     authorized_frontier,
     local_owner_label_grant,
+    query_tokens,
     rank_projected,
 )
 from omnivia_core_runtime.workspace.blob_publication import (
@@ -176,7 +180,9 @@ MAX_PAGE_LIMIT: Final = 1000
 #: are: a handler failure becomes a wire `ApiError` a caller reads, and nothing about
 #: this server's state or this caller's own values may travel there.
 _MESSAGE_INVALID_INPUT: Final = "the request payload is not a valid evidence search"
-_MESSAGE_NO_STORAGE: Final = "this service instance is not serving authoritative storage"
+_MESSAGE_NO_STORAGE: Final = (
+    "this service instance is not serving authoritative storage"
+)
 _MESSAGE_STALE_PROJECTION: Final = (
     "a projection this search reads lags the authoritative source checkpoint"
 )
@@ -200,9 +206,7 @@ CAPTURE_SOURCE_KIND: Final = EVIDENCE_CAPTURE_SOURCE_KIND
 #: the byte length this service persists are computed here and must be bounded here.
 _MAX_ENCODED_LENGTH: Final = 4 * ((EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3)
 
-_MESSAGE_INVALID_CAPTURE: Final = (
-    "the request payload is not a valid evidence capture"
-)
+_MESSAGE_INVALID_CAPTURE: Final = "the request payload is not a valid evidence capture"
 _MESSAGE_SOURCE_CONFLICT: Final = (
     "this source identity already names evidence with different content or claims"
 )
@@ -211,6 +215,9 @@ _MESSAGE_SOURCE_NOT_UNIQUE: Final = (
 )
 _MESSAGE_BLOB_UNPUBLISHED: Final = (
     "the submitted content could not be made durable in this workspace"
+)
+_MESSAGE_CAPTURE_TOO_LARGE: Final = (
+    "the submitted content exceeds the evidence capture size limit"
 )
 
 
@@ -340,15 +347,10 @@ def evidence_search(context: OperationContext) -> Mapping[str, Any]:
     )
     start = 0
     if supplied is not None:
-        if (
-            supplied.get("s") != snapshot_digest
-        ):
+        if supplied.get("s") != snapshot_digest:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
         offset = supplied.get("o")
-        if (
-            type(offset) is not int
-            or not 0 < offset < len(ranked)
-        ):
+        if type(offset) is not int or not 0 < offset < len(ranked):
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
         start = offset
 
@@ -495,6 +497,7 @@ class EvidenceHandlers:
         """
         submitted = self._decode(context)
         content = _content_bytes(submitted)
+        witness = _lexical_witness(content)
         checksum = f"sha256:{hashlib.sha256(content).hexdigest()}"
         length = len(content)
 
@@ -573,6 +576,7 @@ class EvidenceHandlers:
                 submitted=submitted,
                 checksum=checksum,
                 length=length,
+                principal=context.principal,
                 allocate_identifier=self.allocate_identifier,
             )
 
@@ -597,6 +601,8 @@ class EvidenceHandlers:
             workspace_id=context.workspace_id,
             blobs_root=blobs_root,
             evidence_id=captured if isinstance(captured, str) else "",
+            principal=context.principal,
+            witness=witness,
         )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
@@ -608,6 +614,8 @@ class EvidenceHandlers:
         workspace_id: str,
         blobs_root: Path,
         evidence_id: str,
+        principal: str,
+        witness: str,
     ) -> None:
         """Gate A: bring `evidence.search` level with this commit, or do not report success.
 
@@ -644,8 +652,9 @@ class EvidenceHandlers:
         answers "not found" -- and the identity surface, which carries the source id the
         caller chose, would still match a query naming it. So the check is the projection's
         own statement that *this* evidence id was composed from content, read off the value
-        `open_search_projection` returned. It runs no query, and it reads no authoritative
-        table to make up for what the index does not hold.
+        `open_search_projection` returned. It then runs the content-derived witness
+        through the same authorized frontier and production ranker as
+        `evidence.search`; no identity-only marker can satisfy that check.
 
         `build_search_projection` is idempotent and re-derives its position from the
         database, so calling it here is the same maintenance call startup makes, not a
@@ -668,9 +677,31 @@ class EvidenceHandlers:
                 projection = open_search_projection(
                     connection, workspace_id=workspace_id, blobs_root=blobs_root
                 )
-                if evidence_id not in projection.content_indexed:
+                candidates = read_evidence_candidates(
+                    connection, workspace_id=workspace_id
+                )
+                checkpoint = int(
+                    authoritative_checkpoint(connection, workspace_id=workspace_id)
+                )
+                frontier = authorized_frontier(
+                    candidates,
+                    workspace_id=workspace_id,
+                    grant=local_owner_label_grant(
+                        principal_id=principal,
+                        workspace_id=workspace_id,
+                        granted_workspace=workspace_id,
+                    ),
+                    resolution_time_us=checkpoint,
+                )
+                projected = _projected(connection, projection, frontier)
+                matches = rank_projected(
+                    projected, witness, limit=len(projected.candidates)
+                )
+                if evidence_id not in projection.content_indexed or not any(
+                    candidate.evidence_id == evidence_id for candidate in matches
+                ):
                     failed = True
-        except (ProjectionError, sqlite3.Error, OSError):
+        except (OperationError, ProjectionError, sqlite3.Error, OSError):
             # Contained rather than chained: the projection's own messages name run ids
             # and checkpoints, and this refusal travels to a caller. The category is
             # decided below, from the database, not from which exception arrived.
@@ -717,17 +748,25 @@ class EvidenceHandlers:
 
         Sentinel-then-raise, this tree's convention and load-bearing here for the reason
         it is load-bearing above: the contract's decode and semantic errors quote the
-        payload they rejected -- which for this operation is the caller's own submitted
         text -- so raising inside the `except` would leave that text reachable through
         `__context__` on the error a caller catches.
         """
         decoded: EvidenceCaptureInput | None
+        error_code: str | None = None
         try:
             decoded = decode_evidence_capture_input(context.request.input)
+        except EvidenceCaptureSizeLimitError:
+            decoded = None
+            error_code = ERROR_CODE_SIZE_LIMIT_EXCEEDED
         except (ContractDecodeError, ContractSemanticError):
             decoded = None
         if decoded is None:
-            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_CAPTURE)
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST if error_code is None else error_code,
+                _MESSAGE_INVALID_CAPTURE
+                if error_code is None
+                else _MESSAGE_CAPTURE_TOO_LARGE,
+            )
         return decoded
 
 
@@ -740,8 +779,8 @@ class _StoredSource:
     content_length_bytes: int | None
     media_type: str
     source_version: str | None
-    event_at_us: int | None
-    observed_at_us: int | None
+    event_at_ns: int | None
+    observed_at_ns: int | None
 
 
 def _content_bytes(submitted: EvidenceCaptureInput) -> bytes:
@@ -760,7 +799,9 @@ def _content_bytes(submitted: EvidenceCaptureInput) -> bytes:
         # most this many base64 characters, so anything longer cannot be within bound
         # whatever it decodes to.
         if len(encoded) > _MAX_ENCODED_LENGTH:
-            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_CAPTURE)
+            raise OperationError(
+                ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CAPTURE_TOO_LARGE
+            )
         # Sentinel-then-raise, this directory's convention: `binascii.Error`'s message
         # quotes the encoded payload it rejected, and that payload is the caller's own
         # submitted document. `from None` would suppress the chain but not the frame the
@@ -778,16 +819,70 @@ def _content_bytes(submitted: EvidenceCaptureInput) -> bytes:
         if text is None:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_CAPTURE)
         content = text.encode("utf-8")
-    if not 1 <= len(content) <= EVIDENCE_CAPTURE_MAX_CONTENT_BYTES:
+    if len(content) > EVIDENCE_CAPTURE_MAX_CONTENT_BYTES:
+        raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CAPTURE_TOO_LARGE)
+    if len(content) < 1:
         raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_CAPTURE)
     return content
 
 
+def _lexical_witness(content: bytes) -> str:
+    """One bounded content-derived query token, or a refusal before persistence."""
+    tokens = query_tokens(content.decode("utf-8"))
+    if not tokens:
+        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_CAPTURE)
+    return tokens[0]
+
+
 def _microseconds(value: str | None) -> int | None:
-    """One contract timestamp as microseconds, or `None` where the request stated none."""
+    """One exact contract timestamp narrowed to the legacy storage projection."""
     if value is None:
         return None
-    return int(datetime.fromisoformat(value).timestamp() * 1_000_000)
+    return canonical_timestamp_nanoseconds(value) // 1_000
+
+
+def _stored_timestamp_claims(
+    metadata_json: object,
+    *,
+    event_at_us: int | None,
+    observed_at_us: int | None,
+) -> tuple[int | None, int | None]:
+    """Recover exact capture claims, with a safe fallback for pre-upgrade rows."""
+    metadata: object = None
+    try:
+        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        metadata = None
+    if not isinstance(metadata, dict):
+        raise OperationError(
+            ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_SOURCE_NOT_UNIQUE
+        )
+    event = metadata.get("event_at")
+    observed = metadata.get("observed_at")
+    parsed: tuple[int | None, int | None] | None = None
+    try:
+        exact_event = (
+            canonical_timestamp_nanoseconds(event)
+            if isinstance(event, str)
+            else None
+            if event_at_us is None
+            else event_at_us * 1_000
+        )
+        exact_observed = (
+            canonical_timestamp_nanoseconds(observed)
+            if isinstance(observed, str)
+            else None
+            if observed_at_us is None
+            else observed_at_us * 1_000
+        )
+        parsed = (exact_event, exact_observed)
+    except ContractSemanticError:
+        parsed = None
+    if parsed is None:
+        raise OperationError(
+            ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_SOURCE_NOT_UNIQUE
+        )
+    return parsed
 
 
 def _existing_direct_source(
@@ -808,7 +903,8 @@ def _existing_direct_source(
     """
     rows = connection.execute(
         "SELECT a.evidence_id, a.content_checksum, a.media_type, a.event_at_us, "
-        "       a.observed_at_us, b.content_length_bytes, s.source_version "
+        "       a.observed_at_us, b.content_length_bytes, s.source_version, "
+        "       a.original_metadata_json "
         "FROM omnivia_evidence_artifacts a "
         "LEFT JOIN omnivia_blob_objects b "
         "  ON b.workspace_id = a.workspace_id "
@@ -827,12 +923,17 @@ def _existing_direct_source(
             ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_SOURCE_NOT_UNIQUE
         )
     row = rows[0]
+    event_at_us = None if row[3] is None else int(row[3])
+    observed_at_us = None if row[4] is None else int(row[4])
+    event_at_ns, observed_at_ns = _stored_timestamp_claims(
+        row[7], event_at_us=event_at_us, observed_at_us=observed_at_us
+    )
     return _StoredSource(
         evidence_id=str(row[0]),
         content_checksum=str(row[1]),
         media_type=str(row[2]),
-        event_at_us=None if row[3] is None else int(row[3]),
-        observed_at_us=None if row[4] is None else int(row[4]),
+        event_at_ns=event_at_ns,
+        observed_at_ns=observed_at_ns,
         content_length_bytes=None if row[5] is None else int(row[5]),
         source_version=None if row[6] is None else str(row[6]),
     )
@@ -858,8 +959,18 @@ def _require_identical(
         or stored.content_length_bytes != length
         or stored.media_type != submitted.media_type
         or stored.source_version != submitted.source_version
-        or stored.event_at_us != _microseconds(submitted.event_at)
-        or stored.observed_at_us != _microseconds(submitted.observed_at)
+        or stored.event_at_ns
+        != (
+            None
+            if submitted.event_at is None
+            else canonical_timestamp_nanoseconds(submitted.event_at)
+        )
+        or stored.observed_at_ns
+        != (
+            None
+            if submitted.observed_at is None
+            else canonical_timestamp_nanoseconds(submitted.observed_at)
+        )
     ):
         raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_SOURCE_CONFLICT)
 
@@ -902,6 +1013,7 @@ def _append_direct_evidence(
     submitted: EvidenceCaptureInput,
     checksum: str,
     length: int,
+    principal: str,
     allocate_identifier: IdentifierAllocator,
 ) -> Mapping[str, Any]:
     """Write the five 0008 rows one capture consists of, inside the caller's transaction.
@@ -924,9 +1036,15 @@ def _append_direct_evidence(
     now_us = settlement.settled_at_us
     staged_source_ref = allocate_identifier("stg")
     evidence_id = allocate_identifier("evd")
-    metadata = to_canonical_json(
-        {"capture": CAPTURE_SOURCE_KIND, "source_id": submitted.source_native_id}
-    )
+    capture_metadata = {
+        "capture": CAPTURE_SOURCE_KIND,
+        "source_id": submitted.source_native_id,
+    }
+    if submitted.event_at is not None:
+        capture_metadata["event_at"] = submitted.event_at
+    if submitted.observed_at is not None:
+        capture_metadata["observed_at"] = submitted.observed_at
+    metadata = to_canonical_json(capture_metadata)
     metadata_digest = f"sha256:{hashlib.sha256(metadata.encode('utf-8')).hexdigest()}"
 
     blob = connection.execute(
@@ -1026,12 +1144,13 @@ def _append_direct_evidence(
         "(provenance_event_id, evidence_id, workspace_id, provenance_sequence, actor_id, "
         "actor_kind, action, occurred_at_us, reason_code, reason_comment, parser_status, "
         "ingestion_status, tombstoned_observation, source_kind, source_native_id, "
-        "audit_ref) VALUES (?, ?, ?, 1, 'core-service', 'service', 'captured', ?, NULL, "
-        "NULL, 'not_parsed', 'ingested', 0, ?, ?, ?)",
+        "audit_ref) VALUES (?, ?, ?, 1, ?, 'agent', 'captured', ?, NULL, NULL, "
+        "'not_parsed', 'ingested', 0, ?, ?, ?)",
         (
             allocate_identifier("prv"),
             evidence_id,
             workspace_id,
+            principal,
             now_us,
             CAPTURE_SOURCE_KIND,
             submitted.source_native_id,

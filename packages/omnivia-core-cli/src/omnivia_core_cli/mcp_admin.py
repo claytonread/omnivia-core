@@ -286,10 +286,12 @@ def host_snippet(host: str, path: Path) -> str:
     everything else in it.
     """
     if host == "codex":
+        command = json.dumps(MCP_EXECUTABLE)
+        configuration = json.dumps(str(path))
         return (
             f"[mcp_servers.omnivia-core]\n"
-            f'command = "{MCP_EXECUTABLE}"\n'
-            f'args = ["--config", "{path}"]\n'
+            f"command = {command}\n"
+            f'args = ["--config", {configuration}]\n'
         )
     return (
         json.dumps(

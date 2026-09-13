@@ -84,13 +84,18 @@ bearer is read again for each call, so revoking or rotating it takes effect on
 the next call rather than at the next restart, and a reference this installation
 cannot produce a usable credential for refuses startup rather than falling back.
 
-A managed-local document with **no** reference is the pre-setup shape, and the
-server refuses to start on it with that same fixed sentence: an installed server
-presents its own bearer or does not run. There is no unauthenticated
-managed-local session, because the local endpoint would admit one as the
-service's own principal. The configuration reader still parses such a document;
-it is `connect` that refuses, before a service is started and before MCP
-initialization. Re-run the installed setup for that host to write the reference.
+A managed-local document with **no** reference is the pre-setup shape. The
+console entry point upgrades it before MCP initialization through the service's
+protected local control: it chooses only an unused/revoked host slot (or a
+matching interrupted restricted setup), provisions a dedicated restricted
+principal with `authoring_intent: false`, stores the one-time bearer privately,
+and atomically replaces the owner-private document with one workspace and
+`mutation_enabled: false`. A legacy true byte never becomes authoring consent.
+If no safe slot exists or publication cannot settle, startup refuses with a
+fixed diagnostic and leaves either a rolled-back or resumable state. A direct
+library caller that bypasses the entry point is still refused by `connect`.
+There is no unauthenticated fallback, because the local endpoint would admit one
+as the service's own principal.
 
 `server.verify_installed_setup(path)` is the check R004 section 9.2 step 7
 requires an installed setup to pass before it reports success, and it lives here

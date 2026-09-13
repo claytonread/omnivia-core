@@ -22,7 +22,7 @@ import base64
 import binascii
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import Final
 
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
@@ -55,6 +55,8 @@ __all__ = [
     "EVIDENCE_CAPTURE_MAX_CONTENT_BYTES",
     "EVIDENCE_CAPTURE_SOURCE_KIND",
     "EVIDENCE_TOMBSTONE_ACTION",
+    "EvidenceCaptureSizeLimitError",
+    "canonical_timestamp_nanoseconds",
     "decode_evidence_capture_input",
     "decode_evidence_search_input",
     "validate_evidence_artifact",
@@ -113,7 +115,9 @@ elsewhere in this module, this result field is not forward-open: a caller cannot
 what to do with a disposition it has never seen, so an unrecognized value is rejected
 rather than preserved."""
 
-_EVIDENCE_CAPTURE_MAX_BASE64_LENGTH: Final = 4 * ((EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3)
+_EVIDENCE_CAPTURE_MAX_BASE64_LENGTH: Final = 4 * (
+    (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3
+)
 """The maximum `content_base64` string length that could possibly decode to no more than
 :data:`EVIDENCE_CAPTURE_MAX_CONTENT_BYTES` bytes. Checked before any base64 decode is
 attempted, so an oversized encoded payload is rejected on its encoded length alone rather
@@ -128,6 +132,18 @@ _WORKSPACE_ID_RE: Final = re.compile(WORKSPACE_ID_PATTERN)
 _EVIDENCE_CHECKSUM_RE: Final = re.compile(EVIDENCE_CHECKSUM_PATTERN)
 _MEDIA_TYPE_RE: Final = re.compile(MEDIA_TYPE_PATTERN)
 _TIMESTAMP_RE: Final = re.compile(TIMESTAMP_PATTERN)
+_EPOCH_ORDINAL: Final = date(1970, 1, 1).toordinal()
+
+
+class EvidenceCaptureSizeLimitError(ContractSemanticError):
+    """A capture content representation is provably above the decoded-byte ceiling.
+
+    This is deliberately narrower than :class:`ContractSemanticError`: empty content,
+    malformed base64 and non-UTF-8 bytes are invalid input, while a well-formed value
+    above the advertised bound is the Application Contract's
+    ``size_limit_exceeded`` branch.  Keeping that distinction in the shared semantic
+    layer lets every transport ask the service for the same canonical classification.
+    """
 
 
 def _require_type(value: object, expected: type | tuple[type, ...], label: str) -> None:
@@ -140,21 +156,31 @@ def _require_type(value: object, expected: type | tuple[type, ...], label: str) 
     `ContractSemanticError`, never a raw `TypeError`/`AttributeError` from whatever this
     module does with `value` next.
     """
-    if isinstance(value, bool) and expected is not bool and not (isinstance(expected, tuple) and bool in expected):
+    if (
+        isinstance(value, bool)
+        and expected is not bool
+        and not (isinstance(expected, tuple) and bool in expected)
+    ):
         raise ContractSemanticError(f"{label}: expected {expected!r}, got bool")
     if not isinstance(value, expected):
-        raise ContractSemanticError(f"{label}: expected {expected!r}, got {type(value).__name__}")
+        raise ContractSemanticError(
+            f"{label}: expected {expected!r}, got {type(value).__name__}"
+        )
 
 
 def _require_str(value: object, label: str) -> str:
     if isinstance(value, bool) or not isinstance(value, str):
-        raise ContractSemanticError(f"{label}: expected a string, got {type(value).__name__}")
+        raise ContractSemanticError(
+            f"{label}: expected a string, got {type(value).__name__}"
+        )
     return value
 
 
 def _require_bool(value: object, label: str) -> bool:
     if not isinstance(value, bool):
-        raise ContractSemanticError(f"{label}: expected a boolean, got {type(value).__name__}")
+        raise ContractSemanticError(
+            f"{label}: expected a boolean, got {type(value).__name__}"
+        )
     return value
 
 
@@ -167,19 +193,25 @@ def _require_int(value: object, label: str) -> int:
     JSON number, and the schema says `type: integer`.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ContractSemanticError(f"{label}: expected an integer, got {type(value).__name__}")
+        raise ContractSemanticError(
+            f"{label}: expected an integer, got {type(value).__name__}"
+        )
     return value
 
 
 def _require_sequence(value: object, label: str) -> Sequence[object]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise ContractSemanticError(f"{label}: expected a sequence, got {type(value).__name__}")
+        raise ContractSemanticError(
+            f"{label}: expected a sequence, got {type(value).__name__}"
+        )
     return value
 
 
 def _require_mapping(value: object, label: str) -> Mapping[object, object]:
     if not isinstance(value, Mapping):
-        raise ContractSemanticError(f"{label}: expected a mapping, got {type(value).__name__}")
+        raise ContractSemanticError(
+            f"{label}: expected a mapping, got {type(value).__name__}"
+        )
     return value
 
 
@@ -219,8 +251,12 @@ def _validate_evidence_id(value: object, label: str) -> None:
 
 def _validate_evidence_checksum(value: object, label: str) -> None:
     text = _require_str(value, label)
-    if len(text) > _EVIDENCE_CHECKSUM_MAX_LENGTH or not _EVIDENCE_CHECKSUM_RE.fullmatch(text):
-        raise ContractSemanticError(f"{label}: {text!r} is not a valid EvidenceChecksum")
+    if len(text) > _EVIDENCE_CHECKSUM_MAX_LENGTH or not _EVIDENCE_CHECKSUM_RE.fullmatch(
+        text
+    ):
+        raise ContractSemanticError(
+            f"{label}: {text!r} is not a valid EvidenceChecksum"
+        )
 
 
 def _validate_media_type(value: object, label: str) -> None:
@@ -229,7 +265,15 @@ def _validate_media_type(value: object, label: str) -> None:
         raise ContractSemanticError(f"{label}: {text!r} is not a valid MediaType")
 
 
-def _parse_timestamp(value: object, label: str) -> datetime:
+def canonical_timestamp_nanoseconds(value: object, label: str = "timestamp") -> int:
+    """Return an exact UTC epoch-nanosecond value for one canonical timestamp.
+
+    The contract admits one through nine fractional digits.  ``datetime`` validates
+    the calendar and clock fields, but its microsecond field cannot represent the last
+    three digits; the fraction is therefore parsed independently and combined with an
+    integer day/second offset.  No float participates, so ordering and identity remain
+    exact below a microsecond as well as before the Unix epoch.
+    """
     text = _require_str(value, label)
     if not _TIMESTAMP_RE.match(text):
         raise ContractSemanticError(
@@ -237,9 +281,31 @@ def _parse_timestamp(value: object, label: str) -> datetime:
             "(naive, offset, and malformed spellings are all rejected)"
         )
     try:
-        return datetime.fromisoformat(text)
+        instant = datetime(
+            int(text[0:4]),
+            int(text[5:7]),
+            int(text[8:10]),
+            int(text[11:13]),
+            int(text[14:16]),
+            int(text[17:19]),
+            tzinfo=UTC,
+        )
     except ValueError as error:
-        raise ContractSemanticError(f"{label}: {text!r} is not a valid RFC 3339 timestamp") from error
+        raise ContractSemanticError(
+            f"{label}: {text!r} is not a valid RFC 3339 timestamp"
+        ) from error
+    fraction = text[20:-1] if text[19:20] == "." else ""
+    nanoseconds = int(fraction.ljust(9, "0")) if fraction else 0
+    days = instant.date().toordinal() - _EPOCH_ORDINAL
+    seconds = (
+        days * 86_400 + instant.hour * 3_600 + instant.minute * 60 + instant.second
+    )
+    return seconds * 1_000_000_000 + nanoseconds
+
+
+def _parse_timestamp(value: object, label: str) -> int:
+    """Validate a timestamp and return its exact ordering key."""
+    return canonical_timestamp_nanoseconds(value, label)
 
 
 def _validate_source_reference(source: object, label: str) -> tuple[str, str]:
@@ -248,8 +314,13 @@ def _validate_source_reference(source: object, label: str) -> tuple[str, str]:
     assert isinstance(source, SourceReference)
     _validate_open_code(source.kind, f"{label}.kind")
     _validate_identifier(source.source_id, f"{label}.source_id")
-    if source.locator is not None and len(_require_str(source.locator, f"{label}.locator")) > _LOCATOR_MAX_LENGTH:
-        raise ContractSemanticError(f"{label}.locator exceeds the maximum length of {_LOCATOR_MAX_LENGTH}")
+    if (
+        source.locator is not None
+        and len(_require_str(source.locator, f"{label}.locator")) > _LOCATOR_MAX_LENGTH
+    ):
+        raise ContractSemanticError(
+            f"{label}.locator exceeds the maximum length of {_LOCATOR_MAX_LENGTH}"
+        )
     if source.retrieved_at is not None:
         _parse_timestamp(source.retrieved_at, f"{label}.retrieved_at")
     return (source.kind, source.source_id)
@@ -267,7 +338,9 @@ def _validate_source_span(span: object, label: str) -> None:
     _require_type(span, SourceSpan, label)
     assert isinstance(span, SourceSpan)
     if len(_require_str(span.pointer, f"{label}.pointer")) > _LOCATOR_MAX_LENGTH:
-        raise ContractSemanticError(f"{label}.pointer exceeds the maximum length of {_LOCATOR_MAX_LENGTH}")
+        raise ContractSemanticError(
+            f"{label}.pointer exceeds the maximum length of {_LOCATOR_MAX_LENGTH}"
+        )
     start = None
     if span.start_offset is not None:
         start = _require_int(span.start_offset, f"{label}.start_offset")
@@ -279,7 +352,9 @@ def _validate_source_span(span: object, label: str) -> None:
         if end < 0:
             raise ContractSemanticError(f"{label}.end_offset must be non-negative")
     if start is not None and end is not None and end < start:
-        raise ContractSemanticError(f"{label}.end_offset is before {label}.start_offset")
+        raise ContractSemanticError(
+            f"{label}.end_offset is before {label}.start_offset"
+        )
 
 
 def _validate_evidence_reference(
@@ -303,8 +378,14 @@ def _validate_evidence_reference(
         )
     if reference.span is not None:
         _validate_source_span(reference.span, f"{label}.span")
-    if reference.excerpt is not None and len(_require_str(reference.excerpt, f"{label}.excerpt")) > _EXCERPT_MAX_LENGTH:
-        raise ContractSemanticError(f"{label}.excerpt exceeds the maximum length of {_EXCERPT_MAX_LENGTH}")
+    if (
+        reference.excerpt is not None
+        and len(_require_str(reference.excerpt, f"{label}.excerpt"))
+        > _EXCERPT_MAX_LENGTH
+    ):
+        raise ContractSemanticError(
+            f"{label}.excerpt exceeds the maximum length of {_EXCERPT_MAX_LENGTH}"
+        )
 
 
 def _validate_provenance_entry(
@@ -345,7 +426,9 @@ def _validate_provenance_entry(
             )
         for index, reference in enumerate(references):
             _validate_evidence_reference(
-                reference, f"{label}.evidence[{index}]", artifact_source_key=artifact_source_key
+                reference,
+                f"{label}.evidence[{index}]",
+                artifact_source_key=artifact_source_key,
             )
     return entry.action
 
@@ -399,8 +482,12 @@ def validate_evidence_artifact(artifact: object) -> None:
     _require_type(artifact.temporal, type(artifact.temporal), "temporal")
     validate_record_temporal_metadata(artifact.temporal)
     if artifact.temporal.observed_at is not None:
-        observed_at = _parse_timestamp(artifact.temporal.observed_at, "temporal.observed_at")
-        ingested_at = _parse_timestamp(artifact.temporal.ingested_at, "temporal.ingested_at")
+        observed_at = _parse_timestamp(
+            artifact.temporal.observed_at, "temporal.observed_at"
+        )
+        ingested_at = _parse_timestamp(
+            artifact.temporal.ingested_at, "temporal.ingested_at"
+        )
         if observed_at > ingested_at:
             raise ContractSemanticError(
                 f"temporal.observed_at {artifact.temporal.observed_at!r} is after "
@@ -411,7 +498,9 @@ def validate_evidence_artifact(artifact: object) -> None:
     _validate_media_type(artifact.media_type, "media_type")
     _require_mapping(artifact.metadata, "metadata")
 
-    permission_labels = _require_sequence(artifact.permission_labels, "permission_labels")
+    permission_labels = _require_sequence(
+        artifact.permission_labels, "permission_labels"
+    )
     if len(permission_labels) > _PERMISSION_LABELS_MAX_ITEMS:
         raise ContractSemanticError(
             f"permission_labels has {len(permission_labels)} entries, exceeding the maximum "
@@ -421,7 +510,9 @@ def validate_evidence_artifact(artifact: object) -> None:
     for index, label in enumerate(permission_labels):
         validated_label = _validate_open_code(label, f"permission_labels[{index}]")
         if validated_label in seen_labels:
-            raise ContractSemanticError(f"permission_labels[{index}] duplicates {validated_label!r}")
+            raise ContractSemanticError(
+                f"permission_labels[{index}] duplicates {validated_label!r}"
+            )
         seen_labels.add(validated_label)
 
     _validate_open_code(artifact.sensitivity, "sensitivity")
@@ -430,7 +521,9 @@ def validate_evidence_artifact(artifact: object) -> None:
 
     tombstoned = _require_bool(artifact.tombstoned, "tombstoned")
 
-    provenance_history = _require_sequence(artifact.provenance_history, "provenance_history")
+    provenance_history = _require_sequence(
+        artifact.provenance_history, "provenance_history"
+    )
     if len(provenance_history) > _PROVENANCE_HISTORY_MAX_ITEMS:
         raise ContractSemanticError(
             f"provenance_history has {len(provenance_history)} entries, exceeding the "
@@ -451,7 +544,9 @@ def validate_evidence_artifact(artifact: object) -> None:
     for index, entry in enumerate(provenance_history):
         actions.append(
             _validate_provenance_entry(
-                entry, f"provenance_history[{index}]", artifact_source_key=artifact_source_key
+                entry,
+                f"provenance_history[{index}]",
+                artifact_source_key=artifact_source_key,
             )
         )
 
@@ -475,7 +570,9 @@ def validate_evidence_search_input(input_: object) -> None:
     assert isinstance(input_, EvidenceSearchInput)
     query = _require_str(input_.query, "query")
     if not (1 <= len(query) <= _QUERY_MAX_LENGTH):
-        raise ContractSemanticError(f"query length is outside the bounded range [1, {_QUERY_MAX_LENGTH}]")
+        raise ContractSemanticError(
+            f"query length is outside the bounded range [1, {_QUERY_MAX_LENGTH}]"
+        )
     if input_.sensitivity is not None:
         _validate_open_code(input_.sensitivity, "sensitivity")
     if input_.include_tombstoned is not None:
@@ -484,7 +581,9 @@ def validate_evidence_search_input(input_: object) -> None:
         validate_page_limit(input_.limit)
 
 
-def decode_evidence_search_input(payload: object, path: str = "EvidenceSearchInput") -> EvidenceSearchInput:
+def decode_evidence_search_input(
+    payload: object, path: str = "EvidenceSearchInput"
+) -> EvidenceSearchInput:
     """Decode and fully validate `payload` into a semantically valid `EvidenceSearchInput`."""
     input_ = EvidenceSearchInput.from_wire(payload, path)
     validate_evidence_search_input(input_)
@@ -535,7 +634,10 @@ def validate_evidence_search_result(
             raise ContractSemanticError(
                 f"{label} is tombstoned but the request did not set include_tombstoned=true"
             )
-        if request.sensitivity is not None and artifact.sensitivity != request.sensitivity:
+        if (
+            request.sensitivity is not None
+            and artifact.sensitivity != request.sensitivity
+        ):
             raise ContractSemanticError(
                 f"{label}.sensitivity {artifact.sensitivity!r} does not match the requested "
                 f"sensitivity {request.sensitivity!r}"
@@ -568,11 +670,13 @@ def _decode_evidence_capture_content(input_: EvidenceCaptureInput) -> bytes:
         try:
             content = text.encode("utf-8")
         except UnicodeEncodeError as error:
-            raise ContractSemanticError(f"text is not valid Unicode text: {error}") from error
+            raise ContractSemanticError(
+                f"text is not valid Unicode text: {error}"
+            ) from error
     else:
         encoded = _require_str(input_.content_base64, "content_base64")
         if len(encoded) > _EVIDENCE_CAPTURE_MAX_BASE64_LENGTH:
-            raise ContractSemanticError(
+            raise EvidenceCaptureSizeLimitError(
                 f"content_base64 length {len(encoded)} exceeds the maximum of "
                 f"{_EVIDENCE_CAPTURE_MAX_BASE64_LENGTH} encoded characters, the largest "
                 f"encoding that could decode to no more than "
@@ -583,13 +687,22 @@ def _decode_evidence_capture_content(input_: EvidenceCaptureInput) -> bytes:
         try:
             content = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as error:
-            raise ContractSemanticError(f"content_base64 is not strict RFC 4648 base64: {error}") from error
+            raise ContractSemanticError(
+                f"content_base64 is not strict RFC 4648 base64: {error}"
+            ) from error
         try:
             content.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise ContractSemanticError(f"content_base64 does not decode to valid UTF-8: {error}") from error
+            raise ContractSemanticError(
+                f"content_base64 does not decode to valid UTF-8: {error}"
+            ) from error
 
-    if not (1 <= len(content) <= EVIDENCE_CAPTURE_MAX_CONTENT_BYTES):
+    if len(content) > EVIDENCE_CAPTURE_MAX_CONTENT_BYTES:
+        raise EvidenceCaptureSizeLimitError(
+            f"decoded content length {len(content)} exceeds the maximum of "
+            f"{EVIDENCE_CAPTURE_MAX_CONTENT_BYTES} bytes"
+        )
+    if len(content) < 1:
         raise ContractSemanticError(
             f"decoded content length {len(content)} is outside the bounded range "
             f"[1, {EVIDENCE_CAPTURE_MAX_CONTENT_BYTES}]"
@@ -633,8 +746,30 @@ def validate_evidence_capture_input(input_: object) -> None:
         )
 
 
-def decode_evidence_capture_input(payload: object, path: str = "EvidenceCaptureInput") -> EvidenceCaptureInput:
-    """Decode and fully validate `payload` into a semantically valid `EvidenceCaptureInput`."""
+def decode_evidence_capture_input(
+    payload: object, path: str = "EvidenceCaptureInput"
+) -> EvidenceCaptureInput:
+    """Decode one closed operation input and fully validate its semantics.
+
+    Generated DTO ``from_wire`` methods remain additive-tolerant for minor-version
+    compatibility.  The operation itself is intentionally closed, though, so its public
+    decoder rejects a raw key the schema does not declare before the tolerant DTO layer
+    could discard it.  MCP and the service both use this function.
+    """
+    if isinstance(payload, Mapping):
+        accepted = {
+            "source_native_id",
+            "media_type",
+            "text",
+            "content_base64",
+            "source_version",
+            "event_at",
+            "observed_at",
+        }
+        if any(not isinstance(key, str) or key not in accepted for key in payload):
+            raise ContractSemanticError(
+                f"{path}: contains a member the closed evidence.capture input does not declare"
+            )
     input_ = EvidenceCaptureInput.from_wire(payload, path)
     validate_evidence_capture_input(input_)
     return input_
@@ -666,9 +801,13 @@ def validate_evidence_capture_result(result: object) -> None:
         )
     _validate_identifier(source.source_id, "source.source_id")
     if source.locator is not None:
-        raise ContractSemanticError("source.locator must be absent for a direct_submission source")
+        raise ContractSemanticError(
+            "source.locator must be absent for a direct_submission source"
+        )
     if source.retrieved_at is not None:
-        raise ContractSemanticError("source.retrieved_at must be absent for a direct_submission source")
+        raise ContractSemanticError(
+            "source.retrieved_at must be absent for a direct_submission source"
+        )
 
     media_type = _require_str(result.media_type, "media_type")
     if media_type not in EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES:

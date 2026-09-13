@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -533,6 +534,28 @@ def test_the_codex_snippet_is_toml_and_names_only_the_command_and_the_path(
         'command = "omnivia-core-mcp"\n'
         f'args = ["--config", "{harness.configuration("codex")}"]\n'
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        Path("/absolute/config.json"),
+        Path(r"C:\Users\Example\AppData\Local\OmniVia\codex.json"),
+        Path('/absolute/a "quoted" configuration.json'),
+        Path("/absolute/control\ncharacter.json"),
+        Path("/absolute/del-\x7f.json"),
+    ],
+)
+def test_every_codex_path_round_trips_through_a_toml_parser(path: Path) -> None:
+    document = tomllib.loads(mcp_admin.host_snippet("codex", path))
+    assert document == {
+        "mcp_servers": {
+            "omnivia-core": {
+                "command": "omnivia-core-mcp",
+                "args": ["--config", str(path)],
+            }
+        }
+    }
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex"])

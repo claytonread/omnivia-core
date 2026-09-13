@@ -465,6 +465,43 @@ BM25_MINIMUM_IDF: Final = 1e-6
 #: rather than trusting the equivalence, because a drift here is a silent recall bug.
 _TOKEN: Final = re.compile(r"[^\W_]+")
 
+#: FTS5's built-in tokenizers truncate one token at 32 KiB.  A truncation that
+#: lands inside a multibyte code point can make ``fts5vocab`` return text that
+#: Python's SQLite binding cannot decode, while an ASCII token longer than the
+#: limit silently disagrees with the query-side tokenizer. Split normalized
+#: alphanumeric runs at 4 KiB on both sides of the projection: that is below
+#: FTS5's byte ceiling and, because every code point occupies at least one byte,
+#: every resulting token also fits the contract's 4,096-character search-query
+#: ceiling. This changes no ordinary query and gives every contract-valid
+#: capture, including a one-MiB unbroken word, a queryable token sequence.
+FTS5_SAFE_TOKEN_BYTES: Final = 4 * 1024
+
+
+def _bounded_token_chunks(token: str) -> tuple[str, ...]:
+    """Split one normalized token without ever splitting a UTF-8 code point."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for character in token:
+        width = len(character.encode("utf-8"))
+        if current and current_bytes + width > FTS5_SAFE_TOKEN_BYTES:
+            chunks.append("".join(current))
+            current = []
+            current_bytes = 0
+        current.append(character)
+        current_bytes += width
+    if current:
+        chunks.append("".join(current))
+    return tuple(chunks)
+
+
+def projection_text(text: str) -> str:
+    """Normalized text with deterministic FTS5-safe boundaries in long tokens."""
+    normalized = normalize_query(text)
+    return _TOKEN.sub(
+        lambda match: " ".join(_bounded_token_chunks(match.group(0))), normalized
+    )
+
 
 def query_tokens(query: str) -> tuple[str, ...]:
     """A query as the token sequence the projection's documents were tokenized into.
@@ -473,7 +510,7 @@ def query_tokens(query: str) -> tuple[str, ...]:
     document, so a match is a property of the text rather than of which side a caller
     happened to type.
     """
-    return tuple(_TOKEN.findall(normalize_query(query)))
+    return tuple(_TOKEN.findall(projection_text(query)))
 
 
 def rank_projected(
@@ -534,10 +571,7 @@ def rank_projected(
             item.candidate,
             -idf
             * (hits * (BM25_K1 + 1.0))
-            / (
-                hits
-                + BM25_K1 * (1.0 - BM25_B + BM25_B * len(item.terms) / average)
-            ),
+            / (hits + BM25_K1 * (1.0 - BM25_B + BM25_B * len(item.terms) / average)),
         )
         for item, hits in matched
     ]
@@ -761,6 +795,7 @@ __all__ = [
     "BM25_MINIMUM_IDF",
     "CONFIGURED_LOCAL_OWNER",
     "FRONTIER_FILTERS",
+    "FTS5_SAFE_TOKEN_BYTES",
     "GOVERNED_FRONTIER_FILTERS",
     "AuthorizedFrontier",
     "EvidenceCandidate",
@@ -775,6 +810,7 @@ __all__ = [
     "governed_search_text",
     "local_owner_label_grant",
     "normalize_query",
+    "projection_text",
     "query_tokens",
     "rank_candidates",
     "rank_governed",

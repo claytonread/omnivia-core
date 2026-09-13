@@ -320,9 +320,9 @@ def test_the_same_source_id_in_two_workspaces_is_two_independent_artifacts(
             assert count(owned, AUDIT) == 1
             # Its own blob, under its own root, holding the submitted bytes.
             assert blob_file(owned, checksum).read_bytes() == content
-            assert rows(
-                owned, f"SELECT workspace_id, content_digest FROM {BLOBS}"
-            ) == [(workspace.workspace_id, checksum)]
+            assert rows(owned, f"SELECT workspace_id, content_digest FROM {BLOBS}") == [
+                (workspace.workspace_id, checksum)
+            ]
 
             # Retrieval is workspace-local: each search answers with its own artifact
             # and never with the neighbour's, for the content word and for the shared
@@ -333,9 +333,8 @@ def test_the_same_source_id_in_two_workspaces_is_two_independent_artifacts(
                 ) == (result.evidence_id,)
 
         # And the two databases really are two: neither holds the other's evidence id.
-        assert (
-            rows(first.served, f"SELECT evidence_id FROM {ARTIFACTS}")
-            != rows(second.served, f"SELECT evidence_id FROM {ARTIFACTS}")
+        assert rows(first.served, f"SELECT evidence_id FROM {ARTIFACTS}") != rows(
+            second.served, f"SELECT evidence_id FROM {ARTIFACTS}"
         )
 
 
@@ -397,10 +396,9 @@ def test_a_source_identity_naming_two_artifacts_fails_closed_and_writes_nothing(
 
         # The bytes the first capture published are untouched: publication verifies
         # what is already there rather than rewriting it.
-        assert (
-            blob_file(owned, first.content_checksum).read_bytes()
-            == submission()["text"].encode("utf-8")
-        )
+        assert blob_file(owned, first.content_checksum).read_bytes() == submission()[
+            "text"
+        ].encode("utf-8")
     finally:
         owned.connection.close()
 
@@ -574,6 +572,9 @@ def test_hostile_content_reaches_no_filesystem_network_process_or_authority_seam
     assert principal == PRINCIPAL
     assert "installation-administrator" not in authority
     assert "ws-elsewhere" not in authority
+    assert rows(owned, f"SELECT actor_id, actor_kind FROM {PROVENANCE}") == [
+        (PRINCIPAL, "agent")
+    ]
 
     # And the observed end state the neighbour asserts, unchanged: the bytes are the
     # submitted ones, the workspace gained nothing but its blob, the named table still
@@ -701,8 +702,8 @@ def test_each_accepted_form_settles_with_a_complete_and_attributable_record(
             result.evidence_id,
             1,
             "captured",
-            "service",
-            "core-service",
+            "agent",
+            PRINCIPAL,
             response.metadata.audit_reference,
         )
     ]
@@ -787,7 +788,10 @@ def test_each_accepted_form_settles_with_a_complete_and_attributable_record(
     replay = answered(
         router.dispatch(
             capture_request(
-                request_id="req-2", key="idem-1", source_native_id=source_id, **overrides
+                request_id="req-2",
+                key="idem-1",
+                source_native_id=source_id,
+                **overrides,
             )
         )
     )
@@ -795,7 +799,9 @@ def test_each_accepted_form_settles_with_a_complete_and_attributable_record(
     assert replay.metadata.audit_reference == audit_ref
     assert count(owned, ARTIFACTS) == 1
     assert count(owned, AUDIT) == 1
-    assert [kind for (kind,) in rows(owned, f"SELECT execution_kind FROM {EXECUTIONS}")] == [
+    assert [
+        kind for (kind,) in rows(owned, f"SELECT execution_kind FROM {EXECUTIONS}")
+    ] == [
         "executed",
         "replayed",
     ]
@@ -804,7 +810,9 @@ def test_each_accepted_form_settles_with_a_complete_and_attributable_record(
     # not the needle that occurs only in the body, not the encoded form of either.
     recorded = durable_text(owned)
     needle = f"needle-{form}"
-    assert needle in content.decode("utf-8"), "the variant carries no needle to look for"
+    assert needle in content.decode("utf-8"), (
+        "the variant carries no needle to look for"
+    )
     assert needle not in recorded
     assert content.decode("utf-8") not in recorded
     if overrides.get("content_base64") is not None:
@@ -933,9 +941,7 @@ def test_a_grant_re_presented_after_it_was_spent_is_refused(
     """
     fault = GrantFault(monkeypatch, "issue")
     fault.install()
-    first = captured(
-        router.dispatch(capture_request(request_id="req-1", key="idem-1"))
-    )
+    first = captured(router.dispatch(capture_request(request_id="req-1", key="idem-1")))
     if spend == "replaying":
         replay = answered(
             router.dispatch(capture_request(request_id="req-2", key="idem-1"))
@@ -972,9 +978,7 @@ def test_a_grant_re_presented_after_it_was_spent_is_refused(
     # A freshly issued grant still replays the settled answer honestly, so the refusals
     # above are about the spent grant rather than about a closed claim.
     fault.mode = "issue"
-    again = answered(
-        router.dispatch(capture_request(request_id="req-4", key="idem-1"))
-    )
+    again = answered(router.dispatch(capture_request(request_id="req-4", key="idem-1")))
     assert again.result["evidence_id"] == first.evidence_id
     assert count(owned, ARTIFACTS) == 1
     assert count(owned, AUDIT) == 1
@@ -1142,7 +1146,9 @@ def _fault_at(
         def append(*args: Any, **keywords: Any) -> Mapping[str, Any]:
             written = real_append(*args, **keywords)
             if active["fault"]:
-                raise RuntimeError("injected fault after the business rows were written")
+                raise RuntimeError(
+                    "injected fault after the business rows were written"
+                )
             return written
 
         monkeypatch.setattr(evidence_handlers, "_append_direct_evidence", append)
@@ -1313,7 +1319,9 @@ def _raced(
         finally:
             client.close()
 
-    threads = [threading.Thread(target=speak, args=(index,)) for index in range(callers)]
+    threads = [
+        threading.Thread(target=speak, args=(index,)) for index in range(callers)
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:

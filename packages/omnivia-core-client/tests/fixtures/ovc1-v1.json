@@ -1,11 +1,11 @@
 {
   "format": "omnivia.ovc1.v1",
-  "description": "Language-neutral byte vectors for the frozen OVC1 frame used by every OmniVia Core client. A frame is the four ASCII magic bytes OVC1, an unsigned big-endian uint32 giving the JSON byte length, then exactly that many canonical UTF-8 JSON bytes and nothing after them. The JSON root is always an object, and the payload is at most 4194304 bytes inclusive. Canonical JSON is RFC 8785 (JCS) over the admitted I-JSON value domain: the same algorithm and the same admission policy OmniVia Core applies to a content-addressed Context Pack artifact. There is exactly one canonical form here and no wire-specific variant of it.",
+  "description": "Language-neutral byte vectors for the frozen OVC1 frame used by every OmniVia Core client. A frame is the four ASCII magic bytes OVC1, an unsigned big-endian uint32 giving the JSON byte length, then exactly that many canonical UTF-8 JSON bytes and nothing after them. The JSON root is always an object, and the payload is at most 8388608 bytes inclusive. Canonical JSON is RFC 8785 (JCS) over the admitted I-JSON value domain: the same algorithm and the same admission policy OmniVia Core applies to a content-addressed Context Pack artifact. There is exactly one canonical form here and no wire-specific variant of it.",
   "magic_hex": "4f564331",
   "magic_ascii": "OVC1",
   "length_field": "unsigned big-endian uint32, 4 bytes, the JSON byte count",
   "header_bytes": 8,
-  "maximum_json_bytes": 4194304,
+  "maximum_json_bytes": 8388608,
   "protocol_version": "1.0",
   "contract_version": "1.2",
   "canonicalization": {

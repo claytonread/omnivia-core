@@ -461,9 +461,19 @@ def test_capture_writes_the_canonical_rows_and_a_conformant_result(
     ) == [(EVIDENCE_CAPTURE_SOURCE_KIND, "verified", checksum)]
     assert rows(
         owned,
-        f"SELECT evidence_id, provenance_sequence, action, actor_kind, source_kind "
+        f"SELECT evidence_id, provenance_sequence, action, actor_kind, actor_id, "
+        f"source_kind "
         f"FROM {PROVENANCE}",
-    ) == [(result.evidence_id, 1, "captured", "service", EVIDENCE_CAPTURE_SOURCE_KIND)]
+    ) == [
+        (
+            result.evidence_id,
+            1,
+            "captured",
+            "agent",
+            LOCAL_PRINCIPAL,
+            EVIDENCE_CAPTURE_SOURCE_KIND,
+        )
+    ]
 
     # The audit event the coordinator wrote, and the reference the caller was handed.
     assert count(owned, AUDIT) == 1
@@ -533,6 +543,7 @@ def test_capture_admits_one_mebibyte_and_refuses_the_byte_after_it(
         )
     )
     assert result.content_length_bytes == EVIDENCE_CAPTURE_MAX_CONTENT_BYTES
+    assert found(router, "a" * 4096) == (result.evidence_id,)
 
     over = refusal(
         router.dispatch(
@@ -545,7 +556,8 @@ def test_capture_admits_one_mebibyte_and_refuses_the_byte_after_it(
             )
         )
     )
-    assert over.error.code == "invalid_request"
+    assert over.error.code == "size_limit_exceeded"
+    assert over.error.retry_class == "non_retryable"
 
     empty = refusal(
         router.dispatch(
@@ -594,10 +606,68 @@ def test_capture_admits_one_mebibyte_and_refuses_the_byte_after_it(
             )
         )
     )
-    assert oversized.error.code == "invalid_request"
+    assert oversized.error.code == "size_limit_exceeded"
+    assert oversized.error.retry_class == "non_retryable"
 
     # No refusal wrote anything: every bound is applied before the durable path.
     assert count(owned, ARTIFACTS) == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["principal_id", "path", "storage_options", "unexpected_future_field"],
+)
+def test_closed_capture_input_rejects_every_undeclared_field_before_a_write(
+    owned: Served,
+    router: ApplicationDispatcher,
+    field: str,
+) -> None:
+    response = refusal(
+        router.dispatch(
+            capture_request(
+                request_id="req-closed", key="idem-closed", **{field: "forged"}
+            )
+        )
+    )
+    assert response.error.code == "invalid_request"
+    assert count(owned, ARTIFACTS) == 0
+    assert count(owned, AUDIT) == 0
+
+
+def test_tokenless_content_is_refused_before_any_durable_effect(
+    owned: Served,
+    router: ApplicationDispatcher,
+) -> None:
+    response = refusal(
+        router.dispatch(
+            capture_request(
+                request_id="req-tokenless", key="idem-tokenless", text="!!!"
+            )
+        )
+    )
+    assert response.error.code == "invalid_request"
+    assert count(owned, ARTIFACTS) == 0
+    assert count(owned, BLOBS) == 0
+    assert count(owned, AUDIT) == 0
+    assert list(owned.layout.blobs_path.rglob("*")) == []
+
+
+def test_unicode_content_is_visible_through_the_production_tokenizer(
+    owned: Served,
+    router: ApplicationDispatcher,
+) -> None:
+    result = captured(
+        router.dispatch(
+            capture_request(
+                request_id="req-unicode",
+                key="idem-unicode",
+                text="ＦＯＯ café 漢字",
+            )
+        )
+    )
+    assert found(router, "foo") == (result.evidence_id,)
+    assert found(router, "CAFÉ") == (result.evidence_id,)
+    assert found(router, "漢字") == (result.evidence_id,)
 
 
 # --- source identity: exact reuse, or a conflict --------------------------------
@@ -703,6 +773,43 @@ def test_a_changed_observed_at_conflicts_and_the_stated_one_still_reuses(
 
     assert count(owned, ARTIFACTS) == 1
     assert count(owned, PROVENANCE) == 1
+
+
+def test_source_claim_identity_preserves_submicrosecond_precision(
+    owned: Served,
+    router: ApplicationDispatcher,
+) -> None:
+    first = captured(
+        router.dispatch(
+            capture_request(
+                request_id="req-ns-1",
+                key="idem-ns-1",
+                event_at="2026-07-30T00:00:00.000000001Z",
+            )
+        )
+    )
+    same = captured(
+        router.dispatch(
+            capture_request(
+                request_id="req-ns-2",
+                key="idem-ns-2",
+                event_at="2026-07-30T00:00:00.000000001Z",
+            )
+        )
+    )
+    assert same.evidence_id == first.evidence_id
+
+    changed = refusal(
+        router.dispatch(
+            capture_request(
+                request_id="req-ns-3",
+                key="idem-ns-3",
+                event_at="2026-07-30T00:00:00.000000002Z",
+            )
+        )
+    )
+    assert changed.error.code == "conflict"
+    assert count(owned, ARTIFACTS) == 1
 
 
 def test_a_second_principal_reuses_the_source_rather_than_forking_it(

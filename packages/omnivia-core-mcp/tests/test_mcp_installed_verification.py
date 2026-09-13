@@ -51,7 +51,7 @@ from omnivia_core_client import (
     write_owner_private,
 )
 from omnivia_core_mcp import server
-from omnivia_core_mcp.configuration import McpConfigurationError
+from omnivia_core_mcp.configuration import McpConfigurationError, read_configuration
 from omnivia_core_mcp.manifest import exposure_manifest
 
 pytestmark = pytest.mark.skipif(
@@ -248,7 +248,6 @@ def test_a_configuration_that_is_not_owner_private_is_refused(
 @pytest.mark.parametrize(
     ("name", "overrides"),
     [
-        ("no-credential.json", {"credential_reference": None}),
         ("absent-credential.json", {"credential_reference": ABSENT_REFERENCE}),
         (
             "ambiguous.json",
@@ -258,22 +257,48 @@ def test_a_configuration_that_is_not_owner_private_is_refused(
             },
         ),
     ],
-    ids=["no-credential", "absent-credential", "no-unambiguous-workspace"],
+    ids=["absent-credential", "no-unambiguous-workspace"],
 )
 def test_a_configuration_the_server_will_not_start_on_does_not_qualify(
     installed: Installed, name: str, overrides: dict[str, Any]
 ) -> None:
     """Every startup refusal is one qualification failure, and says nothing more.
 
-    The child refuses in its own words on its own stderr -- no dedicated
-    principal, nothing filed under the reference it carries, a workspace this
-    installation does not serve -- and that stderr is discarded. What the setup
+    The child refuses in its own words on its own stderr -- nothing filed under
+    the reference it carries, or no unambiguous workspace to select -- and that
+    stderr is discarded. What the setup
     command is told is that no exchange completed, which is the only thing that
     can be said without relaying a path, a reference or a workspace.
     """
     path = installed.write(name=name, **overrides)
     with pytest.raises(server.StartupError, match="did not complete"):
         server.verify_installed_setup(path)
+
+
+@pytest.mark.parametrize("legacy_mutation", [False, True])
+def test_a_legacy_configuration_is_upgraded_to_restricted_before_qualification(
+    installed: Installed, legacy_mutation: bool
+) -> None:
+    """The real child migrates the old document before its MCP handshake.
+
+    The live installation already holds the restricted setup provisioned by the
+    fixture. Startup reuses that authority, never treats a legacy true byte as
+    authoring consent, and publishes the dedicated principal and reference into
+    the same owner-private file. Qualification then observes the restricted six.
+    """
+    path = installed.write(
+        name=f"legacy-{legacy_mutation}.json",
+        credential_reference=None,
+        mutation_enabled=legacy_mutation,
+    )
+
+    assert server.verify_installed_setup(path) == 6
+
+    upgraded = read_configuration(path)
+    assert upgraded.credential_reference is not None
+    assert upgraded.principal_id != PRINCIPAL
+    assert upgraded.mutation_enabled is False
+    assert upgraded.allowed_workspace_ids == (installed.workspace_id,)
 
 
 def test_no_refusal_quotes_the_path_the_workspace_or_the_bearer(

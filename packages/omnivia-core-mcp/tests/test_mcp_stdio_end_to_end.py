@@ -51,10 +51,12 @@ fixture is also the only module in this package's tests that imports the runtime
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -68,7 +70,10 @@ import pytest
 from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from omnivia_core_client import Deadline, InstallationServiceConfig, stop_managed_local
 from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, exposure_manifest, tools
+
+from omnivia_core.contracts.v1 import to_canonical_json
 
 PROBE = Path(__file__).parent / "_mcp_stdio_probe.py"
 
@@ -169,8 +174,9 @@ def configuration_file(
     host's bearer under -- never the bearer, which is not reachable from this
     module at all. It is written only when it is given, because a document
     without one is exactly the shape every installation had before the installed
-    setup path existed, and refusing to start on that is what
-    :func:`live_configuration`'s callers are contrasted against.
+    setup path existed. This probe calls :func:`server.connect` directly and is
+    therefore refused on that shape; the production entry point's automatic
+    restricted migration is covered separately.
 
     `mutation_enabled` is written only when it is true, for the same reason: the
     default file is the one an existing installation already has -- the field
@@ -249,6 +255,15 @@ def parameters(config: Path, *args: str) -> StdioServerParameters:
     return StdioServerParameters(
         command=sys.executable,
         args=[str(PROBE), "--config", str(config), *args],
+        env=_environment(),
+    )
+
+
+def production_parameters(config: Path) -> StdioServerParameters:
+    """The installed entry point, with no test admission or transport seam."""
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "omnivia_core_mcp.server", "--config", str(config)],
         env=_environment(),
     )
 
@@ -1037,6 +1052,230 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
     )
 
 
+RECOVERY_SOURCE = "mcp-post-dispatch-recovery-note"
+RECOVERY_KEY = "mcp-post-dispatch-recovery-001"
+RECOVERY_TOKEN = "postdispatchrecoverytoken"
+RECOVERY_TEXT = (
+    f"A response-loss fixture whose unique lexical witness is {RECOVERY_TOKEN}.\n"
+)
+
+
+def recovery_capture() -> dict[str, Any]:
+    return {
+        "input": {
+            "source_native_id": RECOVERY_SOURCE,
+            "media_type": "text/markdown",
+            "text": RECOVERY_TEXT,
+        },
+        "idempotency_key": RECOVERY_KEY,
+    }
+
+
+async def _drop_committed_capture_response(
+    config: Path, service_pid: int
+) -> dict[str, Any]:
+    """Call once through a transport that discards Core's decoded reply."""
+    async with (
+        stdio_client(
+            parameters(config, "--drop-after-reply-pid", str(service_pid))
+        ) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        listed = await session.list_tools()
+        assert "evidence_capture" in {tool.name for tool in listed.tools}
+        result = await session.call_tool("evidence_capture", recovery_capture())
+        return result.model_dump(mode="json")
+
+
+async def _replay_capture_in_production_session(config: Path) -> dict[str, Any]:
+    """Start the production entry point, replay, then observe lexical readiness."""
+    async with (
+        stdio_client(production_parameters(config)) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        initialized = await session.initialize()
+        listed = await session.list_tools()
+        replay = await session.call_tool("evidence_capture", recovery_capture())
+        found = await session.call_tool("evidence_search", {"query": RECOVERY_TOKEN})
+        return {
+            "server_name": initialized.server_info.name,
+            "tools": [tool.name for tool in listed.tools],
+            "replay": replay.model_dump(mode="json"),
+            "found": found.model_dump(mode="json"),
+        }
+
+
+def _read_one(
+    database: Path, statement: str, values: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(statement, values).fetchall()
+    finally:
+        connection.close()
+    assert len(rows) == 1, rows
+    return tuple(rows[0])
+
+
+def test_a_lost_capture_response_replays_after_a_real_service_restart(
+    tmp_path: Path,
+) -> None:
+    """CQ-T10 / F-2 / F-6 / F-8: one effect across a hard restart.
+
+    The first MCP child uses the real installed authority and sends the real
+    capture. Its test transport waits for Core's complete decoded response -- so
+    the transaction and lexical barrier have finished -- then SIGKILLs that Core
+    process and raises instead of handing the reply to MCP. The host therefore
+    observes an ambiguous failure, not success.
+
+    After the old process is reaped, the database's canonical stored outcome is
+    read as the evidence of what committed. The installed managed-start command
+    starts a new Core process, then a *new production MCP process* takes the
+    ordinary managed-local attach path, obtains a fresh authenticated session,
+    and replays the same caller key and input. The replay must equal those stored
+    canonical bytes, be searchable, and leave exactly one artifact, blob, claim
+    and outcome.
+    """
+    with fixture.serving(
+        profile="authoring", seed=False, managed_endpoint=True
+    ) as service:
+        assert service.process.pid > 0
+        first_descriptor = service.descriptor()
+        config = live_configuration(
+            tmp_path,
+            service,
+            purposes=AUTHORING_PURPOSES,
+            mutation_enabled=True,
+        )
+        installation = InstallationServiceConfig(
+            installation_state=service.installation_state,
+            workspace_id=service.workspace_id,
+        )
+        replacement_may_be_running = False
+        try:
+            lost = anyio.run(
+                lambda: _drop_committed_capture_response(config, service.process.pid)
+            )
+            assert lost["is_error"] is True
+            assert lost["structured_content"] is None
+            assert "response was lost" in lost["content"][0]["text"]
+
+            first_lease = service.stop_and_read_lease()
+            (stored_outcome,) = _read_one(
+                service.database,
+                "SELECT o.outcome_json "
+                "FROM omnivia_idempotency_outcomes AS o "
+                "JOIN omnivia_idempotency_claims AS c "
+                "ON c.claim_id = o.claim_id AND c.workspace_id = o.workspace_id "
+                "WHERE c.workspace_id = ? AND c.principal_id = ? "
+                "AND c.operation = 'evidence.capture' AND c.idempotency_key = ?",
+                (service.workspace_id, service.principal_id, RECOVERY_KEY),
+            )
+            assert isinstance(stored_outcome, str)
+
+            executable = Path(sys.executable).parent / "omnivia-core-service"
+            restarted = subprocess.run(
+                [
+                    str(executable),
+                    "--managed-start",
+                    "--workspace",
+                    str(service.installation_state.parent / "workspace"),
+                    "--installation-state",
+                    str(service.installation_state),
+                    "--endpoint",
+                    first_descriptor.endpoint_uri,
+                    "--managed-start-log",
+                    str(service.installation_state.parent / "run" / "service.log"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            replacement_may_be_running = restarted.returncode == 0
+            assert restarted.returncode == 0, restarted.stderr
+            restart_result = json.loads(restarted.stdout)
+            assert restart_result["status"] == "started", restart_result
+
+            try:
+                observed = anyio.run(
+                    lambda: _replay_capture_in_production_session(config)
+                )
+            except BaseException as failure:
+                managed_log = service.installation_state.parent / "run" / "service.log"
+                said = (
+                    managed_log.read_text(encoding="utf-8", errors="replace")
+                    if managed_log.is_file()
+                    else "<no managed-start service log>"
+                )
+                raise AssertionError(
+                    f"the post-crash managed start failed; its service wrote {said!r}"
+                ) from failure
+            replacement_may_be_running = True
+            replacement = service.descriptor()
+            assert replacement.service_instance_id != (
+                first_descriptor.service_instance_id
+            )
+            assert replacement.process is not None
+            assert first_descriptor.process is not None
+            assert replacement.process.pid != first_descriptor.process.pid
+            assert replacement.fencing_generation > first_lease.fencing_generation
+
+            assert observed["server_name"] == "omnivia-core"
+            assert observed["tools"] == [
+                entry.tool_name for entry in exposure_manifest("authoring")
+            ]
+            replay = observed["replay"]
+            assert replay["is_error"] is False, replay
+            replayed_result = replay["structured_content"]
+            assert to_canonical_json(replayed_result) == stored_outcome
+
+            found = observed["found"]
+            assert found["is_error"] is False, found
+            evidence = found["structured_content"]["evidence"]
+            assert [entry["evidence_id"] for entry in evidence] == [
+                replayed_result["evidence_id"]
+            ]
+
+            stopped = stop_managed_local(installation, deadline=Deadline.after(30.0))
+            replacement_may_be_running = False
+            assert stopped.status == "stopped"
+
+            assert _read_one(
+                service.database,
+                "SELECT COUNT(*), MIN(content_checksum) "
+                "FROM omnivia_evidence_artifacts "
+                "WHERE workspace_id = ? AND source_kind = 'direct_submission' "
+                "AND source_native_id = ?",
+                (service.workspace_id, RECOVERY_SOURCE),
+            ) == (1, replayed_result["content_checksum"])
+            assert _read_one(
+                service.database,
+                "SELECT COUNT(*) FROM omnivia_blob_objects WHERE content_digest = ?",
+                (replayed_result["content_checksum"],),
+            ) == (1,)
+            assert _read_one(
+                service.database,
+                "SELECT COUNT(*) FROM omnivia_idempotency_claims "
+                "WHERE workspace_id = ? AND principal_id = ? "
+                "AND operation = 'evidence.capture' AND idempotency_key = ?",
+                (service.workspace_id, service.principal_id, RECOVERY_KEY),
+            ) == (1,)
+            assert _read_one(
+                service.database,
+                "SELECT COUNT(*) FROM omnivia_idempotency_outcomes AS o "
+                "JOIN omnivia_idempotency_claims AS c "
+                "ON c.claim_id = o.claim_id AND c.workspace_id = o.workspace_id "
+                "WHERE c.workspace_id = ? AND c.principal_id = ? "
+                "AND c.operation = 'evidence.capture' AND c.idempotency_key = ?",
+                (service.workspace_id, service.principal_id, RECOVERY_KEY),
+            ) == (1,)
+        finally:
+            if replacement_may_be_running:
+                stop_managed_local(installation, deadline=Deadline.after(30.0))
+
+
 def test_the_authoring_calls_cover_every_tool_the_profile_adds() -> None:
     """The coverage check for the wider profile, matching the one the six have.
 
@@ -1081,21 +1320,25 @@ def test_only_the_fixture_reaches_the_runtime() -> None:
                 assert not forbidden.search(statement), f"{module.name}: {statement}"
 
 
-def test_the_probe_stands_in_for_nothing_and_is_told_only_a_config_path(
+def test_the_ordinary_probe_uses_no_double_and_is_told_only_a_config_path(
     observed: dict[str, Any], live_service: fixture.GovernedService
 ) -> None:
     """Every answer above came through production code, not through a double.
 
-    Two halves. The probe declares no class -- no transport, no operation
-    stand-in, no session of its own -- and takes no endpoint and no workspace
-    argument: it is handed one configuration path and `server.connect` derives
-    the rest, which is the whole V06-6 change. And the session above brought back
-    workspace-specific values that no double in this tree holds. Neither alone is
-    sufficient: source without answers would not show the path was used, and
-    answers without source would not show what carried them.
+    The only class in the probe is the explicit post-dispatch fault injector used
+    by the restart test, and the ordinary path that produced ``observed`` never
+    enables it. The probe takes no endpoint and no workspace argument: it is
+    handed one configuration path and `server.connect` derives the rest, which
+    is the whole V06-6 change. The session above also brought back
+    workspace-specific values that no double in this tree holds.
     """
     source = PROBE.read_text(encoding="utf-8")
-    assert "class " not in source, "a transport or operation double needs a class"
+    classes = [
+        node.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ClassDef)
+    ]
+    assert classes == ["_DropAfterReplyTransport"]
     assert "--endpoint" not in source
     assert "--workspace-id" not in source
     assert source.count("server.connect(") == 1

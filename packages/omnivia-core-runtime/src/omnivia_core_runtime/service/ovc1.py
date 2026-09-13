@@ -21,7 +21,10 @@ from omnivia_core.contracts.v1.canonical_json import (
 MAGIC: Final = b"OVC1"
 LENGTH_BYTES: Final = 4
 HEADER_BYTES: Final = 8
-MAXIMUM_JSON_BYTES: Final = 4 * 1024 * 1024
+#: Eight MiB keeps the frame finite while admitting the worst canonical JSON
+#: expansion of a contract-valid 1 MiB direct text capture (six bytes per control
+#: character) plus the bounded request envelope.
+MAXIMUM_JSON_BYTES: Final = 8 * 1024 * 1024
 
 
 class OVC1Error(Exception):

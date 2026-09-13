@@ -46,7 +46,7 @@ from omnivia_core_runtime.storage.retrieval import (
     ProjectedFrontier,
     authorized_frontier,
     local_owner_label_grant,
-    normalize_query,
+    projection_text,
     query_tokens,
     rank_projected,
 )
@@ -70,10 +70,34 @@ RESOLUTION_US = m2.BASE_US + 10_000_000
 #: excludes the retrieval instant, so the two surfaces stay byte-identical and the bm25
 #: tie the assertions below need is preserved exactly.
 EXTRA_ARTIFACTS: tuple[tuple[str, str, str, int, int], ...] = (
-    ("evd-alpha-1", "doc-alpha-1", "archive://alpha/alpha/alpha.md", m2.BASE_US + 10, m2.BASE_US),
-    ("evd-gamma-1", "doc-gamma-1", "archive://gamma/one.md", m2.BASE_US + 20, m2.BASE_US),
-    ("evd-tie-a", "doc-alpha-2", "archive://alpha/two.md", m2.BASE_US + 30, m2.BASE_US + 1),
-    ("evd-tie-b", "doc-alpha-2", "archive://alpha/two.md", m2.BASE_US + 40, m2.BASE_US + 2),
+    (
+        "evd-alpha-1",
+        "doc-alpha-1",
+        "archive://alpha/alpha/alpha.md",
+        m2.BASE_US + 10,
+        m2.BASE_US,
+    ),
+    (
+        "evd-gamma-1",
+        "doc-gamma-1",
+        "archive://gamma/one.md",
+        m2.BASE_US + 20,
+        m2.BASE_US,
+    ),
+    (
+        "evd-tie-a",
+        "doc-alpha-2",
+        "archive://alpha/two.md",
+        m2.BASE_US + 30,
+        m2.BASE_US + 1,
+    ),
+    (
+        "evd-tie-b",
+        "doc-alpha-2",
+        "archive://alpha/two.md",
+        m2.BASE_US + 40,
+        m2.BASE_US + 2,
+    ),
 )
 
 #: Every phase `build_search_projection` runs, by the name it is reachable under. The
@@ -223,16 +247,22 @@ def test_lb_l2_a_build_activates_one_run_and_projects_every_artifact(
     assert outcome.document_count == 5
     assert outcome.build_digest == expected_digest(owned)
 
-    assert scalar(
-        owned,
-        "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
-        outcome.run_id,
-    ) == "succeeded"
-    assert scalar(
-        owned,
-        "SELECT active_run_id FROM omnivia_projection_ledger WHERE projection_id = ?",
-        fts.PROJECTION_ID,
-    ) == outcome.run_id
+    assert (
+        scalar(
+            owned,
+            "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
+            outcome.run_id,
+        )
+        == "succeeded"
+    )
+    assert (
+        scalar(
+            owned,
+            "SELECT active_run_id FROM omnivia_projection_ledger WHERE projection_id = ?",
+            fts.PROJECTION_ID,
+        )
+        == outcome.run_id
+    )
     assert (
         scalar(
             owned,
@@ -291,9 +321,10 @@ def test_lb_l4_an_interruption_at_any_phase_converges_on_the_next_build(
     outcome = build(owned)
     assert outcome.build_digest == expected_digest(owned)
     assert outcome.document_count == 5
-    assert fts.current_build(
-        owned.connection, workspace_id=WORKSPACE_ID
-    ).run_id == outcome.run_id
+    assert (
+        fts.current_build(owned.connection, workspace_id=WORKSPACE_ID).run_id
+        == outcome.run_id
+    )
     # Exactly one run reached the pointer, and no orphan content survived.
     assert (
         scalar(
@@ -349,12 +380,15 @@ def test_lb_l5_an_interruption_mid_append_resumes_from_the_last_checkpoint(
     assert outcome.run_id == interrupted_run
     assert outcome.document_count == 5
     assert outcome.build_digest == expected_digest(owned)
-    assert scalar(
-        owned,
-        "SELECT MAX(checkpoint_sequence) FROM omnivia_projection_run_checkpoints "
-        "WHERE run_id = ?",
-        outcome.run_id,
-    ) == 2
+    assert (
+        scalar(
+            owned,
+            "SELECT MAX(checkpoint_sequence) FROM omnivia_projection_run_checkpoints "
+            "WHERE run_id = ?",
+            outcome.run_id,
+        )
+        == 2
+    )
 
 
 def test_lb_l6_a_second_build_at_the_same_checkpoint_does_nothing(
@@ -387,11 +421,14 @@ def test_lb_l7_new_evidence_starts_a_fresh_run_that_supersedes_and_reclaims(
     assert second.epoch == first.epoch + 1
     assert second.document_count == 6
     assert second.build_digest == expected_digest(owned)
-    assert scalar(
-        owned,
-        "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
-        first.run_id,
-    ) == "superseded"
+    assert (
+        scalar(
+            owned,
+            "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
+            first.run_id,
+        )
+        == "superseded"
+    )
     # The superseded run's content is derived material the next build reproduced.
     assert (
         scalar(
@@ -412,7 +449,9 @@ def test_lb_l8_a_run_whose_source_moved_on_is_failed_not_activated(
     activate a projection that is behind the moment it lands. It is failed with a
     canonical error instead, and the next build starts at the current checkpoint.
     """
-    monkeypatch.setattr(fts, "_validate_run", lambda *a, **k: (_ for _ in ()).throw(Interrupted("x")))
+    monkeypatch.setattr(
+        fts, "_validate_run", lambda *a, **k: (_ for _ in ()).throw(Interrupted("x"))
+    )
     with pytest.raises(Interrupted):
         build(owned)
     monkeypatch.undo()
@@ -442,7 +481,9 @@ def test_lb_l8b_a_complete_run_killed_before_activation_is_landed_then_overtaken
     which is the only legal thing to do with it, and the same call then builds forward
     to the current checkpoint. One call in, level with the workspace out.
     """
-    monkeypatch.setattr(fts, "_activate_run", lambda *a, **k: (_ for _ in ()).throw(Interrupted("x")))
+    monkeypatch.setattr(
+        fts, "_activate_run", lambda *a, **k: (_ for _ in ()).throw(Interrupted("x"))
+    )
     with pytest.raises(Interrupted):
         build(owned)
     monkeypatch.undo()
@@ -459,11 +500,14 @@ def test_lb_l8b_a_complete_run_killed_before_activation_is_landed_then_overtaken
     assert outcome.document_count == 6
     assert outcome.build_digest == expected_digest(owned)
     assert outcome.run_id != stranded
-    assert scalar(
-        owned,
-        "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
-        stranded,
-    ) == "superseded"
+    assert (
+        scalar(
+            owned,
+            "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
+            stranded,
+        )
+        == "superseded"
+    )
     assert (
         scalar(
             owned,
@@ -484,22 +528,24 @@ def test_lb_l9_the_active_pointer_refuses_a_direct_update(owned: m2.Owned) -> No
     columns, and 0011's guard refuses one issued by hand under full write authority.
     """
     outcome = build(owned)
-    with pytest.raises(
-        sqlite3.DatabaseError, match="requires matching activation"
-    ), fenced_transaction(
-        owned.connection,
-        owned.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=owned.generation,
+    with (
+        pytest.raises(sqlite3.DatabaseError, match="requires matching activation"),
+        fenced_transaction(
+            owned.connection,
+            owned.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation,
+        ),
     ):
         owned.connection.execute(
             "UPDATE omnivia_projection_ledger SET active_run_id = ?, active_epoch = 99 "
             "WHERE projection_id = ?",
             ("forged-run", fts.PROJECTION_ID),
         )
-    assert fts.current_build(
-        owned.connection, workspace_id=WORKSPACE_ID
-    ).run_id == outcome.run_id
+    assert (
+        fts.current_build(owned.connection, workspace_id=WORKSPACE_ID).run_id
+        == outcome.run_id
+    )
 
 
 # --- reads ---------------------------------------------------------------------
@@ -508,7 +554,7 @@ def test_lb_l9_the_active_pointer_refuses_a_direct_update(owned: m2.Owned) -> No
 def test_lb_l10_an_unactivated_projection_is_unavailable_not_empty(
     owned: m2.Owned,
 ) -> None:
-    """"Nothing activated" must not read as "no results"; that is the silent success
+    """ "Nothing activated" must not read as "no results"; that is the silent success
     §20.7 forbids."""
     with pytest.raises(fts.ProjectionUnavailable):
         fts.open_search_projection(owned.connection, workspace_id=WORKSPACE_ID)
@@ -752,9 +798,10 @@ def test_lb_l22_the_index_is_reachable_only_after_it_is_materialised(
     found = fts.session_search_projection(owned.connection)
 
     assert found is opened
-    assert found.build.run_id == fts.current_build(
-        owned.connection, workspace_id=WORKSPACE_ID
-    ).run_id
+    assert (
+        found.build.run_id
+        == fts.current_build(owned.connection, workspace_id=WORKSPACE_ID).run_id
+    )
 
 
 def test_lb_l23_a_failed_rematerialisation_leaves_no_index_reachable(
@@ -777,7 +824,7 @@ def test_lb_l23_a_failed_rematerialisation_leaves_no_index_reachable(
     # the window that matters: the `temp` table the old handle named is already gone.
     monkeypatch.setattr(
         fts,
-        "normalize_query",
+        "projection_text",
         lambda _text: (_ for _ in ()).throw(Interrupted("x")),
     )
     with pytest.raises(Interrupted):
@@ -945,11 +992,13 @@ def test_lb_l25_the_query_tokenizer_agrees_with_the_projections_own(
         "   ",
         "",
         'alpha" OR "gamma',
+        "a" * 32_769,
+        "é" * 20_000,
     ):
-        # `normalize_query` on the way in on both sides, exactly as materialisation
-        # applies it to every document: the claim is that the two *tokenizers* agree,
-        # not that FTS5 normalizes.
-        assert query_tokens(probe) == fts5_tokens(normalize_query(probe)), probe
+        # `projection_text` on the way in on both sides, exactly as materialisation
+        # applies it to every document: the claim is that normalization, safe
+        # long-token splitting and the two tokenizers agree.
+        assert query_tokens(probe) == fts5_tokens(projection_text(probe)), probe
 
 
 # --- §20.12 F4: the production ranker, and the four forms it must not take ------
@@ -1004,8 +1053,8 @@ def test_lb_l26_f4_the_production_ranker_is_reachable_by_no_store_at_all(
         "omnivia_core_runtime.storage.projections.fts",
     ):
         assert forbidden not in imported
-    assert not any(name.startswith("omnivia_core_runtime.") for name in imported), sorted(
-        imported
+    assert not any(name.startswith("omnivia_core_runtime.") for name in imported), (
+        sorted(imported)
     )
 
     # 3. Nothing at module scope is a live handle, so no global and no closure could
@@ -1060,9 +1109,7 @@ def test_lb_l26_f4_the_production_ranker_is_reachable_by_no_store_at_all(
 
         return by_closure
 
-    def by_callback(
-        value: ProjectedFrontier, retrieve: Any
-    ) -> tuple[str, ...]:
+    def by_callback(value: ProjectedFrontier, retrieve: Any) -> tuple[str, ...]:
         return (*(i.candidate.evidence_id for i in value.candidates), retrieve())
 
     leaks = (
@@ -1074,7 +1121,8 @@ def test_lb_l26_f4_the_production_ranker_is_reachable_by_no_store_at_all(
     for leaked in leaks:
         assert "evd-tie-b" in leaked
     assert "evd-tie-b" not in {
-        candidate.evidence_id for candidate in rank_projected(narrowed, "alpha", limit=10)
+        candidate.evidence_id
+        for candidate in rank_projected(narrowed, "alpha", limit=10)
     }
 
 

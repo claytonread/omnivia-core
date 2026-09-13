@@ -59,7 +59,12 @@ from omnivia_core_runtime.service.mutation import (
     WORKSPACE_CONTRIBUTOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS, success
-from omnivia_core_runtime.service.ovc1 import HEADER_BYTES, decode_frame, encode_frame
+from omnivia_core_runtime.service.ovc1 import (
+    HEADER_BYTES,
+    MAXIMUM_JSON_BYTES,
+    decode_frame,
+    encode_frame,
+)
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.transport import (
@@ -964,7 +969,7 @@ def test_an_oversized_control_is_refused_before_it_is_buffered(
     tmp_path: Path,
 ) -> None:
     with served(tmp_path) as harness:
-        header = b"OVC1" + (8 * 1024 * 1024).to_bytes(4, "big")
+        header = b"OVC1" + (MAXIMUM_JSON_BYTES + 1).to_bytes(4, "big")
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(2.0)
         try:

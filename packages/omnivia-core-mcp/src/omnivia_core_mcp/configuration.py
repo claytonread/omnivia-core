@@ -10,12 +10,14 @@ filed it under.  Neither the secret nor its location is in this document.
 
 A `managed_local` configuration without a reference is the shape every
 installation had before that setup path existed.  It is still *read* -- this
-module parses a document it can describe rather than rejecting it -- but it names
-no dedicated principal, and :func:`~omnivia_core_mcp.server.connect` refuses to
-start a server on it: an installed server presents its own bearer or does not
-run, because the local endpoint would otherwise admit it as the service's own
-principal.  Re-running the installed setup for that host is what writes the
-reference.
+module parses a document it can describe rather than rejecting it -- but it
+names no dedicated principal. The console entry point passes it through
+:func:`~omnivia_core_mcp.server.upgrade_legacy_configuration`, which uses the
+protected local control to provision restricted authority and atomically
+publishes the reference before calling :func:`~omnivia_core_mcp.server.connect`.
+A direct caller that bypasses that entry point still gets a refusal from
+``connect``. There is never an unauthenticated fallback, because the local
+endpoint would otherwise admit the server as the service's own principal.
 
 Only explicit paths are accepted.  The reader opens a regular owner-private
 file without following symlinks, verifies that the pathname and descriptor keep
