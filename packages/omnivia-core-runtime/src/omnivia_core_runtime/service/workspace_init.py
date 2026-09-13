@@ -1272,9 +1272,12 @@ def _ensure_workspace_directory(path: Path) -> bool:
         # to create a child.  Calling ``mkdir`` on the child first follows an
         # existing junction in the parent and creates outside the intended tree.
         _ensure_workspace_directory(path.parent)
+    path_already_existed = False
     try:
         path.mkdir(mode=0o700)
     except FileExistsError:
+        path_already_existed = True
+    if path_already_existed:
         if not _is_real_directory_no_follow(path):
             raise OSError(f"refusing non-directory or reparse-point path: {path}")
         _pin_current_windows_path(path, directory=True)
