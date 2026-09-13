@@ -450,20 +450,19 @@ def _windows_owner_only(path: Path) -> bool:
     protected so a permissive parent cannot re-supply them, and leaves one allow
     ACE naming this process's own SID -- the SID `whoami /user` reports, not an
     account name, which is a second lookup that can resolve to another principal.
+    `/L` keeps a raced symbolic link from redirecting the ACL write onto its target.
 
     Short-circuits at the first failing step: a partly applied sequence is not a
     restriction, and the caller fails closed on the `False`.
     """
-    identity = _run(
-        [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"], timeout=15
-    )
+    identity = _run([_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"], timeout=15)
     found = _SID_RE.search(identity.stdout) if identity.returncode == 0 else None
     if found is None:
         return False
     sid = found.group()
     return all(
         _run(
-            [_system32("icacls.exe"), str(path), *arguments, "/q"], timeout=60
+            [_system32("icacls.exe"), str(path), *arguments, "/L", "/q"], timeout=60
         ).returncode
         == 0
         for arguments in (
@@ -506,7 +505,9 @@ _ADMIN_HOST: Final = "claude-code"
 _ADMIN_PROFILE: Final = "restricted"
 
 
-def _provisioned_configuration(cli: Path, installation: Path, workspace_id: str) -> Path:
+def _provisioned_configuration(
+    cli: Path, installation: Path, workspace_id: str
+) -> Path:
     """Provision this installation's protected MCP setup through the real CLI.
 
     `omnivia mcp configure` is R004 section 9.2's installed administration path:
@@ -593,7 +594,9 @@ def _mcp_error_codes(error: BaseException) -> list[int]:
     return sorted(codes)
 
 
-def _mcp_failure_message(stage: str, error: BaseException, server_diagnostic: bool) -> str:
+def _mcp_failure_message(
+    stage: str, error: BaseException, server_diagnostic: bool
+) -> str:
     classes = _exception_class_names(error)
     codes = _mcp_error_codes(error)
     return (
@@ -736,7 +739,9 @@ def _mcp_journey(
     """
     host = profile.name
     stage: list[str] = ["transport_entry"]
-    with tempfile.TemporaryDirectory(prefix="omnivia-mcp-diagnostic-") as diagnostic_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="omnivia-mcp-diagnostic-"
+    ) as diagnostic_dir:
         diagnostic_path = Path(diagnostic_dir) / "mcp-server-stderr.txt"
         try:
             with open(diagnostic_path, "w", encoding="utf-8") as diagnostic:
@@ -834,7 +839,9 @@ def _replacement_pid(descriptor: Path) -> int:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if descriptor.is_file():
-            document = _document(descriptor.read_text(encoding="utf-8"), "replacement descriptor")
+            document = _document(
+                descriptor.read_text(encoding="utf-8"), "replacement descriptor"
+            )
             process = document.get("process")
             pid = process.get("pid") if isinstance(process, dict) else None
             if isinstance(pid, int) and document.get("ready") is True:
@@ -987,9 +994,7 @@ def run(output: Path) -> dict[str, Any]:
                         "domain_scope": "standalone.qualification",
                         "evidence_disposition": "available",
                         "record_type": "memory.fact",
-                        "sources": [
-                            {"kind": "document", "source_id": SOURCE_ID}
-                        ],
+                        "sources": [{"kind": "document", "source_id": SOURCE_ID}],
                     },
                     idempotency_key="standard-memory-create-1",
                 ),
@@ -1058,7 +1063,9 @@ def run(output: Path) -> dict[str, Any]:
             )
             records = searched.get("records")
             if not isinstance(records, list) or not records:
-                raise JourneyError("CLI knowledge search did not find the approved record")
+                raise JourneyError(
+                    "CLI knowledge search did not find the approved record"
+                )
 
             config = _provisioned_configuration(cli, installation, workspace_id)
             hosts = root / "host-configurations"
@@ -1073,9 +1080,7 @@ def run(output: Path) -> dict[str, Any]:
                     "knowledge_search": {"query": QUERY_TOKEN},
                     "memory_search": {"query": QUERY_TOKEN},
                     "graph_traverse": {
-                        "start": [
-                            {"record_id": record_id, "version": approved_version}
-                        ]
+                        "start": [{"record_id": record_id, "version": approved_version}]
                     },
                     "context_pack_build": {
                         "query": QUERY_TOKEN,
@@ -1166,7 +1171,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"standalone journey failed: {error}", file=sys.stderr)
         return 1
     path = args.output / "standalone-journey-result.json"
-    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

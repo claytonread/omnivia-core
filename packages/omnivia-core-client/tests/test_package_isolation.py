@@ -208,7 +208,12 @@ def test_only_the_windows_pipe_module_reaches_for_ctypes() -> None:
     importers = sorted(
         path.name for path in MODULES if "ctypes" in _imported_roots(path)
     )
-    assert importers == ["discovery.py", "owner_private.py", "windows_pipe.py"]
+    assert importers == [
+        "discovery.py",
+        "managed_local.py",
+        "owner_private.py",
+        "windows_pipe.py",
+    ]
 
 
 @pytest.mark.parametrize("module_name", HTTP_ONLY_IMPORTS)

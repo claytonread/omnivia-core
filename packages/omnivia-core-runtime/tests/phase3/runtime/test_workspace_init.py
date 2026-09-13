@@ -95,6 +95,8 @@ def test_windows_allocated_init_restricts_the_restart_authorization_chain(
         (tmp_path, True),
         (storage, True),
         (workspace, True),
+        (workspace / "blobs", True),
+        (workspace / "indexes", True),
     ]
 
 
@@ -118,7 +120,90 @@ def test_windows_legacy_init_restricts_the_workspace_and_its_trust_anchor(
         (workspace / "locks", True),
         (tmp_path, True),
         (workspace, True),
+        (workspace / "blobs", True),
+        (workspace / "indexes", True),
     ]
+
+
+def test_windows_init_refuses_a_reparse_point_in_the_managed_home_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_home = tmp_path / "actual-home"
+    actual_home.mkdir()
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(actual_home, target_is_directory=True)
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = initialise_workspace(
+        workspace_root=linked_home / "workspace",
+        installation_root=linked_home / "installation-state",
+    )
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert not (actual_home / "workspace").exists()
+    assert seen == []
+
+
+def test_windows_allocated_init_refuses_a_reparse_workspaces_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    redirected = tmp_path / "redirected"
+    home.mkdir()
+    redirected.mkdir()
+    (home / "workspaces").symlink_to(redirected, target_is_directory=True)
+    workspace = home / "workspaces" / "ws-redirected"
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = initialise_allocated_workspace(
+        workspace_root=workspace,
+        installation_root=home / "installation-state",
+        target_workspace_id="ws-redirected",
+        display_name="Redirected",
+    )
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert not (redirected / "ws-redirected").exists()
+    assert seen == []
+
+
+def test_windows_init_refuses_a_symlinked_manifest_before_read_or_acl_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside-manifest.json"
+    outside.write_text('{"outside":true}', encoding="utf-8")
+    (workspace / "workspace.json").symlink_to(outside)
+    before = outside.read_bytes()
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == before
+    assert seen == []
 
 
 #: The lock file every refusal below is decided under.
@@ -231,7 +316,9 @@ def _digest(root: Path) -> dict[str, str]:
 
 def _changed(before: dict[str, str], after: dict[str, str]) -> set[str]:
     """Every entry the two digests disagree about -- created, removed or rewritten."""
-    return {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+    return {
+        name for name in set(before) | set(after) if before.get(name) != after.get(name)
+    }
 
 
 def _applied(layout: WorkspaceLayout) -> set[int]:
@@ -742,7 +829,7 @@ def test_windows_busy_refusal_does_not_rewrite_any_existing_acl(
 def test_a_workspace_missing_its_migrations_is_finished_and_reported_as_changed(
     tmp_path: Path,
 ) -> None:
-    """"nothing was changed" used to be emitted after applying every pending migration.
+    """ "nothing was changed" used to be emitted after applying every pending migration.
 
     `bootstrap_generation_one` and `apply_pending_migrations` are separate
     transactions, so a workspace holding the substrate row and none of the

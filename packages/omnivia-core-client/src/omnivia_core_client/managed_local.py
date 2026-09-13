@@ -74,6 +74,7 @@ Standard library plus this package's own parts.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -193,6 +194,11 @@ _WINDOWS_RESERVED_COMPONENTS: Final = frozenset(
 #: path or a caught exception, and none of the three may cross this boundary.
 _MANAGED_START_FAILED: Final = "the managed service could not be started"
 
+# Native Windows process-probe constants.  Signal zero is not a probe there.
+_PROCESS_QUERY_LIMITED_INFORMATION: Final = 0x1000
+_ERROR_ACCESS_DENIED: Final = 5
+_ERROR_INVALID_PARAMETER: Final = 87
+
 _POLL_SECONDS: Final = 0.05
 
 
@@ -308,9 +314,7 @@ class _Installation:
             # A digest, not `hash()`: string hashing is salted per interpreter
             # run, so `hash()` would name a different pipe every invocation.
             key = self.run_directory if self.registered else self.home
-            digest = hashlib.blake2s(
-                str(key).encode("utf-8")
-            ).hexdigest()[:16]
+            digest = hashlib.blake2s(str(key).encode("utf-8")).hexdigest()[:16]
             return f"pipe://omnivia-core-{digest}"
         if self.registered:
             directory = _registered_socket_directory(self.run_directory)
@@ -407,8 +411,7 @@ def _windows_unambiguous_workspace_component(
     if workspace_id.endswith((".", " ")):
         return False
     if any(
-        ord(character) < 32 or character in '<>:"/\\|?*'
-        for character in workspace_id
+        ord(character) < 32 or character in '<>:"/\\|?*' for character in workspace_id
     ):
         return False
     stem = workspace_id.split(".", 1)[0]
@@ -651,9 +654,7 @@ def connect_managed_local(
     # business rather than workspace state. Each component is created only below
     # a proved parent, and every existing component is checked no-follow and
     # owner-controlled before a descendant or log can be named through it.
-    run_authorization = _prepare_run_directory(
-        installation, config.workspace_id
-    )
+    run_authorization = _prepare_run_directory(installation, config.workspace_id)
     socket_directory = installation.socket_directory
     if (
         run_authorization is not None
@@ -736,10 +737,58 @@ def _request_stop(pid: int) -> None:
     os.kill(pid, signal.SIGTERM if break_event is None else break_event)
 
 
+def _windows_kernel32() -> Any | None:
+    """A minimally configured kernel32 process probe, or ``None`` if unavailable."""
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        return None
+    try:
+        kernel32 = loader("kernel32")
+        kernel32.OpenProcess.argtypes = (
+            ctypes.c_uint32,
+            ctypes.c_int32,
+            ctypes.c_uint32,
+        )
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int32
+        kernel32.GetLastError.argtypes = ()
+        kernel32.GetLastError.restype = ctypes.c_uint32
+    except Exception:  # noqa: BLE001 - an unusable API proves no process exit
+        return None
+    return kernel32
+
+
+def _windows_process_exists(pid: int, *, api: Any | None = None) -> bool:
+    """Probe a Windows PID without sending ``CTRL_C_EVENT`` via ``os.kill(pid, 0)``.
+
+    A handle or access-denied proves the process exists; invalid-parameter proves
+    the PID is absent. An unavailable API or unknown error is conservative: stop
+    eventually reports a lingering process instead of claiming an unproved exit.
+    """
+    kernel32 = api if api is not None else _windows_kernel32()
+    if kernel32 is None:
+        return True
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    error = int(kernel32.GetLastError())
+    if error == _ERROR_ACCESS_DENIED:
+        return True
+    return error != _ERROR_INVALID_PARAMETER
+
+
 def _process_exists(pid: int) -> bool:
+    if platform.system() == "Windows":
+        return _windows_process_exists(pid)
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
         return False
     return True
 

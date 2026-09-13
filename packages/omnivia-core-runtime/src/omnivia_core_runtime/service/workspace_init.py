@@ -429,6 +429,26 @@ def initialise_workspace(
     substrate out of the database rather than inferring it from the manifest file
     existing.
     """
+    return _initialise_workspace(
+        workspace_root=workspace_root,
+        installation_root=installation_root,
+        core_version=core_version,
+        harden_windows_on_success=True,
+    )
+
+
+def _initialise_workspace(
+    *,
+    workspace_root: Path,
+    installation_root: Path,
+    core_version: str,
+    harden_windows_on_success: bool,
+) -> WorkspaceInitResult:
+    """Implementation seam used to defer DACL repair until registration accepts."""
+    unsafe = _windows_unsafe_initialisation_tree(workspace_root, installation_root)
+    if unsafe is not None:
+        return unsafe
+
     qualification = qualify_filesystem(workspace_root)
     if not qualification.writable:
         return WorkspaceInitResult(
@@ -478,6 +498,7 @@ def initialise_workspace(
         manifest=manifest,
         minted=minted,
         restrict_parent_on_windows=False,
+        harden_windows_on_success=harden_windows_on_success,
     )
 
 
@@ -496,6 +517,14 @@ def initialise_allocated_workspace(
     derived ``workspace_root`` before filesystem work began.  A retry either
     finishes that exact target or refuses; it cannot select a replacement.
     """
+    unsafe = _windows_unsafe_initialisation_tree(
+        workspace_root,
+        installation_root,
+        workspace_id=target_workspace_id,
+    )
+    if unsafe is not None:
+        return unsafe
+
     qualification = qualify_filesystem(workspace_root)
     if not qualification.writable:
         return WorkspaceInitResult(
@@ -558,6 +587,7 @@ def initialise_allocated_workspace(
         manifest=manifest,
         minted=minted,
         restrict_parent_on_windows=True,
+        harden_windows_on_success=True,
     )
 
 
@@ -715,6 +745,117 @@ def _is_real_directory_no_follow(path: Path) -> bool:
     )
 
 
+def _is_real_file_no_follow(path: Path) -> bool:
+    """Whether ``path`` is an existing regular file, never a reparse point."""
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        == 0
+    )
+
+
+def _existing_windows_path_is_safe(path: Path, *, directory: bool) -> bool:
+    """Accept an absent name or an existing ordinary object of the expected kind."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return (
+        _is_real_directory_no_follow(path)
+        if directory
+        else _is_real_file_no_follow(path)
+    )
+
+
+def _windows_path_chain_is_safe(path: Path) -> bool:
+    """Verify every existing lexical component without resolving through links."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    for component in reversed((absolute, *absolute.parents)):
+        try:
+            os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        if not _is_real_directory_no_follow(component):
+            return False
+    return True
+
+
+def _windows_unsafe_initialisation_tree(
+    workspace_root: Path,
+    installation_root: Path,
+    *,
+    workspace_id: str | None = None,
+) -> WorkspaceInitResult | None:
+    """Refuse a Windows tree whose existing objects can redirect later writes.
+
+    ``Path.is_dir`` and ``Path.is_file`` follow junctions and symbolic links.  That
+    is unsuitable before workspace creation or ACL hardening: a junction at the
+    managed home, ``workspaces`` parent, workspace root, or installation root can
+    redirect every later child operation outside the selected installation.  The
+    known file entries are checked too, because a symlinked manifest, database, or
+    lock would otherwise be opened through that otherwise-clean directory chain.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return None
+
+    layout = WorkspaceLayout(root=workspace_root)
+    installation = InstallationLayout(root=installation_root)
+    directories = (
+        layout.root,
+        layout.blobs_path,
+        layout.indexes_path,
+        layout.locks_path,
+        installation.root,
+        installation.root / BACKUPS_DIR,
+        installation.root / ATTEMPTS_DIR,
+        installation.root / RUNTIME_DIR,
+        installation.catalogue,
+    )
+    files = (
+        layout.manifest_path,
+        layout.database_path,
+        layout.database_path.with_name(f"{layout.database_path.name}-wal"),
+        layout.database_path.with_name(f"{layout.database_path.name}-shm"),
+        layout.database_path.with_name(f"{layout.database_path.name}-journal"),
+        layout.locks_path / "storage.lock",
+        installation.installation_database,
+        installation.installation_lock,
+    )
+    safe = _windows_path_chain_is_safe(layout.root) and _windows_path_chain_is_safe(
+        installation.root
+    )
+    safe = safe and all(
+        _existing_windows_path_is_safe(path, directory=True) for path in directories
+    )
+    safe = safe and all(
+        _existing_windows_path_is_safe(path, directory=False) for path in files
+    )
+    if safe:
+        return None
+    return WorkspaceInitResult(
+        status=WorkspaceInitStatus.REFUSED,
+        refusal=WorkspaceInitRefusal.WRITE_FAILURE,
+        reason=(
+            "the Windows workspace or installation path contains an unsafe "
+            "link, reparse point, or filesystem object; nothing was written"
+        ),
+        workspace_id=workspace_id,
+        workspace_root=workspace_root,
+        installation_root=installation_root,
+        workspace_format_version=(
+            WORKSPACE_FORMAT_VERSION if workspace_id is not None else None
+        ),
+    )
+
+
 def _ensure_workspace_directory(path: Path) -> None:
     """Create ``path`` and missing parents, securing each Windows creation at once.
 
@@ -727,18 +868,19 @@ def _ensure_workspace_directory(path: Path) -> None:
     if not _WINDOWS_OWNER_CONTROL:
         path.mkdir(parents=True, exist_ok=True)
         return
+    if path.parent != path:
+        # Validate (or create and secure) every parent before asking the filesystem
+        # to create a child.  Calling ``mkdir`` on the child first follows an
+        # existing junction in the parent and creates outside the intended tree.
+        _ensure_workspace_directory(path.parent)
     try:
         path.mkdir(mode=0o700)
-    except FileNotFoundError:
-        if path.parent == path:
-            raise
-        _ensure_workspace_directory(path.parent)
-        _ensure_workspace_directory(path)
-        return
     except FileExistsError:
         if not _is_real_directory_no_follow(path):
-            raise
+            raise OSError(f"refusing non-directory or reparse-point path: {path}")
         return
+    if not _is_real_directory_no_follow(path):
+        raise OSError(f"created path is not a real directory: {path}")
     try:
         restrict_to_owner(path, directory=True)
     except OSError:
@@ -783,9 +925,35 @@ def _restrict_windows_workspace_layout(
             (layout.root.parent, layout.root) if restrict_parent else (layout.root,)
         )
     for directory in directories:
+        if not _is_real_directory_no_follow(directory):
+            raise OSError(
+                f"refusing to harden non-directory or reparse point: {directory}"
+            )
         restrict_to_owner(directory, directory=True)
-    if layout.manifest_path.is_file():
+    try:
+        manifest_exists = os.lstat(layout.manifest_path)
+    except FileNotFoundError:
+        manifest_exists = None
+    if manifest_exists is not None:
+        if not _is_real_file_no_follow(layout.manifest_path):
+            raise OSError(
+                "refusing to harden a non-file or reparse-point workspace manifest"
+            )
         restrict_to_owner(layout.manifest_path, directory=False)
+
+
+def harden_windows_workspace_layout(
+    *,
+    workspace_root: Path,
+    installation_root: Path,
+    restrict_parent: bool = False,
+) -> None:
+    """Apply the managed-client DACL only after every public refusal is decided."""
+    _restrict_windows_workspace_layout(
+        WorkspaceLayout(root=workspace_root),
+        installation_root,
+        restrict_parent=restrict_parent,
+    )
 
 
 def _bootstrap(
@@ -795,6 +963,7 @@ def _bootstrap(
     manifest: WorkspaceManifest,
     minted: bool,
     restrict_parent_on_windows: bool,
+    harden_windows_on_success: bool,
 ) -> WorkspaceInitResult:
     """Steps 1 to 6, under the workspace's own lifetime storage lock.
 
@@ -1035,17 +1204,30 @@ def _bootstrap(
             # of what the storage layer refuses to keep it that way, which a
             # pre-check duplicating `bootstrap_generation_one`'s conditions would
             # have needed and would have drifted from.
-            _restrict_windows_workspace_layout(
-                layout,
-                installation_root,
-                restrict_parent=restrict_parent_on_windows,
-            )
+            if harden_windows_on_success:
+                _restrict_windows_workspace_layout(
+                    layout,
+                    installation_root,
+                    restrict_parent=restrict_parent_on_windows,
+                )
             if minted:
+                if _WINDOWS_OWNER_CONTROL:
+                    _ensure_workspace_directory(layout.blobs_path)
+                    _ensure_workspace_directory(layout.indexes_path)
                 create_workspace(layout.root, manifest)
             else:
                 # Repair, not rewrite. A missing `blobs/`, `indexes/` or `locks/`
                 # is created; the manifest already on disk is untouched.
-                layout.create_directories()
+                if _WINDOWS_OWNER_CONTROL:
+                    for directory in (
+                        layout.root,
+                        layout.blobs_path,
+                        layout.indexes_path,
+                        layout.locks_path,
+                    ):
+                        _ensure_workspace_directory(directory)
+                else:
+                    layout.create_directories()
             InstallationLayout(root=installation_root).create(manifest.workspace_id)
         except (StorageError, OSError) as failure:
             return _write_failure(layout, manifest, installation_root, failure)
@@ -1192,6 +1374,7 @@ __all__ = [
     "WorkspaceInitRefusal",
     "WorkspaceInitResult",
     "WorkspaceInitStatus",
+    "harden_windows_workspace_layout",
     "initialise_allocated_workspace",
     "initialise_workspace",
     "render_result",

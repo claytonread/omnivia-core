@@ -44,7 +44,8 @@ from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitRefusal,
     WorkspaceInitResult,
     WorkspaceInitStatus,
-    initialise_workspace,
+    _initialise_workspace,
+    harden_windows_workspace_layout,
 )
 from omnivia_core_runtime.storage.installation_store import (
     AllocationState,
@@ -96,10 +97,11 @@ def initialise_and_register_managed_local_workspace(
     effect. Only a successful bootstrap -- fresh or already there -- goes on to
     register, and registration is itself idempotent and replay-safe.
     """
-    result = initialise_workspace(
+    result = _initialise_workspace(
         workspace_root=workspace_root,
         installation_root=installation_root,
         core_version=core_version,
+        harden_windows_on_success=False,
     )
     if result.status is WorkspaceInitStatus.REFUSED:
         return result
@@ -114,6 +116,24 @@ def initialise_and_register_managed_local_workspace(
         installation_root=installation_root,
     )
     if refused is None:
+        try:
+            harden_windows_workspace_layout(
+                workspace_root=result.workspace_root,
+                installation_root=installation_root,
+            )
+        except OSError:
+            return WorkspaceInitResult(
+                status=WorkspaceInitStatus.REFUSED,
+                refusal=WorkspaceInitRefusal.WRITE_FAILURE,
+                reason=(
+                    "the registered workspace could not be secured for managed "
+                    "local access"
+                ),
+                workspace_id=result.workspace_id,
+                workspace_root=result.workspace_root,
+                installation_root=installation_root,
+                workspace_format_version=result.workspace_format_version,
+            )
         return result
     refusal, reason = refused
     return WorkspaceInitResult(
@@ -188,11 +208,14 @@ def _claim_and_settle(
             ),
         )
 
-    request_digest = "sha256:" + hashlib.sha256(
-        to_canonical_json(
-            {"workspace_id": workspace_id, "workspace_root": str(workspace_root)}
-        ).encode("utf-8")
-    ).hexdigest()
+    request_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            to_canonical_json(
+                {"workspace_id": workspace_id, "workspace_root": str(workspace_root)}
+            ).encode("utf-8")
+        ).hexdigest()
+    )
 
     def _mint() -> NewInstallationAllocation:
         return NewInstallationAllocation(
@@ -271,9 +294,9 @@ def _claim_and_settle(
             return (WorkspaceInitRefusal.WRITE_FAILURE, _INTERNAL_FAULT)
 
         canonical = to_canonical_json(result)
-        outcome_digest = "sha256:" + hashlib.sha256(
-            canonical.encode("utf-8")
-        ).hexdigest()
+        outcome_digest = (
+            "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        )
         try:
             store.settle_allocation_success(
                 authority,

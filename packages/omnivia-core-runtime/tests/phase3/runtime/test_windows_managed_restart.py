@@ -9,6 +9,7 @@ drive the installed client through a real named-pipe service start and attachmen
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from omnivia_core_client import (
     stop_managed_local,
 )
 from omnivia_core_runtime.service.workspace_init import (
+    WorkspaceInitRefusal,
     WorkspaceInitStatus,
     initialise_allocated_workspace,
     initialise_workspace,
@@ -80,3 +82,37 @@ def test_allocated_init_creates_the_complete_windows_restart_trust_chain(
     assert result.status is WorkspaceInitStatus.INITIALISED
 
     _start_attach_stop(home, workspace_id)
+
+
+def test_windows_init_refuses_a_real_junction_before_writing_through_it(
+    tmp_path: Path,
+) -> None:
+    """The hosted row proves the native reparse attribute, not a POSIX stand-in."""
+    home = tmp_path / "junction-home"
+    redirected = tmp_path / "redirected"
+    home.mkdir()
+    redirected.mkdir()
+    junction = home / "workspaces"
+    command = Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "cmd.exe")
+    created = subprocess.run(
+        [str(command), "/d", "/c", "mklink", "/J", str(junction), str(redirected)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr or created.stdout
+    try:
+        workspace_id = "ws-windows-junction-0001"
+        result = initialise_allocated_workspace(
+            workspace_root=junction / workspace_id,
+            installation_root=home / "installation-state",
+            target_workspace_id=workspace_id,
+            display_name="Must not be redirected",
+        )
+    finally:
+        os.rmdir(junction)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert not (redirected / workspace_id).exists()

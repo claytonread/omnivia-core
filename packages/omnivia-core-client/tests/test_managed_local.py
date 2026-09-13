@@ -774,9 +774,7 @@ def test_an_admitted_workspace_id_still_resolves_inside_the_workspaces_root(
     connects(monkeypatch, [None, client()])
     seen_launches = launcher(monkeypatch)
 
-    connect_managed_local(
-        config(tmp_path, workspace_id), deadline=Deadline.after(30)
-    )
+    connect_managed_local(config(tmp_path, workspace_id), deadline=Deadline.after(30))
 
     [(argv, _timeout)] = seen_launches
     launched_workspace = Path(argv[argv.index("--workspace") + 1])
@@ -991,3 +989,51 @@ def test_a_socket_directory_not_owned_by_this_user_refuses_the_start(
 
     with pytest.raises(ManagedStartError):
         connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+@pytest.mark.parametrize(
+    ("handle", "error", "expected"),
+    [
+        (101, 0, True),
+        (0, managed_local._ERROR_ACCESS_DENIED, True),
+        (0, managed_local._ERROR_INVALID_PARAMETER, False),
+        (0, 1234, True),
+    ],
+    ids=["open-handle", "access-denied", "absent-pid", "unknown-fails-closed"],
+)
+def test_windows_process_liveness_uses_open_process_without_sending_a_signal(
+    handle: int, error: int, expected: bool
+) -> None:
+    opened: list[tuple[int, int, int]] = []
+    closed: list[int] = []
+    api = SimpleNamespace(
+        OpenProcess=lambda rights, inherit, pid: (
+            opened.append((rights, inherit, pid)) or handle
+        ),
+        CloseHandle=lambda value: closed.append(value) or 1,
+        GetLastError=lambda: error,
+    )
+
+    assert managed_local._windows_process_exists(4242, api=api) is expected
+    assert opened == [(managed_local._PROCESS_QUERY_LIMITED_INFORMATION, 0, 4242)]
+    assert closed == ([handle] if handle else [])
+
+
+def test_windows_process_liveness_refuses_to_claim_exit_when_api_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(managed_local, "_windows_kernel32", lambda: None)
+    assert managed_local._windows_process_exists(4242) is True
+
+
+def test_process_exists_never_calls_os_kill_with_signal_zero_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(managed_local.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(managed_local, "_windows_process_exists", lambda _pid: False)
+
+    def unexpected_kill(_pid: int, _signal: int) -> None:
+        raise AssertionError("Windows liveness must not use os.kill(pid, 0)")
+
+    monkeypatch.setattr(managed_local.os, "kill", unexpected_kill)
+    assert managed_local._process_exists(4242) is False

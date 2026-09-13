@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from omnivia_core_runtime.service import workspace_init as workspace_init_module
 from omnivia_core_runtime.service.authorization import AuthenticatedSession
 from omnivia_core_runtime.service.installation_bootstrap import (
     BOOTSTRAP_PRINCIPAL,
@@ -447,7 +448,9 @@ def test_the_installation_catalogue_being_busy_refuses_registration_without_cras
     tmp_path: Path,
 ) -> None:
     workspace_root, installation_root = _init(tmp_path)
-    holder = open_installation_store(installation_root, owner_instance_id="live-service")
+    holder = open_installation_store(
+        installation_root, owner_instance_id="live-service"
+    )
     try:
         result = initialise_and_register_managed_local_workspace(
             workspace_root=workspace_root, installation_root=installation_root
@@ -459,6 +462,39 @@ def test_the_installation_catalogue_being_busy_refuses_registration_without_cras
     assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
     # The workspace itself was still bootstrapped -- only registration was busy.
     assert result.workspace_id is not None
+
+
+def test_windows_catalogue_busy_refusal_does_not_rewrite_existing_acls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Managed ``--init`` defers trust-chain repair until registration accepts."""
+    workspace_root, installation_root = _init(tmp_path)
+    prepared = initialise_workspace(
+        workspace_root=workspace_root, installation_root=installation_root
+    )
+    assert prepared.status is WorkspaceInitStatus.INITIALISED
+
+    holder = open_installation_store(
+        installation_root, owner_instance_id="live-service"
+    )
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+    try:
+        result = initialise_and_register_managed_local_workspace(
+            workspace_root=workspace_root,
+            installation_root=installation_root,
+        )
+    finally:
+        holder.close()
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
+    assert seen == []
 
 
 def test_a_failed_verification_fails_closed_and_a_later_retry_recovers(

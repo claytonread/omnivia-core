@@ -84,14 +84,15 @@ def test_windows_restrict_root_issues_the_established_icacls_sequence(
     icacls = _expected_tool("icacls.exe")
     assert commands == [
         [_expected_tool("whoami.exe"), "/user", "/fo", "csv", "/nh"],
-        [icacls, str(target), "/setowner", f"*{_EXPECTED_SID}", "/q"],
-        [icacls, str(target), "/reset", "/q"],
+        [icacls, str(target), "/setowner", f"*{_EXPECTED_SID}", "/L", "/q"],
+        [icacls, str(target), "/reset", "/L", "/q"],
         [
             icacls,
             str(target),
             "/inheritance:r",
             "/grant:r",
             f"*{_EXPECTED_SID}:(OI)(CI)F",
+            "/L",
             "/q",
         ],
     ]

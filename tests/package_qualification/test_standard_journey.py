@@ -163,9 +163,17 @@ def test_windows_restriction_issues_the_established_icacls_sequence(
     icacls = _system32("icacls.exe")
     assert commands == [
         [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
-        [icacls, str(config), "/setowner", f"*{sid}", "/q"],
-        [icacls, str(config), "/reset", "/q"],
-        [icacls, str(config), "/inheritance:r", "/grant:r", f"*{sid}:F", "/q"],
+        [icacls, str(config), "/setowner", f"*{sid}", "/L", "/q"],
+        [icacls, str(config), "/reset", "/L", "/q"],
+        [
+            icacls,
+            str(config),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{sid}:F",
+            "/L",
+            "/q",
+        ],
     ]
 
 
@@ -610,7 +618,11 @@ def test_final_cleanup_routes_the_replacement_through_the_pid_only_stop() -> Non
 
 def _configure_snippet(path: str, *, command: str = "omnivia-core-mcp") -> str:
     return json.dumps(
-        {"mcpServers": {"omnivia-core": {"command": command, "args": ["--config", path]}}}
+        {
+            "mcpServers": {
+                "omnivia-core": {"command": command, "args": ["--config", path]}
+            }
+        }
     )
 
 
@@ -632,7 +644,12 @@ def test_the_journey_never_forges_its_own_mcp_config_document() -> None:
     `omnivia mcp configure`, through `InstalledConfigStore`, never by this
     journey composing the document itself.
     """
-    suspicious = {"principal_id", "mutation_enabled", "service_mode", "allowed_purposes"}
+    suspicious = {
+        "principal_id",
+        "mutation_enabled",
+        "service_mode",
+        "allowed_purposes",
+    }
     for node in ast.walk(_tree()):
         if isinstance(node, ast.Dict):
             keys = {
@@ -739,7 +756,10 @@ def test_provisioned_configuration_fails_closed_on_an_unexpected_diagnostic(
         module,
         "_run",
         lambda arguments, **_: subprocess.CompletedProcess(
-            arguments, 0, _configure_snippet(str(tmp_path / "config.json")), "unexpected"
+            arguments,
+            0,
+            _configure_snippet(str(tmp_path / "config.json")),
+            "unexpected",
         ),
     )
 
@@ -774,7 +794,11 @@ def test_provisioned_configuration_fails_closed_on_an_unexpected_diagnostic(
             }
         ),
         json.dumps(
-            {"mcpServers": {"omnivia-core": {"command": "omnivia-core-mcp", "args": []}}}
+            {
+                "mcpServers": {
+                    "omnivia-core": {"command": "omnivia-core-mcp", "args": []}
+                }
+            }
         ),
         json.dumps(
             {
@@ -833,7 +857,11 @@ def test_exception_class_names_flattens_nested_exception_groups() -> None:
     outer = BaseExceptionGroup(
         "outer", [nested, KeyError("secret-path/c"), ValueError("secret-path/d")]
     )
-    assert module._exception_class_names(outer) == ["KeyError", "TypeError", "ValueError"]
+    assert module._exception_class_names(outer) == [
+        "KeyError",
+        "TypeError",
+        "ValueError",
+    ]
 
 
 def test_exception_class_names_is_deterministic_regardless_of_nesting_order() -> None:
@@ -914,7 +942,9 @@ def test_mcp_failure_message_reports_codes_without_mcp_message_or_data() -> None
 
 def test_mcp_failure_message_is_safe_and_deterministic() -> None:
     module = _module()
-    error = RuntimeError("/Users/someone/secret-workspace api-key=sk-1234 leaked-content")
+    error = RuntimeError(
+        "/Users/someone/secret-workspace api-key=sk-1234 leaked-content"
+    )
     message = module._mcp_failure_message("knowledge_search", error, True)
     assert message == (
         "MCP standalone session did not complete: stage=knowledge_search "
@@ -1017,7 +1047,9 @@ def test_mcp_journey_removes_its_temporary_diagnostic_file(
         captured_dirs.append(Path(context.name))
         return context
 
-    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", _tracking_temporary_directory)
+    monkeypatch.setattr(
+        module.tempfile, "TemporaryDirectory", _tracking_temporary_directory
+    )
 
     async def _failing_session(command, arguments, calls, diagnostic, stage):
         stage[0] = "initialize"
@@ -1050,7 +1082,9 @@ def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
         "called": {
             name: {
                 "is_error": False,
-                "structured_content": {module._RESULT_KEYS[name]: _result(module, name)},
+                "structured_content": {
+                    module._RESULT_KEYS[name]: _result(module, name)
+                },
             }
             for name in names
         },
@@ -1102,10 +1136,13 @@ def test_each_generated_configuration_carries_only_the_accepted_stdio_fields(
 ) -> None:
     module = _module()
     profile = module.HOST_PROFILES[index]
-    command, arguments = "/opt/omnivia/bin/omnivia-core-mcp", [
-        "--config",
-        "/opt/omnivia/omnivia-mcp.json",
-    ]
+    command, arguments = (
+        "/opt/omnivia/bin/omnivia-core-mcp",
+        [
+            "--config",
+            "/opt/omnivia/omnivia-mcp.json",
+        ],
+    )
 
     text = module._host_configuration(profile, command, arguments)
 
@@ -1199,10 +1236,10 @@ _REJECTED: dict[str, object] = {
     "second_server": lambda p: _render(
         p, {"omnivia-core": _entry(), "second": _entry()}
     ),
-    "wrong_table_key": lambda p: _render(p, {"omnivia-core": _entry()}, table="servers"),
-    "extra_top_level_key": lambda p: _render(
-        p, {"omnivia-core": _entry()}, extra=True
+    "wrong_table_key": lambda p: _render(
+        p, {"omnivia-core": _entry()}, table="servers"
     ),
+    "extra_top_level_key": lambda p: _render(p, {"omnivia-core": _entry()}, extra=True),
     "command_absent": lambda p: _render(
         p, {"omnivia-core": {"args": list(_ARGUMENTS)}}
     ),
@@ -1248,9 +1285,7 @@ def test_an_unaccepted_host_configuration_fails_closed(index: int, case: str) ->
     profile = module.HOST_PROFILES[index]
 
     with pytest.raises(module.JourneyError) as excinfo:
-        module._accepted_launch(
-            _REJECTED[case](profile), profile, _COMMAND, _ARGUMENTS
-        )
+        module._accepted_launch(_REJECTED[case](profile), profile, _COMMAND, _ARGUMENTS)
 
     assert str(excinfo.value) == (
         f"the {profile.name} configuration was not an accepted stdio launch"
@@ -1259,7 +1294,7 @@ def test_an_unaccepted_host_configuration_fails_closed(index: int, case: str) ->
 
 @pytest.mark.parametrize("index", [0, 1, 2])
 @pytest.mark.parametrize(
-    "text", ["", "not a configuration at all", "{\"mcpServers\":", "[[[["]
+    "text", ["", "not a configuration at all", '{"mcpServers":', "[[[["]
 )
 def test_a_malformed_host_configuration_fails_closed(index: int, text: str) -> None:
     module = _module()

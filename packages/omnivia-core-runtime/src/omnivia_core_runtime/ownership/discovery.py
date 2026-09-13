@@ -133,6 +133,10 @@ def _restrict_windows(path: Path, *, directory: bool) -> None:  # pragma: no cov
     would have just granted it. The chain is created by this installation's own
     user, so the first case is the one that shows up.
 
+    Every invocation carries `/L`, so a name replaced by a symbolic link between
+    validation and the tool call is modified as a link rather than redirecting the
+    ACL write onto its target.
+
     `/reset` then drops the *explicit* entries, which `/inheritance:r` does not
     touch -- an installer's or a user's grant to a group would otherwise survive a
     restriction the POSIX `chmod` clears unconditionally. `/inheritance:r` drops the
@@ -159,7 +163,7 @@ def _restrict_windows(path: Path, *, directory: bool) -> None:  # pragma: no cov
         ("/inheritance:r", "/grant:r", f"*{owner}:{rights}"),
     ):
         completed = subprocess.run(
-            [_system32("icacls.exe"), str(path), *arguments, "/q"],
+            [_system32("icacls.exe"), str(path), *arguments, "/L", "/q"],
             capture_output=True,
             text=True,
             timeout=60,

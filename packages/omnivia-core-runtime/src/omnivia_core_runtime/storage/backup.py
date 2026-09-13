@@ -112,8 +112,9 @@ def _windows_restrict_root(path: Path) -> bool:
     token rather than the DACL; `/reset` drops explicit entries `/inheritance:r`
     does not touch; `/inheritance:r` with `/grant:r` drops the inherited entries
     too and leaves one allow ACE naming the owning OS user's own SID, read from
-    `whoami /user`'s closed CSV grammar. Every step runs in order and the first
-    failure ends the sequence.
+    `whoami /user`'s closed CSV grammar. Every invocation carries `/L`, so a raced
+    symbolic link cannot redirect the ACL write onto its target. Every step runs in
+    order and the first failure ends the sequence.
     """
     try:
         identity = subprocess.run(
@@ -133,7 +134,7 @@ def _windows_restrict_root(path: Path) -> bool:
             ("/inheritance:r", "/grant:r", f"*{sid}:{_WINDOWS_ROOT_RIGHTS}"),
         ):
             completed = subprocess.run(
-                [_system32("icacls.exe"), str(path), *arguments, "/q"],
+                [_system32("icacls.exe"), str(path), *arguments, "/L", "/q"],
                 capture_output=True,
                 text=True,
                 timeout=60,

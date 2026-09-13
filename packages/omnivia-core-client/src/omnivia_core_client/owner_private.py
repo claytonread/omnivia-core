@@ -601,6 +601,9 @@ def _windows_restrict_to_owner(path: Path, *, directory: bool) -> bool:
     /user`'s closed CSV grammar, the same one this repository's other Windows
     SID readers use, rather than from a `ctypes` token query.
 
+    Every invocation carries `/L`, so a name replaced by a symbolic link between
+    validation and the tool call cannot redirect the ACL write onto its target.
+
     `directory` is why this takes it rather than asking the filesystem: the
     rights an owner-only object needs differ by kind -- `(OI)(CI)F` so a
     directory's children inherit this one entry, or plain `F` for a file, which
@@ -635,7 +638,7 @@ def _windows_restrict_to_owner(path: Path, *, directory: bool) -> bool:
             ("/inheritance:r", "/grant:r", f"*{sid}:{rights}"),
         ):
             completed = subprocess.run(
-                [_system32("icacls.exe"), str(path), *arguments, "/q"],
+                [_system32("icacls.exe"), str(path), *arguments, "/L", "/q"],
                 capture_output=True,
                 text=True,
                 timeout=60,
