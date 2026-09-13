@@ -666,6 +666,7 @@ def execute_mutation(
     grant: MutationGrant | None,
     context: AuthorizedApplicationContext,
     equivalence: IdempotencyEquivalence,
+    compatible_equivalences: tuple[IdempotencyEquivalence, ...] = (),
     precondition: PreconditionReader | None = None,
     mutate: DomainMutation,
     validate_result: ResultValidator,
@@ -704,9 +705,13 @@ def execute_mutation(
 
     `equivalence` is the accepted contract function's own output for this request, not a
     second opinion computed here: `idempotency_equivalence()` remains the single
-    authority for what makes two requests the same request. It is cross-checked against
-    the grant and the context below, so an equivalence describing some other request
-    cannot be used to reach this one's stored answer.
+    authority for what makes two requests the same request. A handler may also supply a
+    bounded set of `compatible_equivalences` for legacy wire spellings that the
+    operation itself declares semantically identical. Each is produced by that same
+    contract function, must carry the exact primary scope, and is accepted only when
+    resolving an existing claim; every new claim stores the primary fingerprint. The
+    primary is cross-checked against the grant and context below, so an equivalence
+    describing some other request cannot be used to reach this one's stored answer.
     """
     allocator = allocate_identifier or _allocate_identifier
     if not isinstance(grant, MutationGrant) or not grant.server_issued:
@@ -754,6 +759,14 @@ def execute_mutation(
         or scope.idempotency_key != key
     ):
         raise MutationDenied(_MESSAGE_EQUIVALENCE_MISMATCH)
+    if len(compatible_equivalences) > 2 or any(
+        candidate.scope != scope for candidate in compatible_equivalences
+    ):
+        raise MutationDenied(_MESSAGE_EQUIVALENCE_MISMATCH)
+    accepted_fingerprints = frozenset(
+        (equivalence.fingerprint,)
+        + tuple(candidate.fingerprint for candidate in compatible_equivalences)
+    )
     # The grant names the request it was issued for. A grant for the same operation and
     # scope but a different body, key or precondition is refused here -- before the
     # transaction, and therefore before any handler could run.
@@ -782,7 +795,7 @@ def execute_mutation(
         existing = _find_claim(fenced, grant, key)
         if existing is not None:
             claim_id, stored_digest, original_audit_ref = existing
-            if stored_digest != equivalence.fingerprint:
+            if stored_digest not in accepted_fingerprints:
                 raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
             # An honest replay runs no domain code, but it does spend the fresh grant it
             # was presented with: the row below is what makes that durable, so the grant

@@ -107,6 +107,7 @@ from omnivia_core.contracts.v1 import (
     EvidenceCaptureSizeLimitError,
     EvidenceSearchInput,
     EvidenceSearchResult,
+    IdempotencyEquivalence,
     PageMetadata,
     SourceReference,
     canonical_timestamp_nanoseconds,
@@ -517,12 +518,8 @@ class EvidenceHandlers:
                 ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
             )
 
-        equivalence = idempotency_equivalence(
-            context.request.operation,
-            context.request.metadata,
-            submitted.to_wire(),
-            principal_id=context.principal,
-            workspace_id=context.workspace_id,
+        equivalence, compatible_equivalences = _capture_idempotency_equivalences(
+            context, submitted, content
         )
         grant = issue_mutation_grant(
             context.authorization,
@@ -586,6 +583,7 @@ class EvidenceHandlers:
             grant=grant,
             context=context.authorization,
             equivalence=equivalence,
+            compatible_equivalences=compatible_equivalences,
             mutate=mutate,
             validate_result=_valid_capture_result,
             clock=self.clock,
@@ -838,6 +836,49 @@ def _lexical_witness(content: bytes, source_native_id: str) -> str:
     objects merely to validate the post-commit barrier.
     """
     return first_query_token(content.decode("utf-8")) or source_native_id
+
+
+def _capture_idempotency_equivalences(
+    context: OperationContext, submitted: EvidenceCaptureInput, content: bytes
+) -> tuple[IdempotencyEquivalence, tuple[IdempotencyEquivalence, ...]]:
+    """Canonical capture identity plus the two pre-canonical wire spellings.
+
+    ``text`` and ``content_base64`` carry the same contract value.  New settlements
+    always fingerprint the canonical RFC 4648 spelling, which is compact enough for
+    OVC1 and independent of which public form the caller chose.  Claims written by an
+    older Core may instead contain the caller's exact spelling (including a text form
+    or a valid non-canonical pad-bit spelling), so those contract-computed
+    fingerprints are retained as read-only replay aliases.  They can answer an
+    existing claim but are never written for a new one.
+    """
+    original = submitted.to_wire()
+    canonical = dict(original)
+    canonical.pop("text", None)
+    canonical["content_base64"] = base64.b64encode(content).decode("ascii")
+
+    text_form = dict(canonical)
+    text_form.pop("content_base64")
+    text_form["text"] = content.decode("utf-8")
+
+    def equivalence_for(payload: Mapping[str, Any]) -> IdempotencyEquivalence:
+        return idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            payload,
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+    primary = equivalence_for(canonical)
+    alternatives: list[IdempotencyEquivalence] = []
+    for spelling in (original, text_form):
+        candidate = equivalence_for(spelling)
+        if candidate.fingerprint != primary.fingerprint and all(
+            candidate.fingerprint != existing.fingerprint
+            for existing in alternatives
+        ):
+            alternatives.append(candidate)
+    return primary, tuple(alternatives)
 
 
 def _microseconds(value: str | None) -> int | None:

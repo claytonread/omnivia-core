@@ -92,6 +92,7 @@ from omnivia_core.contracts.v1 import (
     ResponseEnvelope,
     SuccessResponseEnvelope,
     get_operation_metadata,
+    idempotency_equivalence,
     validate_evidence_capture_result,
 )
 
@@ -868,6 +869,57 @@ def test_a_same_key_replay_is_answered_and_a_changed_body_conflicts(
         )
     )
     assert conflict.error.code == "idempotency_conflict"
+    assert count(owned, ARTIFACTS) == 1
+    assert count(owned, AUDIT) == 1
+
+
+def test_a_parent_text_fingerprint_replays_after_capture_canonicalization(
+    owned: Served,
+    router: ApplicationDispatcher,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim settled before compact transport remains replayable after upgrade."""
+    current = evidence_handlers._capture_idempotency_equivalences
+
+    def parent_equivalence(
+        context: Any, submitted: Any, content: bytes
+    ) -> tuple[Any, tuple[Any, ...]]:
+        del content
+        return (
+            idempotency_equivalence(
+                context.request.operation,
+                context.request.metadata,
+                submitted.to_wire(),
+                principal_id=context.principal,
+                workspace_id=context.workspace_id,
+            ),
+            (),
+        )
+
+    monkeypatch.setattr(
+        evidence_handlers, "_capture_idempotency_equivalences", parent_equivalence
+    )
+    primary = answered(
+        router.dispatch(capture_request(request_id="req-parent", key="idem-upgrade"))
+    )
+    monkeypatch.setattr(
+        evidence_handlers, "_capture_idempotency_equivalences", current
+    )
+
+    raw = submission()["text"].encode("utf-8")
+    replay = answered(
+        router.dispatch(
+            capture_request(
+                request_id="req-current",
+                key="idem-upgrade",
+                text=None,
+                content_base64=base64.b64encode(raw).decode("ascii"),
+            )
+        )
+    )
+
+    assert replay.result == primary.result
+    assert replay.metadata.audit_reference == primary.metadata.audit_reference
     assert count(owned, ARTIFACTS) == 1
     assert count(owned, AUDIT) == 1
 

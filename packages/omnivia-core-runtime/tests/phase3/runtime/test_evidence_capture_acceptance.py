@@ -746,10 +746,13 @@ def test_each_accepted_form_settles_with_a_complete_and_attributable_record(
 
     # The idempotency settlement: one claim over the contract's own fingerprint for this
     # request, one terminal success outcome, and one `executed` grant expenditure.
+    canonical_input = dict(request.input)
+    canonical_input.pop("text", None)
+    canonical_input["content_base64"] = base64.b64encode(content).decode("ascii")
     equivalence = idempotency_equivalence(
         request.operation,
         request.metadata,
-        request.input,
+        canonical_input,
         principal_id=PRINCIPAL,
         workspace_id=WORKSPACE_ID,
     )

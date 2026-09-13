@@ -1127,7 +1127,9 @@ def test_an_input_the_contract_refuses_never_reaches_the_client(
         {
             "source_native_id": "oversize-text",
             "media_type": "text/plain",
-            "text": "a" * (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 1),
+            # Larger than OVC1 itself, proving the adapter never serializes or
+            # base64-encodes in proportion to this caller-controlled value.
+            "text": "a" * (4 * 1024 * 1024 + 1),
         },
         {
             "source_native_id": "oversize-base64",
@@ -1145,10 +1147,13 @@ def test_capture_size_refusal_is_classified_by_core_and_relayed_by_mcp(
 
     def too_large(request: RequestEnvelope) -> ResponseEnvelope:
         expected = dict(payload)
-        text = expected.pop("text", None)
-        if isinstance(text, str):
-            expected["content_base64"] = base64.b64encode(text.encode()).decode("ascii")
+        expected.pop("text", None)
+        expected.pop("content_base64", None)
+        expected["content_base64"] = "A" * (
+            4 * ((EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3) + 4
+        )
         assert request.input == expected
+        assert len(json.dumps(request.input).encode("utf-8")) < 4 * 1024 * 1024
         return ErrorResponseEnvelope(
             metadata=response_metadata(request),
             error=ApiError(

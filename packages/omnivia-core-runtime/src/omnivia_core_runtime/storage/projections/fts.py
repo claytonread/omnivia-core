@@ -137,7 +137,7 @@ PROJECTION_KIND: Final = "evidence.search"
 #: is built with. Both are recorded on every run so a build made under one profile is
 #: distinguishable from a build made under another rather than silently comparable.
 SCHEMA_VERSION: Final = "0012"
-PROFILE_VERSION: Final = "fts5.unicode61.nodiacritics.2"
+PROFILE_VERSION: Final = "fts5.unicode61.nodiacritics.3"
 
 #: The tokenizer, stated once. `remove_diacritics 0` is the load-bearing half: with
 #: removal on, `unicode61` folds combining marks away by its own internal table, and the
@@ -904,6 +904,11 @@ def _plan_run(
             "WHERE l.projection_id = ?",
             (workspace_id, PROJECTION_ID),
         ).fetchone()
+        declared_epoch_row = fenced.execute(
+            "SELECT MAX(target_epoch) FROM omnivia_projection_runs "
+            "WHERE workspace_id = ? AND projection_id = ?",
+            (workspace_id, PROJECTION_ID),
+        ).fetchone()
 
     in_flight_compatible = in_flight is not None and (
         str(in_flight[4]) == SCHEMA_VERSION and str(in_flight[5]) == PROFILE_VERSION
@@ -951,7 +956,16 @@ def _plan_run(
     if in_flight is None and active_checkpoint == checkpoint and active_compatible:
         return None
 
-    epoch = active_epoch + 1
+    # Failed declarations are append-preserved too.  Advancing only from the active
+    # ledger epoch would recreate their deterministic ``(epoch, checkpoint)`` run id
+    # and make every restart collide with history.  A new declaration therefore moves
+    # beyond both the active pointer and every epoch ever declared for this workspace.
+    declared_epoch = (
+        int(declared_epoch_row[0])
+        if declared_epoch_row is not None and declared_epoch_row[0] is not None
+        else 0
+    )
+    epoch = max(active_epoch, declared_epoch) + 1
     run_id = f"{PROJECTION_ID}-{epoch}-{checkpoint}"
     with fenced_transaction(
         connection, identity, workspace_id=workspace_id, fencing_generation=generation

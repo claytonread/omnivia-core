@@ -146,6 +146,7 @@ from omnivia_core_client import (
 )
 
 from omnivia_core.contracts.v1 import (
+    EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     CapabilityRequirement,
     ClientIdentity,
     ContractDecodeError,
@@ -215,6 +216,15 @@ CALL_TIMEOUT_SECONDS: Final = 30.0
 
 #: Budget for one connect, including the live probe behind it.
 CONNECT_TIMEOUT_SECONDS: Final = 30.0
+
+#: One strict-base64 spelling just beyond the largest encoded capture.  Oversized
+#: caller material is replaced with this bounded sentinel before OVC1 serialization,
+#: so Core still owns the canonical ``size_limit_exceeded`` response without this
+#: adapter allocating in proportion to an attacker-controlled input.
+_CAPTURE_MAX_BASE64_LENGTH: Final = 4 * (
+    (EVIDENCE_CAPTURE_MAX_CONTENT_BYTES + 2) // 3
+)
+_CAPTURE_OVERSIZE_SENTINEL_LENGTH: Final = _CAPTURE_MAX_BASE64_LENGTH + 4
 
 #: Budget for reaching a managed-local service, which is a different question
 #: from reaching one that is already up: it covers the probe, a service being
@@ -1052,8 +1062,10 @@ def _request(
             + (f" (or {len(unknown) - 1} other(s))" if len(unknown) > 1 else "")
             + f"; its advertised schema declares {sorted(advertised)} and is closed"
         )
-    _refuse_uncanonical(exposed, payload)
-    payload = _transport_payload(exposed, payload)
+    oversized_capture = _refuse_uncanonical(exposed, payload)
+    payload = _transport_payload(
+        exposed, payload, oversized_capture=oversized_capture
+    )
     required = entry.required_capability
     request_id = f"mcp-{uuid.uuid4()}"
     return RequestEnvelope(
@@ -1085,7 +1097,10 @@ def _request(
 
 
 def _transport_payload(
-    exposed: ExposedOperation, payload: Mapping[str, Any]
+    exposed: ExposedOperation,
+    payload: Mapping[str, Any],
+    *,
+    oversized_capture: bool = False,
 ) -> dict[str, Any]:
     """Choose the compact equivalent capture representation for Core's wire.
 
@@ -1099,6 +1114,11 @@ def _transport_payload(
     """
     compact = dict(payload)
     if exposed.operation != "evidence.capture":
+        return compact
+    if oversized_capture:
+        compact.pop("text", None)
+        compact.pop("content_base64", None)
+        compact["content_base64"] = "A" * _CAPTURE_OVERSIZE_SENTINEL_LENGTH
         return compact
     value = compact.pop("text", None)
     if isinstance(value, str):
@@ -1120,7 +1140,9 @@ def _refuse_reserved(exposed: ExposedOperation, supplied: Mapping[str, Any]) -> 
         )
 
 
-def _refuse_uncanonical(exposed: ExposedOperation, payload: Mapping[str, Any]) -> None:
+def _refuse_uncanonical(
+    exposed: ExposedOperation, payload: Mapping[str, Any]
+) -> bool:
     """Refuse an input the operation's own canonical contract does not accept.
 
     The advertised wrapper proves a call is the right *shape* and the projected
@@ -1145,15 +1167,17 @@ def _refuse_uncanonical(exposed: ExposedOperation, payload: Mapping[str, Any]) -
     """
     decode = _CANONICAL_INPUT.get(exposed.operation)
     if decode is None:
-        return
+        return False
     try:
+        if exposed.operation == "evidence.capture" and _capture_exceeds_limit(payload):
+            return True
         decode(dict(payload))
     except EvidenceCaptureSizeLimitError:
         # The Application Contract gives an over-limit capture its own canonical
         # error code.  Let the service classify it so MCP relays the same typed
         # response as in-process and local IPC callers instead of replacing it with
         # this adapter's uncoded preflight refusal.
-        return
+        return True
     except (ContractDecodeError, ContractSemanticError) as refusal:
         raise ValueError(
             "the input this call carries is not a valid document for "
@@ -1161,6 +1185,46 @@ def _refuse_uncanonical(exposed: ExposedOperation, payload: Mapping[str, Any]) -
             "schema states every field, type and bound the operation requires; "
             "this refusal deliberately repeats none of what was supplied"
         ) from refusal
+    return False
+
+
+def _capture_exceeds_limit(payload: Mapping[str, Any]) -> bool:
+    """Recognize an over-limit content form with bounded work and no copy.
+
+    The canonical decoder is still authoritative for every structural and semantic
+    decision.  This is only its cheap size-ordering rule moved ahead of ``str.encode``:
+    make one allocation-free pass over text (also preserving the decoder's surrogate
+    refusal), or compare the encoded string's length, then let Core classify a fixed
+    bounded surrogate document.
+    """
+    text = payload.get("text")
+    encoded = payload.get("content_base64")
+    if (text is None) == (encoded is None):
+        return False
+    if isinstance(encoded, str):
+        return len(encoded) > _CAPTURE_MAX_BASE64_LENGTH
+    if not isinstance(text, str):
+        return False
+
+    length = 0
+    oversized = False
+    for character in text:
+        scalar = ord(character)
+        if 0xD800 <= scalar <= 0xDFFF:
+            raise ContractSemanticError("text is not valid Unicode text")
+        if oversized:
+            continue
+        if scalar <= 0x7F:
+            length += 1
+        elif scalar <= 0x7FF:
+            length += 2
+        elif scalar <= 0xFFFF:
+            length += 3
+        else:
+            length += 4
+        if length > EVIDENCE_CAPTURE_MAX_CONTENT_BYTES:
+            oversized = True
+    return oversized
 
 
 def _unwrapped(

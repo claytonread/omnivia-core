@@ -204,6 +204,9 @@ _NOT_ADMINISTRATOR: Final = (
 )
 _NOT_PUBLISHED: Final = "the local half of this setup could not be published"
 _NOT_VERIFIED: Final = "the configured MCP server did not pass its startup check"
+_HOST_CONFIGURATION_UNREPRESENTABLE: Final = (
+    "the host configuration path cannot be represented safely"
+)
 _SPLIT_BRAIN: Final = (
     "this installation's MCP state could not be settled; run configure again"
 )
@@ -404,6 +407,13 @@ def _configure(
     workspace: str = arguments.workspace
     config = InstalledConfigStore(state)
     path = config.path(host)
+    try:
+        snippet = host_snippet(host, path)
+    except ValueError:
+        # Renderability is a precondition, not a reporting concern.  In particular,
+        # a POSIX surrogate-escaped path cannot be represented by TOML; discover that
+        # before reaching the service so a failed print never leaves live authority.
+        raise _Refused(_HOST_CONFIGURATION_UNREPRESENTABLE, 1) from None
     store = InstalledCredentialStore(state)
     transport = _reach(state, workspace, start=True, deadline=deadline, seams=seams)
 
@@ -412,7 +422,7 @@ def _configure(
     if not result.rotated:
         if _settled(store, config, host, result.setup, document):
             _verify(seams, path)
-            return _report(host, path)
+            return _report(snippet)
         # The service holds the requested state and this installation's half of
         # it is missing, superseded or unsafe. Nothing can re-derive the bearer
         # that setup was issued with -- it was handed over once -- so the only
@@ -451,7 +461,7 @@ def _configure(
         seams=seams,
     )
     _discard(store, config, superseded, None)
-    return _report(host, path)
+    return _report(snippet)
 
 
 def _provision(
@@ -607,9 +617,9 @@ def _compensate(
     raise _Refused(_ROLLED_BACK if cleared else _ROLLED_BACK_PARTLY, 1)
 
 
-def _report(host: str, path: Path) -> int:
+def _report(snippet: str) -> int:
     """Print the host-native snippet for a successful configure. Exit 0."""
-    sys.stdout.write(host_snippet(host, path))
+    sys.stdout.write(snippet)
     return 0
 
 

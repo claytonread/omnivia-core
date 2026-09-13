@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import math
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Final
@@ -469,20 +470,124 @@ BM25_MINIMUM_IDF: Final = 1e-6
 #: capture, including a one-MiB unbroken word, a queryable token sequence.
 FTS5_SAFE_TOKEN_BYTES: Final = 4 * 1024
 
+# BEGIN GENERATED UNICODE61 TOKEN BOUNDARIES
+# Generated from Unicode 6.1.0 UnicodeData.txt, selecting general categories
+# L*, N* and Co exactly as SQLite's unicode61 tokenizer documents.
+# Source: https://www.unicode.org/Public/6.1.0/ucd/UnicodeData.txt
+# SHA-256: 3066262585a3c4f407b16db787e6d3a6e033b90f27405b6c76d1babefffca6ad
+# Each adjacent pair is start and exclusive end; a boundary-search parity
+# check makes membership O(log ranges) without allocating a set of the
+# 239,629 admitted scalar values.
+_UNICODE61_TOKEN_BOUNDARIES: Final = (
+    "\u0030\u003a\u0041\u005b\u0061\u007b\u00aa\u00ab\u00b2\u00b4\u00b5\u00b6"
+    "\u00b9\u00bb\u00bc\u00bf\u00c0\u00d7\u00d8\u00f7\u00f8\u02c2\u02c6\u02d2"
+    "\u02e0\u02e5\u02ec\u02ed\u02ee\u02ef\u0370\u0375\u0376\u0378\u037a\u037e"
+    "\u0386\u0387\u0388\u038b\u038c\u038d\u038e\u03a2\u03a3\u03f6\u03f7\u0482"
+    "\u048a\u0528\u0531\u0557\u0559\u055a\u0561\u0588\u05d0\u05eb\u05f0\u05f3"
+    "\u0620\u064b\u0660\u066a\u066e\u0670\u0671\u06d4\u06d5\u06d6\u06e5\u06e7"
+    "\u06ee\u06fd\u06ff\u0700\u0710\u0711\u0712\u0730\u074d\u07a6\u07b1\u07b2"
+    "\u07c0\u07eb\u07f4\u07f6\u07fa\u07fb\u0800\u0816\u081a\u081b\u0824\u0825"
+    "\u0828\u0829\u0840\u0859\u08a0\u08a1\u08a2\u08ad\u0904\u093a\u093d\u093e"
+    "\u0950\u0951\u0958\u0962\u0966\u0970\u0971\u0978\u0979\u0980\u0985\u098d"
+    "\u098f\u0991\u0993\u09a9\u09aa\u09b1\u09b2\u09b3\u09b6\u09ba\u09bd\u09be"
+    "\u09ce\u09cf\u09dc\u09de\u09df\u09e2\u09e6\u09f2\u09f4\u09fa\u0a05\u0a0b"
+    "\u0a0f\u0a11\u0a13\u0a29\u0a2a\u0a31\u0a32\u0a34\u0a35\u0a37\u0a38\u0a3a"
+    "\u0a59\u0a5d\u0a5e\u0a5f\u0a66\u0a70\u0a72\u0a75\u0a85\u0a8e\u0a8f\u0a92"
+    "\u0a93\u0aa9\u0aaa\u0ab1\u0ab2\u0ab4\u0ab5\u0aba\u0abd\u0abe\u0ad0\u0ad1"
+    "\u0ae0\u0ae2\u0ae6\u0af0\u0b05\u0b0d\u0b0f\u0b11\u0b13\u0b29\u0b2a\u0b31"
+    "\u0b32\u0b34\u0b35\u0b3a\u0b3d\u0b3e\u0b5c\u0b5e\u0b5f\u0b62\u0b66\u0b70"
+    "\u0b71\u0b78\u0b83\u0b84\u0b85\u0b8b\u0b8e\u0b91\u0b92\u0b96\u0b99\u0b9b"
+    "\u0b9c\u0b9d\u0b9e\u0ba0\u0ba3\u0ba5\u0ba8\u0bab\u0bae\u0bba\u0bd0\u0bd1"
+    "\u0be6\u0bf3\u0c05\u0c0d\u0c0e\u0c11\u0c12\u0c29\u0c2a\u0c34\u0c35\u0c3a"
+    "\u0c3d\u0c3e\u0c58\u0c5a\u0c60\u0c62\u0c66\u0c70\u0c78\u0c7f\u0c85\u0c8d"
+    "\u0c8e\u0c91\u0c92\u0ca9\u0caa\u0cb4\u0cb5\u0cba\u0cbd\u0cbe\u0cde\u0cdf"
+    "\u0ce0\u0ce2\u0ce6\u0cf0\u0cf1\u0cf3\u0d05\u0d0d\u0d0e\u0d11\u0d12\u0d3b"
+    "\u0d3d\u0d3e\u0d4e\u0d4f\u0d60\u0d62\u0d66\u0d76\u0d7a\u0d80\u0d85\u0d97"
+    "\u0d9a\u0db2\u0db3\u0dbc\u0dbd\u0dbe\u0dc0\u0dc7\u0e01\u0e31\u0e32\u0e34"
+    "\u0e40\u0e47\u0e50\u0e5a\u0e81\u0e83\u0e84\u0e85\u0e87\u0e89\u0e8a\u0e8b"
+    "\u0e8d\u0e8e\u0e94\u0e98\u0e99\u0ea0\u0ea1\u0ea4\u0ea5\u0ea6\u0ea7\u0ea8"
+    "\u0eaa\u0eac\u0ead\u0eb1\u0eb2\u0eb4\u0ebd\u0ebe\u0ec0\u0ec5\u0ec6\u0ec7"
+    "\u0ed0\u0eda\u0edc\u0ee0\u0f00\u0f01\u0f20\u0f34\u0f40\u0f48\u0f49\u0f6d"
+    "\u0f88\u0f8d\u1000\u102b\u103f\u104a\u1050\u1056\u105a\u105e\u1061\u1062"
+    "\u1065\u1067\u106e\u1071\u1075\u1082\u108e\u108f\u1090\u109a\u10a0\u10c6"
+    "\u10c7\u10c8\u10cd\u10ce\u10d0\u10fb\u10fc\u1249\u124a\u124e\u1250\u1257"
+    "\u1258\u1259\u125a\u125e\u1260\u1289\u128a\u128e\u1290\u12b1\u12b2\u12b6"
+    "\u12b8\u12bf\u12c0\u12c1\u12c2\u12c6\u12c8\u12d7\u12d8\u1311\u1312\u1316"
+    "\u1318\u135b\u1369\u137d\u1380\u1390\u13a0\u13f5\u1401\u166d\u166f\u1680"
+    "\u1681\u169b\u16a0\u16eb\u16ee\u16f1\u1700\u170d\u170e\u1712\u1720\u1732"
+    "\u1740\u1752\u1760\u176d\u176e\u1771\u1780\u17b4\u17d7\u17d8\u17dc\u17dd"
+    "\u17e0\u17ea\u17f0\u17fa\u1810\u181a\u1820\u1878\u1880\u18a9\u18aa\u18ab"
+    "\u18b0\u18f6\u1900\u191d\u1946\u196e\u1970\u1975\u1980\u19ac\u19c1\u19c8"
+    "\u19d0\u19db\u1a00\u1a17\u1a20\u1a55\u1a80\u1a8a\u1a90\u1a9a\u1aa7\u1aa8"
+    "\u1b05\u1b34\u1b45\u1b4c\u1b50\u1b5a\u1b83\u1ba1\u1bae\u1be6\u1c00\u1c24"
+    "\u1c40\u1c4a\u1c4d\u1c7e\u1ce9\u1ced\u1cee\u1cf2\u1cf5\u1cf7\u1d00\u1dc0"
+    "\u1e00\u1f16\u1f18\u1f1e\u1f20\u1f46\u1f48\u1f4e\u1f50\u1f58\u1f59\u1f5a"
+    "\u1f5b\u1f5c\u1f5d\u1f5e\u1f5f\u1f7e\u1f80\u1fb5\u1fb6\u1fbd\u1fbe\u1fbf"
+    "\u1fc2\u1fc5\u1fc6\u1fcd\u1fd0\u1fd4\u1fd6\u1fdc\u1fe0\u1fed\u1ff2\u1ff5"
+    "\u1ff6\u1ffd\u2070\u2072\u2074\u207a\u207f\u208a\u2090\u209d\u2102\u2103"
+    "\u2107\u2108\u210a\u2114\u2115\u2116\u2119\u211e\u2124\u2125\u2126\u2127"
+    "\u2128\u2129\u212a\u212e\u212f\u213a\u213c\u2140\u2145\u214a\u214e\u214f"
+    "\u2150\u218a\u2460\u249c\u24ea\u2500\u2776\u2794\u2c00\u2c2f\u2c30\u2c5f"
+    "\u2c60\u2ce5\u2ceb\u2cef\u2cf2\u2cf4\u2cfd\u2cfe\u2d00\u2d26\u2d27\u2d28"
+    "\u2d2d\u2d2e\u2d30\u2d68\u2d6f\u2d70\u2d80\u2d97\u2da0\u2da7\u2da8\u2daf"
+    "\u2db0\u2db7\u2db8\u2dbf\u2dc0\u2dc7\u2dc8\u2dcf\u2dd0\u2dd7\u2dd8\u2ddf"
+    "\u2e2f\u2e30\u3005\u3008\u3021\u302a\u3031\u3036\u3038\u303d\u3041\u3097"
+    "\u309d\u30a0\u30a1\u30fb\u30fc\u3100\u3105\u312e\u3131\u318f\u3192\u3196"
+    "\u31a0\u31bb\u31f0\u3200\u3220\u322a\u3248\u3250\u3251\u3260\u3280\u328a"
+    "\u32b1\u32c0\u3400\u4db6\u4e00\u9fcd\ua000\ua48d\ua4d0\ua4fe\ua500\ua60d"
+    "\ua610\ua62c\ua640\ua66f\ua67f\ua698\ua6a0\ua6f0\ua717\ua720\ua722\ua789"
+    "\ua78b\ua78f\ua790\ua794\ua7a0\ua7ab\ua7f8\ua802\ua803\ua806\ua807\ua80b"
+    "\ua80c\ua823\ua830\ua836\ua840\ua874\ua882\ua8b4\ua8d0\ua8da\ua8f2\ua8f8"
+    "\ua8fb\ua8fc\ua900\ua926\ua930\ua947\ua960\ua97d\ua984\ua9b3\ua9cf\ua9da"
+    "\uaa00\uaa29\uaa40\uaa43\uaa44\uaa4c\uaa50\uaa5a\uaa60\uaa77\uaa7a\uaa7b"
+    "\uaa80\uaab0\uaab1\uaab2\uaab5\uaab7\uaab9\uaabe\uaac0\uaac1\uaac2\uaac3"
+    "\uaadb\uaade\uaae0\uaaeb\uaaf2\uaaf5\uab01\uab07\uab09\uab0f\uab11\uab17"
+    "\uab20\uab27\uab28\uab2f\uabc0\uabe3\uabf0\uabfa\uac00\ud7a4\ud7b0\ud7c7"
+    "\ud7cb\ud7fc\ue000\ufa6e\ufa70\ufada\ufb00\ufb07\ufb13\ufb18\ufb1d\ufb1e"
+    "\ufb1f\ufb29\ufb2a\ufb37\ufb38\ufb3d\ufb3e\ufb3f\ufb40\ufb42\ufb43\ufb45"
+    "\ufb46\ufbb2\ufbd3\ufd3e\ufd50\ufd90\ufd92\ufdc8\ufdf0\ufdfc\ufe70\ufe75"
+    "\ufe76\ufefd\uff10\uff1a\uff21\uff3b\uff41\uff5b\uff66\uffbf\uffc2\uffc8"
+    "\uffca\uffd0\uffd2\uffd8\uffda\uffdd\U00010000\U0001000c\U0001000d\U00010027\U00010028\U0001003b"
+    "\U0001003c\U0001003e\U0001003f\U0001004e\U00010050\U0001005e\U00010080\U000100fb\U00010107\U00010134\U00010140\U00010179"
+    "\U0001018a\U0001018b\U00010280\U0001029d\U000102a0\U000102d1\U00010300\U0001031f\U00010320\U00010324\U00010330\U0001034b"
+    "\U00010380\U0001039e\U000103a0\U000103c4\U000103c8\U000103d0\U000103d1\U000103d6\U00010400\U0001049e\U000104a0\U000104aa"
+    "\U00010800\U00010806\U00010808\U00010809\U0001080a\U00010836\U00010837\U00010839\U0001083c\U0001083d\U0001083f\U00010856"
+    "\U00010858\U00010860\U00010900\U0001091c\U00010920\U0001093a\U00010980\U000109b8\U000109be\U000109c0\U00010a00\U00010a01"
+    "\U00010a10\U00010a14\U00010a15\U00010a18\U00010a19\U00010a34\U00010a40\U00010a48\U00010a60\U00010a7f\U00010b00\U00010b36"
+    "\U00010b40\U00010b56\U00010b58\U00010b73\U00010b78\U00010b80\U00010c00\U00010c49\U00010e60\U00010e7f\U00011003\U00011038"
+    "\U00011052\U00011070\U00011083\U000110b0\U000110d0\U000110e9\U000110f0\U000110fa\U00011103\U00011127\U00011136\U00011140"
+    "\U00011183\U000111b3\U000111c1\U000111c5\U000111d0\U000111da\U00011680\U000116ab\U000116c0\U000116ca\U00012000\U0001236f"
+    "\U00012400\U00012463\U00013000\U0001342f\U00016800\U00016a39\U00016f00\U00016f45\U00016f50\U00016f51\U00016f93\U00016fa0"
+    "\U0001b000\U0001b002\U0001d360\U0001d372\U0001d400\U0001d455\U0001d456\U0001d49d\U0001d49e\U0001d4a0\U0001d4a2\U0001d4a3"
+    "\U0001d4a5\U0001d4a7\U0001d4a9\U0001d4ad\U0001d4ae\U0001d4ba\U0001d4bb\U0001d4bc\U0001d4bd\U0001d4c4\U0001d4c5\U0001d506"
+    "\U0001d507\U0001d50b\U0001d50d\U0001d515\U0001d516\U0001d51d\U0001d51e\U0001d53a\U0001d53b\U0001d53f\U0001d540\U0001d545"
+    "\U0001d546\U0001d547\U0001d54a\U0001d551\U0001d552\U0001d6a6\U0001d6a8\U0001d6c1\U0001d6c2\U0001d6db\U0001d6dc\U0001d6fb"
+    "\U0001d6fc\U0001d715\U0001d716\U0001d735\U0001d736\U0001d74f\U0001d750\U0001d76f\U0001d770\U0001d789\U0001d78a\U0001d7a9"
+    "\U0001d7aa\U0001d7c3\U0001d7c4\U0001d7cc\U0001d7ce\U0001d800\U0001ee00\U0001ee04\U0001ee05\U0001ee20\U0001ee21\U0001ee23"
+    "\U0001ee24\U0001ee25\U0001ee27\U0001ee28\U0001ee29\U0001ee33\U0001ee34\U0001ee38\U0001ee39\U0001ee3a\U0001ee3b\U0001ee3c"
+    "\U0001ee42\U0001ee43\U0001ee47\U0001ee48\U0001ee49\U0001ee4a\U0001ee4b\U0001ee4c\U0001ee4d\U0001ee50\U0001ee51\U0001ee53"
+    "\U0001ee54\U0001ee55\U0001ee57\U0001ee58\U0001ee59\U0001ee5a\U0001ee5b\U0001ee5c\U0001ee5d\U0001ee5e\U0001ee5f\U0001ee60"
+    "\U0001ee61\U0001ee63\U0001ee64\U0001ee65\U0001ee67\U0001ee6b\U0001ee6c\U0001ee73\U0001ee74\U0001ee78\U0001ee79\U0001ee7d"
+    "\U0001ee7e\U0001ee7f\U0001ee80\U0001ee8a\U0001ee8b\U0001ee9c\U0001eea1\U0001eea4\U0001eea5\U0001eeaa\U0001eeab\U0001eebc"
+    "\U0001f100\U0001f10b\U00020000\U0002a6d7\U0002a700\U0002b735\U0002b740\U0002b81e\U0002f800\U0002fa1e\U000f0000\U000ffffe"
+    "\U00100000\U0010fffe"
+)
+# END GENERATED UNICODE61 TOKEN BOUNDARIES
+
 
 def _unicode61_token_character(character: str) -> bool:
     """Whether unicode61's default category set treats this scalar as a token."""
-    category = unicodedata.category(character)
-    return category.startswith(("L", "N")) or category == "Co"
+    return bisect_right(_UNICODE61_TOKEN_BOUNDARIES, character) % 2 == 1
 
 
 def _bounded_tokens(normalized: str) -> Iterator[str]:
     r"""Yield unicode61-equivalent tokens below FTS5's byte ceiling.
 
-    SQLite documents the default token categories as letters, numbers and
-    private-use characters. Python's ``\w`` omits the last group, so using a
-    regular expression here lets a private-use run reach FTS5's 32 KiB
-    truncation even though the query-side tokenizer sees no token at all.
+    SQLite documents the default token categories as Unicode 6.1 letters,
+    numbers and private-use characters.  The interpreter's Unicode database is
+    newer and would silently treat post-6.1 scripts as tokens that FTS5 sees as
+    separators, so membership is read from the generated 6.1 boundary table
+    above instead of from :func:`unicodedata.category`.
     """
     current: list[str] = []
     current_bytes = 0

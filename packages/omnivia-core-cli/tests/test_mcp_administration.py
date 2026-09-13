@@ -559,6 +559,27 @@ def test_every_codex_path_round_trips_through_a_toml_parser(path: Path) -> None:
     }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX surrogate-escaped paths")
+def test_an_unrepresentable_codex_path_is_refused_before_authority_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = Path(str(tmp_path / "installation-") + "\udcff")
+    service = FakeService()
+    harness = Harness(
+        state=state, service=service, verification=FakeVerification()
+    )
+
+    assert configure(harness, host="codex") == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "the host configuration path cannot be represented safely\n"
+    assert service.minted == 0
+    assert service.setups == {}
+    assert harness.verification.paths == []
+    assert not state.exists()
+
+
 @pytest.mark.parametrize("host", ["claude-code", "codex"])
 def test_no_snippet_can_carry_a_credential(host: str) -> None:
     """There is no parameter here a secret could travel through."""

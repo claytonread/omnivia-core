@@ -430,6 +430,44 @@ def test_lb_l6_a_changed_token_profile_rebuilds_at_the_same_checkpoint(
     )
 
 
+def test_lb_l6_an_interrupted_old_profile_advances_past_its_declared_epoch(
+    owned: m2.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed incompatible run is history, not an identity reusable on restart."""
+    real_append = fts._append_documents
+
+    def interrupt(*_: object, **__: object) -> None:
+        raise Interrupted("old-profile-append")
+
+    monkeypatch.setattr(fts, "_append_documents", interrupt)
+    with pytest.raises(Interrupted):
+        build(owned)
+    old_run = scalar(
+        owned, "SELECT run_id FROM omnivia_projection_runs WHERE state = 'running'"
+    )
+    old_epoch = scalar(
+        owned,
+        "SELECT target_epoch FROM omnivia_projection_runs WHERE run_id = ?",
+        old_run,
+    )
+
+    monkeypatch.setattr(fts, "_append_documents", real_append)
+    monkeypatch.setattr(fts, "PROFILE_VERSION", "fts5.unicode61.nodiacritics.next")
+    recovered = build(owned, now_us=NOW_US + 1_000)
+
+    assert recovered.activated is True
+    assert recovered.epoch == old_epoch + 1
+    assert recovered.run_id != old_run
+    assert (
+        scalar(
+            owned,
+            "SELECT state FROM omnivia_projection_runs WHERE run_id = ?",
+            old_run,
+        )
+        == "failed"
+    )
+
+
 def test_lb_l7_new_evidence_starts_a_fresh_run_that_supersedes_and_reclaims(
     owned: m2.Owned,
 ) -> None:
@@ -1015,6 +1053,9 @@ def test_lb_l25_the_query_tokenizer_agrees_with_the_projections_own(
         "a" * 32_769,
         "é" * 20_000,
         "\ue000" * 20_000,
+        # Adlam was assigned after Unicode 6.1.  Python classifies it as a letter,
+        # while SQLite unicode61 correctly treats it as a separator.
+        "alpha\U0001e900\U0001e922omega",
     ):
         # `projection_text` on the way in on both sides, exactly as materialisation
         # applies it to every document: the claim is that normalization, safe
