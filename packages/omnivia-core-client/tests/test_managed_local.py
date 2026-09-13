@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import subprocess
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
@@ -70,23 +71,20 @@ def registered_endpoint(root: Path, workspace_id: str = WORKSPACE_ID) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _clean_registered_socket_directories() -> Iterator[None]:
-    """Remove any owner-private socket directory a test caused to be created.
+def _isolate_registered_socket_directories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Give each test a unique short socket namespace and remove only that one.
 
-    ``connect_managed_local`` creates these under the platform temp root, not
-    under ``tmp_path``, precisely so the socket path stays short -- so nothing
-    pytest already cleans up removes them, and a leftover one would otherwise
-    accumulate outside every test's own sandbox. A symlink a test planted there
-    is removed by name rather than ``rmtree``, which refuses to descend through
-    a top-level symlink and would otherwise leave it behind.
+    A prior cleanup glob removed every newly seen ``/tmp/omnivia-core-*`` path,
+    including one a concurrent test worker or live service could have created.
+    This root is short enough for ``sockaddr_un`` and owned by this test alone.
     """
-    before = set(managed_local._POSIX_TEMP_ROOT.glob("omnivia-core-*"))
+    root = Path("/tmp") / f"oc-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(managed_local, "_POSIX_TEMP_ROOT", root)
     yield
-    for created in set(managed_local._POSIX_TEMP_ROOT.glob("omnivia-core-*")) - before:
-        if created.is_symlink() or created.is_file():
-            created.unlink(missing_ok=True)
-        else:
-            shutil.rmtree(created, ignore_errors=True)
+    shutil.rmtree(root, ignore_errors=True)
 
 
 def result(status: str = "started", **extra: object) -> str:
@@ -530,6 +528,168 @@ def test_a_mismatched_workspace_id_is_refused_even_with_other_workspaces_present
         )
 
 
+def test_a_symlinked_workspaces_root_cannot_redirect_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside"
+    initialise_registered(outside)
+    initialise(tmp_path)
+    (tmp_path / "workspaces").symlink_to(
+        outside / "workspaces", target_is_directory=True
+    )
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(managed_local, "locate_service", refuse_locate_service)
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_symlinked_registered_workspace_cannot_redirect_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "workspaces").mkdir()
+    outside = tmp_path / "outside-workspace"
+    outside.mkdir()
+    (outside / "workspace.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "workspaces" / WORKSPACE_ID).symlink_to(
+        outside, target_is_directory=True
+    )
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(managed_local, "locate_service", refuse_locate_service)
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_symlinked_registered_manifest_cannot_authorize_a_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspaces" / WORKSPACE_ID
+    workspace.mkdir(parents=True)
+    outside = tmp_path / "outside-manifest.json"
+    outside.write_text("{}", encoding="utf-8")
+    (workspace / "workspace.json").symlink_to(outside)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(managed_local, "locate_service", refuse_locate_service)
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+@pytest.mark.parametrize("linked_component", ["run", "workspaces", WORKSPACE_ID])
+def test_a_symlinked_run_component_cannot_redirect_the_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    linked_component: str,
+) -> None:
+    initialise_registered(tmp_path)
+    outside = tmp_path / f"outside-{linked_component}"
+    outside.mkdir()
+    run = tmp_path / "run"
+    if linked_component == "run":
+        run.symlink_to(outside, target_is_directory=True)
+    else:
+        run.mkdir()
+        run_workspaces = run / "workspaces"
+        if linked_component == "workspaces":
+            run_workspaces.symlink_to(outside, target_is_directory=True)
+        else:
+            run_workspaces.mkdir()
+            (run_workspaces / WORKSPACE_ID).symlink_to(
+                outside, target_is_directory=True
+            )
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local, "locate_service", lambda: "/fixed/omnivia-core-service"
+    )
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_run_component_that_cannot_be_restricted_is_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise_registered(tmp_path)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local, "locate_service", lambda: "/fixed/omnivia-core-service"
+    )
+    monkeypatch.setattr(
+        managed_local, "restrict_to_owner", lambda _path, *, directory: False
+    )
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+    assert not (tmp_path / "run").exists()
+
+
+def test_a_registered_workspace_appearing_during_legacy_fallback_refuses_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise(tmp_path)
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local, "locate_service", lambda: "/fixed/omnivia-core-service"
+    )
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+    resolve = managed_local._resolve_installation
+    calls = 0
+
+    def racing_resolve(
+        service_config: InstallationServiceConfig,
+    ) -> managed_local._AuthorizedInstallation:
+        nonlocal calls
+        calls += 1
+        selected = resolve(service_config)
+        if calls == 1:
+            initialise_registered(tmp_path)
+        return selected
+
+    monkeypatch.setattr(managed_local, "_resolve_installation", racing_resolve)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+    assert calls == 2
+
+
+def test_a_manifest_replaced_after_authorization_refuses_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = initialise_registered(tmp_path)
+    manifest = workspace / "workspace.json"
+    connects(monkeypatch, [None])
+    monkeypatch.setattr(
+        managed_local, "locate_service", lambda: "/fixed/omnivia-core-service"
+    )
+    monkeypatch.setattr(managed_local, "_invoke", refuse_invoke)
+    resolve = managed_local._resolve_installation
+    calls = 0
+
+    def racing_resolve(
+        service_config: InstallationServiceConfig,
+    ) -> managed_local._AuthorizedInstallation:
+        nonlocal calls
+        calls += 1
+        selected = resolve(service_config)
+        if calls == 1:
+            replacement = workspace / "replacement.json"
+            replacement.write_text("{}", encoding="utf-8")
+            os.replace(replacement, manifest)
+        return selected
+
+    monkeypatch.setattr(managed_local, "_resolve_installation", racing_resolve)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+    assert calls == 2
+
+
 @pytest.mark.parametrize(
     "workspace_id",
     [
@@ -583,6 +743,27 @@ def test_an_admitted_workspace_id_still_resolves_inside_the_workspaces_root(
     assert launched_workspace == tmp_path / "workspaces" / workspace_id
 
 
+@pytest.mark.parametrize(
+    "workspace_id",
+    ["Workspace", "a:b", "a.", "con", "con.txt", "LPT1", "nul.json"],
+)
+def test_a_windows_aliasing_workspace_id_is_refused_as_a_path_component(
+    workspace_id: str,
+) -> None:
+    assert not managed_local._windows_unambiguous_workspace_component(
+        workspace_id, windows=True
+    )
+
+
+@pytest.mark.parametrize("workspace_id", ["ws-1234", "a...b", "a.b.c", "com10"])
+def test_a_server_shaped_workspace_id_is_unambiguous_on_windows(
+    workspace_id: str,
+) -> None:
+    assert managed_local._windows_unambiguous_workspace_component(
+        workspace_id, windows=True
+    )
+
+
 def write_legacy_manifest(root: Path, content: str) -> None:
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
@@ -602,7 +783,7 @@ def refuse_invoke(*_args: Any, **_kwargs: Any) -> str:
     [
         "not-json",
         json.dumps(["not", "an", "object", WORKSPACE_ID]),
-        json.dumps({}),
+        json.dumps({"workspace_id": None}),
         json.dumps({"workspace_id": "some-other-workspace"}),
         json.dumps(
             {
@@ -615,7 +796,7 @@ def refuse_invoke(*_args: Any, **_kwargs: Any) -> str:
     ids=[
         "malformed",
         "not-an-object",
-        "missing-workspace-id",
+        "null-workspace-id",
         "mismatched-workspace-id",
         "well-shaped-but-oversized",
         "malformed-and-oversized",
@@ -634,6 +815,20 @@ def test_an_unauthorised_legacy_manifest_never_reaches_the_launcher(
 
     with pytest.raises(ManagedStartError):
         connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+
+def test_a_legacy_manifest_without_workspace_id_remains_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original managed client accepted any existing JSON-object manifest."""
+    write_legacy_manifest(tmp_path, "{}")
+    connects(monkeypatch, [None, client()])
+    seen_launches = launcher(monkeypatch)
+
+    connected = connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
+
+    assert connected.status == "started"
+    assert len(seen_launches) == 1
 
 
 def test_a_legacy_workspace_directory_with_no_manifest_is_refused(

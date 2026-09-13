@@ -1,12 +1,11 @@
-"""Proving that an open file is one only its owning user can reach.
+"""Proving that an open file is one only its owning user can control.
 
-Two callers need the same proof and there is one of it here: the MCP adapter's
-trusted configuration reader, which must not act on a document anyone else could
-have written, and :mod:`~omnivia_core_client.installed_credentials`, which must
-not hand out a bearer that anyone else could have substituted. The proof used to
-live in the adapter; it is here because a second copy of a security check is a
-second copy to keep correct, and the two would have drifted the first time one
-was fixed.
+Several callers need the same proof and there is one implementation here: the MCP
+adapter's trusted configuration reader, installed credential storage, and the
+managed launcher's non-secret workspace-manifest reader. The first two require an
+owner-private file; the last permits other principals to read but never to write.
+Both policies share the same no-follow, descriptor-pinned read so a security
+check cannot drift merely because the access policy differs.
 
 **Nothing here raises.** :func:`read_owner_private` answers ``None`` for every
 refusal -- an absent file, a symlink, a directory, a device, a file this process
@@ -36,12 +35,12 @@ against bytes already read from a handle nothing but this process could have
 substituted -- the open descriptor's own proof stands alone. Off, which is the
 default and every other caller, the comparison above still runs in full.
 
-**"Owner-private" is proved on both platform families.** On POSIX it is the
-descriptor's own ``st_uid`` against this process's effective uid, plus mode bits
-with nothing set for group or world. On Windows there are no mode bits to read,
-so it is a native owner and DACL proof from the open handle: the file's owner is
-this process's user, and no access-allowed ACE grants anyone else. Either proof
-fails closed, including when the native call itself does not complete.
+**The owner policies are proved on both platform families.** On POSIX each uses
+the descriptor's own ``st_uid`` against this process's effective uid and rejects
+group/world writes; the private form additionally rejects group/world reads and
+execution. On Windows there are no mode bits to read, so each is a native owner
+and DACL proof from the open handle. Either proof fails closed, including when
+the native call itself does not complete.
 
 **And on Windows the name is proved to be the thing, not a pointer at it.**
 There is no ``O_NOFOLLOW`` on that platform, so a symbolic link, a junction or a
@@ -74,8 +73,10 @@ __all__ = [
     "owner_private_directory",
     "owner_private_directory_metadata",
     "owner_private_file",
+    "owner_writable_file",
     "owner_writable_only",
     "read_owner_private",
+    "read_owner_writable",
     "restrict_to_owner",
     "same_file",
     "write_owner_private",
@@ -694,6 +695,32 @@ def owner_private_file(metadata: os.stat_result, descriptor: int) -> bool:
     return metadata.st_uid == os.geteuid() and metadata.st_mode & 0o077 == 0
 
 
+def owner_writable_file(metadata: os.stat_result, descriptor: int) -> bool:
+    """Whether only this file's owning user can change its contents.
+
+    Unlike :func:`owner_private_file`, this deliberately permits read access for
+    other principals.  It is the file counterpart of
+    :func:`owner_writable_only`: suitable for non-secret coordination documents
+    whose integrity matters, while preserving the ordinary readable modes older
+    installations may already use.
+
+    The verdict is taken from the open descriptor.  On POSIX the file must be a
+    regular non-symlink owned by this effective user with no group/world write
+    bit.  On Windows the native owner and DACL proof admits other principals
+    only when none has a right that can change the file.
+    """
+    if not stat.S_ISREG(metadata.st_mode) or not not_a_reparse_point(metadata):
+        return False
+    if _IS_WINDOWS:
+        verified = False
+        try:
+            verified = _owner_writable_dacl(*_windows_acl_facts(descriptor))
+        except Exception:  # noqa: BLE001 -- platform verifier must fail closed.
+            verified = False
+        return verified
+    return metadata.st_uid == os.geteuid() and metadata.st_mode & 0o022 == 0
+
+
 def _lstat(path: Path, dir_fd: int | None) -> os.stat_result | None:
     value: os.stat_result | None = None
     try:
@@ -748,6 +775,62 @@ def _bounded_read(descriptor: int, maximum_bytes: int) -> bytes | None:
     return None if failed else b"".join(chunks)
 
 
+def _read_owner_qualified(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    dir_fd: int | None = None,
+    rotation_tolerant: bool = False,
+    owner_only: bool,
+) -> bytes | None:
+    """The common pinned read, under either owner-only file policy."""
+    if dir_fd is None:
+        if not isinstance(path, Path) or not path.is_absolute():
+            return None
+    elif not isinstance(path, Path) or len(path.parts) != 1 or not path.name:
+        return None
+    before = _lstat(path, dir_fd)
+    if (
+        before is None
+        or not stat.S_ISREG(before.st_mode)
+        or not not_a_reparse_point(before)
+    ):
+        return None
+    descriptor = _open(path, dir_fd)
+    if descriptor < 0:
+        return None
+    content: bytes | None = None
+    opened: os.stat_result | None = None
+    after_read: os.stat_result | None = None
+    try:
+        opened = _fstat(descriptor)
+        policy = owner_private_file if owner_only else owner_writable_file
+        if (
+            opened is not None
+            and (rotation_tolerant or same_file(before, opened))
+            and policy(opened, descriptor)
+        ):
+            content = _bounded_read(descriptor, maximum_bytes)
+            after_read = _fstat(descriptor)
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+    if content is None or opened is None or after_read is None:
+        return None
+    if not same_file(opened, after_read):
+        return None
+    if rotation_tolerant:
+        return content
+    after_path = _lstat(path, dir_fd)
+    if after_path is None or not not_a_reparse_point(after_path):
+        return None
+    if not same_file(opened, after_path):
+        return None
+    return content
+
+
 def read_owner_private(
     path: Path,
     *,
@@ -783,50 +866,37 @@ def read_owner_private(
     this process could have substituted. A generic caller with no such proof of
     its own must leave this off.
     """
-    if dir_fd is None:
-        if not isinstance(path, Path) or not path.is_absolute():
-            return None
-    elif not isinstance(path, Path) or len(path.parts) != 1 or not path.name:
-        return None
-    before = _lstat(path, dir_fd)
-    if (
-        before is None
-        or not stat.S_ISREG(before.st_mode)
-        or not not_a_reparse_point(before)
-    ):
-        return None
-    descriptor = _open(path, dir_fd)
-    if descriptor < 0:
-        return None
-    content: bytes | None = None
-    opened: os.stat_result | None = None
-    after_read: os.stat_result | None = None
-    try:
-        opened = _fstat(descriptor)
-        if (
-            opened is not None
-            and (rotation_tolerant or same_file(before, opened))
-            and owner_private_file(opened, descriptor)
-        ):
-            content = _bounded_read(descriptor, maximum_bytes)
-            after_read = _fstat(descriptor)
-    finally:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-    if content is None or opened is None or after_read is None:
-        return None
-    if not same_file(opened, after_read):
-        return None
-    if rotation_tolerant:
-        return content
-    after_path = _lstat(path, dir_fd)
-    if after_path is None or not not_a_reparse_point(after_path):
-        return None
-    if not same_file(opened, after_path):
-        return None
-    return content
+    return _read_owner_qualified(
+        path,
+        maximum_bytes=maximum_bytes,
+        dir_fd=dir_fd,
+        rotation_tolerant=rotation_tolerant,
+        owner_only=True,
+    )
+
+
+def read_owner_writable(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    dir_fd: int | None = None,
+    rotation_tolerant: bool = False,
+) -> bytes | None:
+    """Read one regular file only its owning user may change, or return ``None``.
+
+    This has the same no-follow, descriptor-pinned, bounded-read and identity
+    recheck guarantees as :func:`read_owner_private`.  It differs only in the
+    access policy: other principals may read the file, but may not write it or
+    replace its contents through the open descriptor.  Callers must separately
+    prove the containing directory chain before relying on the bytes.
+    """
+    return _read_owner_qualified(
+        path,
+        maximum_bytes=maximum_bytes,
+        dir_fd=dir_fd,
+        rotation_tolerant=rotation_tolerant,
+        owner_only=False,
+    )
 
 
 #: What a directory this module has to bring into existence is created with, and

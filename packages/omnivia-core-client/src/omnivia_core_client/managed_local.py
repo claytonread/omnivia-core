@@ -45,14 +45,16 @@ workspace also gets its own run directory, keyed by ``workspace_id`` under the
 shared run root, so two workspace IDs never contend for one socket or one log;
 the legacy layout keeps the single shared run directory it always had.
 
-**The fixed legacy path is not keyed, so its manifest has to name its
-workspace.** The registered layout's directory already is ``workspace_id``;
-``<home>/workspace`` is the same path for every ``workspace_id`` a caller could
-name, so its mere presence authorises nothing. A start against that layout is
-authorised only when its manifest is a bounded, valid JSON object whose own
-``workspace_id`` field equals ``config.workspace_id`` exactly -- see
-:func:`_legacy_manifest_authorizes` -- and every other shape of that file fails
-closed before a launcher is located or run.
+**The path and manifest are one authorization.** Every existing directory from
+the installation root down to the chosen workspace must be a real,
+owner-controlled directory, and the manifest is opened no-follow, read through
+that trusted chain under a byte bound, and checked again immediately before the
+launcher is invoked. A manifest carrying ``workspace_id`` must name the requested
+workspace exactly. The pre-registration client historically admitted a valid
+JSON object without that field, so absence remains compatible for the fixed
+legacy path; a present mismatch never is. Re-resolving the two layouts at the
+last use prevents a registered manifest appearing mid-start from racing a
+previous decision to fall back to the legacy workspace.
 
 **No environment variable** (R004-11). The installation root is derived from the
 state root the caller already named, and from nothing ambient.
@@ -88,7 +90,13 @@ from omnivia_core.contracts.v1 import ServiceProcessEvidence
 from omnivia_core_client.deadline import Deadline
 from omnivia_core_client.discovery import descriptor_path
 from omnivia_core_client.errors import EndpointUnavailableError, ManagedStartError
-from omnivia_core_client.owner_private import owner_private_directory
+from omnivia_core_client.owner_private import (
+    owner_private_chain,
+    owner_private_directory,
+    read_owner_writable,
+    restrict_to_owner,
+    same_file,
+)
 from omnivia_core_client.service_client import InstallationServiceConfig, ServiceClient
 
 __all__ = [
@@ -128,11 +136,16 @@ _STARTED: Final = "started"
 #: uninitialised installation costs no process.
 _MANIFEST_NAME: Final = "workspace.json"
 
-#: How much of the legacy manifest is read before its identity is trusted. A
-#: `workspace_id` claim is a handful of bytes; anything past this is not one,
-#: and an unbounded read lets a planted file choose this process's memory
-#: before a single field of it has been checked.
-_LEGACY_MANIFEST_MAXIMUM_BYTES: Final = 64 * 1024
+#: How much of either workspace manifest is read before its identity is trusted.
+#: A `workspace_id` claim is a handful of bytes; anything past this is not one,
+#: and an unbounded read lets a planted file choose this process's memory before
+#: a single field of it has been checked.
+_MANIFEST_MAXIMUM_BYTES: Final = 64 * 1024
+
+#: Compatibility alias for the private name used by the first registered-layout
+#: implementation. Keeping it avoids making downstream white-box checks fail for
+#: a rename that changes no contract.
+_LEGACY_MANIFEST_MAXIMUM_BYTES: Final = _MANIFEST_MAXIMUM_BYTES
 
 #: The fixed name the installation-state root must carry. Checked against
 #: ``config.installation_state`` itself, not merely derived from it, so a
@@ -157,6 +170,21 @@ _RUN_DIRECTORY: Final = "run"
 #: What a registered POSIX socket directory is created with, and proved to
 #: still be before the launcher runs -- see :func:`_prepare_socket_directory`.
 _SOCKET_DIRECTORY_MODE: Final = 0o700
+
+#: Every run-directory component this client creates starts owner-only. An
+#: existing component may remain readable by others for compatibility, but the
+#: chain proof below requires that only its owner can change names beneath it.
+_RUN_DIRECTORY_MODE: Final = 0o700
+
+#: Windows device names alias ordinary-looking path components even with a
+#: suffix, and its filesystem normally folds case. Registered workspace ids are
+#: server-minted lowercase UUIDs; refusing the wider public identifier grammar on
+#: that platform keeps one id equal to one path and pipe key.
+_WINDOWS_RESERVED_COMPONENTS: Final = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+)
 
 #: The whole diagnostic. See the module docstring: everything that could make
 #: this sentence more specific is material from a child process, a filesystem
@@ -280,6 +308,24 @@ class _Installation:
         return f"unix://{self.run_directory / 's.sock'}"
 
 
+@dataclass(frozen=True, slots=True)
+class _ManifestEvidence:
+    """The authorized bytes and the pathname identity they were read from."""
+
+    content: bytes
+    identity: os.stat_result
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthorizedInstallation:
+    """A selected layout plus the exact trusted objects that selected it."""
+
+    installation: _Installation
+    directory_names: tuple[str, ...]
+    directory_proof: tuple[os.stat_result, ...]
+    manifest: _ManifestEvidence
+
+
 #: The fixed POSIX temp root a registered socket directory is named under.
 #: ``/tmp`` itself, never :func:`tempfile.gettempdir`: that reads ``TMPDIR``,
 #: which on some hosts (notably macOS, per-user) names a path long enough that
@@ -332,36 +378,113 @@ def _prepare_socket_directory(path: Path) -> bool:
     return owner_private_directory(path)
 
 
-def _legacy_manifest_authorizes(path: Path, workspace_id: str) -> bool:
-    """Whether the fixed legacy manifest at ``path`` itself names ``workspace_id``.
+def _windows_unambiguous_workspace_component(
+    workspace_id: str, *, windows: bool | None = None
+) -> bool:
+    """Whether ``workspace_id`` has exactly one Windows path interpretation.
 
-    The legacy layout is not keyed by ``workspace_id`` the way the registered
-    one is -- ``<home>/workspace`` is the same path regardless of which
-    workspace was asked for -- so locating it says nothing about which
-    workspace it is. Only the manifest's own claim can, and that claim is
-    trusted only when it is a bounded, valid JSON object whose ``workspace_id``
-    field matches exactly. Anything else -- absent, oversized, malformed, the
-    wrong shape, or naming a different workspace -- is refused here, before any
-    launcher is located or run.
+    The public ``WorkspaceId`` grammar is transport-safe but deliberately wider
+    than a Windows path component. Registered ids are server-minted lowercase
+    UUIDs, so this boundary can fail closed on case aliases, alternate data
+    streams, trailing-dot aliases and device names without changing the public
+    contract shared by non-filesystem callers.
+    """
+    on_windows = os.name == "nt" if windows is None else windows
+    if not on_windows:
+        return True
+    if workspace_id != workspace_id.lower():
+        return False
+    if workspace_id.endswith((".", " ")):
+        return False
+    if any(
+        ord(character) < 32 or character in '<>:"/\\|?*'
+        for character in workspace_id
+    ):
+        return False
+    stem = workspace_id.split(".", 1)[0]
+    return stem not in _WINDOWS_RESERVED_COMPONENTS
+
+
+def _manifest_evidence(path: Path, workspace_id: str) -> _ManifestEvidence | None:
+    """Read one trusted manifest and enforce any identity claim it carries.
+
+    A missing ``workspace_id`` remains accepted because the original managed
+    client admitted legacy JSON-object manifests without inspecting that field.
+    Current manifests always carry the field; when present it must agree exactly.
     """
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(_LEGACY_MANIFEST_MAXIMUM_BYTES + 1)
+        before = os.stat(path, follow_symlinks=False)
     except OSError:
-        return False
-    if len(raw) > _LEGACY_MANIFEST_MAXIMUM_BYTES:
-        return False
+        return None
+    raw = read_owner_writable(path, maximum_bytes=_MANIFEST_MAXIMUM_BYTES + 1)
+    if raw is None or len(raw) > _MANIFEST_MAXIMUM_BYTES:
+        return None
+    try:
+        after = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not same_file(before, after):
+        return None
     document: Any = None
     try:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
-        return False
+        return None
     if not isinstance(document, dict):
+        return None
+    if "workspace_id" in document and document["workspace_id"] != workspace_id:
+        return None
+    return _ManifestEvidence(raw, after)
+
+
+def _directory_proof(
+    root: Path, names: tuple[str, ...]
+) -> tuple[os.stat_result, ...] | None:
+    """Prove a real owner-controlled chain, permitting non-secret read access."""
+    return owner_private_chain(root, names, owner_private_leaf=False)
+
+
+def _same_directory_proof(
+    before: tuple[os.stat_result, ...], after: tuple[os.stat_result, ...] | None
+) -> bool:
+    return (
+        after is not None
+        and len(before) == len(after)
+        and all(same_file(left, right) for left, right in zip(before, after))
+    )
+
+
+def _path_entry_exists(path: Path) -> bool:
+    """Whether a name exists without following a final symlink or junction."""
+    try:
+        os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
         return False
-    return document.get("workspace_id") == workspace_id
+    except OSError:
+        # An unreadable or otherwise undecidable entry exists for authorization
+        # purposes: treating it as absent could incorrectly select the fallback.
+        return True
+    return True
 
 
-def _resolve_installation(config: InstallationServiceConfig) -> _Installation:
+def _authorize_candidate(
+    installation: _Installation,
+    directory_names: tuple[str, ...],
+    workspace_id: str,
+) -> _AuthorizedInstallation | None:
+    proof = _directory_proof(installation.home, directory_names)
+    if proof is None:
+        return None
+    manifest = _manifest_evidence(installation.manifest_path, workspace_id)
+    if manifest is None:
+        return None
+    after = _directory_proof(installation.home, directory_names)
+    if not _same_directory_proof(proof, after):
+        return None
+    return _AuthorizedInstallation(installation, directory_names, proof, manifest)
+
+
+def _resolve_installation(config: InstallationServiceConfig) -> _AuthorizedInstallation:
     """Resolve ``config`` to the one on-disk layout it names.
 
     Two layouts are admitted, and only what is already on disk decides between
@@ -369,12 +492,14 @@ def _resolve_installation(config: InstallationServiceConfig) -> _Installation:
     and never a path a caller supplies, which no argument here accepts. The
     registered layout is tried first, because it is what every workspace
     `workspace.create` mints uses; the fixed legacy layout is tried only if the
-    registered one has no manifest at ``config.workspace_id``. A ``workspace_id``
-    matching neither is not refused here -- this function has nothing to refuse
-    with -- but by the manifest check :func:`connect_managed_local` makes next,
-    against whichever candidate this returns.
+    registered one has no manifest at ``config.workspace_id``. Every component
+    is proved before the next name is inspected, so a symlink or junction cannot
+    redirect even an existence check. A candidate that exists but does not prove
+    is a refusal, not evidence that the other layout may be selected.
     """
     home = config.installation_state.parent
+    if not _windows_unambiguous_workspace_component(config.workspace_id):
+        _refuse()
     registered = _Installation(
         home=home,
         workspace_root=home / _WORKSPACES_DIRECTORY / config.workspace_id,
@@ -383,13 +508,82 @@ def _resolve_installation(config: InstallationServiceConfig) -> _Installation:
         / _WORKSPACES_DIRECTORY
         / config.workspace_id,
     )
-    if registered.manifest_path.is_file():
-        return registered
-    return _Installation(
+    registered_names = (_WORKSPACES_DIRECTORY, config.workspace_id)
+    registered_root = home / _WORKSPACES_DIRECTORY
+    if _path_entry_exists(registered_root):
+        if _directory_proof(home, (_WORKSPACES_DIRECTORY,)) is None:
+            _refuse()
+        if _path_entry_exists(registered.workspace_root):
+            if _directory_proof(home, registered_names) is None:
+                _refuse()
+            if _path_entry_exists(registered.manifest_path):
+                authorized = _authorize_candidate(
+                    registered, registered_names, config.workspace_id
+                )
+                if authorized is None:
+                    _refuse()
+                return authorized
+
+    legacy = _Installation(
         home=home,
         workspace_root=home / _LEGACY_WORKSPACE_DIRECTORY,
         run_directory=home / _RUN_DIRECTORY,
     )
+    authorized = _authorize_candidate(
+        legacy, (_LEGACY_WORKSPACE_DIRECTORY,), config.workspace_id
+    )
+    if authorized is None:
+        _refuse()
+    return authorized
+
+
+def _same_authorization(
+    before: _AuthorizedInstallation, after: _AuthorizedInstallation
+) -> bool:
+    """Whether re-resolution selected the same unchanged trusted layout."""
+    return (
+        before.installation == after.installation
+        and before.directory_names == after.directory_names
+        and before.manifest.content == after.manifest.content
+        and same_file(before.manifest.identity, after.manifest.identity)
+        and _same_directory_proof(before.directory_proof, after.directory_proof)
+    )
+
+
+def _prepare_run_directory(
+    installation: _Installation, workspace_id: str
+) -> tuple[tuple[str, ...], tuple[os.stat_result, ...]] | None:
+    """Create and prove the run chain one component at a time, never through links."""
+    names = (
+        (_RUN_DIRECTORY, _WORKSPACES_DIRECTORY, workspace_id)
+        if installation.registered
+        else (_RUN_DIRECTORY,)
+    )
+    for index in range(len(names)):
+        prefix = names[:index]
+        if _directory_proof(installation.home, prefix) is None:
+            return None
+        target = installation.home.joinpath(*names[: index + 1])
+        created = False
+        try:
+            os.mkdir(target, _RUN_DIRECTORY_MODE)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError:
+            return None
+        if created and not restrict_to_owner(target, directory=True):
+            try:
+                target.rmdir()
+            except OSError:
+                pass
+            return None
+        if _directory_proof(installation.home, names[: index + 1]) is None:
+            return None
+    proof = _directory_proof(installation.home, names)
+    if proof is None:
+        return None
+    return names, proof
 
 
 def connect_managed_local(
@@ -419,6 +613,11 @@ def connect_managed_local(
     reachable is a failure here, because what was asked for is a service that can
     be called rather than a process that exists.
     """
+    # On Windows the wider public WorkspaceId grammar contains path aliases.
+    # Refuse those before even discovery, because two spellings that name one
+    # descriptor or workspace directory must not acquire distinct authority.
+    if not _windows_unambiguous_workspace_component(config.workspace_id):
+        _refuse()
     try:
         attached = ServiceClient.connect(config, deadline=deadline)
     except EndpointUnavailableError:
@@ -432,34 +631,42 @@ def connect_managed_local(
     home = config.installation_state.parent
     if home / _INSTALLATION_STATE_DIRECTORY != config.installation_state:
         _refuse()
-    installation = _resolve_installation(config)
-    if installation.registered:
-        if not installation.manifest_path.is_file():
-            _refuse()
-    elif not _legacy_manifest_authorizes(
-        installation.manifest_path, config.workspace_id
-    ):
-        _refuse()
+    authorization = _resolve_installation(config)
+    installation = authorization.installation
     executable = locate_service()
     if executable is None:
         _refuse()
 
-    # The run directory only: it holds the socket the service will bind and the
-    # log it will write, both of which are this convention's business rather than
-    # the workspace's. No workspace state is created by this line.
-    could_not_prepare = False
-    try:
-        installation.run_directory.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        could_not_prepare = True
+    # The run chain only: it holds the socket and log, both this convention's
+    # business rather than workspace state. Each component is created only below
+    # a proved parent, and every existing component is checked no-follow and
+    # owner-controlled before a descendant or log can be named through it.
+    run_authorization = _prepare_run_directory(
+        installation, config.workspace_id
+    )
     socket_directory = installation.socket_directory
     if (
-        not could_not_prepare
+        run_authorization is not None
         and socket_directory is not None
         and not _prepare_socket_directory(socket_directory)
     ):
-        could_not_prepare = True
-    if could_not_prepare:
+        run_authorization = None
+    if run_authorization is None:
+        _refuse()
+
+    # Re-run layout selection at the last possible point. This catches a
+    # registered manifest appearing after a legacy fallback, any manifest
+    # replacement, and any directory swap. Because the proved chains are
+    # owner-controlled, an untrusted local principal cannot change a component
+    # in the remaining call boundary before the launcher consumes these paths.
+    current = _resolve_installation(config)
+    run_names, run_proof = run_authorization
+    current_run = _directory_proof(installation.home, run_names)
+    if not _same_authorization(authorization, current):
+        _refuse()
+    if not _same_directory_proof(run_proof, current_run):
+        _refuse()
+    if socket_directory is not None and not owner_private_directory(socket_directory):
         _refuse()
     status = _status(_invoke(executable, installation, deadline))
 

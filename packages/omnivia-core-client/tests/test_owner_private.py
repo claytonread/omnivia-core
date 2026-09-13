@@ -668,6 +668,32 @@ def test_a_file_that_is_a_reparse_point_is_refused_before_any_native_call(
     assert not owner_private.owner_private_file(FakeStat(mode=DIRECTORY), 3)
 
 
+@pytest.mark.parametrize(
+    ("facts", "accepted"),
+    [
+        ((True, ((0, True, FULL_ACCESS),)), True),
+        (
+            (
+                True,
+                ((0, True, FULL_ACCESS), (0, False, READ_ACCESS)),
+            ),
+            True,
+        ),
+        ((True, ((0, False, FULL_ACCESS),)), False),
+        ((False, ((0, True, FULL_ACCESS),)), False),
+    ],
+)
+def test_the_windows_owner_writable_file_uses_the_parent_dacl_policy(
+    facts: tuple[bool, tuple[tuple[int, bool, int], ...]],
+    accepted: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_windows_acl_facts", lambda _fd: facts)
+
+    assert owner_private.owner_writable_file(FakeStat(mode=REGULAR), 3) is accepted
+
+
 def test_the_named_directory_verdict_fails_closed_when_the_native_call_does_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -766,6 +792,21 @@ def test_a_reparse_point_ends_a_read_even_after_the_bytes_came_back(
 
     monkeypatch.setattr(owner_private, "_lstat", watched)
     assert owner_private.read_owner_private(path, maximum_bytes=64) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_owner_writable_reader_allows_readable_but_not_writable_manifest_modes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workspace.json"
+    path.write_bytes(b"{}")
+    path.chmod(0o644)
+
+    assert owner_private.read_owner_private(path, maximum_bytes=64) is None
+    assert owner_private.read_owner_writable(path, maximum_bytes=64) == b"{}"
+
+    path.chmod(0o666)
+    assert owner_private.read_owner_writable(path, maximum_bytes=64) is None
 
 
 def test_a_real_rotation_is_refused_by_default_between_the_lookup_and_the_open(
