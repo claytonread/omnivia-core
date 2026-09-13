@@ -529,7 +529,7 @@ _UNICODE61_TOKEN_BOUNDARIES: Final = (
     "\ua954\ua95f\ua960\ua980\ua984\ua9b3\ua9ce\ua9de\ua9e0\uaa29\uaa37\uaa43"
     "\uaa44\uaa4c\uaa4e\uaa5c\uaa60\uaa77\uaa7a\uaa7b\uaa7c\uaab0\uaab1\uaab2"
     "\uaab5\uaab7\uaab9\uaabe\uaac0\uaac1\uaac2\uaade\uaae0\uaaeb\uaaf2\uaaf5"
-    "\uaaf7\uabe3\uabee\ud800\ue000\ufb1e\ufb1f\ufb29\ufb2a\ufbb2\ufbc2\ufd3e"
+    "\uaaf7\uabe3\uabee\ufb1e\ufb1f\ufb29\ufb2a\ufbb2\ufbc2\ufd3e"
     "\ufd40\ufdfc\ufdfe\ufe00\ufe1a\ufe20\ufe27\ufe30\ufe53\ufe54\ufe67\ufe68"
     "\ufe6c\ufeff\uff00\uff01\uff10\uff1a\uff21\uff3b\uff41\uff5b\uff66\uffe0"
     "\uffe7\uffe8\uffef\ufff9\U00010000\U00010100\U00010103\U00010137\U00010140\U00010179\U0001018a\U00010190"
@@ -553,6 +553,9 @@ _UNICODE61_TOKEN_BOUNDARIES: Final = (
 
 def _unicode61_token_character(character: str) -> bool:
     """Whether unicode61's default category set treats this scalar as a token."""
+    codepoint = ord(character)
+    if 0xD800 <= codepoint <= 0xDFFF:
+        return False
     return bisect_right(_UNICODE61_TOKEN_BOUNDARIES, character) % 2 == 1
 
 
