@@ -88,6 +88,7 @@ def test_windows_allocated_init_restricts_the_restart_authorization_chain(
     )
 
     assert result.status is WorkspaceInitStatus.INITIALISED
+    installation = tmp_path / "installation-state"
     assert seen == [
         (storage, True),
         (workspace, True),
@@ -97,6 +98,14 @@ def test_windows_allocated_init_restricts_the_restart_authorization_chain(
         (workspace, True),
         (workspace / "blobs", True),
         (workspace / "indexes", True),
+        (installation, True),
+        (installation / "backups", True),
+        (installation / "backups" / "ws-allocated-owner-control", True),
+        (installation / "attempts", True),
+        (installation / "attempts" / "ws-allocated-owner-control", True),
+        (installation / "runtime", True),
+        (installation / "runtime" / "ws-allocated-owner-control", True),
+        (installation / "catalogue", True),
     ]
 
 
@@ -115,6 +124,8 @@ def test_windows_legacy_init_restricts_the_workspace_and_its_trust_anchor(
     result = _init(tmp_path)
 
     assert result.status is WorkspaceInitStatus.INITIALISED
+    assert result.workspace_id is not None
+    installation = tmp_path / "installation-state"
     assert seen == [
         (workspace, True),
         (workspace / "locks", True),
@@ -122,7 +133,61 @@ def test_windows_legacy_init_restricts_the_workspace_and_its_trust_anchor(
         (workspace, True),
         (workspace / "blobs", True),
         (workspace / "indexes", True),
+        (installation, True),
+        (installation / "backups", True),
+        (installation / "backups" / result.workspace_id, True),
+        (installation / "attempts", True),
+        (installation / "attempts" / result.workspace_id, True),
+        (installation / "runtime", True),
+        (installation / "runtime" / result.workspace_id, True),
+        (installation / "catalogue", True),
     ]
+
+
+def test_windows_pin_refresh_stabilises_an_entry_that_appears_during_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    installation = tmp_path / "installation-state"
+    workspace.mkdir()
+    installation.mkdir()
+    manifest = workspace / "workspace.json"
+
+    class _Api:
+        def __init__(self) -> None:
+            self.opened: list[Path] = []
+
+        def CreateFileW(self, path: str, *_arguments: object) -> int:
+            self.opened.append(Path(path))
+            return len(self.opened) + 100
+
+        def CloseHandle(self, _handle: object) -> int:
+            return 1
+
+    api = _Api()
+    real_entries = workspace_init_module._windows_initialisation_entries
+    scans = {"count": 0}
+
+    def _entries(
+        workspace_root: Path, installation_root: Path
+    ) -> tuple[tuple[Path, bool], ...]:
+        scans["count"] += 1
+        if scans["count"] == 2:
+            manifest.write_text("{}", encoding="utf-8")
+        return real_entries(workspace_root, installation_root)
+
+    monkeypatch.setattr(
+        workspace_init_module, "_windows_initialisation_entries", _entries
+    )
+    pins = workspace_init_module._WindowsInitialisationPins(
+        api, workspace, installation
+    )
+    try:
+        pins.refresh()
+    finally:
+        pins.close()
+
+    assert Path(os.path.abspath(manifest)) in api.opened
 
 
 def test_windows_init_refuses_a_reparse_point_in_the_managed_home_chain(
@@ -206,7 +271,65 @@ def test_windows_init_refuses_a_symlinked_manifest_before_read_or_acl_change(
     assert seen == []
 
 
-@pytest.mark.parametrize("sidecar", ["installation.sqlite-wal", "installation.sqlite-shm"])
+@pytest.mark.parametrize("name", ["workspace.json", "workspace.sqlite"])
+def test_windows_init_refuses_a_hard_linked_workspace_file_without_changing_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / f"outside-{name}"
+    outside.write_bytes(b"must stay unchanged")
+    os.link(outside, workspace / name)
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"must stay unchanged"
+    assert seen == []
+
+
+def test_windows_init_rejects_a_manifest_published_after_provisional_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absent guard entry is re-decided after its parent becomes private."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "late-manifest.json"
+    outside.write_text('{"outside":true}', encoding="utf-8")
+    published = {"done": False}
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+
+    def _restrict(path: Path, *, directory: bool) -> None:
+        if path == workspace and directory and not published["done"]:
+            (workspace / "workspace.json").symlink_to(outside)
+            published["done"] = True
+
+    monkeypatch.setattr(workspace_init_module, "restrict_to_owner", _restrict)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert published["done"]
+    assert outside.read_bytes() == b'{"outside":true}'
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        "installation.sqlite-wal",
+        "installation.sqlite-shm",
+        "installation.sqlite-journal",
+    ],
+)
 def test_windows_init_refuses_a_symlinked_catalogue_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sidecar: str
 ) -> None:
@@ -1428,10 +1551,10 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
         connection.close()
 
 
-def test_windows_foreign_database_refusal_restricts_only_new_lock_residue(
+def test_windows_foreign_database_refusal_secures_only_the_sqlite_namespace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No existing trust anchor, workspace or foreign database ACL is rewritten."""
+    """Parent and file are owner-only before vetting; database bytes stay untouched."""
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
     database = workspace / "workspace.sqlite"
@@ -1454,8 +1577,12 @@ def test_windows_foreign_database_refusal_restricts_only_new_lock_residue(
 
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.UNRELATED_DIRECTORY
-    assert seen == [(workspace / "locks", True)]
-    assert all(path not in {tmp_path, workspace, database} for path, _ in seen)
+    assert seen == [
+        (workspace / "locks", True),
+        (workspace, True),
+        (database, False),
+    ]
+    assert all(path != tmp_path for path, _ in seen)
 
 
 def test_a_workspace_another_process_owns_is_refused_without_waiting(

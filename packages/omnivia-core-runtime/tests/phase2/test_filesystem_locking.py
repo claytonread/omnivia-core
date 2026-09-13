@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from omnivia_core_runtime.ownership import locks as locks_module
 from omnivia_core_runtime.ownership.identity import (
     _ERROR_ACCESS_DENIED,
     _PROCESS_QUERY_LIMITED_INFORMATION,
@@ -389,6 +390,41 @@ def test_lock_probe_never_opens_the_old_predictable_name(
     assert outside.read_bytes() == b"must stay unchanged"
     assert planted.is_symlink()
     assert list(tmp_path.glob(".omnivia-lock-probe-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses POSIX unlink-on-open semantics")
+def test_lock_probe_never_unlinks_a_replacement_after_its_handle_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replacement = tmp_path / ".omnivia-lock-probe-controlled"
+
+    def replaced_probe(_directory: Path) -> tuple[Path, Any]:
+        descriptor = os.open(replacement, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        replacement.unlink()
+        replacement.write_bytes(b"attacker replacement")
+        return replacement, handle
+
+    monkeypatch.setattr(locks_module, "_exclusive_lock_probe", replaced_probe)
+
+    qualification = qualify_filesystem(tmp_path, filesystem="apfs", probe_locking=True)
+
+    assert qualification.verdict is FilesystemVerdict.QUALIFIED
+    assert replacement.read_bytes() == b"attacker replacement"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="uses Windows delete-on-close semantics")
+def test_windows_lock_probe_cleanup_is_owned_by_its_native_handle(
+    tmp_path: Path,
+) -> None:
+    probe, handle = locks_module._exclusive_lock_probe(tmp_path)
+    assert probe.is_file()
+
+    handle.close()
+    assert not probe.exists()
+
+    probe.write_bytes(b"later replacement")
+    assert probe.read_bytes() == b"later replacement"
 
 
 def test_qualification_resolves_up_to_the_nearest_existing_ancestor(

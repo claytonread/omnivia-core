@@ -45,10 +45,13 @@ from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitResult,
     WorkspaceInitStatus,
     _initialise_workspace,
+    _prepare_windows_sqlite_database,
+    _refresh_current_windows_paths,
     _windows_initialisation_guard,
     _windows_path_refusal,
     harden_windows_workspace_layout,
 )
+from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.installation_store import (
     AllocationState,
     InstallationBusy,
@@ -173,7 +176,11 @@ def _register(
     """`None` on success (including "already registered"); a refusal otherwise."""
     try:
         store = open_installation_store(
-            installation_root, owner_instance_id=BOOTSTRAP_PRINCIPAL
+            installation_root,
+            owner_instance_id=BOOTSTRAP_PRINCIPAL,
+            before_database_open=lambda: _prepare_windows_sqlite_database(
+                InstallationLayout(root=installation_root).installation_database
+            ),
         )
     except InstallationBusy:
         return (
@@ -187,9 +194,12 @@ def _register(
         return (WorkspaceInitRefusal.WRITE_FAILURE, _INTERNAL_FAULT)
 
     try:
-        return _claim_and_settle(
+        _refresh_current_windows_paths()
+        result = _claim_and_settle(
             store, workspace_id=workspace_id, workspace_root=workspace_root
         )
+        _refresh_current_windows_paths()
+        return result
     finally:
         store.close()
 

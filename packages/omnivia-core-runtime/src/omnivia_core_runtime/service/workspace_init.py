@@ -55,25 +55,29 @@ one path only: when there is none. An existing manifest is read and kept. Nothin
 here deletes, truncates or overwrites anything, and the three cases R004-10 names
 are refused before any of it starts.
 
-**And a refusal leaves the tree as it found it.** That is a stronger claim than
-"nothing is overwritten" and it used not to hold. `init` wrote the manifest and the
-installation-state tree first and consulted the database last, so a workspace whose
-manifest was lost while its database survived had a *fresh* `workspace_id` minted
-and written -- `layout.exists()` asks about the manifest path -- before the
-exclusive open discovered it disagreeing. The refusal was correct and the manifest
-it had just written stayed, so every later run refused too and no shipped command
-could initialise that installation again. The order above is the fix, and it is an
-order rather than a rollback: no manifest, no layout directory and no installation
-state is written until the database work has succeeded, so there is nothing to take
-back and no window in which a crash could leave a half-taken-back tree.
-`WORKSPACE_BUSY` was the same defect with a different trigger -- it created ten
-directories on its way to refusing -- and the same reordering closes it.
+**And a refusal leaves the data tree as it found it.** That is a stronger claim
+than "nothing is overwritten" and it used not to hold. `init` wrote the manifest
+and the installation-state tree first and consulted the database last, so a
+workspace whose manifest was lost while its database survived had a *fresh*
+`workspace_id` minted and written -- `layout.exists()` asks about the manifest path
+-- before the exclusive open discovered it disagreeing. The refusal was correct
+and the manifest it had just written stayed, so every later run refused too and no
+shipped command could initialise that installation again. The order above is the
+fix, and it is an order rather than a rollback: no manifest, no layout directory
+and no installation state is written until the database work has succeeded, so
+there is nothing to take back and no window in which a crash could leave a
+half-taken-back tree. On Windows, identity and foreign-database vetting deliberately
+tighten a pre-existing workspace root to the owning OS user after acquiring its
+lock and before opening SQLite; transient sidecar names would otherwise remain
+replaceable by another local principal. `WORKSPACE_BUSY` still changes no ACL.
 
 **The claim is bounded, and `_bootstrap`'s docstring states the bound rather than
 rounding it up.** It covers the three refusals that decide whether this workspace is
 ours to touch, and not `WRITE_FAILURE`, which the storage layer or the filesystem
 can raise after a manifest is already on disk. What those three leave behind is
-`workspace/locks/` and the lock file they were decided under.
+`workspace/locks/` and the lock file they were decided under, plus the Windows
+workspace-root security repair just described when vetting reaches an existing
+database.
 
 **What "changed" counts.** Four things move, not one, and all four are reported.
 The manifest and the substrate row were always counted. `apply_pending_migrations`
@@ -112,6 +116,7 @@ import stat
 import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -488,7 +493,7 @@ def _initialise_workspace(
         )
 
     layout = WorkspaceLayout(root=workspace_root)
-    if layout.exists():
+    if _workspace_manifest_exists(layout):
         existing = _existing_manifest(layout, core_version)
         if isinstance(existing, WorkspaceInitResult):
             return existing
@@ -512,6 +517,7 @@ def _initialise_workspace(
         installation_root=installation_root,
         manifest=manifest,
         minted=minted,
+        core_version=core_version,
         restrict_parent_on_windows=False,
         harden_windows_on_success=harden_windows_on_success,
     )
@@ -588,7 +594,7 @@ def _initialise_allocated_workspace(
         )
 
     layout = WorkspaceLayout(root=workspace_root)
-    if layout.exists():
+    if _workspace_manifest_exists(layout):
         existing = _existing_manifest(layout, core_version)
         if isinstance(existing, WorkspaceInitResult):
             return existing
@@ -626,6 +632,7 @@ def _initialise_allocated_workspace(
         installation_root=installation_root,
         manifest=manifest,
         minted=minted,
+        core_version=core_version,
         restrict_parent_on_windows=True,
         harden_windows_on_success=True,
     )
@@ -675,6 +682,29 @@ def _chosen_by_somebody(root: Path, names: Iterable[str]) -> list[str]:
     and not only what it is called. See `OS_GENERATED_ENTRIES`.
     """
     return [name for name in names if not _os_generated(root / name)]
+
+
+def _workspace_manifest_exists(layout: WorkspaceLayout) -> bool:
+    """Decide manifest presence without ever following a Windows redirection.
+
+    The Windows initialization guard pins an entry that exists, but deliberately
+    makes no promise that an absent name will remain absent.  A regular manifest is
+    therefore pinned at the decision itself.  An absent name is only a provisional
+    answer: :func:`_bootstrap` repeats it after the workspace directory has been
+    quiesced and made owner-only, before any database or manifest write.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return layout.exists()
+    try:
+        os.lstat(layout.manifest_path)
+    except FileNotFoundError:
+        return False
+    except OSError as failure:
+        raise OSError("workspace manifest presence could not be proved") from failure
+    if not _is_real_file_no_follow(layout.manifest_path):
+        raise OSError("workspace manifest is not a regular no-follow file")
+    _pin_current_windows_path(layout.manifest_path, directory=False)
+    return True
 
 
 def _os_generated(entry: Path) -> bool:
@@ -748,6 +778,35 @@ def _existing_manifest(
     return manifest
 
 
+def _revalidate_windows_manifest_selection(
+    layout: WorkspaceLayout,
+    *,
+    manifest: WorkspaceManifest,
+    minted: bool,
+    core_version: str,
+) -> None:
+    """Bind the provisional manifest decision after securing its namespace.
+
+    Before the lifetime lock, presence checks are read-only so a busy refusal does
+    not rewrite ACLs.  Once that lock is held, the Windows path secures and
+    quiesces the workspace root.  Absence is stable against other local principals
+    only at that point.  A name that appeared, disappeared or changed meanwhile is
+    a refusal; initialization never adopts or overwrites the race winner.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    exists = _workspace_manifest_exists(layout)
+    if minted:
+        if exists:
+            raise OSError("workspace manifest appeared during initialization")
+        return
+    if not exists:
+        raise OSError("workspace manifest disappeared during initialization")
+    current = _existing_manifest(layout, core_version)
+    if isinstance(current, WorkspaceInitResult) or current != manifest:
+        raise OSError("workspace manifest changed during initialization")
+
+
 def _new_manifest(
     core_version: str,
     *,
@@ -793,6 +852,7 @@ def _is_real_file_no_follow(path: Path) -> bool:
         return False
     return (
         stat.S_ISREG(metadata.st_mode)
+        and (not _WINDOWS_OWNER_CONTROL or metadata.st_nlink == 1)
         and getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
         == 0
     )
@@ -865,6 +925,9 @@ def _windows_initialisation_entries(
         installation.installation_database.with_name(
             f"{installation.installation_database.name}-shm"
         ),
+        installation.installation_database.with_name(
+            f"{installation.installation_database.name}-journal"
+        ),
         installation.installation_lock,
     ):
         entries[Path(os.path.abspath(os.fspath(file_path)))] = False
@@ -927,93 +990,233 @@ def _handle_value(handle: object) -> int | None:
 
 
 @contextmanager
-def _windows_initialisation_guard(
-    workspace_root: Path, installation_root: Path
-) -> Iterator[None]:
-    """Pin every existing Windows component against replacement for this call.
+def _quiesce_windows_directory(path: Path) -> Iterator[None]:
+    """Hold one directory with zero sharing while its DACL becomes authoritative.
 
-    ``CreateFileW`` opens the entry itself (including a reparse point) and omits
-    ``FILE_SHARE_DELETE``. Windows consequently refuses delete, rename, or replace
-    while the handle is held. Components are opened root-to-leaf and their file
-    identities are compared across the open, closing the check/use gap between the
-    Python ``lstat`` verdict and later lock, SQLite, manifest, and ACL operations.
+    A DACL change stops new opens but cannot revoke a handle another principal
+    already owns.  Opening the directory with share mode zero first therefore
+    rejects any live reader, writer or deleter and prevents another such handle
+    from being acquired until the repair and child validation finish.  The normal
+    initialization pin (desired access zero) can coexist with this handle.
     """
     if os.name != "nt":
         yield
         return
 
     api = _windows_path_api()
-    handles: list[object] = []
-    held: set[Path] = set()
+    before = os.lstat(path)
+    if not _is_real_directory_no_follow(path):
+        raise OSError("SQLite parent is not a real directory")
+    handle = api.CreateFileW(
+        str(path),
+        0,
+        0,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    value = _handle_value(handle)
+    if value in (None, 0, _INVALID_HANDLE_VALUE):
+        raise OSError("SQLite parent has a live external directory handle")
     try:
-        # A component absent on the first scan can appear while earlier handles
-        # are being acquired. Repeat until every then-existing known entry is held;
-        # a continuously changing namespace is a refusal, not a state to guess at.
-        for _attempt in range(4):
-            added = False
-            for path, directory in _windows_initialisation_entries(
-                workspace_root, installation_root
-            ):
-                if path in held:
-                    continue
-                try:
-                    before = os.lstat(path)
-                except FileNotFoundError:
-                    continue
-                if not _existing_windows_path_is_safe(path, directory=directory):
-                    raise OSError("unsafe Windows path component")
-                handle = api.CreateFileW(
-                    str(path),
-                    0,
-                    _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-                    None,
-                    _OPEN_EXISTING,
-                    _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
-                    None,
-                )
-                value = _handle_value(handle)
-                if value in (None, 0, _INVALID_HANDLE_VALUE):
-                    raise OSError("Windows path component could not be pinned")
-                try:
-                    after = os.lstat(path)
-                    identity = (
-                        before.st_dev,
-                        before.st_ino,
-                        stat.S_IFMT(before.st_mode),
-                    )
-                    observed = (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode))
-                    if identity != observed or not _existing_windows_path_is_safe(
-                        path, directory=directory
-                    ):
-                        raise OSError("Windows path component changed while opening")
-                except BaseException:
-                    api.CloseHandle(handle)
-                    raise
-                handles.append(handle)
-                held.add(path)
-                added = True
-
-            existing: set[Path] = set()
-            for path, directory in _windows_initialisation_entries(
-                workspace_root, installation_root
-            ):
-                try:
-                    os.lstat(path)
-                except FileNotFoundError:
-                    continue
-                if not _existing_windows_path_is_safe(path, directory=directory):
-                    raise OSError("unsafe Windows path component")
-                existing.add(path)
-            if existing <= held:
-                break
-            if not added:
-                raise OSError("Windows path namespace did not stabilise")
-        else:
-            raise OSError("Windows path namespace did not stabilise")
+        after = os.lstat(path)
+        if (
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+        ) != (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)) or not (
+            _is_real_directory_no_follow(path)
+        ):
+            raise OSError("SQLite parent changed while being quiesced")
         yield
     finally:
-        for handle in reversed(handles):
-            api.CloseHandle(handle)
+        api.CloseHandle(handle)
+
+
+def _secure_existing_windows_directory(path: Path) -> None:
+    """Quiesce, restrict and pin one directory before using a child name."""
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    with _quiesce_windows_directory(path):
+        if not _is_real_directory_no_follow(path):
+            raise OSError("directory is not a real no-follow object")
+        restrict_to_owner(path, directory=True)
+        if not _is_real_directory_no_follow(path):
+            raise OSError("directory changed while being secured")
+        _pin_current_windows_path(path, directory=True)
+        _refresh_current_windows_paths()
+
+
+def _windows_sqlite_sidecars(
+    workspace_root: Path, installation_root: Path
+) -> frozenset[Path]:
+    workspace = WorkspaceLayout(root=workspace_root).database_path
+    installation = InstallationLayout(root=installation_root).installation_database
+    return frozenset(
+        Path(os.path.abspath(os.fspath(path)))
+        for path in (
+            workspace.with_name(f"{workspace.name}-wal"),
+            workspace.with_name(f"{workspace.name}-shm"),
+            workspace.with_name(f"{workspace.name}-journal"),
+            installation.with_name(f"{installation.name}-wal"),
+            installation.with_name(f"{installation.name}-shm"),
+            installation.with_name(f"{installation.name}-journal"),
+        )
+    )
+
+
+class _WindowsInitialisationPins:
+    """No-share-delete handles for stable entries in one initialization call."""
+
+    def __init__(self, api: Any, workspace_root: Path, installation_root: Path) -> None:
+        self._api = api
+        self._workspace_root = workspace_root
+        self._installation_root = installation_root
+        self._handles: list[object] = []
+        self._held: dict[Path, tuple[int, int, int]] = {}
+        self._sqlite_sidecars = _windows_sqlite_sidecars(
+            workspace_root, installation_root
+        )
+
+    def pin(self, path: Path, *, directory: bool) -> None:
+        """Pin one existing stable entry, comparing identity across its open."""
+        absolute = Path(os.path.abspath(os.fspath(path)))
+        try:
+            before = os.lstat(absolute)
+        except FileNotFoundError:
+            return
+        if not _existing_windows_path_is_safe(absolute, directory=directory):
+            raise OSError("unsafe Windows path component")
+        identity = (before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode))
+        prior = self._held.get(absolute)
+        if prior is not None:
+            if prior != identity:
+                raise OSError("pinned Windows path component changed")
+            return
+
+        # WAL, SHM and rollback-journal files are deletion-managed by SQLite.
+        # Holding them without FILE_SHARE_DELETE would prevent checkpoint cleanup;
+        # their parent and database stay pinned, and every refresh validates their
+        # no-follow kind immediately before and after database operations instead.
+        if absolute in self._sqlite_sidecars:
+            return
+
+        handle = self._api.CreateFileW(
+            str(absolute),
+            0,
+            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+            None,
+            _OPEN_EXISTING,
+            _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        value = _handle_value(handle)
+        if value in (None, 0, _INVALID_HANDLE_VALUE):
+            raise OSError("Windows path component could not be pinned")
+        try:
+            after = os.lstat(absolute)
+            observed = (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode))
+            if identity != observed or not _existing_windows_path_is_safe(
+                absolute, directory=directory
+            ):
+                raise OSError("Windows path component changed while opening")
+        except BaseException:
+            self._api.CloseHandle(handle)
+            raise
+        self._handles.append(handle)
+        self._held[absolute] = identity
+
+    def refresh(self) -> None:
+        """Pin every known entry observed during a bounded rescan.
+
+        This is intentionally not an absence lock: a directory handle does not
+        stop creation of a child.  Callers consume an existing entry only after a
+        no-follow pin, create files with an exclusive syscall, and repeat the
+        provisional manifest decision after its parent has been quiesced and made
+        owner-only.  The rescan closes creation windows between our own steps; it
+        never promotes a missing pathname into a security fact.
+        """
+        for _attempt in range(4):
+            held_before = len(self._held)
+            entries = _windows_initialisation_entries(
+                self._workspace_root, self._installation_root
+            )
+            for path, directory in entries:
+                self.pin(path, directory=directory)
+
+            missing_stable_entry = False
+            for path, directory in _windows_initialisation_entries(
+                self._workspace_root, self._installation_root
+            ):
+                absolute = Path(os.path.abspath(os.fspath(path)))
+                try:
+                    os.lstat(absolute)
+                except FileNotFoundError:
+                    continue
+                if not _existing_windows_path_is_safe(absolute, directory=directory):
+                    raise OSError("unsafe Windows path component")
+                if absolute not in self._sqlite_sidecars and absolute not in self._held:
+                    missing_stable_entry = True
+            if not missing_stable_entry:
+                return
+            if len(self._held) == held_before:
+                raise OSError("Windows path namespace did not stabilise")
+        raise OSError("Windows path namespace did not stabilise")
+
+    def close(self) -> None:
+        for handle in reversed(self._handles):
+            self._api.CloseHandle(handle)
+        self._handles.clear()
+        self._held.clear()
+
+
+_CURRENT_WINDOWS_PINS: ContextVar[_WindowsInitialisationPins | None] = ContextVar(
+    "omnivia_windows_initialisation_pins", default=None
+)
+
+
+def _pin_current_windows_path(path: Path, *, directory: bool) -> None:
+    pins = _CURRENT_WINDOWS_PINS.get()
+    if pins is not None:
+        pins.pin(path, directory=directory)
+
+
+def _refresh_current_windows_paths() -> None:
+    pins = _CURRENT_WINDOWS_PINS.get()
+    if pins is not None:
+        pins.refresh()
+
+
+@contextmanager
+def _windows_initialisation_guard(
+    workspace_root: Path, installation_root: Path
+) -> Iterator[None]:
+    """Pin Windows components against replacement for this entire call.
+
+    ``CreateFileW`` opens the entry itself (including a reparse point) and omits
+    ``FILE_SHARE_DELETE``. Windows consequently refuses delete, rename, or replace
+    while the handle is held. Existing components are pinned before the call; every
+    creation boundary refreshes the same guard so newly published directories,
+    databases, manifests and locks join it. Absence is never inferred from a scan:
+    creation remains exclusive, and the workspace root is quiesced and owner-only
+    before a provisional absent manifest or SQLite sidecar name is consumed.
+    """
+    if os.name != "nt":
+        yield
+        return
+
+    pins = _WindowsInitialisationPins(
+        _windows_path_api(), workspace_root, installation_root
+    )
+    token = _CURRENT_WINDOWS_PINS.set(pins)
+    try:
+        pins.refresh()
+        yield
+        pins.refresh()
+    finally:
+        _CURRENT_WINDOWS_PINS.reset(token)
+        pins.close()
 
 
 def _windows_unsafe_initialisation_tree(
@@ -1052,7 +1255,7 @@ def _windows_unsafe_initialisation_tree(
     )
 
 
-def _ensure_workspace_directory(path: Path) -> None:
+def _ensure_workspace_directory(path: Path) -> bool:
     """Create ``path`` and missing parents, securing each Windows creation at once.
 
     A returned ``FileExistsError`` is the race-safe answer that the directory was
@@ -1063,7 +1266,7 @@ def _ensure_workspace_directory(path: Path) -> None:
     """
     if not _WINDOWS_OWNER_CONTROL:
         path.mkdir(parents=True, exist_ok=True)
-        return
+        return False
     if path.parent != path:
         # Validate (or create and secure) every parent before asking the filesystem
         # to create a child.  Calling ``mkdir`` on the child first follows an
@@ -1074,19 +1277,22 @@ def _ensure_workspace_directory(path: Path) -> None:
     except FileExistsError:
         if not _is_real_directory_no_follow(path):
             raise OSError(f"refusing non-directory or reparse-point path: {path}")
-        return
+        _pin_current_windows_path(path, directory=True)
+        return False
     if not _is_real_directory_no_follow(path):
         raise OSError(f"created path is not a real directory: {path}")
     try:
-        restrict_to_owner(path, directory=True)
-        if not _is_real_directory_no_follow(path):
-            raise OSError(f"created directory was replaced while securing it: {path}")
+        # A just-created directory can inherit a permissive DACL on Windows.
+        # Reject a racing access-capable handle, hold the exact name stable, and
+        # make the DACL owner-only before any child is created beneath it.
+        _secure_existing_windows_directory(path)
     except OSError:
         try:
             path.rmdir()
         except OSError:
             pass
         raise
+    return True
 
 
 def _create_empty_database_file(path: Path) -> None:
@@ -1098,6 +1304,7 @@ def _create_empty_database_file(path: Path) -> None:
         created = os.fstat(descriptor)
         if not stat.S_ISREG(created.st_mode):
             raise OSError("new workspace database is not a regular file")
+        _pin_current_windows_path(path, directory=False)
     finally:
         os.close(descriptor)
     observed = os.lstat(path)
@@ -1124,10 +1331,14 @@ def _restrict_windows_workspace_layout(
     the workspace root, and an existing manifest. A freshly written manifest is
     restricted on its temporary file before publication by ``write_manifest``.
 
-    This runs only after the storage ownership/refusal decisions. Existing ACLs are
-    therefore never rewritten by ``WORKSPACE_BUSY``, identity-mismatch or unrelated
-    database refusals. Newly created directories are handled separately, at their
-    creating syscall, because there is no prior ACL on those to preserve.
+    This broader trust-chain repair runs only after the storage ownership/refusal
+    decisions. A pre-existing workspace root is secured separately, after its
+    lifetime lock is acquired but before SQLite vetting, because its transient WAL,
+    shared-memory and journal names cannot safely live in a directory writable by
+    another local principal. Busy refusal still changes no ACL; identity or foreign
+    database refusal may therefore leave only that workspace-root security repair.
+    Newly created directories are handled separately, at their creating syscall,
+    because there is no prior ACL on those to preserve.
     """
     if not _WINDOWS_OWNER_CONTROL:
         return
@@ -1159,6 +1370,101 @@ def _restrict_windows_workspace_layout(
         restrict_to_owner(layout.manifest_path, directory=False)
 
 
+def _restrict_windows_sqlite_parent(path: Path) -> None:
+    """Secure a pinned SQLite parent before the driver can touch sidecar names.
+
+    WAL, shared-memory and rollback-journal files have to remain deletable by
+    SQLite, so they cannot be held with the no-share-delete handles used for stable
+    initialization paths. The parent directory is the durable authorization
+    boundary instead: once its DACL is owner-only, an untrusted local principal
+    cannot create, replace or redirect one of those transient names.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    if not _is_real_directory_no_follow(path):
+        raise OSError(f"refusing to secure non-directory or reparse point: {path}")
+    restrict_to_owner(path, directory=True)
+    if not _is_real_directory_no_follow(path):
+        raise OSError(f"SQLite parent was replaced while securing it: {path}")
+    _pin_current_windows_path(path, directory=True)
+    _refresh_current_windows_paths()
+
+
+def _secure_existing_windows_file(path: Path, *, subject: str) -> None:
+    """Quiesce and secure one existing file without following links.
+
+    Securing only the parent does not revoke an already-open outsider handle or an
+    explicit file ACL. On Windows a zero-access, zero-share handle proves no reader,
+    writer or deleter is already present; while that exact object is pinned, its ACL
+    is reduced to the owning OS user. The secured parent then prevents a new
+    competing pathname open after this short-lived handle closes.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if not _is_real_file_no_follow(path):
+        raise OSError(f"refusing an unsafe {subject}")
+
+    api: Any | None = None
+    handle: object | None = None
+    if os.name == "nt":  # pragma: no cover - exercised on the hosted Windows row
+        api = _windows_path_api()
+        handle = api.CreateFileW(
+            str(path),
+            0,
+            0,
+            None,
+            _OPEN_EXISTING,
+            _FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        value = _handle_value(handle)
+        if value in (None, 0, _INVALID_HANDLE_VALUE):
+            raise OSError(f"{subject} is already open")
+    try:
+        opened = os.lstat(path)
+        identity = (before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode))
+        observed = (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode))
+        if identity != observed or not _is_real_file_no_follow(path):
+            raise OSError(f"{subject} changed while opening")
+        restrict_to_owner(path, directory=False)
+        secured = os.lstat(path)
+        if identity != (
+            secured.st_dev,
+            secured.st_ino,
+            stat.S_IFMT(secured.st_mode),
+        ) or not _is_real_file_no_follow(path):
+            raise OSError(f"{subject} changed while securing")
+    finally:
+        if api is not None and handle is not None:
+            api.CloseHandle(handle)
+
+
+def _prepare_windows_sqlite_database(path: Path) -> None:
+    """Make an existing-or-fresh SQLite namespace safe before its first open."""
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    # The zero-share directory handle rejects pre-existing access-capable handles
+    # before the DACL repair and remains held until every existing child is proved
+    # closed and owner-only.  Once released, the repaired DACL prevents an
+    # untrusted principal from acquiring a new handle or publishing a sidecar.
+    with _quiesce_windows_directory(path.parent):
+        _restrict_windows_sqlite_parent(path.parent)
+        for candidate in (
+            path,
+            path.with_name(f"{path.name}-wal"),
+            path.with_name(f"{path.name}-shm"),
+            path.with_name(f"{path.name}-journal"),
+        ):
+            _secure_existing_windows_file(
+                candidate, subject="SQLite database or sidecar"
+            )
+        _refresh_current_windows_paths()
+
+
 def harden_windows_workspace_layout(
     *,
     workspace_root: Path,
@@ -1166,11 +1472,13 @@ def harden_windows_workspace_layout(
     restrict_parent: bool = False,
 ) -> None:
     """Apply the managed-client DACL only after every public refusal is decided."""
+    _refresh_current_windows_paths()
     _restrict_windows_workspace_layout(
         WorkspaceLayout(root=workspace_root),
         installation_root,
         restrict_parent=restrict_parent,
     )
+    _refresh_current_windows_paths()
 
 
 def _bootstrap(
@@ -1179,6 +1487,7 @@ def _bootstrap(
     installation_root: Path,
     manifest: WorkspaceManifest,
     minted: bool,
+    core_version: str,
     restrict_parent_on_windows: bool,
     harden_windows_on_success: bool,
 ) -> WorkspaceInitResult:
@@ -1190,14 +1499,17 @@ def _bootstrap(
     would meet that service's exclusive SQLite lock as a busy timeout rather than
     as an answer, and two concurrent inits would race on the substrate.
 
-    **The order below is the whole of "a refusal leaves the tree as it found it",
-    and it is an order rather than a rollback.** The claim covers the three refusals
-    that decide *whether this workspace is ours to touch* -- `WORKSPACE_BUSY`,
-    `WORKSPACE_IDENTITY_MISMATCH`, and the `UNRELATED_DIRECTORY` a foreign database
-    earns. Each is decided before the manifest, the layout directories and the
-    installation-state tree are created, so there is nothing to undo and no window
-    in which a crash could leave a half-undone one behind. It used to run the other
-    way round, and both refusals that then existed wrote:
+    **The order below is the whole of "a refusal leaves the data tree as it found
+    it", and it is an order rather than a rollback.** The claim covers the three
+    refusals that decide *whether this workspace is ours to touch* --
+    `WORKSPACE_BUSY`, `WORKSPACE_IDENTITY_MISMATCH`, and the `UNRELATED_DIRECTORY`
+    a foreign database earns. Each is decided before the manifest, layout
+    directories and installation-state tree are created. On Windows, after the
+    lifetime lock is acquired, a pre-existing workspace root is deliberately made
+    owner-only before SQLite opens it; this is a security precondition for its
+    transient sidecar namespace, not adoption of the database. It does not occur on
+    the busy path. It used to run the other way round, and both refusals that then
+    existed wrote:
 
     - `WORKSPACE_BUSY` created ten directories and, on a workspace with no manifest,
       wrote one -- so refusing a workspace a running service owned left a tree
@@ -1257,11 +1569,12 @@ def _bootstrap(
 
     **"As it found it" is bounded by what the metric can see, and the metric is not
     the filesystem.** `_digest` compares each entry's `lstat` mode and its content
-    hash, so what these tests prove is that no entry was created, removed, retyped,
-    re-permissioned or rewritten. Ownership and extended attributes are outside it
-    entirely. Timestamps are outside it too, and the mtime the `touch` above used to
-    move is the one case pinned by hand rather than by the digest -- atime is not
-    pinned even there, because the vet has to read the file and a read moves it.
+    hash, so outside the Windows workspace-root security repair these tests prove
+    that no entry was created, removed, retyped, re-permissioned or rewritten.
+    Ownership and extended attributes are outside it entirely. Timestamps are
+    outside it too, and the mtime the `touch` above used to move is the one case
+    pinned by hand rather than by the digest -- atime is not pinned even there,
+    because the vet has to read the file and a read moves it.
 
     **The database's bytes are part of that claim, and making them so is why the vet
     is a separate open.** `journal_mode = WAL` rewrites the header of whatever file
@@ -1289,12 +1602,13 @@ def _bootstrap(
     # directories the no-op path repairs and the very next line would hide it.
     absent = _absent_directories(layout, installation_root, manifest.workspace_id)
     try:
-        _ensure_workspace_directory(layout.root)
-        _ensure_workspace_directory(layout.locks_path)
+        workspace_root_created = _ensure_workspace_directory(layout.root)
+        locks_path_created = _ensure_workspace_directory(layout.locks_path)
         lock = create_lock(
             lock_path, LockRole.LIFETIME_STORAGE, {"holder": LOCK_HOLDER}
         )
         held = lock.acquire()
+        _refresh_current_windows_paths()
     except OSError as failure:
         return _write_failure(layout, manifest, installation_root, failure)
     if not held:
@@ -1313,6 +1627,27 @@ def _bootstrap(
 
     try:
         try:
+            if not workspace_root_created:
+                # Stable entries are pinned by the surrounding Windows guard, but
+                # SQLite sidecars cannot be: SQLite must be able to delete them.
+                # Restrict the containing namespace only after the storage lock is
+                # held (so busy is still mutation-free) and before the first
+                # connection can create, replace or follow a sidecar name.
+                _prepare_windows_sqlite_database(layout.database_path)
+                _secure_existing_windows_file(
+                    layout.manifest_path, subject="workspace manifest"
+                )
+            if _WINDOWS_OWNER_CONTROL and not locks_path_created:
+                # The lock path had to remain untouched until this acquisition
+                # decided the busy result. Once held, its directory can be
+                # quiesced and made owner-only before any later child access.
+                _secure_existing_windows_directory(layout.locks_path)
+            _revalidate_windows_manifest_selection(
+                layout,
+                manifest=manifest,
+                minted=minted,
+                core_version=core_version,
+            )
             # `open_database` creates a file in `EPHEMERAL` alone, so a fresh
             # workspace needs one to exist before an exclusive open can be asked
             # for. SQLite reads a zero-byte file as an empty database, which is
@@ -1340,6 +1675,7 @@ def _bootstrap(
             else:
                 if not _is_real_file_no_follow(layout.database_path):
                     raise OSError("workspace database is not a regular file")
+            _refresh_current_windows_paths()
             # Vetted first, through a connection that does not enable WAL. Setting
             # `journal_mode = WAL` rewrites the header of whatever file it opened,
             # so an exclusive open taken *before* the refusal is decided changes a
@@ -1365,6 +1701,7 @@ def _bootstrap(
                 populated = existing is None and fingerprint_schema(vetting).tables > 0
             finally:
                 vetting.close()
+            _refresh_current_windows_paths()
 
             if existing is not None and existing.workspace_id != manifest.workspace_id:
                 return _identity_mismatch(
@@ -1419,6 +1756,7 @@ def _bootstrap(
                 )
             finally:
                 connection.close()
+            _refresh_current_windows_paths()
 
             # The filesystem, last, and that ordering is the repair. Every refusal
             # this function can reach is decided above, so until this line runs
@@ -1437,6 +1775,7 @@ def _bootstrap(
                     _ensure_workspace_directory(layout.blobs_path)
                     _ensure_workspace_directory(layout.indexes_path)
                 create_workspace(layout.root, manifest)
+                _refresh_current_windows_paths()
             else:
                 # Repair, not rewrite. A missing `blobs/`, `indexes/` or `locks/`
                 # is created; the manifest already on disk is untouched.
@@ -1450,7 +1789,25 @@ def _bootstrap(
                         _ensure_workspace_directory(directory)
                 else:
                     layout.create_directories()
-            InstallationLayout(root=installation_root).create(manifest.workspace_id)
+            installation = InstallationLayout(root=installation_root)
+            if _WINDOWS_OWNER_CONTROL:
+                # Use the guard-aware creator here rather than the backup helper's
+                # otherwise-equivalent owner-private creation. Every top-level and
+                # workspace-specific component joins this call's no-share-delete
+                # pin set before a later catalogue, credential or runtime open.
+                for directory in (
+                    installation.root / BACKUPS_DIR,
+                    installation.root / BACKUPS_DIR / manifest.workspace_id,
+                    installation.root / ATTEMPTS_DIR,
+                    installation.attempts_for(manifest.workspace_id),
+                    installation.root / RUNTIME_DIR,
+                    installation.runtime_for(manifest.workspace_id),
+                    installation.catalogue,
+                ):
+                    _ensure_workspace_directory(directory)
+            else:
+                installation.create(manifest.workspace_id)
+            _refresh_current_windows_paths()
         except (StorageError, OSError) as failure:
             return _write_failure(layout, manifest, installation_root, failure)
     finally:

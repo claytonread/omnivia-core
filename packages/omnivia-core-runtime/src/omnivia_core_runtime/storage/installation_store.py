@@ -1358,8 +1358,15 @@ def open_installation_store(
     owner_instance_id: str,
     clock_us: Callable[[], int] = _wall_clock_us,
     installation_id_factory: Callable[[], str] = _installation_id,
+    before_database_open: Callable[[], None] | None = None,
 ) -> InstallationStore:
-    """Acquire installation ownership and return its sole write-capable store."""
+    """Acquire installation ownership and return its sole write-capable store.
+
+    ``before_database_open`` runs only after the lifetime lock is held and before
+    SQLite can create or open any catalogue sidecar. Managed Windows bootstrap uses
+    that narrow seam to make a pre-existing catalogue directory owner-only without
+    changing its ACL on the busy-refusal path.
+    """
     if not 1 <= len(owner_instance_id) <= 128:
         raise InstallationStoreError(
             "owner instance id must contain 1 to 128 characters"
@@ -1381,6 +1388,8 @@ def open_installation_store(
 
     connection: sqlite3.Connection | None = None
     try:
+        if before_database_open is not None:
+            before_database_open()
         connection = _connect_catalogue(layout.installation_database)
         now_us = clock_us()
         if now_us <= 0:

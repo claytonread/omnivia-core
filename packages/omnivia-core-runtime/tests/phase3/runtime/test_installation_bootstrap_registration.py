@@ -32,6 +32,7 @@ from omnivia_core_runtime.service.workspace_init import (
     initialise_allocated_workspace,
     initialise_workspace,
 )
+from omnivia_core_runtime.storage import installation_store as installation_store_module
 from omnivia_core_runtime.storage.installation_store import (
     InstallationStore,
     InstallationStoreError,
@@ -464,10 +465,10 @@ def test_the_installation_catalogue_being_busy_refuses_registration_without_cras
     assert result.workspace_id is not None
 
 
-def test_windows_catalogue_busy_refusal_does_not_rewrite_existing_acls(
+def test_windows_catalogue_busy_refusal_secures_workspace_but_not_catalogue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Managed ``--init`` defers trust-chain repair until registration accepts."""
+    """SQLite parents are secured only after their own lifetime lock is held."""
     workspace_root, installation_root = _init(tmp_path)
     prepared = initialise_workspace(
         workspace_root=workspace_root, installation_root=installation_root
@@ -494,7 +495,55 @@ def test_windows_catalogue_busy_refusal_does_not_rewrite_existing_acls(
 
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
-    assert seen == []
+    assert seen == [
+        (workspace_root, True),
+        (workspace_root / "workspace.sqlite", False),
+        (workspace_root / "workspace.json", False),
+        (workspace_root / "locks", True),
+    ]
+
+
+def test_windows_registration_secures_catalogue_before_sqlite_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deletable sidecar namespace is private before the first catalogue open."""
+    workspace_root, installation_root = _init(tmp_path)
+    prepared = initialise_workspace(
+        workspace_root=workspace_root, installation_root=installation_root
+    )
+    assert prepared.status is WorkspaceInitStatus.INITIALISED
+    seeded = open_installation_store(
+        installation_root, owner_instance_id="catalogue-seeder"
+    )
+    seeded.close()
+
+    catalogue = installation_root / "catalogue"
+    catalogue_database = catalogue / "installation.sqlite"
+    seen: list[tuple[Path, bool]] = []
+    real_connect = installation_store_module._connect_catalogue
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    def _connect_after_security(path: Path) -> sqlite3.Connection:
+        assert (catalogue, True) in seen
+        assert (catalogue_database, False) in seen
+        return real_connect(path)
+
+    monkeypatch.setattr(
+        installation_store_module, "_connect_catalogue", _connect_after_security
+    )
+
+    result = initialise_and_register_managed_local_workspace(
+        workspace_root=workspace_root,
+        installation_root=installation_root,
+    )
+
+    assert result.status is WorkspaceInitStatus.ALREADY_INITIALISED
+    assert seen.index((workspace_root, True)) < seen.index((catalogue, True))
 
 
 def test_a_failed_verification_fails_closed_and_a_later_retry_recovers(
