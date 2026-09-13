@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 from omnivia_core_client import (
+    AuthoringAdmissionResult,
+    ClientError,
     Credential,
     CredentialReference,
     InstalledCredentialStore,
@@ -32,6 +34,7 @@ WORKSPACE = "ws-legacy-upgrade"
 OTHER_WORKSPACE = "ws-other"
 LEGACY_PRINCIPAL = "legacy-local-user"
 PURPOSES = ("workspace_inspection", "knowledge_retrieval", "memory_authoring")
+STORED_SECRET = "omcp_live_00112233445566778899aabbccddeeff"
 
 
 @dataclass
@@ -44,6 +47,24 @@ class ControlPeer:
     def status(self, *_args: Any, **_kwargs: Any) -> McpStatusResult:
         self.events.append("status")
         return McpStatusResult(setups=tuple(self.setups.values()))
+
+    def admission(
+        self, _transport: Any, credential: str, *_args: Any, **_kwargs: Any
+    ) -> AuthoringAdmissionResult:
+        self.events.append("admission")
+        matching = [
+            setup
+            for setup in self.setups.values()
+            if setup.status == "active" and credential == STORED_SECRET
+        ]
+        if len(matching) != 1:
+            raise ClientError("test credential is not active")
+        setup = matching[0]
+        return AuthoringAdmissionResult(
+            admitted=setup.profile == "authoring" and setup.authoring_intent,
+            principal_id=setup.principal_id,
+            workspace_id=setup.workspace_id,
+        )
 
 
 def setup_view(
@@ -110,12 +131,13 @@ def attach_control(monkeypatch: pytest.MonkeyPatch, peer: ControlPeer) -> None:
         lambda connected: peer if connected is client else pytest.fail("wrong client"),
     )
     monkeypatch.setattr(server, "mcp_status", peer.status)
+    monkeypatch.setattr(server, "mcp_authoring_admission", peer.admission)
 
 
 def store_setup(path: Path, setup: McpSetupView) -> CredentialReference:
     reference = CredentialReference(setup.credential_reference)
     InstalledCredentialStore(path.parent / "installation").store(
-        reference, Credential("omcp_live_00112233445566778899aabbccddeeff")
+        reference, Credential(STORED_SECRET)
     )
     return reference
 
@@ -158,7 +180,7 @@ def test_one_interrupted_restricted_setup_is_published_without_grant_change(
     assert upgraded.allowed_purposes == PURPOSES
     assert upgraded.mutation_enabled is False
     assert upgraded.credential_reference == reference
-    assert peer.events == ["status"]
+    assert peer.events == ["status", "admission", "admission"]
     assert peer.setups == {host: existing}
 
     before = list(peer.events)
@@ -223,6 +245,7 @@ def test_configuration_publication_failure_preserves_existing_authority_and_bear
 
     store = InstalledCredentialStore(path.parent / "installation")
     assert peer.setups == {"codex": existing}
+    assert peer.events == ["status", "admission"]
     assert store.health(reference) == "present"
     assert read_configuration(path).credential_reference is None
     rendered = " ".join((str(refused.value), repr(refused.value.args)))
@@ -235,11 +258,64 @@ def test_configuration_publication_failure_preserves_existing_authority_and_bear
         assert private not in rendered
 
 
+def test_a_present_but_wrong_bearer_refuses_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Store readability is not evidence that the service accepts its credential."""
+    path = legacy_file(tmp_path)
+    original = path.read_bytes()
+    existing = setup_view("codex")
+    reference = store_setup(path, existing)
+    InstalledCredentialStore(path.parent / "installation").store(
+        reference, Credential("omcp_live_ffeeddccbbaa99887766554433221100")
+    )
+    peer = ControlPeer(setups={"codex": existing})
+    attach_control(monkeypatch, peer)
+
+    with pytest.raises(server.StartupError):
+        server.upgrade_legacy_configuration(path, read_configuration(path))
+
+    assert peer.events == ["status", "admission"]
+    assert path.read_bytes() == original
+    assert read_configuration(path).credential_reference is None
+
+
+def test_revocation_after_publication_restores_the_exact_legacy_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second live proof compensates if authority changes at publication."""
+    path = legacy_file(tmp_path, mutation_enabled=True)
+    original = path.read_bytes()
+    existing = setup_view("codex")
+    store_setup(path, existing)
+    peer = ControlPeer(setups={"codex": existing})
+    attach_control(monkeypatch, peer)
+    calls = 0
+
+    def revoked_after_first_proof(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            peer.events.append("admission")
+            raise ClientError("test credential was revoked")
+        return peer.admission(*args, **kwargs)
+
+    monkeypatch.setattr(server, "mcp_authoring_admission", revoked_after_first_proof)
+
+    with pytest.raises(server.StartupError):
+        server.upgrade_legacy_configuration(path, read_configuration(path))
+
+    assert peer.events == ["status", "admission", "admission"]
+    assert path.read_bytes() == original
+    assert read_configuration(path).credential_reference is None
+
+
 def test_readback_must_match_the_whole_published_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A same-reference replacement cannot widen or narrow another field."""
     path = legacy_file(tmp_path, mutation_enabled=True)
+    original = path.read_bytes()
     legacy = read_configuration(path)
     existing = setup_view("claude-code")
     reference = store_setup(path, existing)
@@ -259,6 +335,7 @@ def test_readback_must_match_the_whole_published_authority(
     assert InstalledCredentialStore(path.parent / "installation").health(reference) == (
         "present"
     )
+    assert path.read_bytes() == original
 
 
 def test_an_ambiguous_legacy_workspace_refuses_before_connecting(

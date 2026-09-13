@@ -1037,3 +1037,143 @@ def test_process_exists_never_calls_os_kill_with_signal_zero_on_windows(
 
     monkeypatch.setattr(managed_local.os, "kill", unexpected_kill)
     assert managed_local._process_exists(4242) is False
+
+
+class _FakeWindowsProcessApi:
+    def __init__(
+        self,
+        *,
+        creation: tuple[int, int] = (0x76543210, 0x01234567),
+        waits: tuple[int, ...] = (managed_local._WAIT_OBJECT_0,),
+    ) -> None:
+        self.handle = 771
+        self.creation = creation
+        self.waits = iter(waits)
+        self.opened: list[tuple[int, int, int]] = []
+        self.closed: list[int] = []
+        self.waited: list[tuple[int, int]] = []
+
+    def OpenProcess(self, rights: int, inherit: int, pid: int) -> int:
+        self.opened.append((rights, inherit, pid))
+        return self.handle
+
+    def GetProcessTimes(self, handle: int, created: Any, *_unused: Any) -> int:
+        assert handle == self.handle
+        created._obj.dwLowDateTime = self.creation[0]
+        created._obj.dwHighDateTime = self.creation[1]
+        return 1
+
+    def WaitForSingleObject(self, handle: int, timeout: int) -> int:
+        self.waited.append((handle, timeout))
+        return next(self.waits)
+
+    def CloseHandle(self, handle: int) -> int:
+        self.closed.append(handle)
+        return 1
+
+
+def _windows_creation(api: _FakeWindowsProcessApi) -> str:
+    return str((api.creation[1] << 32) | api.creation[0])
+
+
+def test_windows_process_start_time_uses_both_filetime_halves_and_closes_handle() -> None:
+    api = _FakeWindowsProcessApi()
+
+    assert managed_local._windows_process_start_time(4242, api=api) == _windows_creation(
+        api
+    )
+    assert api.opened == [
+        (managed_local._PROCESS_QUERY_LIMITED_INFORMATION, 0, 4242)
+    ]
+    assert api.closed == [api.handle]
+
+
+def test_windows_stop_refuses_a_reused_pid_before_signalling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = _FakeWindowsProcessApi()
+    process = SimpleNamespace(pid=4242, start_time="different-process")
+    connected = cast(
+        ServiceClient, SimpleNamespace(descriptor=SimpleNamespace(process=process))
+    )
+    connects(monkeypatch, [connected])
+    monkeypatch.setattr(managed_local.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(managed_local, "_windows_kernel32", lambda: api)
+    monkeypatch.setattr(
+        managed_local,
+        "_request_stop",
+        lambda _pid: pytest.fail("an unproved process must not be signalled"),
+    )
+
+    stopped = managed_local.stop_managed_local(
+        config(tmp_path), deadline=Deadline.after(30)
+    )
+
+    assert stopped.status == "identity_mismatch"
+    assert api.closed == [api.handle]
+    assert api.waited == []
+
+
+def test_windows_stop_fails_closed_when_process_identity_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = SimpleNamespace(pid=4242, start_time="published-start")
+    connected = cast(
+        ServiceClient, SimpleNamespace(descriptor=SimpleNamespace(process=process))
+    )
+    connects(monkeypatch, [connected])
+    monkeypatch.setattr(managed_local.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(managed_local, "_windows_kernel32", lambda: None)
+    monkeypatch.setattr(
+        managed_local,
+        "_request_stop",
+        lambda _pid: pytest.fail("unknown identity must not authorize a signal"),
+    )
+
+    stopped = managed_local.stop_managed_local(
+        config(tmp_path), deadline=Deadline.after(30)
+    )
+
+    assert stopped.status == "identity_mismatch"
+
+
+def test_windows_stop_retains_the_identity_handle_through_signal_and_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = _FakeWindowsProcessApi()
+    process = SimpleNamespace(pid=4242, start_time=_windows_creation(api))
+    connected = cast(
+        ServiceClient, SimpleNamespace(descriptor=SimpleNamespace(process=process))
+    )
+    connects(monkeypatch, [connected])
+    monkeypatch.setattr(managed_local.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(managed_local, "_windows_kernel32", lambda: api)
+    signalled: list[int] = []
+
+    def request_stop(pid: int) -> None:
+        assert api.closed == [], "the PID-stability handle must still be retained"
+        signalled.append(pid)
+
+    monkeypatch.setattr(managed_local, "_request_stop", request_stop)
+    monkeypatch.setattr(
+        managed_local,
+        "_process_exists",
+        lambda _pid: pytest.fail("Windows must observe the retained process handle"),
+    )
+
+    stopped = managed_local.stop_managed_local(
+        config(tmp_path), deadline=Deadline.after(30)
+    )
+
+    assert stopped.status == "stopped"
+    assert signalled == [4242]
+    assert api.opened == [
+        (
+            managed_local._PROCESS_QUERY_LIMITED_INFORMATION
+            | managed_local._SYNCHRONIZE,
+            0,
+            4242,
+        )
+    ]
+    assert api.waited == [(api.handle, 0)]
+    assert api.closed == [api.handle]

@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -996,7 +997,7 @@ def test_a_projection_failure_refuses_and_the_same_key_repairs_it(
     assert count(owned, AUDIT) == 1
 
 
-@pytest.mark.parametrize("damage", ["missing", "corrupt", "symlink"])
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "symlink", "hardlink"])
 def test_a_blob_that_is_not_the_content_cannot_pass_gate_a(
     owned: Served, router: ApplicationDispatcher, damage: str
 ) -> None:
@@ -1021,6 +1022,10 @@ def test_a_blob_that_is_not_the_content_cannot_pass_gate_a(
         target = owned.layout.root / "elsewhere"
         target.write_bytes(content)
         path.symlink_to(target)
+    elif damage == "hardlink":
+        target = owned.layout.root / "elsewhere"
+        target.write_bytes(content)
+        os.link(target, path)
 
     projection = open_search_projection(
         owned.connection,
@@ -1034,7 +1039,7 @@ def test_a_blob_that_is_not_the_content_cannot_pass_gate_a(
     assert found(router, MARKER) == ()
 
 
-@pytest.mark.parametrize("damage", ["corrupt", "symlink"])
+@pytest.mark.parametrize("damage", ["corrupt", "symlink", "hardlink"])
 def test_a_capture_over_a_damaged_object_is_refused_rather_than_settled(
     owned: Served, router: ApplicationDispatcher, damage: str
 ) -> None:
@@ -1052,10 +1057,14 @@ def test_a_capture_over_a_damaged_object_is_refused_rather_than_settled(
     path.parent.mkdir(parents=True, exist_ok=True)
     if damage == "corrupt":
         path.write_bytes(b"not the submitted bytes")
-    else:
+    elif damage == "symlink":
         target = owned.layout.root / "elsewhere"
         target.write_bytes(content)
         path.symlink_to(target)
+    else:
+        target = owned.layout.root / "elsewhere"
+        target.write_bytes(content)
+        os.link(target, path)
 
     response = refusal(
         router.dispatch(capture_request(request_id="req-1", key="idem-1"))

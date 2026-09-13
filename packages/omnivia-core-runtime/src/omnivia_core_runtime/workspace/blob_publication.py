@@ -20,7 +20,7 @@ import re
 import stat
 import uuid
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from omnivia_core_runtime.workspace.filesystem import fsync_directory
 
@@ -29,10 +29,125 @@ from omnivia_core_runtime.workspace.filesystem import fsync_directory
 DIGEST_PATTERN: Final = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 _CHUNK: Final = 1024 * 1024
+_GENERIC_READ: Final = 0x80000000
+_FILE_SHARE_READ: Final = 0x00000001
+_OPEN_EXISTING: Final = 3
+_FILE_FLAG_OPEN_REPARSE_POINT: Final = 0x00200000
+_FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x00000400
 
 
 class BlobPublicationRefused(RuntimeError):
     """Bytes cannot be published, or what is already published is not those bytes."""
+
+
+def _windows_file_api() -> Any:
+    """A configured ``CreateFileW`` API for opening the named object itself."""
+    import ctypes
+
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        raise OSError("Windows file API is unavailable")
+    try:
+        kernel32 = loader("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        )
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int32
+    except Exception as failure:
+        raise OSError("Windows file API is unavailable") from failure
+    return kernel32
+
+
+def _handle_value(handle: object) -> int | None:
+    value = getattr(handle, "value", handle)
+    return value if isinstance(value, int) else None
+
+
+def _open_windows_blob(
+    path: Path,
+    *,
+    api: Any | None = None,
+    descriptor_from_handle: Any | None = None,
+) -> int:
+    """Open the path's object, not a reparse target, and transfer handle ownership."""
+    import ctypes
+    import msvcrt
+
+    kernel32 = _windows_file_api() if api is None else api
+    handle = kernel32.CreateFileW(
+        str(path),
+        _GENERIC_READ,
+        _FILE_SHARE_READ,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    value = _handle_value(handle)
+    if value in (None, 0, ctypes.c_void_p(-1).value):
+        raise OSError("blob could not be opened without following links")
+    converter = (
+        msvcrt.open_osfhandle  # type: ignore[attr-defined]
+        if descriptor_from_handle is None
+        else descriptor_from_handle
+    )
+    try:
+        # Ownership of the native handle passes to the CRT descriptor on success.
+        return int(converter(value, os.O_RDONLY | getattr(os, "O_BINARY", 0)))
+    except (OSError, ValueError, OverflowError) as failure:
+        kernel32.CloseHandle(handle)
+        raise OSError("blob handle could not become a descriptor") from failure
+
+
+def _opened_blob(path: Path) -> int:
+    """Open exactly one regular, single-linked object without following reparse data."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    try:
+        descriptor = (
+            _open_windows_blob(path)
+            if os.name == "nt"
+            else os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
+        )
+    except OSError as error:
+        raise BlobPublicationRefused(
+            "the content-addressed blob cannot be read safely"
+        ) from error
+    try:
+        opened = os.fstat(descriptor)
+        named = os.lstat(path)
+        attributes = int(getattr(opened, "st_file_attributes", 0)) | int(
+            getattr(named, "st_file_attributes", 0)
+        )
+        safe = (
+            stat.S_ISREG(opened.st_mode)
+            and stat.S_ISREG(named.st_mode)
+            and opened.st_nlink == 1
+            and named.st_nlink == 1
+            and attributes & _FILE_ATTRIBUTE_REPARSE_POINT == 0
+            and (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode))
+            == (named.st_dev, named.st_ino, stat.S_IFMT(named.st_mode))
+        )
+        if not safe:
+            raise BlobPublicationRefused(
+                "the content-addressed blob is not one regular file"
+            )
+    except BlobPublicationRefused:
+        os.close(descriptor)
+        raise
+    except OSError as error:
+        os.close(descriptor)
+        raise BlobPublicationRefused(
+            "the content-addressed blob cannot be read safely"
+        ) from error
+    return descriptor
 
 
 def blob_path(blobs_root: Path, digest: str) -> Path:
@@ -66,18 +181,8 @@ def _verify(path: Path, content: bytes) -> None:
     non-regular file standing where the object should be is refused rather than
     followed to whatever it points at.
     """
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = _opened_blob(path)
     try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise BlobPublicationRefused(
-            "the content-addressed blob cannot be read safely"
-        ) from error
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise BlobPublicationRefused(
-                "the content-addressed blob is not one regular file"
-            )
         offset = 0
         while True:
             chunk = os.read(descriptor, _CHUNK)

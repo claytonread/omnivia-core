@@ -85,6 +85,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, NoReturn
@@ -196,8 +198,19 @@ _MANAGED_START_FAILED: Final = "the managed service could not be started"
 
 # Native Windows process-probe constants.  Signal zero is not a probe there.
 _PROCESS_QUERY_LIMITED_INFORMATION: Final = 0x1000
+_SYNCHRONIZE: Final = 0x00100000
 _ERROR_ACCESS_DENIED: Final = 5
 _ERROR_INVALID_PARAMETER: Final = 87
+_WAIT_OBJECT_0: Final = 0
+
+
+class _FILETIME(ctypes.Structure):
+    """Win32 ``FILETIME`` used as the service's opaque creation-time evidence."""
+
+    _fields_ = (
+        ("dwLowDateTime", ctypes.c_uint32),
+        ("dwHighDateTime", ctypes.c_uint32),
+    )
 
 _POLL_SECONDS: Final = 0.05
 
@@ -716,19 +729,17 @@ def _process_start_time(pid: int) -> str | None:
         except (OSError, subprocess.SubprocessError):  # pragma: no cover
             return None
         return completed.stdout.strip() or None
-    return None  # pragma: no cover - Windows and other hosts
+    if system == "Windows":
+        return _windows_process_start_time(pid)
+    return None  # pragma: no cover - unsupported hosts
 
 
-def _same_process(process: ServiceProcessEvidence) -> bool | None:
-    """True for a matching process, false for a mismatch, None if unreadable."""
+def _same_process(process: ServiceProcessEvidence) -> bool:
+    """Whether the live PID has exactly the descriptor's creation-time evidence."""
     if process.pid <= 0:
         return False
     observed = _process_start_time(process.pid)
-    if observed is not None:
-        return observed == process.start_time
-    if platform.system() in ("Linux", "Darwin", "FreeBSD"):
-        return False
-    return None  # pragma: no cover - Windows only
+    return observed is not None and observed == process.start_time
 
 
 def _request_stop(pid: int) -> None:
@@ -752,11 +763,103 @@ def _windows_kernel32() -> Any | None:
         kernel32.OpenProcess.restype = ctypes.c_void_p
         kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
         kernel32.CloseHandle.restype = ctypes.c_int32
+        kernel32.GetProcessTimes.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(_FILETIME),
+            ctypes.POINTER(_FILETIME),
+            ctypes.POINTER(_FILETIME),
+            ctypes.POINTER(_FILETIME),
+        )
+        kernel32.GetProcessTimes.restype = ctypes.c_int32
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
         kernel32.GetLastError.argtypes = ()
         kernel32.GetLastError.restype = ctypes.c_uint32
     except Exception:  # noqa: BLE001 - an unusable API proves no process exit
         return None
     return kernel32
+
+
+def _windows_process_start_time_from_handle(api: Any, handle: object) -> str | None:
+    """Read both halves of one pinned process object's creation time."""
+    created = _FILETIME()
+    exited = _FILETIME()
+    kernel_time = _FILETIME()
+    user_time = _FILETIME()
+    if not api.GetProcessTimes(
+        handle,
+        ctypes.byref(created),
+        ctypes.byref(exited),
+        ctypes.byref(kernel_time),
+        ctypes.byref(user_time),
+    ):
+        return None
+    hundred_nanoseconds = (int(created.dwHighDateTime) << 32) | int(
+        created.dwLowDateTime
+    )
+    return str(hundred_nanoseconds) if hundred_nanoseconds else None
+
+
+def _windows_process_start_time(pid: int, *, api: Any | None = None) -> str | None:
+    """Creation time for ``pid``, closing its temporary process handle."""
+    kernel32 = api if api is not None else _windows_kernel32()
+    if kernel32 is None:
+        return None
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+    if not handle:
+        return None
+    try:
+        return _windows_process_start_time_from_handle(kernel32, handle)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessIdentityPin:
+    """A proved process identity and, on Windows, its retained kernel handle."""
+
+    matches: bool
+    windows_api: Any | None = None
+    windows_handle: object | None = None
+
+    def exists(self, pid: int) -> bool:
+        """Whether the proved process is still running, never a recycled PID."""
+        if self.windows_api is None or self.windows_handle is None:
+            return _process_exists(pid)
+        wait = int(self.windows_api.WaitForSingleObject(self.windows_handle, 0))
+        # Timeout proves it is running. A failed or unknown wait proves no exit,
+        # so the stop path conservatively reports a lingering process.
+        return wait != _WAIT_OBJECT_0
+
+
+@contextmanager
+def _pin_process_identity(
+    process: ServiceProcessEvidence,
+) -> Iterator[_ProcessIdentityPin]:
+    """Prove identity and prevent Windows PID reuse until stop observation ends."""
+    if process.pid <= 0 or platform.system() != "Windows":
+        yield _ProcessIdentityPin(matches=_same_process(process))
+        return
+
+    api = _windows_kernel32()
+    if api is None:
+        yield _ProcessIdentityPin(matches=False)
+        return
+    handle = api.OpenProcess(
+        _PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, 0, process.pid
+    )
+    if not handle:
+        yield _ProcessIdentityPin(matches=False)
+        return
+    try:
+        observed = _windows_process_start_time_from_handle(api, handle)
+        yield _ProcessIdentityPin(
+            matches=observed is not None and observed == process.start_time,
+            windows_api=api,
+            windows_handle=handle,
+        )
+    finally:
+        api.CloseHandle(handle)
 
 
 def _windows_process_exists(pid: int, *, api: Any | None = None) -> bool:
@@ -816,25 +919,28 @@ def stop_managed_local(
     process = client.descriptor.process
     if process is None:
         return StopResult("no_process")
-    if _same_process(process) is False:
-        return StopResult("identity_mismatch")
+    with _pin_process_identity(process) as pin:
+        if not pin.matches:
+            return StopResult("identity_mismatch")
 
-    try:
-        _request_stop(process.pid)
-    except (OSError, ValueError):
-        return StopResult("identity_mismatch")
+        try:
+            _request_stop(process.pid)
+        except (OSError, ValueError):
+            return StopResult("identity_mismatch")
 
-    advertised = descriptor_path(config.installation_state, config.workspace_id)
-    while advertised.exists() and not deadline.expired:
-        _pause(deadline)
-    if advertised.exists():
-        return StopResult("timeout")
+        advertised = descriptor_path(config.installation_state, config.workspace_id)
+        while advertised.exists() and not deadline.expired:
+            _pause(deadline)
+        if advertised.exists():
+            return StopResult("timeout")
 
-    while _process_exists(process.pid) and not deadline.expired:
-        _pause(deadline)
-    if _process_exists(process.pid):
-        return StopResult("process_lingering")
-    return StopResult("stopped")
+        process_exists = pin.exists(process.pid)
+        while process_exists and not deadline.expired:
+            _pause(deadline)
+            process_exists = pin.exists(process.pid)
+        if process_exists:
+            return StopResult("process_lingering")
+        return StopResult("stopped")
 
 
 def _refuse() -> NoReturn:

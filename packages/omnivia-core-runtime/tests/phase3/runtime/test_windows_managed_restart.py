@@ -25,6 +25,7 @@ from omnivia_core_client import (
 from omnivia_core_runtime.ownership.locks import LockRole, create_lock
 from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitRefusal,
+    WorkspaceInitResult,
     WorkspaceInitStatus,
     _create_empty_database_file,
     _ensure_workspace_directory,
@@ -56,6 +57,26 @@ def _start_attach_stop(home: Path, workspace_id: str) -> None:
         if started:
             stopped = stop_managed_local(config, deadline=Deadline.after(30))
             assert stopped.status == "stopped"
+
+
+def _existing_blob_tree(tmp_path: Path) -> tuple[Path, str, Path]:
+    home = tmp_path / "existing-blob-home"
+    result = initialise_workspace(
+        workspace_root=home / "workspace",
+        installation_root=home / "installation-state",
+    )
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert result.workspace_id is not None
+    digest_directory = home / "workspace" / "blobs" / "sha256"
+    digest_directory.mkdir()
+    return home, result.workspace_id, digest_directory
+
+
+def _reinitialise(home: Path) -> WorkspaceInitResult:
+    return initialise_workspace(
+        workspace_root=home / "workspace",
+        installation_root=home / "installation-state",
+    )
 
 
 def test_legacy_init_creates_the_complete_windows_restart_trust_chain(
@@ -142,6 +163,74 @@ def test_windows_guard_pins_existing_directories_against_rename(
 
     home.rename(moved)
     moved.rename(home)
+
+
+def test_windows_reinitialisation_refuses_a_retained_blob_write_handle(
+    tmp_path: Path,
+) -> None:
+    home, _workspace_id, directory = _existing_blob_tree(tmp_path)
+    blob = directory / ("a" * 64)
+    blob.write_bytes(b"content")
+
+    with blob.open("r+b"):
+        refused = _reinitialise(home)
+
+    assert refused.status is WorkspaceInitStatus.REFUSED
+    assert refused.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert _reinitialise(home).status is WorkspaceInitStatus.ALREADY_INITIALISED
+
+
+def test_windows_reinitialisation_refuses_a_blob_symlink(tmp_path: Path) -> None:
+    home, _workspace_id, directory = _existing_blob_tree(tmp_path)
+    outside = tmp_path / "outside-symlink-blob"
+    outside.write_bytes(b"content")
+    blob = directory / ("b" * 64)
+    try:
+        blob.symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"this Windows host cannot create a file symlink: {error}")
+
+    refused = _reinitialise(home)
+
+    assert refused.status is WorkspaceInitStatus.REFUSED
+    assert refused.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"content"
+
+
+def test_windows_reinitialisation_refuses_a_blob_junction(tmp_path: Path) -> None:
+    home, _workspace_id, directory = _existing_blob_tree(tmp_path)
+    outside = tmp_path / "outside-junction-blobs"
+    outside.mkdir()
+    junction = directory / "redirected"
+    command = Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "cmd.exe")
+    created = subprocess.run(
+        [str(command), "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr or created.stdout
+    try:
+        refused = _reinitialise(home)
+    finally:
+        os.rmdir(junction)
+
+    assert refused.status is WorkspaceInitStatus.REFUSED
+    assert refused.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+
+
+def test_windows_reinitialisation_refuses_a_hard_linked_blob(tmp_path: Path) -> None:
+    home, _workspace_id, directory = _existing_blob_tree(tmp_path)
+    outside = tmp_path / "outside-hard-linked-blob"
+    outside.write_bytes(b"content")
+    os.link(outside, directory / ("c" * 64))
+
+    refused = _reinitialise(home)
+
+    assert refused.status is WorkspaceInitStatus.REFUSED
+    assert refused.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"content"
 
 
 def test_windows_guard_adds_new_directories_files_and_manifests(

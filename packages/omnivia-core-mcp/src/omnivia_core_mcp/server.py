@@ -142,6 +142,7 @@ from omnivia_core_client import (
     local_control_transport,
     mcp_authoring_admission,
     mcp_status,
+    read_owner_private,
     write_owner_private,
 )
 
@@ -168,6 +169,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_mcp import __version__
 from omnivia_core_mcp.configuration import (
+    MAXIMUM_CONFIGURATION_BYTES,
     AuthoringAdmission,
     McpConfiguration,
     McpConfigurationError,
@@ -613,6 +615,32 @@ def _legacy_configuration_document(
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def _legacy_setup_authenticates(
+    control: Any,
+    store: InstalledCredentialStore,
+    reference: CredentialReference,
+    setup: Any,
+    *,
+    deadline: Deadline,
+) -> bool:
+    """Whether this stored bearer still resolves to this restricted setup now."""
+    admission = None
+    try:
+        admission = mcp_authoring_admission(
+            control,
+            store.resolve(reference).reveal(),
+            deadline=deadline,
+        )
+    except (ClientError, OSError):
+        admission = None
+    return bool(
+        admission is not None
+        and admission.admitted is False
+        and admission.principal_id == setup.principal_id
+        and admission.workspace_id == setup.workspace_id
+    )
+
+
 def upgrade_legacy_configuration(
     path: Path, configuration: McpConfiguration
 ) -> McpConfiguration:
@@ -635,6 +663,12 @@ def upgrade_legacy_configuration(
     workspace_id = configuration.selected_workspace_id
     state = configuration.installation_state
     if workspace_id is None or state is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    original_document = read_owner_private(
+        path, maximum_bytes=MAXIMUM_CONFIGURATION_BYTES + 1
+    )
+    if original_document is None:
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     deadline = Deadline.after(MANAGED_START_TIMEOUT_SECONDS)
@@ -670,14 +704,20 @@ def upgrade_legacy_configuration(
         reference = CredentialReference(setup.credential_reference)
     except ClientError:
         reference = None
+    if reference is None:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
     valid_setup = (
-        reference is not None
-        and setup.workspace_id == workspace_id
+        setup.workspace_id == workspace_id
         and setup.profile == RESTRICTED_PROFILE
         and setup.authoring_intent is False
         and setup.status == "active"
     )
     if not valid_setup:
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    if not _legacy_setup_authenticates(
+        control, store, reference, setup, deadline=deadline
+    ):
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     document = _legacy_configuration_document(
@@ -686,6 +726,15 @@ def upgrade_legacy_configuration(
         credential_reference=setup.credential_reference,
     )
     if not write_owner_private(path, document):
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
+
+    # Publication never outruns the authority it names. A revocation, rotation,
+    # profile change, or identity mismatch between the pre-publication proof and
+    # this immediate second proof restores the exact trusted legacy document.
+    if not _legacy_setup_authenticates(
+        control, store, reference, setup, deadline=deadline
+    ):
+        write_owner_private(path, original_document)
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     upgraded = None
@@ -706,6 +755,7 @@ def upgrade_legacy_configuration(
         credential_reference=reference,
     )
     if upgraded != expected:
+        write_owner_private(path, original_document)
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
     return upgraded
 

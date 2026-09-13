@@ -1446,6 +1446,34 @@ def _secure_existing_windows_file(path: Path, *, subject: str) -> None:
             api.CloseHandle(handle)
 
 
+def _secure_existing_windows_blob_tree(path: Path) -> None:
+    """Recursively secure every existing blob object before the service can use it.
+
+    The workspace root's DACL does not replace an explicit permissive DACL on a
+    descendant, and a retained handle to a descendant survives an ACL repair. Each
+    directory is therefore quiesced and made owner-only before its names are
+    enumerated; each file is opened with zero sharing, rejected if it is a link,
+    reparse point, or hard link, and secured while that exact object is held.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        return
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return
+    if not _is_real_directory_no_follow(path):
+        raise OSError("blob root is not a real no-follow directory")
+    _secure_existing_windows_directory(path)
+    children = tuple(path.iterdir())
+    for child in children:
+        if _is_real_directory_no_follow(child):
+            _secure_existing_windows_blob_tree(child)
+        elif _is_real_file_no_follow(child):
+            _secure_existing_windows_file(child, subject="workspace blob")
+        else:
+            raise OSError("workspace blob tree contains an unsafe object")
+
+
 def _prepare_windows_sqlite_database(path: Path) -> None:
     """Make an existing-or-fresh SQLite namespace safe before its first open."""
     if not _WINDOWS_OWNER_CONTROL:
@@ -1735,6 +1763,13 @@ def _bootstrap(
                     workspace_root=layout.root,
                     installation_root=installation_root,
                 )
+
+            # Existing blob descendants are part of the later service's trusted
+            # read surface. Secure the complete tree only after the workspace's
+            # identity and foreign-database refusals have been decided, but before
+            # any database mutation can make this run successful. A retained child
+            # handle, reparse point, or hard link therefore fails this init closed.
+            _secure_existing_windows_blob_tree(layout.blobs_path)
 
             connection = open_database(
                 layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE

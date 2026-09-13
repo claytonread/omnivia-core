@@ -93,7 +93,6 @@ import hashlib
 import json
 import os
 import sqlite3
-import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +119,7 @@ from omnivia_core_runtime.storage.retrieval import (
 )
 from omnivia_core_runtime.workspace.blob_publication import (
     BlobPublicationRefused,
+    _opened_blob,
     blob_path,
 )
 
@@ -593,17 +593,13 @@ def _blob_text(blobs_root: Path, digest: str) -> str | None:
         path = blob_path(blobs_root, digest)
     except BlobPublicationRefused:
         return None
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags)
-    except OSError:
+        descriptor = _opened_blob(path)
+    except BlobPublicationRefused:
         return None
     try:
         status = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(status.st_mode)
-            or status.st_size > MAX_INDEXED_CONTENT_BYTES
-        ):
+        if status.st_size > MAX_INDEXED_CONTENT_BYTES:
             return None
         chunks: list[bytes] = []
         # Looped rather than one `os.read`, because a short read is a legal thing for

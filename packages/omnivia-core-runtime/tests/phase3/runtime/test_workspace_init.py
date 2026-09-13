@@ -296,6 +296,60 @@ def test_windows_init_refuses_a_hard_linked_workspace_file_without_changing_targ
     assert seen == []
 
 
+def test_windows_reinitialisation_secures_every_existing_blob_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _init(tmp_path)
+    assert first.status is WorkspaceInitStatus.INITIALISED
+    blob_directory = tmp_path / "workspace" / "blobs" / "sha256"
+    blob_directory.mkdir()
+    blob = blob_directory / ("a" * 64)
+    blob.write_bytes(b"existing content")
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.ALREADY_INITIALISED
+    assert (tmp_path / "workspace" / "blobs", True) in seen
+    assert (blob_directory, True) in seen
+    assert (blob, False) in seen
+
+
+@pytest.mark.parametrize("damage", ["symlink", "hardlink"])
+def test_windows_reinitialisation_refuses_an_unsafe_blob_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    first = _init(tmp_path)
+    assert first.status is WorkspaceInitStatus.INITIALISED
+    blob_directory = tmp_path / "workspace" / "blobs" / "sha256"
+    blob_directory.mkdir()
+    outside = tmp_path / "outside-blob"
+    outside.write_bytes(b"must remain unchanged")
+    blob = blob_directory / ("b" * 64)
+    if damage == "symlink":
+        blob.symlink_to(outside)
+    else:
+        os.link(outside, blob)
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda _path, *, directory: None,
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"must remain unchanged"
+
+
 def test_windows_init_rejects_a_manifest_published_after_provisional_absence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

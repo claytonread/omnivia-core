@@ -131,6 +131,22 @@ def test_refuses_a_symlink_or_a_directory_standing_at_the_address(
         publish_blob(root, DIGEST, CONTENT)
 
 
+def test_refuses_a_hard_link_standing_at_the_address(tmp_path: Path) -> None:
+    """One address must own one inode; another name can otherwise mutate its bytes."""
+    root = blobs_root(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_bytes(CONTENT)
+    (root / "sha256").mkdir()
+    target = address(root)
+    os.link(elsewhere, target)
+
+    with pytest.raises(BlobPublicationRefused, match="not one regular file"):
+        publish_blob(root, DIGEST, CONTENT)
+
+    assert target.stat().st_nlink == 2
+    assert elsewhere.read_bytes() == CONTENT
+
+
 def test_refuses_a_digest_outside_the_internal_address_domain(tmp_path: Path) -> None:
     """One algorithm, one length, one letter case -- checked before any path is built."""
     root = blobs_root(tmp_path)
