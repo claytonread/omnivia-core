@@ -222,6 +222,14 @@ class ManagedServiceConnection:
 
 
 @dataclass(frozen=True, slots=True)
+class _ManagedStartAnswer:
+    """The launcher verdict and the exact live instance it authorized."""
+
+    status: str
+    service_instance_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class _Installation:
     """One resolved installation layout and the paths it derives.
 
@@ -669,7 +677,7 @@ def connect_managed_local(
     if socket_directory is not None and not owner_private_directory(socket_directory):
         _refuse()
     manifest_digest = "sha256:" + hashlib.sha256(current.manifest.content).hexdigest()
-    status = _status(
+    launch = _status(
         _invoke(
             executable,
             current.installation,
@@ -682,7 +690,9 @@ def connect_managed_local(
     started = ServiceClient.connect(config, deadline=deadline)
     if started is None:
         _refuse()
-    return ManagedServiceConnection(client=started, status=status)
+    if started.descriptor.service_instance_id != launch.service_instance_id:
+        _refuse()
+    return ManagedServiceConnection(client=started, status=launch.status)
 
 
 def _process_start_time(pid: int) -> str | None:
@@ -886,16 +896,16 @@ def _invoke(
     return decoded
 
 
-def _status(stdout: str) -> str:
-    """The launcher's answer as ``attached`` or ``started``, or a refusal.
+def _status(stdout: str) -> _ManagedStartAnswer:
+    """The launcher's answer and authorized service instance, or a refusal.
 
     Fails closed on every reading: output past the bound, output that is not
     JSON, a root that is not an object, a version this build was not written
-    against, a reported failure, or a status outside the two. Only
-    ``managed_start_version``, ``status`` and nothing else is read -- the service
-    descriptor beside them is deliberately ignored, because the reconnect that
-    follows proves liveness against what the *installation* published rather than
-    against a claim the child made about itself.
+    against, a reported failure, or a status outside the two. The service instance
+    is retained only to compare with the verified descriptor
+    obtained by the reconnect that follows. Without that equality, the authorized
+    winner could exit and a different service could replace its descriptor between
+    the launcher result and the client connect.
     """
     if len(stdout.encode("utf-8")) > MANAGED_START_RESULT_MAXIMUM_BYTES:
         _refuse()
@@ -910,8 +920,12 @@ def _status(stdout: str) -> str:
     if document.get("managed_start_version") != MANAGED_START_VERSION:
         _refuse()
     status = document.get("status")
-    if status == _ATTACHED:
-        return _ATTACHED
-    if status != _STARTED:
+    service = document.get("service")
+    service_instance_id = (
+        service.get("service_instance_id") if isinstance(service, dict) else None
+    )
+    if status not in {_ATTACHED, _STARTED}:
         _refuse()
-    return _STARTED
+    if not isinstance(service_instance_id, str) or not service_instance_id:
+        _refuse()
+    return _ManagedStartAnswer(status=status, service_instance_id=service_instance_id)

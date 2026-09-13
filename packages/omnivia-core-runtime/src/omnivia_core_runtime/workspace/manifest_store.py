@@ -43,6 +43,28 @@ def manifest_digest(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def manifest_authorization(workspace_root: Path, digest: str) -> str:
+    """Opaque binding for one workspace path and one exact manifest snapshot.
+
+    A workspace id is not enough to distinguish the registered and legacy layouts:
+    both deliberately share it, and therefore share one runtime-directory key.  A
+    managed launcher compares this value with the live service's readiness answer
+    before attaching, so a service that consumed different bytes or opened the other
+    layout cannot win a startup race merely by advertising under that shared id.
+
+    The path is hashed rather than published.  It is normalised lexically, never
+    resolved through the filesystem, because the caller has already selected and
+    proved the exact path and following a later symlink would weaken that proof.
+    """
+    normalized = os.path.normcase(os.path.abspath(str(workspace_root)))
+    payload = json.dumps(
+        ["omnivia.managed-start-authorization.v1", normalized, digest],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return manifest_digest(payload)
+
+
 def _entry_is_absent(path: Path) -> bool:
     """Whether ``path`` has no final entry, without following one that is present."""
     try:
@@ -71,6 +93,14 @@ class WorkspaceInspection:
             and self.integrity_ok
             and self.compatibility.compatible
         )
+
+
+@dataclass(frozen=True)
+class ManifestSnapshot:
+    """One parsed manifest and the digest of the exact bytes that produced it."""
+
+    manifest: WorkspaceManifest
+    digest: str
 
 
 def write_manifest(layout: WorkspaceLayout, manifest: WorkspaceManifest) -> Path:
@@ -115,6 +145,20 @@ def read_manifest(
     expected_digest: str | None = None,
     required_absent_path: Path | None = None,
 ) -> WorkspaceManifest:
+    """Read and parse the manifest without writing anything."""
+    return read_manifest_snapshot(
+        layout,
+        expected_digest=expected_digest,
+        required_absent_path=required_absent_path,
+    ).manifest
+
+
+def read_manifest_snapshot(
+    layout: WorkspaceLayout,
+    *,
+    expected_digest: str | None = None,
+    required_absent_path: Path | None = None,
+) -> ManifestSnapshot:
     """Read and parse the manifest without writing anything.
 
     ``expected_digest`` binds a managed-start authorization to the exact bytes the
@@ -126,18 +170,22 @@ def read_manifest(
     """
     path = layout.manifest_path
     if required_absent_path is not None and not _entry_is_absent(required_absent_path):
-        raise ManifestStoreError("manifest differs from the managed-start authorization")
+        raise ManifestStoreError(
+            "manifest differs from the managed-start authorization"
+        )
     if not path.is_file():
         raise ManifestStoreError(f"no workspace manifest at {path}")
     try:
         raw = path.read_bytes()
     except OSError as exc:
         raise ManifestStoreError(f"manifest is unreadable: {exc}") from exc
+    observed_digest = manifest_digest(raw)
     if (
-        required_absent_path is not None
-        and not _entry_is_absent(required_absent_path)
-    ) or (expected_digest is not None and manifest_digest(raw) != expected_digest):
-        raise ManifestStoreError("manifest differs from the managed-start authorization")
+        required_absent_path is not None and not _entry_is_absent(required_absent_path)
+    ) or (expected_digest is not None and observed_digest != expected_digest):
+        raise ManifestStoreError(
+            "manifest differs from the managed-start authorization"
+        )
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -176,7 +224,7 @@ def read_manifest(
             "manifest does not reconstruct exactly; the stored document and the "
             f"parsed manifest disagree on: {', '.join(disagreeing)}"
         )
-    return manifest
+    return ManifestSnapshot(manifest=manifest, digest=observed_digest)
 
 
 def _disagreeing_paths(raw: Any, reconstructed: Any, prefix: str = "") -> list[str]:
@@ -247,11 +295,14 @@ def create_workspace(
 
 
 __all__ = [
+    "ManifestSnapshot",
     "ManifestStoreError",
     "WorkspaceInspection",
     "create_workspace",
     "inspect_workspace",
+    "manifest_authorization",
     "manifest_digest",
     "read_manifest",
+    "read_manifest_snapshot",
     "write_manifest",
 ]

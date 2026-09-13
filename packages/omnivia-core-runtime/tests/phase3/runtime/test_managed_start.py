@@ -296,6 +296,69 @@ def test_an_existing_compatible_ready_service_is_reused(home: Path) -> None:
     )
 
 
+def test_a_ready_race_winner_that_opened_different_manifest_bytes_is_refused(
+    home: Path,
+) -> None:
+    """A shared workspace id cannot substitute for the snapshot the caller chose.
+
+    The first service remains live on the manifest bytes it consumed. Replacing the
+    manifest with another valid document keeps the workspace id and compatibility
+    identical, so descriptor identity and ordinary readiness still agree. Only the
+    opaque path-plus-byte readiness binding can tell that this ready service did not
+    consume the second launcher's authorization.
+    """
+    code, first, _ = _run(home)
+    assert code == 0
+    assert first["status"] == ManagedStartStatus.STARTED.value
+    (owner_pid,) = _service_pids(home)
+
+    layout = WorkspaceLayout(root=home / "workspace")
+    write_manifest(layout, replace(read_manifest(layout), name="later snapshot"))
+    replacement_digest = _manifest_binding(layout.root)
+
+    result = managed_start(
+        workspace_root=layout.root,
+        installation_root=home / "installation-state",
+        endpoint_uri=_endpoint(home),
+        expected_manifest_digest=replacement_digest,
+        required_absent_manifest=_registered_manifest(home),
+        timeout_seconds=1.0,
+    )
+
+    assert result.status is ManagedStartStatus.FAILED
+    assert result.failure is ManagedStartFailure.TIMEOUT
+    assert _service_pids(home) == [owner_pid]
+    assert _descriptor_document(home) is not None
+
+
+def test_a_ready_legacy_service_cannot_answer_for_registered_path_with_same_bytes(
+    home: Path,
+) -> None:
+    """The readiness binding includes the selected path, not only manifest bytes."""
+    code, first, _ = _run(home)
+    assert code == 0
+    assert first["status"] == ManagedStartStatus.STARTED.value
+    (owner_pid,) = _service_pids(home)
+
+    registered = home / "workspaces" / WORKSPACE_ID
+    registered.mkdir(parents=True)
+    shutil.copyfile(
+        home / "workspace" / "workspace.json", registered / "workspace.json"
+    )
+
+    result = managed_start(
+        workspace_root=registered,
+        installation_root=home / "installation-state",
+        endpoint_uri=_endpoint(home),
+        expected_manifest_digest=_manifest_binding(registered),
+        timeout_seconds=1.0,
+    )
+
+    assert result.status is ManagedStartStatus.FAILED
+    assert result.failure is ManagedStartFailure.TIMEOUT
+    assert _service_pids(home) == [owner_pid]
+
+
 # --- R004-11: an incompatible service is not replaced silently ---
 
 

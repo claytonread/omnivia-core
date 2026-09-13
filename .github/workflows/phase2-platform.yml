@@ -87,6 +87,13 @@ jobs:
         # including a public LocalIpcTransport call against the real listener.
         run: python -m pytest packages/omnivia-core-runtime/tests/phase3/protocol/test_windows_named_pipe.py -q -rs
 
+      - name: Run initialized-workspace managed restart on Windows
+        # The Runtime ACL writer and Client native reader are separate packages;
+        # mocked policy tests cannot prove they agree. These cases start beneath
+        # the hosted runner's real inherited temp DACL and exercise both legacy
+        # and registered layouts through an actual named-pipe start/attach/stop.
+        run: python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_windows_managed_restart.py -q -rs
+
       - name: Run trusted-runtime trust and path-safety tests
         # This is the only lane with a three-platform matrix, and the runtime trust
         # contract is the kind of claim that needs one: symlink and reparse-point

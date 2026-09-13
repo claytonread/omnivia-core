@@ -91,13 +91,14 @@ def test_windows_allocated_init_restricts_the_restart_authorization_chain(
     assert seen == [
         (storage, True),
         (workspace, True),
+        (workspace / "locks", True),
+        (tmp_path, True),
         (storage, True),
         (workspace, True),
-        (workspace / "workspace.json", False),
     ]
 
 
-def test_windows_legacy_init_restricts_the_workspace_but_not_its_trust_anchor(
+def test_windows_legacy_init_restricts_the_workspace_and_its_trust_anchor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -114,8 +115,9 @@ def test_windows_legacy_init_restricts_the_workspace_but_not_its_trust_anchor(
     assert result.status is WorkspaceInitStatus.INITIALISED
     assert seen == [
         (workspace, True),
+        (workspace / "locks", True),
+        (tmp_path, True),
         (workspace, True),
-        (workspace / "workspace.json", False),
     ]
 
 
@@ -710,6 +712,33 @@ def test_a_busy_workspace_is_refused_before_any_directory_is_created(
     assert not (tmp_path / "installation-state").exists()
 
 
+def test_windows_busy_refusal_does_not_rewrite_any_existing_acl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trust-anchor repair belongs to acceptance, never the busy path."""
+    from omnivia_core_runtime.ownership.locks import LockRole, create_lock
+
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    layout.locks_path.mkdir(parents=True)
+    held = create_lock(layout.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE)
+    assert held.acquire()
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+    try:
+        result = _init(tmp_path)
+    finally:
+        held.release()
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
+    assert seen == []
+
+
 def test_a_workspace_missing_its_migrations_is_finished_and_reported_as_changed(
     tmp_path: Path,
 ) -> None:
@@ -1285,6 +1314,36 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
         ]
     finally:
         connection.close()
+
+
+def test_windows_foreign_database_refusal_restricts_only_new_lock_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No existing trust anchor, workspace or foreign database ACL is rewritten."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    database = workspace / "workspace.sqlite"
+    connection = sqlite3.connect(str(database))
+    try:
+        connection.execute("CREATE TABLE receipts (id INTEGER PRIMARY KEY)")
+        connection.commit()
+    finally:
+        connection.close()
+
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.UNRELATED_DIRECTORY
+    assert seen == [(workspace / "locks", True)]
+    assert all(path not in {tmp_path, workspace, database} for path, _ in seen)
 
 
 def test_a_workspace_another_process_owns_is_refused_without_waiting(

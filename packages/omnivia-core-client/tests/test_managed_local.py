@@ -11,6 +11,7 @@ import subprocess
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -27,6 +28,7 @@ from omnivia_core_client import (
 
 WORKSPACE_ID = "ws-managed-client-01"
 SECRET = "secret-child-output-and-endpoint"
+SERVICE_INSTANCE_ID = "svc-managed-local-authorized"
 
 
 def config(root: Path, workspace_id: str = WORKSPACE_ID) -> InstallationServiceConfig:
@@ -92,14 +94,22 @@ def result(status: str = "started", **extra: object) -> str:
         {
             "managed_start_version": "1.0",
             "status": status,
-            "service": {"endpoint_uri": SECRET},
+            "service": {
+                "endpoint_uri": SECRET,
+                "service_instance_id": SERVICE_INSTANCE_ID,
+            },
             **extra,
         }
     )
 
 
-def client() -> ServiceClient:
-    return cast(ServiceClient, object())
+def client(service_instance_id: str = SERVICE_INSTANCE_ID) -> ServiceClient:
+    return cast(
+        ServiceClient,
+        SimpleNamespace(
+            descriptor=SimpleNamespace(service_instance_id=service_instance_id)
+        ),
+    )
 
 
 def connects(
@@ -206,6 +216,18 @@ def test_start_and_reconnect_reuse_the_exact_deadline(
             25.0,
         )
     ]
+
+
+def test_reconnect_cannot_replace_the_service_instance_the_launcher_authorized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post-launch connect is live proof of the same winner, not any winner."""
+    initialise(tmp_path)
+    connects(monkeypatch, [None, client("svc-replaced-after-launch")])
+    launcher(monkeypatch)
+
+    with pytest.raises(ManagedStartError):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
 
 
 def test_unreachable_published_service_reaches_the_runtime_launcher(

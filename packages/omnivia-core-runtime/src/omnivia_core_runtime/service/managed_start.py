@@ -87,7 +87,8 @@ from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 from omnivia_core_runtime.workspace.manifest_store import (
     ManifestStoreError,
-    read_manifest,
+    manifest_authorization,
+    read_manifest_snapshot,
 )
 
 #: The console script this spawns. The same name the CLI locates, because it is the
@@ -228,7 +229,7 @@ def managed_start(
     """
     layout = WorkspaceLayout(root=workspace_root)
     try:
-        manifest = read_manifest(
+        snapshot = read_manifest_snapshot(
             layout,
             expected_digest=expected_manifest_digest,
             required_absent_path=required_absent_manifest,
@@ -244,6 +245,10 @@ def managed_start(
                 "starts an existing workspace and creates none"
             ),
         )
+
+    manifest = snapshot.manifest
+    bound_digest = snapshot.digest
+    expected_authorization = manifest_authorization(workspace_root, bound_digest)
 
     try:
         contract_version = workspace_contract_version(
@@ -283,8 +288,20 @@ def managed_start(
             ):
                 existing = decision.existing
                 assert existing is not None  # both outcomes carry one
-                answer = _dial_readiness(existing, workspace_id=manifest.workspace_id)
-                if answer is not None and answer.get("ready"):
+                answer = _dial_readiness(
+                    existing,
+                    workspace_id=manifest.workspace_id,
+                    expected_authorization=expected_authorization,
+                )
+                if (
+                    answer is not None
+                    and answer.get("ready")
+                    and _authorization_holds(
+                        layout,
+                        expected_digest=bound_digest,
+                        required_absent_manifest=required_absent_manifest,
+                    )
+                ):
                     return ManagedStartResult(
                         status=ManagedStartStatus.ATTACHED,
                         reason=decision.reason,
@@ -305,8 +322,9 @@ def managed_start(
                     runtime_directory=runtime_directory,
                     workspace_id=manifest.workspace_id,
                     endpoint_uri=endpoint_uri,
-                    expected_manifest_digest=expected_manifest_digest,
+                    expected_manifest_digest=bound_digest,
                     required_absent_manifest=required_absent_manifest,
+                    expected_authorization=expected_authorization,
                     core_version=core_version,
                     log_path=(
                         runtime_directory / "service.log"
@@ -340,8 +358,9 @@ def _spawn_and_wait(
     runtime_directory: Path,
     workspace_id: str,
     endpoint_uri: str,
-    expected_manifest_digest: str | None,
+    expected_manifest_digest: str,
     required_absent_manifest: Path | None,
+    expected_authorization: str,
     core_version: str,
     log_path: Path,
     deadline: float,
@@ -400,8 +419,20 @@ def _spawn_and_wait(
             )
         advertised = discover(runtime_directory)
         if advertised is not None:
-            answer = _dial_readiness(advertised, workspace_id=workspace_id)
-            if answer is not None and answer.get("ready"):
+            answer = _dial_readiness(
+                advertised,
+                workspace_id=workspace_id,
+                expected_authorization=expected_authorization,
+            )
+            if (
+                answer is not None
+                and answer.get("ready")
+                and _authorization_holds(
+                    WorkspaceLayout(root=workspace_root),
+                    expected_digest=expected_manifest_digest,
+                    required_absent_manifest=required_absent_manifest,
+                )
+            ):
                 return ManagedStartResult(
                     status=ManagedStartStatus.STARTED,
                     reason=f"started {SERVICE_EXECUTABLE} (pid {child.pid})",
@@ -555,6 +586,7 @@ def _dial_readiness(
     descriptor: ServiceEndpointDescriptor,
     *,
     workspace_id: str,
+    expected_authorization: str,
 ) -> dict[str, Any] | None:
     """Ask the advertised service whether it is writable-ready for `workspace_id`.
 
@@ -591,7 +623,34 @@ def _dial_readiness(
         return None
     if not isinstance(response, SuccessResponseEnvelope):
         return None
-    return dict(response.result)
+    answer = dict(response.result)
+    if answer.get("workspace_authorization") != expected_authorization:
+        return None
+    return answer
+
+
+def _authorization_holds(
+    layout: WorkspaceLayout,
+    *,
+    expected_digest: str,
+    required_absent_manifest: Path | None,
+) -> bool:
+    """Re-prove the frozen selection immediately before reporting success.
+
+    The readiness binding proves what the answering service consumed. This second
+    read proves the selected bytes and, for legacy fallback, the preferred
+    registered manifest's absence still hold at the success boundary. Both are
+    required: either one alone leaves a different startup race admissible.
+    """
+    try:
+        snapshot = read_manifest_snapshot(
+            layout,
+            expected_digest=expected_digest,
+            required_absent_path=required_absent_manifest,
+        )
+    except ManifestStoreError:
+        return False
+    return snapshot.digest == expected_digest
 
 
 def _readiness_request(workspace_id: str) -> RequestEnvelope:

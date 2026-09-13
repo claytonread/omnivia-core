@@ -31,8 +31,10 @@ from omnivia_core_runtime.workspace.manifest_store import (
     ManifestStoreError,
     create_workspace,
     inspect_workspace,
+    manifest_authorization,
     manifest_digest,
     read_manifest,
+    read_manifest_snapshot,
     write_manifest,
 )
 
@@ -247,6 +249,24 @@ def test_a_manifest_read_can_be_bound_to_the_exact_authorized_bytes(
     write_manifest(layout, manifest(name="replacement"))
     with pytest.raises(ManifestStoreError, match="managed-start authorization"):
         read_manifest(layout, expected_digest=expected)
+
+
+def test_a_snapshot_authorization_binds_both_exact_bytes_and_workspace_path(
+    tmp_path: Path,
+) -> None:
+    first, first_path = create_workspace(tmp_path / "first", manifest())
+    second, second_path = create_workspace(tmp_path / "second", manifest())
+
+    first_snapshot = read_manifest_snapshot(first)
+    second_snapshot = read_manifest_snapshot(second)
+
+    assert first_snapshot.manifest == read_manifest(first)
+    assert first_snapshot.digest == manifest_digest(first_path.read_bytes())
+    assert second_snapshot.digest == manifest_digest(second_path.read_bytes())
+    assert first_snapshot.digest == second_snapshot.digest
+    assert manifest_authorization(first.root, first_snapshot.digest) != (
+        manifest_authorization(second.root, second_snapshot.digest)
+    )
 
 
 # WM-07

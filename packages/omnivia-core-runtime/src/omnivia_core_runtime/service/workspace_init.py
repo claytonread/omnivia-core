@@ -107,6 +107,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -213,6 +214,11 @@ DEFAULT_WORKSPACE_NAME: Final = "OmniVia workspace"
 #: hosts without mutating ``os.name`` (which would make ``pathlib.Path`` select
 #: an unusable concrete path class midway through a test).
 _WINDOWS_OWNER_CONTROL: Final = os.name == "nt"
+
+#: A Windows symbolic link, junction or mount point is a directory to ordinary
+#: stat predicates. The no-follow attribute is what keeps directory creation from
+#: accepting one as a pre-existing component in the workspace chain.
+_FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x400
 
 #: The only top-level entries an installation-state root may hold. Anything else
 #: means this directory is not one of ours, and `InstallationLayout` is the single
@@ -696,23 +702,86 @@ def _new_manifest(
     )
 
 
+def _is_real_directory_no_follow(path: Path) -> bool:
+    """Whether ``path`` is an existing directory and not a link/reparse point."""
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        == 0
+    )
+
+
+def _ensure_workspace_directory(path: Path) -> None:
+    """Create ``path`` and missing parents, securing each Windows creation at once.
+
+    A returned ``FileExistsError`` is the race-safe answer that the directory was
+    not created by this call; such an object is verified by kind and left exactly
+    as found. Every directory this call did create is owner-only before a child is
+    made beneath it. A restriction failure removes only that new, still-empty
+    directory and propagates as the existing write-failure result.
+    """
+    if not _WINDOWS_OWNER_CONTROL:
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    try:
+        path.mkdir(mode=0o700)
+    except FileNotFoundError:
+        if path.parent == path:
+            raise
+        _ensure_workspace_directory(path.parent)
+        _ensure_workspace_directory(path)
+        return
+    except FileExistsError:
+        if not _is_real_directory_no_follow(path):
+            raise
+        return
+    try:
+        restrict_to_owner(path, directory=True)
+    except OSError:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+        raise
+
+
 def _restrict_windows_workspace_layout(
-    layout: WorkspaceLayout, *, restrict_parent: bool
+    layout: WorkspaceLayout,
+    installation_root: Path,
+    *,
+    restrict_parent: bool,
 ) -> None:
     """Make the managed-client authorization chain writable by this user alone.
 
     POSIX creation modes already give the accepted client what it needs.  Windows
     ignores those modes and inherits its parent's DACL, commonly including writable
     SYSTEM and Administrators ACEs.  The client intentionally refuses that shape,
-    so initialization must establish the matching owner-only DACL on the allocated
-    ``workspaces`` parent, the workspace root, and an existing manifest.  A freshly
-    written manifest inherits the protected root and is checked again after write.
+    so successful initialization establishes the matching owner-only DACL on the
+    managed home trust anchor, the allocated ``workspaces`` parent when present,
+    the workspace root, and an existing manifest. A freshly written manifest is
+    restricted on its temporary file before publication by ``write_manifest``.
+
+    This runs only after the storage ownership/refusal decisions. Existing ACLs are
+    therefore never rewritten by ``WORKSPACE_BUSY``, identity-mismatch or unrelated
+    database refusals. Newly created directories are handled separately, at their
+    creating syscall, because there is no prior ACL on those to preserve.
     """
     if not _WINDOWS_OWNER_CONTROL:
         return
-    directories = (
-        (layout.root.parent, layout.root) if restrict_parent else (layout.root,)
-    )
+    home = installation_root.parent
+    directories: tuple[Path, ...]
+    if layout.root == home / "workspace":
+        directories = (home, layout.root)
+    elif restrict_parent and layout.root.parent == home / "workspaces":
+        directories = (home, layout.root.parent, layout.root)
+    else:
+        directories = (
+            (layout.root.parent, layout.root) if restrict_parent else (layout.root,)
+        )
     for directory in directories:
         restrict_to_owner(directory, directory=True)
     if layout.manifest_path.is_file():
@@ -834,11 +903,8 @@ def _bootstrap(
     # directories the no-op path repairs and the very next line would hide it.
     absent = _absent_directories(layout, installation_root, manifest.workspace_id)
     try:
-        layout.root.mkdir(parents=True, exist_ok=True)
-        _restrict_windows_workspace_layout(
-            layout, restrict_parent=restrict_parent_on_windows
-        )
-        layout.locks_path.mkdir(exist_ok=True)
+        _ensure_workspace_directory(layout.root)
+        _ensure_workspace_directory(layout.locks_path)
         lock = create_lock(
             lock_path, LockRole.LIFETIME_STORAGE, {"holder": LOCK_HOLDER}
         )
@@ -969,15 +1035,17 @@ def _bootstrap(
             # of what the storage layer refuses to keep it that way, which a
             # pre-check duplicating `bootstrap_generation_one`'s conditions would
             # have needed and would have drifted from.
+            _restrict_windows_workspace_layout(
+                layout,
+                installation_root,
+                restrict_parent=restrict_parent_on_windows,
+            )
             if minted:
                 create_workspace(layout.root, manifest)
             else:
                 # Repair, not rewrite. A missing `blobs/`, `indexes/` or `locks/`
                 # is created; the manifest already on disk is untouched.
                 layout.create_directories()
-            _restrict_windows_workspace_layout(
-                layout, restrict_parent=restrict_parent_on_windows
-            )
             InstallationLayout(root=installation_root).create(manifest.workspace_id)
         except (StorageError, OSError) as failure:
             return _write_failure(layout, manifest, installation_root, failure)
