@@ -286,6 +286,7 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     """
     shared = {
         "hashlib": {"installed_credentials.py"},
+        "subprocess": {"owner_private.py"},
         "tempfile": {"installed_credentials.py", "owner_private.py"},
     }
     for imported in (

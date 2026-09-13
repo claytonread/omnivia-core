@@ -51,6 +51,7 @@ from __future__ import annotations
 import ctypes
 import os
 import stat
+import subprocess
 import tempfile
 from collections.abc import Sequence
 from ctypes import wintypes
@@ -64,6 +65,7 @@ __all__ = [
     "owner_private_directory_metadata",
     "owner_private_file",
     "owner_writable_only",
+    "prepare_owner_private_directory",
     "read_owner_private",
     "same_file",
     "write_owner_private",
@@ -89,6 +91,11 @@ _ACCESS_DENIED_ACE_TYPE: Final = 1
 _ALLOWED_ACE_MASK_OFFSET: Final = 4
 _ALLOWED_ACE_SID_OFFSET: Final = 8
 _MINIMUM_SID_BYTES: Final = 8
+
+#: The inheritable directory rights used by the Windows form of owner-only.
+#: Children inherit the one permitted principal rather than the broader ACL of
+#: the directory above the protected store.
+_WINDOWS_DIRECTORY_RIGHTS: Final = "(OI)(CI)F"
 
 #: Every access right that lets a holder change what a directory contains, or
 #: change who may.
@@ -802,6 +809,89 @@ def owner_private_directory(path: Path) -> bool:
         and owner_private_directory_metadata(after)
         and same_file(before, after)
     )
+
+
+def _system32(program: str) -> str:
+    """Return an absolute path to a Windows security tool."""
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
+
+
+def _windows_owner_sid_text() -> str | None:
+    """Return this token user's SID in the form accepted by ``icacls``."""
+    try:
+        completed = subprocess.run(
+            [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+    if completed.returncode != 0:
+        return None
+    for token in completed.stdout.replace('"', " ").replace(",", " ").split():
+        if token.startswith("S-1-") and all(
+            part.isdecimal() for part in token.split("-")[1:]
+        ):
+            return token
+    return None
+
+
+def _restrict_windows_directory(path: Path) -> bool:
+    """Apply one protected, inheritable owner-only DACL to ``path``."""
+    owner = _windows_owner_sid_text()
+    if owner is None:
+        return False
+    for arguments in (
+        ("/setowner", f"*{owner}"),
+        ("/reset",),
+        ("/inheritance:r", "/grant:r", f"*{owner}:{_WINDOWS_DIRECTORY_RIGHTS}"),
+    ):
+        try:
+            completed = subprocess.run(
+                [_system32("icacls.exe"), str(path), *arguments, "/q"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            return False
+        if completed.returncode != 0:
+            return False
+    return True
+
+
+def prepare_owner_private_directory(path: Path) -> bool:
+    """Restrict one trusted directory, then prove the result.
+
+    Callers use this only for a directory they just created or for an explicitly
+    trusted installation-state root after its owner service has authorised the
+    operation; it is not a general path-permission API. On POSIX the restrictive
+    mode was already applied by ``mkdir`` and is set again to make the final state
+    independent of the process umask. On Windows, where mode bits do not set a
+    DACL, the owner is made the current token user and one protected inheritable
+    allow entry is installed. Every failure is a bare ``False`` so tool output,
+    identities, and paths never enter a diagnostic.
+    """
+    if not isinstance(path, Path) or not path.is_absolute():
+        return False
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(metadata.st_mode) or not not_a_reparse_point(metadata):
+        return False
+    if _IS_WINDOWS:
+        if not _restrict_windows_directory(path):
+            return False
+    else:
+        try:
+            path.chmod(0o700)
+        except OSError:
+            return False
+    return owner_private_directory(path)
 
 
 def owner_private_directory_metadata(metadata: os.stat_result) -> bool:

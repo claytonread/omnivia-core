@@ -1311,7 +1311,9 @@ def test_the_pathname_form_creates_no_component_through_an_unproved_parent(
     """
     monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
     made: list[tuple[str, int]] = []
+    prepared: list[str] = []
     real = Path.mkdir
+    real_prepare = installed_credentials.prepare_owner_private_directory
 
     def watched(self: Path, mode: int = 0o777, **keywords: object) -> None:
         assert "parents" not in keywords, "a component was created through a parent"
@@ -1319,10 +1321,70 @@ def test_the_pathname_form_creates_no_component_through_an_unproved_parent(
         real(self, mode)
 
     monkeypatch.setattr(Path, "mkdir", watched)
+
+    def prepare(path: Path) -> bool:
+        prepared.append(path.name)
+        return real_prepare(path)
+
+    monkeypatch.setattr(installed_credentials, "prepare_owner_private_directory", prepare)
     assert configs(tmp_path).write(HOST, DOCUMENT) is True
     assert made == [
         (CONFIGURATION_STORE_DIRECTORY[0], 0o755),
         (CONFIGURATION_STORE_DIRECTORY[1], 0o700),
+    ]
+    assert prepared == list(CONFIGURATION_STORE_DIRECTORY)
+
+
+def test_the_pathname_form_stops_at_a_new_directory_it_cannot_make_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No child or material is created below a failed native restriction."""
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    prepared: list[Path] = []
+
+    def refuse(path: Path) -> bool:
+        prepared.append(path)
+        return False
+
+    monkeypatch.setattr(installed_credentials, "prepare_owner_private_directory", refuse)
+
+    assert configs(tmp_path).write(HOST, DOCUMENT) is False
+    assert prepared == [tmp_path / CONFIGURATION_STORE_DIRECTORY[0]]
+    assert (tmp_path / CONFIGURATION_STORE_DIRECTORY[0]).is_dir()
+    assert not config_directory(tmp_path).exists()
+
+
+def test_the_windows_create_path_normalises_an_unproved_trusted_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inherited Windows root ACL is repaired before anything is created."""
+    monkeypatch.setattr(installed_credentials, "_ANCHORED", False)
+    monkeypatch.setattr(installed_credentials, "_IS_WINDOWS", True)
+    real_chain = installed_credentials.owner_private_chain
+    real_prepare = installed_credentials.prepare_owner_private_directory
+    root_checks = 0
+    prepared: list[Path] = []
+
+    def chain(root: Path, names: object, **keywords: object) -> object:
+        nonlocal root_checks
+        if names == () and keywords.get("owner_private_leaf") is False:
+            root_checks += 1
+            if root_checks == 1:
+                return None
+        return real_chain(root, names, **keywords)  # type: ignore[arg-type]
+
+    def prepare(path: Path) -> bool:
+        prepared.append(path)
+        return real_prepare(path)
+
+    monkeypatch.setattr(installed_credentials, "owner_private_chain", chain)
+    monkeypatch.setattr(installed_credentials, "prepare_owner_private_directory", prepare)
+
+    assert configs(tmp_path).write(HOST, DOCUMENT) is True
+    assert prepared == [
+        tmp_path,
+        tmp_path / CONFIGURATION_STORE_DIRECTORY[0],
+        config_directory(tmp_path),
     ]
 
 

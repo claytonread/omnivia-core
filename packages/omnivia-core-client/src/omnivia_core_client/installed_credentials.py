@@ -132,6 +132,7 @@ from omnivia_core_client.owner_private import (
     owner_private_directory_metadata,
     owner_private_file,
     owner_writable_only,
+    prepare_owner_private_directory,
     read_owner_private,
     same_file,
 )
@@ -251,6 +252,11 @@ _ANCHORED: Final = (
     }
     <= os.supports_dir_fd
 )
+
+#: Named separately from :data:`_ANCHORED` so the Windows root-normalisation
+#: branch can be exercised on a POSIX test host without pretending its kernel
+#: supports Windows path operations.
+_IS_WINDOWS: Final = os.name == "nt"
 
 _DIRECTORY_FLAGS: Final = (
     os.O_RDONLY
@@ -509,6 +515,20 @@ def _proved_chain(
     and it decides on what is actually there.
     """
     if create:
+        # A fresh Windows installation-state root commonly inherits writable
+        # SYSTEM/Administrators entries. It is nevertheless the explicit trusted
+        # root this store was constructed with, and the owner service has already
+        # authorised the configure operation before a write reaches here. Reduce
+        # that root only when its ordinary parent proof fails, then let every
+        # normal proof below decide again. This is not done for reads/removals or
+        # for an already-provable root, and a symlink or unmodifiable root still
+        # refuses without creating anything below it.
+        if (
+            _IS_WINDOWS
+            and owner_private_chain(root, (), owner_private_leaf=False) is None
+            and not prepare_owner_private_directory(root)
+        ):
+            return None
         for index in range(len(names)):
             # The prefix is proved as *parents*: the component about to be created
             # goes below them, and the installation root is a shared directory no
@@ -524,6 +544,13 @@ def _proved_chain(
                     target.mkdir(_LAYOUT_MODES[index])
                 except OSError:
                     pass
+                else:
+                    # POSIX ``mkdir`` already establishes the restrictive mode.
+                    # Windows mode bits do not establish a DACL, so a directory
+                    # this walk just created is restricted and proved before the
+                    # next component or any material is created inside it.
+                    if not prepare_owner_private_directory(target):
+                        return None
     return owner_private_chain(root, names)
 
 

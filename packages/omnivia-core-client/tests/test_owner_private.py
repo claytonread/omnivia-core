@@ -712,6 +712,64 @@ def test_the_windows_metadata_policies_are_the_kind_and_reparse_checks(
         assert policy(FakeStat(mode=REGULAR, uid=999)) is False
 
 
+def test_windows_directory_preparation_applies_and_verifies_one_owner_dacl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "new-store"
+    directory.mkdir()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_windows_owner_sid_text", lambda: "S-1-5-21-7")
+    monkeypatch.setattr(owner_private, "owner_private_directory", lambda path: path == directory)
+
+    def run(arguments: list[str], **_kwargs: object) -> object:
+        calls.append(arguments)
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(owner_private.subprocess, "run", run)
+
+    assert owner_private.prepare_owner_private_directory(directory) is True
+    assert [arguments[2:-1] for arguments in calls] == [
+        ["/setowner", "*S-1-5-21-7"],
+        ["/reset"],
+        ["/inheritance:r", "/grant:r", "*S-1-5-21-7:(OI)(CI)F"],
+    ]
+
+
+def test_windows_directory_preparation_fails_closed_on_a_security_tool_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "new-store"
+    directory.mkdir()
+    verified: list[Path] = []
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", True)
+    monkeypatch.setattr(owner_private, "_windows_owner_sid_text", lambda: "S-1-5-21-7")
+    monkeypatch.setattr(
+        owner_private,
+        "owner_private_directory",
+        lambda path: verified.append(path) or True,
+    )
+    monkeypatch.setattr(
+        owner_private.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Completed", (), {"returncode": 1})(),
+    )
+
+    assert owner_private.prepare_owner_private_directory(directory) is False
+    assert verified == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows DACL publication")
+def test_native_windows_directory_preparation_round_trips_through_the_verifier(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "new-store"
+    directory.mkdir()
+
+    assert owner_private.prepare_owner_private_directory(directory) is True
+    assert owner_private.owner_private_directory(directory) is True
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_the_posix_parent_policy_reads_the_write_bits_and_not_the_read_bits() -> None:
     for mode, admitted in (
