@@ -234,8 +234,10 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
             raise BlobPublicationRefused(
                 "the content-addressed blob directory is not one real directory"
             ) from error
-    else:
-        fsync_directory(directory.parent)
+    # The existing-directory path can be the loser of a concurrent first-create.
+    # It must establish the same parent-entry durability barrier before publishing;
+    # otherwise it could return while the winner has not yet flushed that entry.
+    fsync_directory(directory.parent)
     if target.exists() or target.is_symlink():
         _verify(target, content)
         return target

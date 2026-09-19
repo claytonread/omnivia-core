@@ -20,7 +20,7 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Lock
 from types import ModuleType
 
 import pytest
@@ -97,6 +97,8 @@ def test_concurrent_first_publications_share_the_fanout_directory(
     root = blobs_root(tmp_path)
     directory = root / "sha256"
     rendezvous = Barrier(2)
+    sync_lock = Lock()
+    synced: list[Path] = []
     real_mkdir = Path.mkdir
 
     def racing_mkdir(
@@ -109,7 +111,12 @@ def test_concurrent_first_publications_share_the_fanout_directory(
             rendezvous.wait(timeout=5)
         real_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
 
+    def recording_fsync(path: Path) -> None:
+        with sync_lock:
+            synced.append(path)
+
     monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    monkeypatch.setattr(blob_publication, "fsync_directory", recording_fsync)
     with ThreadPoolExecutor(max_workers=2) as executor:
         published = tuple(
             executor.map(lambda _attempt: publish_blob(root, DIGEST, CONTENT), range(2))
@@ -118,6 +125,7 @@ def test_concurrent_first_publications_share_the_fanout_directory(
     assert published == (address(root), address(root))
     assert address(root).read_bytes() == CONTENT
     assert temporaries(root) == []
+    assert synced.count(root) == 2
 
 
 def test_refuses_an_object_whose_bytes_are_not_the_ones_published(
