@@ -725,6 +725,9 @@ def test_an_exact_resubmission_reuses_the_source_and_a_changed_claim_conflicts(
     # Every conflict left the one captured artifact exactly as it was.
     assert count(owned, ARTIFACTS) == 1
     assert count(owned, PROVENANCE) == 1
+    rejected = f"a different {MARKER} note".encode()
+    rejected_checksum = f"sha256:{hashlib.sha256(rejected).hexdigest()}"
+    assert not blob_file(owned, rejected_checksum).exists()
 
 
 def test_a_changed_observed_at_conflicts_and_the_stated_one_still_reuses(
@@ -870,6 +873,32 @@ def test_a_same_key_replay_is_answered_and_a_changed_body_conflicts(
         )
     )
     assert conflict.error.code == "idempotency_conflict"
+    assert count(owned, ARTIFACTS) == 1
+    assert count(owned, AUDIT) == 1
+    rejected = f"a different {MARKER} note".encode()
+    rejected_checksum = f"sha256:{hashlib.sha256(rejected).hexdigest()}"
+    assert not blob_file(owned, rejected_checksum).exists()
+
+
+def test_a_same_key_replay_repairs_a_reclaimed_blob_before_the_barrier(
+    owned: Served,
+    router: ApplicationDispatcher,
+) -> None:
+    """Moving publication behind conflict resolution must not remove replay repair."""
+    result = captured(
+        router.dispatch(capture_request(request_id="req-1", key="idem-1"))
+    )
+    path = blob_file(owned, result.content_checksum)
+    content = path.read_bytes()
+    path.unlink()
+
+    replay = captured(
+        router.dispatch(capture_request(request_id="req-2", key="idem-1"))
+    )
+
+    assert replay.evidence_id == result.evidence_id
+    assert path.read_bytes() == content
+    assert found(router, MARKER) == (result.evidence_id,)
     assert count(owned, ARTIFACTS) == 1
     assert count(owned, AUDIT) == 1
 

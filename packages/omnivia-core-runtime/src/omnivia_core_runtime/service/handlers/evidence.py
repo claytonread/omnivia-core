@@ -477,11 +477,14 @@ class EvidenceHandlers:
            caller's. Every attempt takes a fresh one, replays included, so a principal
            whose authority was withdrawn between two identical calls is refused at the
            second rather than served from the first one's stored answer.
-        3. **bytes before the row that names them.** `publish_blob` is atomic and
-           content-addressed: a crash after it leaves an object nothing refers to, which
-           is reclaimable, while the reverse order would leave an authoritative evidence
-           row pointing at bytes that are not there. The maintenance capture path has
-           always published in this order and this is the same primitive.
+        3. **conflicts before bytes; bytes before the row that names them.** The fenced
+           mutation resolves an idempotency claim and the direct-source identity before
+           `publish_blob` is allowed to run, so a rejected changed-body replay or source
+           conflict cannot accumulate unreferenced objects. An accepted new source then
+           publishes before its row is inserted. A stored replay verifies (and, when the
+           object was reclaimed, repairs) its already-authoritative blob after resolution
+           and before the projection barrier. Publication remains atomic and
+           content-addressed in every branch.
         4. **one durable transaction**, through the standard coordinator: the audit
            event, the idempotency claim, the domain rows and the outcome all commit
            together or not at all.
@@ -530,19 +533,17 @@ class EvidenceHandlers:
             clock=self.clock,
         )
 
-        published = True
-        try:
-            publish_blob(blobs_root, checksum, content)
-        except (BlobPublicationRefused, OSError):
-            # Contained rather than chained: the primitive's message names a path under
-            # the workspace root, and this refusal becomes a wire error.
-            published = False
-        if not published:
-            raise OperationError(
-                ERROR_CODE_INTERNAL_RECOVERABLE,
-                _MESSAGE_BLOB_UNPUBLISHED,
-                retry_class=RETRY_CLASS_RETRYABLE,
-            )
+        def publish() -> None:
+            try:
+                publish_blob(blobs_root, checksum, content)
+            except (BlobPublicationRefused, OSError):
+                # Contained rather than chained: the primitive's message names a path
+                # under the workspace root, and this refusal becomes a wire error.
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_RECOVERABLE,
+                    _MESSAGE_BLOB_UNPUBLISHED,
+                    retry_class=RETRY_CLASS_RETRYABLE,
+                ) from None
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -559,6 +560,10 @@ class EvidenceHandlers:
                     checksum=checksum,
                     length=length,
                 )
+                # Exact source reuse is accepted, not a conflict. Verify the bytes are
+                # still present before settling its fresh claim, and repair a legitimately
+                # reclaimed object through the same idempotent publication primitive.
+                publish()
                 return _capture_result(
                     evidence_id=existing.evidence_id,
                     submitted=submitted,
@@ -566,6 +571,10 @@ class EvidenceHandlers:
                     length=length,
                     disposition="already_captured",
                 )
+            # This callback runs only after the mutation coordinator has resolved the
+            # idempotency scope. Publishing here also follows the source-identity check
+            # above, while still preceding every row that names these bytes below.
+            publish()
             return _append_direct_evidence(
                 fenced,
                 settlement,
@@ -589,6 +598,11 @@ class EvidenceHandlers:
             clock=self.clock,
             allocate_identifier=self.allocate_identifier,
         )
+        if outcome.replayed:
+            # Replays deliberately skip the domain callback. Verify/repair their already
+            # settled object here, after the idempotency check accepted the exact body and
+            # before the projection barrier can report the stored success.
+            publish()
         # The id the barrier must find, taken from the settled result rather than from
         # anything this attempt computed: on a replay that is the *first* attempt's
         # evidence id, which is exactly the document the caller will look for.
