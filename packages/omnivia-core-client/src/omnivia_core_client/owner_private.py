@@ -57,7 +57,6 @@ Standard library only, and no import of any sibling distribution.
 from __future__ import annotations
 
 import ctypes
-import hashlib
 import os
 import re
 import stat
@@ -89,16 +88,21 @@ __all__ = [
 _IS_WINDOWS: Final = os.name == "nt"
 
 # One process can contain more than one configuration writer, while POSIX
-# ``flock`` and a Windows kernel mutex are principally inter-process tools.  The
+# ``flock`` and a Windows byte-range lock are principally inter-process tools. The
 # small in-process map closes that first race; the OS primitive below closes the
 # second.  Keys contain paths but never leave this process or appear in a
 # diagnostic.
 _TRANSACTION_LOCKS_GUARD = threading.Lock()
 _TRANSACTION_LOCKS: dict[str, threading.Lock] = {}
 
-_WAIT_OBJECT_0: Final = 0x00000000
-_WAIT_ABANDONED_0: Final = 0x00000080
-_INFINITE: Final = 0xFFFFFFFF
+_TRANSACTION_LOCK_FILE: Final = ".omnivia-owner-private.lock"
+_WIN_GENERIC_READ_WRITE: Final = 0xC0000000
+_WIN_SHARE_READ_WRITE: Final = 0x00000003
+_WIN_OPEN_EXISTING: Final = 3
+_WIN_OPEN_ALWAYS: Final = 4
+_WIN_OPEN_REPARSE_POINT: Final = 0x00200000
+_WIN_BACKUP_SEMANTICS: Final = 0x02000000
+_WIN_ERROR_ALREADY_EXISTS: Final = 183
 
 OwnerPrivateReplaceResult = Literal["replaced", "mismatch", "unavailable"]
 
@@ -1001,57 +1005,174 @@ def _release_posix_transaction(descriptor: int) -> None:
         pass
 
 
-def _acquire_windows_transaction(key: str) -> tuple[Any, object] | None:
-    """Acquire a per-path Windows kernel mutex, including an abandoned one."""
+def _acquire_windows_transaction(
+    directory: Path,
+) -> tuple[int, Any, object] | None:
+    """Hold one cross-session byte-range lock beneath a pinned directory."""
+    import msvcrt
+
     kernel32: Any | None = None
-    handle: object | None = None
+    parent_handle: object | None = None
+    file_handle: object | None = None
+    descriptor = -1
+    locked = False
     try:
         kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined]
             "kernel32", use_last_error=True
         )
-        kernel32.CreateMutexW.argtypes = (
-            ctypes.c_void_p,
-            ctypes.c_int32,
+        kernel32.CreateFileW.argtypes = (
             ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
         )
-        kernel32.CreateMutexW.restype = ctypes.c_void_p
-        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
-        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
-        kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
-        kernel32.ReleaseMutex.restype = ctypes.c_int32
+        kernel32.CreateFileW.restype = ctypes.c_void_p
         kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
         kernel32.CloseHandle.restype = ctypes.c_int32
-        digest = hashlib.blake2s(
-            key.encode("utf-8", errors="surrogatepass"), digest_size=20
-        ).hexdigest()
-        handle = kernel32.CreateMutexW(
-            None, 0, f"Local\\OmniViaOwnerPrivate-{digest}"
+        invalid = ctypes.c_void_p(-1).value
+
+        before_directory = _lstat(directory, None)
+        if (
+            before_directory is None
+            or not owner_private_directory_metadata(before_directory)
+        ):
+            return None
+        parent_handle = kernel32.CreateFileW(
+            str(directory),
+            0,
+            _WIN_SHARE_READ_WRITE,
+            None,
+            _WIN_OPEN_EXISTING,
+            _WIN_OPEN_REPARSE_POINT | _WIN_BACKUP_SEMANTICS,
+            None,
         )
-        value = getattr(handle, "value", handle)
-        if not isinstance(value, int) or value == 0:
-            return None
-        wait = int(kernel32.WaitForSingleObject(handle, _INFINITE))
-        if wait not in (_WAIT_OBJECT_0, _WAIT_ABANDONED_0):
-            kernel32.CloseHandle(handle)
-            return None
-        return kernel32, handle
-    except Exception:  # noqa: BLE001 -- an unavailable mutex fails closed.
-        if kernel32 is not None and handle is not None:
+        parent_value = getattr(parent_handle, "value", parent_handle)
+        if not isinstance(parent_value, int) or parent_value in (0, invalid):
+            raise OSError("owner-private transaction directory could not be pinned")
+        after_directory = _lstat(directory, None)
+        if (
+            after_directory is None
+            or not same_file(before_directory, after_directory)
+            or not owner_private_directory_metadata(after_directory)
+        ):
+            raise OSError("owner-private transaction directory changed")
+
+        lock_path = directory / _TRANSACTION_LOCK_FILE
+        before_file = _lstat(lock_path, None)
+        if before_file is not None and (
+            not stat.S_ISREG(before_file.st_mode)
+            or not not_a_reparse_point(before_file)
+            or before_file.st_nlink != 1
+        ):
+            raise OSError("owner-private transaction lock is not a private file")
+        ctypes.set_last_error(0)  # type: ignore[attr-defined]
+        file_handle = kernel32.CreateFileW(
+            str(lock_path),
+            _WIN_GENERIC_READ_WRITE,
+            _WIN_SHARE_READ_WRITE,
+            None,
+            _WIN_OPEN_ALWAYS,
+            _WIN_OPEN_REPARSE_POINT,
+            None,
+        )
+        file_value = getattr(file_handle, "value", file_handle)
+        if not isinstance(file_value, int) or file_value in (0, invalid):
+            raise OSError("owner-private transaction lock could not be opened")
+        last_error = ctypes.get_last_error()  # type: ignore[attr-defined]
+        created = last_error != _WIN_ERROR_ALREADY_EXISTS
+        descriptor = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            file_value, os.O_RDWR | getattr(os, "O_BINARY", 0)
+        )
+        file_handle = None  # the CRT descriptor owns the native handle now
+        if created and not restrict_to_owner(lock_path, directory=False):
+            raise OSError("owner-private transaction lock could not be secured")
+
+        opened = os.fstat(descriptor)
+        named = _lstat(lock_path, None)
+        if (
+            named is None
+            or not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or not not_a_reparse_point(named)
+            or opened.st_nlink != 1
+            or named.st_nlink != 1
+            or not same_file(opened, named)
+            or not owner_private_file(opened, descriptor)
+            or (before_file is not None and not same_file(before_file, opened))
+        ):
+            raise OSError("owner-private transaction lock identity was not proved")
+        if opened.st_size < 1:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if not _write_all(descriptor, b"\0"):
+                raise OSError("owner-private transaction lock could not be initialized")
+            os.fsync(descriptor)
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+        locked = True
+        held = os.fstat(descriptor)
+        still_named = _lstat(lock_path, None)
+        still_directory = _lstat(directory, None)
+        if (
+            still_named is None
+            or still_directory is None
+            or not same_file(opened, held)
+            or not same_file(held, still_named)
+            or not same_file(before_directory, still_directory)
+            or not not_a_reparse_point(still_named)
+            or held.st_nlink != 1
+            or not owner_private_file(held, descriptor)
+            or not owner_private_directory_metadata(still_directory)
+        ):
+            raise OSError("owner-private transaction namespace changed")
+        return descriptor, kernel32, parent_handle
+    except Exception:  # noqa: BLE001 -- an unavailable lock fails closed.
+        if descriptor >= 0:
+            if locked:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(  # type: ignore[attr-defined]
+                        descriptor, msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
+                    )
+                except OSError:
+                    pass
             try:
-                kernel32.CloseHandle(handle)
+                os.close(descriptor)
+            except OSError:
+                pass
+        elif kernel32 is not None and file_handle is not None:
+            try:
+                kernel32.CloseHandle(file_handle)
+            except Exception:  # noqa: BLE001,S110 -- fail closed and stay silent.
+                pass
+        if kernel32 is not None and parent_handle is not None:
+            try:
+                kernel32.CloseHandle(parent_handle)
             except Exception:  # noqa: BLE001,S110 -- fail closed and stay silent.
                 pass
         return None
 
 
-def _release_windows_transaction(resource: tuple[Any, object]) -> None:
-    kernel32, handle = resource
+def _release_windows_transaction(resource: tuple[int, Any, object]) -> None:
+    import msvcrt
+
+    descriptor, kernel32, parent_handle = resource
     try:
-        kernel32.ReleaseMutex(handle)
-    except Exception:  # noqa: BLE001,S110 -- close still releases resources.
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(  # type: ignore[attr-defined]
+            descriptor, msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
+        )
+    except OSError:
         pass
     try:
-        kernel32.CloseHandle(handle)
+        os.close(descriptor)
+    except OSError:
+        pass
+    try:
+        kernel32.CloseHandle(parent_handle)
     except Exception:  # noqa: BLE001,S110 -- diagnostics cannot expose the path.
         pass
 
@@ -1063,9 +1184,11 @@ def owner_private_transaction(path: Path) -> Iterator[bool]:
     The lock is deliberately outside the replaceable file: a lock taken on the
     old inode would not coordinate with a writer that opened the new inode after
     an atomic rename.  POSIX locks the proved containing directory, whose inode
-    remains stable across leaf replacement.  Windows uses a named kernel mutex
-    derived from the normalized absolute path.  Both are released by the OS if a
-    process dies, and a small per-path thread lock covers writers in one process.
+    remains stable across leaf replacement. Windows pins that directory against
+    rename and holds a mandatory byte-range lock on one owner-private sidecar,
+    which is filesystem-backed and therefore shared across logon sessions. Both
+    are released by the OS if a process dies, and a small per-path thread lock
+    covers writers in one process.
 
     ``False`` is a fail-closed acquisition result.  Callers retain their own
     payload-free diagnostic vocabulary and never need this helper to raise a
@@ -1081,7 +1204,7 @@ def owner_private_transaction(path: Path) -> Iterator[bool]:
             yield False
             return
         if _IS_WINDOWS:
-            resource = _acquire_windows_transaction(key)
+            resource = _acquire_windows_transaction(directory)
             if resource is None:
                 yield False
                 return

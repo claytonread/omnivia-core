@@ -334,11 +334,14 @@ def test_exact_original_bytes_must_represent_the_callers_configuration(
     """A stale parsed generation is refused before a service is contacted."""
     path = legacy_file(tmp_path)
     stale = read_configuration(path)
-    changed = json.loads(path.read_text(encoding="utf-8"))
-    changed["principal_id"] = "legacy-concurrent-user"
+    original = path.read_bytes()
+    same_values = json.loads(original.decode("utf-8"))
+    reformatted = (json.dumps(same_values, indent=4) + "\n").encode("utf-8")
+    assert reformatted != original
     assert write_owner_private(
-        path, (json.dumps(changed, sort_keys=True) + "\n").encode("utf-8")
+        path, reformatted
     )
+    assert read_configuration(path) == stale
     called = False
 
     def unexpected(*_args: Any, **_kwargs: Any) -> Any:
@@ -351,7 +354,7 @@ def test_exact_original_bytes_must_represent_the_callers_configuration(
         server.upgrade_legacy_configuration(path, stale)
 
     assert called is False
-    assert read_configuration(path).principal_id == "legacy-concurrent-user"
+    assert path.read_bytes() == reformatted
 
 
 def test_a_present_but_wrong_bearer_refuses_before_publication(

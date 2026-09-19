@@ -37,6 +37,15 @@ FULL_ACCESS = 0x1F01FF
 READ_ACCESS = 0x1200A9
 
 
+def document_entries(directory: Path) -> list[str]:
+    """User documents, excluding the persistent Windows writer lock."""
+    return sorted(
+        entry.name
+        for entry in directory.iterdir()
+        if entry.name != owner_private._TRANSACTION_LOCK_FILE
+    )
+
+
 @pytest.mark.parametrize(
     ("owner_matches", "aces", "owner_only"),
     [
@@ -1051,7 +1060,7 @@ def test_a_written_document_is_owner_private_from_creation(tmp_path: Path) -> No
     if os.name != "nt":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
-    assert [entry.name for entry in path.parent.iterdir()] == ["document.json"]
+    assert document_entries(path.parent) == ["document.json"]
 
 
 def test_a_rewrite_replaces_the_whole_document_and_leaves_no_temporary(
@@ -1061,7 +1070,7 @@ def test_a_rewrite_replaces_the_whole_document_and_leaves_no_temporary(
     assert owner_private.write_owner_private(path, b"first") is True
     assert owner_private.write_owner_private(path, b"second") is True
     assert path.read_bytes() == b"second"
-    assert [entry.name for entry in tmp_path.iterdir()] == ["document.json"]
+    assert document_entries(tmp_path) == ["document.json"]
 
 
 def test_compare_and_replace_refuses_stale_bytes_without_overwriting_them(
@@ -1234,7 +1243,7 @@ def test_the_owner_only_proof_is_taken_before_a_byte_is_written(
     path = tmp_path / "document.json"
     assert owner_private.write_owner_private(path, b"{}") is False
     assert not path.exists()
-    assert list(tmp_path.iterdir()) == []
+    assert document_entries(tmp_path) == []
 
 
 def test_a_new_directory_is_restricted_before_its_own_proof_is_trusted(
@@ -1285,28 +1294,30 @@ def test_a_temporary_file_that_cannot_be_restricted_is_removed_unwritten(
 
     def fake(path: Path, *, directory: bool) -> bool:
         calls.append(path)
-        return directory
+        return directory or path.name == owner_private._TRANSACTION_LOCK_FILE
 
     monkeypatch.setattr(owner_private, "restrict_to_owner", fake)
     path = parent / "document.json"
     assert owner_private.write_owner_private(path, b"{}") is False
     assert not path.exists()
-    assert list(parent.iterdir()) == []
-    assert len(calls) == 1 and calls[0].suffix == ".partial"
+    assert document_entries(parent) == []
+    assert calls[-1].suffix == ".partial"
 
 
 def test_a_short_write_is_a_refusal_rather_than_a_truncated_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`os.write` may accept less than it was handed and raise nothing."""
+    path = tmp_path / "document.json"
+    assert owner_private.write_owner_private(path, b"seed") is True
+    path.unlink()
     real = os.write
     monkeypatch.setattr(
         owner_private.os, "write", lambda fd, data: real(fd, data[:1]) and 0
     )
-    path = tmp_path / "document.json"
     assert owner_private.write_owner_private(path, b"a much longer document") is False
     assert not path.exists()
-    assert list(tmp_path.iterdir()) == []
+    assert document_entries(tmp_path) == []
 
 
 def test_a_replacement_that_fails_leaves_the_previous_document_and_no_temporary(
@@ -1321,7 +1332,7 @@ def test_a_replacement_that_fails_leaves_the_previous_document_and_no_temporary(
     monkeypatch.setattr(owner_private.os, "replace", refuse)
     assert owner_private.write_owner_private(path, b"second") is False
     assert path.read_bytes() == b"first"
-    assert [entry.name for entry in tmp_path.iterdir()] == ["document.json"]
+    assert document_entries(tmp_path) == ["document.json"]
 
 
 def test_the_writer_and_the_reader_agree_on_what_is_trustworthy(

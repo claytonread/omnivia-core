@@ -108,6 +108,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -173,7 +174,6 @@ from omnivia_core_mcp.configuration import (
     AuthoringAdmission,
     McpConfiguration,
     McpConfigurationError,
-    _parse_configuration_bytes,
     effective_profile,
     read_configuration,
 )
@@ -676,14 +676,13 @@ def upgrade_legacy_configuration(
     )
     if original_document is None:
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
-    original_configuration = None
-    try:
-        original_configuration = _parse_configuration_bytes(original_document)
-    except McpConfigurationError:
-        original_configuration = None
-    if original_configuration != configuration:
-        # The caller parsed one generation and this function read another. Only
-        # the exact generation represented by ``configuration`` may be migrated.
+    if (
+        configuration._source_digest is None
+        or hashlib.sha256(original_document).digest() != configuration._source_digest
+    ):
+        # The parsed value carries the digest of its exact trusted bytes. A
+        # semantically equivalent rewrite is still another generation and may
+        # not be adopted as this migration's compare-and-swap expectation.
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     deadline = Deadline.after(MANAGED_START_TIMEOUT_SECONDS)

@@ -289,9 +289,7 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     ``hashlib`` is shared with the store for the same kind of reason: the store
     derives a filename from a credential reference by digesting it, which is what
     keeps a valid reference from spelling a reserved device name or colliding
-    with another on a case-insensitive filesystem. The owner-private writer
-    derives a non-secret Windows mutex name from the path for the corresponding
-    reason: the kernel object namespace never receives the path itself.
+    with another on a case-insensitive filesystem.
 
     ``subprocess`` is shared with ``owner_private.py`` for a narrow reason of its
     own: ``restrict_to_owner``'s Windows writer shells out to ``whoami.exe`` and
@@ -302,7 +300,7 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     being exempted from this test.
     """
     shared = {
-        "hashlib": {"installed_credentials.py", "owner_private.py"},
+        "hashlib": {"installed_credentials.py"},
         "subprocess": {"owner_private.py"},
         "tempfile": {"installed_credentials.py", "owner_private.py"},
     }

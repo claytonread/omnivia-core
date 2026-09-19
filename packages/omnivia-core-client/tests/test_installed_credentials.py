@@ -915,6 +915,18 @@ def config_directory(root: Path) -> Path:
     return root.joinpath(*CONFIGURATION_STORE_DIRECTORY)
 
 
+def configuration_files(root: Path) -> list[str]:
+    """Published host documents, excluding the persistent Windows writer lock."""
+    directory = config_directory(root)
+    if not directory.exists():
+        return []
+    return sorted(
+        path.name
+        for path in directory.iterdir()
+        if path.name != owner_private._TRANSACTION_LOCK_FILE
+    )
+
+
 # --- derived, closed, and public only in the one way it must be ---------------
 
 
@@ -1011,7 +1023,7 @@ def test_each_host_is_one_file_and_removing_one_leaves_the_other(
     store = configs(tmp_path)
     assert store.write(HOST, DOCUMENT) is True
     assert store.write(OTHER_HOST, REWRITTEN) is True
-    assert sorted(path.name for path in config_directory(tmp_path).iterdir()) == [
+    assert configuration_files(tmp_path) == [
         "claude-code.json",
         "codex.json",
     ]
@@ -1027,9 +1039,7 @@ def test_a_replacement_leaves_no_temporary_and_no_previous_document(
     assert store.write(HOST, DOCUMENT) is True
     assert store.write(HOST, REWRITTEN) is True
     assert store.read(HOST) == REWRITTEN
-    assert [path.name for path in config_directory(tmp_path).iterdir()] == [
-        "claude-code.json"
-    ]
+    assert configuration_files(tmp_path) == ["claude-code.json"]
 
 
 def test_replacement_is_atomic_under_a_concurrent_configuration_reader(
@@ -1176,8 +1186,7 @@ def test_a_document_past_the_bound_is_never_written(tmp_path: Path, form: str) -
     assert store.write(HOST, b"a" * (MAXIMUM_CONFIGURATION_BYTES + 1)) is False
     assert store.health(HOST) == "absent"
     assert (
-        not config_directory(tmp_path).exists()
-        or list(config_directory(tmp_path).iterdir()) == []
+        not config_directory(tmp_path).exists() or configuration_files(tmp_path) == []
     )
 
 
@@ -1601,7 +1610,7 @@ def test_the_pathname_form_restricts_the_temporary_file_before_a_byte_is_written
     )
     assert config.write(HOST, REWRITTEN) is False
     assert config.read(HOST) == DOCUMENT
-    assert [p.name for p in config_directory(tmp_path).iterdir()] == [f"{HOST}.json"]
+    assert configuration_files(tmp_path) == [f"{HOST}.json"]
 
 
 def test_the_pathname_form_refuses_when_the_chain_stops_proving_before_the_rename(
@@ -1633,7 +1642,7 @@ def test_the_pathname_form_refuses_when_the_chain_stops_proving_before_the_renam
 
     monkeypatch.undo()
     assert store.read(HOST) == DOCUMENT
-    assert [path.name for path in config_directory(tmp_path).iterdir()] == [
+    assert configuration_files(tmp_path) == [
         f"{HOST}.json"
     ]
 
@@ -1682,7 +1691,7 @@ def test_the_pathname_form_refuses_a_short_write_rather_than_publishing_it(
 
     monkeypatch.undo()
     assert store.health(HOST) == "absent"
-    assert list(config_directory(tmp_path).iterdir()) == []
+    assert configuration_files(tmp_path) == []
 
 
 def test_the_pathname_form_takes_the_owner_only_proof_before_a_byte_is_written(
@@ -1694,7 +1703,7 @@ def test_the_pathname_form_takes_the_owner_only_proof_before_a_byte_is_written(
         installed_credentials, "owner_private_file", lambda _m, _d: False
     )
     assert configs(tmp_path).write(HOST, DOCUMENT) is False
-    assert list(config_directory(tmp_path).iterdir()) == []
+    assert configuration_files(tmp_path) == []
 
 
 def test_the_two_forms_agree_on_what_is_written(tmp_path: Path) -> None:

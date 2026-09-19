@@ -41,10 +41,11 @@ that validated document plus one protected answer it cannot give itself: see
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal, NoReturn
 
@@ -191,6 +192,7 @@ class McpConfiguration:
     installation_state: Path | None
     endpoint: str | None
     credential_reference: CredentialReference | None
+    _source_digest: bytes | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         principal = _exact_text(self.principal_id, _IDENTIFIER_RE, 128)
@@ -215,6 +217,11 @@ class McpConfiguration:
             or purposes is None
             or type(self.mutation_enabled) is not bool
             or self.service_mode not in ("managed_local", "service_client")
+            or not (
+                self._source_digest is None
+                or isinstance(self._source_digest, bytes)
+                and len(self._source_digest) == 32
+            )
             or (
                 self.default_workspace_id is not None
                 and self.default_workspace_id not in (workspaces or ())
@@ -473,7 +480,10 @@ def _parse_configuration_bytes(content: bytes) -> McpConfiguration:
         invalid = True
     if invalid:
         _raise_document()
-    return parse_configuration(document)
+    return replace(
+        parse_configuration(document),
+        _source_digest=hashlib.sha256(content).digest(),
+    )
 
 
 def read_configuration(path: Path) -> McpConfiguration:
