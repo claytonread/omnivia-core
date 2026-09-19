@@ -57,15 +57,18 @@ Standard library only, and no import of any sibling distribution.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import os
 import re
 import stat
 import subprocess
 import tempfile
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from ctypes import wintypes
 from pathlib import Path
-from typing import Final, NoReturn, Protocol
+from typing import Any, Final, Literal, NoReturn, Protocol
 
 __all__ = [
     "not_a_reparse_point",
@@ -77,12 +80,27 @@ __all__ = [
     "owner_writable_only",
     "read_owner_private",
     "read_owner_writable",
+    "replace_owner_private_if_current",
     "restrict_to_owner",
     "same_file",
     "write_owner_private",
 ]
 
 _IS_WINDOWS: Final = os.name == "nt"
+
+# One process can contain more than one configuration writer, while POSIX
+# ``flock`` and a Windows kernel mutex are principally inter-process tools.  The
+# small in-process map closes that first race; the OS primitive below closes the
+# second.  Keys contain paths but never leave this process or appear in a
+# diagnostic.
+_TRANSACTION_LOCKS_GUARD = threading.Lock()
+_TRANSACTION_LOCKS: dict[str, threading.Lock] = {}
+
+_WAIT_OBJECT_0: Final = 0x00000000
+_WAIT_ABANDONED_0: Final = 0x00000080
+_INFINITE: Final = 0xFFFFFFFF
+
+OwnerPrivateReplaceResult = Literal["replaced", "mismatch", "unavailable"]
 
 #: How much is read at once. A chunk size, not a bound: the bound is the
 #: caller's ``maximum_bytes``, which this never reads past.
@@ -913,6 +931,180 @@ _NEW_DIRECTORY_MODE: Final = 0o700
 _PARTIAL_SUFFIX: Final = ".partial"
 
 
+def _transaction_key(path: Path) -> str:
+    """One process-local and cross-process name for an absolute target path."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _thread_transaction_lock(key: str) -> threading.Lock:
+    """The in-process half of one path's writer serialisation."""
+    with _TRANSACTION_LOCKS_GUARD:
+        lock = _TRANSACTION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _TRANSACTION_LOCKS[key] = lock
+        return lock
+
+
+def _acquire_posix_transaction(directory: Path) -> int:
+    """Hold an exclusive lock on one proved directory, or return ``-1``."""
+    import fcntl
+
+    before = _lstat(directory, None)
+    if before is None or not owner_private_directory_metadata(before):
+        return -1
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(directory, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not same_file(before, opened)
+            or not owner_private_directory_metadata(opened)
+        ):
+            raise OSError("owner-private transaction directory changed")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        named = _lstat(directory, None)
+        if (
+            named is None
+            or not same_file(opened, named)
+            or not owner_private_directory_metadata(named)
+        ):
+            raise OSError("owner-private transaction directory was replaced")
+        return descriptor
+    except (OSError, ValueError):
+        if descriptor >= 0:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        return -1
+
+
+def _release_posix_transaction(descriptor: int) -> None:
+    import fcntl
+
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _acquire_windows_transaction(key: str) -> tuple[Any, object] | None:
+    """Acquire a per-path Windows kernel mutex, including an abandoned one."""
+    kernel32: Any | None = None
+    handle: object | None = None
+    try:
+        kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined]
+            "kernel32", use_last_error=True
+        )
+        kernel32.CreateMutexW.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_int32,
+            ctypes.c_wchar_p,
+        )
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+        kernel32.ReleaseMutex.restype = ctypes.c_int32
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int32
+        digest = hashlib.blake2s(
+            key.encode("utf-8", errors="surrogatepass"), digest_size=20
+        ).hexdigest()
+        handle = kernel32.CreateMutexW(
+            None, 0, f"Local\\OmniViaOwnerPrivate-{digest}"
+        )
+        value = getattr(handle, "value", handle)
+        if not isinstance(value, int) or value == 0:
+            return None
+        wait = int(kernel32.WaitForSingleObject(handle, _INFINITE))
+        if wait not in (_WAIT_OBJECT_0, _WAIT_ABANDONED_0):
+            kernel32.CloseHandle(handle)
+            return None
+        return kernel32, handle
+    except Exception:  # noqa: BLE001 -- an unavailable mutex fails closed.
+        if kernel32 is not None and handle is not None:
+            try:
+                kernel32.CloseHandle(handle)
+            except Exception:  # noqa: BLE001,S110 -- fail closed and stay silent.
+                pass
+        return None
+
+
+def _release_windows_transaction(resource: tuple[Any, object]) -> None:
+    kernel32, handle = resource
+    try:
+        kernel32.ReleaseMutex(handle)
+    except Exception:  # noqa: BLE001,S110 -- close still releases resources.
+        pass
+    try:
+        kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001,S110 -- diagnostics cannot expose the path.
+        pass
+
+
+@contextmanager
+def owner_private_transaction(path: Path) -> Iterator[bool]:
+    """Serialize cooperating writers of one owner-private file.
+
+    The lock is deliberately outside the replaceable file: a lock taken on the
+    old inode would not coordinate with a writer that opened the new inode after
+    an atomic rename.  POSIX locks the proved containing directory, whose inode
+    remains stable across leaf replacement.  Windows uses a named kernel mutex
+    derived from the normalized absolute path.  Both are released by the OS if a
+    process dies, and a small per-path thread lock covers writers in one process.
+
+    ``False`` is a fail-closed acquisition result.  Callers retain their own
+    payload-free diagnostic vocabulary and never need this helper to raise a
+    pathname-bearing exception.
+    """
+    if not isinstance(path, Path) or not path.is_absolute() or not path.name:
+        yield False
+        return
+    key = _transaction_key(path)
+    with _thread_transaction_lock(key):
+        directory = path.parent
+        if not owner_private_directory(directory):
+            yield False
+            return
+        if _IS_WINDOWS:
+            resource = _acquire_windows_transaction(key)
+            if resource is None:
+                yield False
+                return
+            try:
+                # The wait may have been arbitrarily long. Reprove the namespace
+                # after it, before granting the critical section.
+                if not owner_private_directory(directory):
+                    yield False
+                else:
+                    yield True
+            finally:
+                _release_windows_transaction(resource)
+            return
+        descriptor = _acquire_posix_transaction(directory)
+        if descriptor < 0:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            _release_posix_transaction(descriptor)
+
+
 def _write_all(descriptor: int, content: bytes) -> bool:
     """Put the whole of `content` on `descriptor`, or say it could not be put.
 
@@ -928,6 +1120,56 @@ def _write_all(descriptor: int, content: bytes) -> bool:
             return False
         written += progress
     return True
+
+
+def _write_owner_private_unlocked(path: Path, content: bytes) -> bool:
+    """The atomic writer, called only while this path's transaction is held."""
+    directory = path.parent
+    descriptor, temporary = -1, ""
+    failed = False
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            dir=str(directory), suffix=_PARTIAL_SUFFIX
+        )
+        failed = not restrict_to_owner(Path(temporary), directory=False)
+        if not failed:
+            metadata = os.fstat(descriptor)
+            failed = not owner_private_file(metadata, descriptor) or not _write_all(
+                descriptor, content
+            )
+        if not failed:
+            os.fsync(descriptor)
+    except (OSError, ValueError):
+        failed = True
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    if not failed:
+        try:
+            os.replace(temporary, path)
+        except OSError:
+            failed = True
+    if failed and temporary:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+    return not failed
+
+
+def _prepare_owner_private_directory(directory: Path) -> bool:
+    if owner_private_directory(directory):
+        return True
+    try:
+        directory.mkdir(parents=True, mode=_NEW_DIRECTORY_MODE)
+    except OSError:
+        return False
+    return restrict_to_owner(
+        directory, directory=True
+    ) and owner_private_directory(directory)
 
 
 def write_owner_private(path: Path, content: bytes) -> bool:
@@ -968,48 +1210,51 @@ def write_owner_private(path: Path, content: bytes) -> bool:
     if not isinstance(path, Path) or not path.is_absolute() or not path.name:
         return False
     directory = path.parent
-    if not owner_private_directory(directory):
-        try:
-            directory.mkdir(parents=True, mode=_NEW_DIRECTORY_MODE)
-        except OSError:
-            return False
-        if not restrict_to_owner(
-            directory, directory=True
-        ) or not owner_private_directory(directory):
-            return False
-    descriptor, temporary = -1, ""
-    failed = False
-    try:
-        descriptor, temporary = tempfile.mkstemp(
-            dir=str(directory), suffix=_PARTIAL_SUFFIX
-        )
-        failed = not restrict_to_owner(Path(temporary), directory=False)
-        if not failed:
-            metadata = os.fstat(descriptor)
-            failed = not owner_private_file(metadata, descriptor) or not _write_all(
-                descriptor, content
-            )
-        if not failed:
-            os.fsync(descriptor)
-    except (OSError, ValueError):
-        failed = True
-    finally:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-    if not failed:
-        try:
-            os.replace(temporary, path)
-        except OSError:
-            failed = True
-    if failed and temporary:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-    return not failed
+    if not _prepare_owner_private_directory(directory):
+        return False
+    with owner_private_transaction(path) as acquired:
+        return acquired and _write_owner_private_unlocked(path, content)
+
+
+def replace_owner_private_if_current(
+    path: Path,
+    expected: bytes,
+    replacement: bytes,
+    *,
+    maximum_bytes: int,
+) -> OwnerPrivateReplaceResult:
+    """Atomically compare and replace one cooperating owner-private document.
+
+    ``mismatch`` means the trusted bytes changed before publication, so the
+    caller must not overwrite them. ``unavailable`` covers every inability to
+    prove, lock, read, or replace the file. The comparison and rename occur in
+    the same transaction used by :func:`write_owner_private` and by the installed
+    configuration store, making the result a real compare-and-swap for all
+    product-owned writers rather than a check followed by a race.
+    """
+    if (
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or not path.name
+        or not isinstance(expected, bytes)
+        or not isinstance(replacement, bytes)
+        or not isinstance(maximum_bytes, int)
+        or maximum_bytes < 0
+        or len(expected) > maximum_bytes
+        or len(replacement) > maximum_bytes
+    ):
+        return "unavailable"
+    with owner_private_transaction(path) as acquired:
+        if not acquired:
+            return "unavailable"
+        current = read_owner_private(path, maximum_bytes=maximum_bytes)
+        if current is None:
+            return "unavailable"
+        if current != expected:
+            return "mismatch"
+        if not _write_owner_private_unlocked(path, replacement):
+            return "unavailable"
+        return "replaced"
 
 
 def owner_private_directory(path: Path) -> bool:

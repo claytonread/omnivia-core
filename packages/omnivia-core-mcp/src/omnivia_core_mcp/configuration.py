@@ -439,12 +439,19 @@ def _read_trusted_bytes(path: Path) -> bytes:
     return content
 
 
-def read_configuration(path: Path) -> McpConfiguration:
-    """Read one explicit, trusted configuration file before MCP initialization."""
-    if not isinstance(path, Path) or not path.is_absolute():
-        _raise_file()
-    content = _read_trusted_bytes(path)
-    if content.startswith(b"\xef\xbb\xbf"):
+def _parse_configuration_bytes(content: bytes) -> McpConfiguration:
+    """Decode the exact bounded bytes of one configuration document.
+
+    Kept separate from the path reader so a compare-and-swap publisher can prove
+    that the bytes it will replace are the same semantic document its caller
+    originally parsed, without opening the path a second time and introducing an
+    ABA race between two independent reads.
+    """
+    if (
+        not isinstance(content, bytes)
+        or len(content) > MAXIMUM_CONFIGURATION_BYTES
+        or content.startswith(b"\xef\xbb\xbf")
+    ):
         _raise_document()
     invalid = False
     document: object = None
@@ -467,3 +474,10 @@ def read_configuration(path: Path) -> McpConfiguration:
     if invalid:
         _raise_document()
     return parse_configuration(document)
+
+
+def read_configuration(path: Path) -> McpConfiguration:
+    """Read one explicit, trusted configuration file before MCP initialization."""
+    if not isinstance(path, Path) or not path.is_absolute():
+        _raise_file()
+    return _parse_configuration_bytes(_read_trusted_bytes(path))

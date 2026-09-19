@@ -149,6 +149,7 @@ from omnivia_core_client.owner_private import (
     owner_private_chain,
     owner_private_directory_metadata,
     owner_private_file,
+    owner_private_transaction,
     owner_writable_only,
     read_owner_private,
     restrict_to_owner,
@@ -952,11 +953,30 @@ class InstalledConfigStore:
         leaf = _configuration_leaf(host)
         if not isinstance(content, bytes) or len(content) > MAXIMUM_CONFIGURATION_BYTES:
             return False
+        if not self._prepare_directory():
+            return False
+        with owner_private_transaction(self.path(host)) as acquired:
+            return acquired and self._write_unlocked(leaf, content)
+
+    def _prepare_directory(self) -> bool:
+        """Create and prove the protected store before its transaction starts."""
+        if not _ANCHORED:
+            return _proved_chain(
+                self._root, CONFIGURATION_STORE_DIRECTORY, create=True
+            ) is not None
+        anchor = _anchor_to(self._root, CONFIGURATION_STORE_DIRECTORY, create=True)
+        if anchor is None:
+            return False
+        anchor.close()
+        return True
+
+    def _write_unlocked(self, leaf: str, content: bytes) -> bool:
+        """Write after :func:`owner_private_transaction` granted this path."""
         if not _ANCHORED:
             return _write_by_path(
                 self._root, CONFIGURATION_STORE_DIRECTORY, leaf, content
             )
-        anchor = _anchor_to(self._root, CONFIGURATION_STORE_DIRECTORY, create=True)
+        anchor = _anchor_to(self._root, CONFIGURATION_STORE_DIRECTORY, create=False)
         if anchor is None:
             return False
         try:
@@ -973,6 +993,13 @@ class InstalledConfigStore:
         *not* that case: unlinking down it would delete whatever it pointed at.
         """
         leaf = _configuration_leaf(host)
+        if not _entry_exists(self._directory):
+            return True
+        with owner_private_transaction(self.path(host)) as acquired:
+            return acquired and self._remove_unlocked(leaf)
+
+    def _remove_unlocked(self, leaf: str) -> bool:
+        """Remove after :func:`owner_private_transaction` granted this path."""
         if not _ANCHORED:
             return _remove_by_path(self._root, CONFIGURATION_STORE_DIRECTORY, leaf)
         anchor = _anchor_to(self._root, CONFIGURATION_STORE_DIRECTORY, create=False)
@@ -992,6 +1019,10 @@ class InstalledConfigStore:
     def _load(self, host: str) -> tuple[bytes | None, bool]:
         """The document's bytes, and whether anything stands where they belong."""
         leaf = _configuration_leaf(host)
+        return self._load_unlocked(leaf)
+
+    def _load_unlocked(self, leaf: str) -> tuple[bytes | None, bool]:
+        """Read one validated leaf, optionally while its writer lock is held."""
         bound = MAXIMUM_CONFIGURATION_BYTES + 1
         if not _ANCHORED:
             content, present = _read_by_path(

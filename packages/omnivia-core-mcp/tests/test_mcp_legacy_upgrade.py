@@ -22,7 +22,9 @@ from omnivia_core_client import (
     InstalledCredentialStore,
     McpSetupView,
     McpStatusResult,
+    write_owner_private,
 )
+from omnivia_core_client.owner_private import replace_owner_private_if_current
 from omnivia_core_mcp import server
 from omnivia_core_mcp.configuration import (
     McpConfiguration,
@@ -112,10 +114,31 @@ def legacy_file(
     if mutation_enabled is not None:
         document["mutation_enabled"] = mutation_enabled
     path = tmp_path / "legacy-mcp.json"
-    assert server.write_owner_private(
+    assert write_owner_private(
         path, (json.dumps(document, sort_keys=True) + "\n").encode("utf-8")
     )
     return path
+
+
+def configured_document(path: Path, *, suffix: str = "concurrent") -> bytes:
+    """A complete valid document representing a later explicit configure."""
+    return (
+        json.dumps(
+            {
+                "allowed_purposes": list(PURPOSES),
+                "allowed_workspace_ids": [WORKSPACE],
+                "credential_reference": f"omcp-{suffix}-reference",
+                "default_workspace_id": WORKSPACE,
+                "format": "omnivia.mcp-config.v1",
+                "installation_state": str(path.parent / "installation"),
+                "mutation_enabled": False,
+                "principal_id": f"mcp-{suffix}-principal",
+                "service_mode": "managed_local",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def attach_control(monkeypatch: pytest.MonkeyPatch, peer: ControlPeer) -> None:
@@ -239,7 +262,11 @@ def test_configuration_publication_failure_preserves_existing_authority_and_bear
     reference = store_setup(path, existing)
     peer = ControlPeer(setups={"codex": existing})
     attach_control(monkeypatch, peer)
-    monkeypatch.setattr(server, "write_owner_private", lambda *_args: False)
+    monkeypatch.setattr(
+        server,
+        "replace_owner_private_if_current",
+        lambda *_args, **_kwargs: "unavailable",
+    )
     with pytest.raises(server.StartupError) as refused:
         server.upgrade_legacy_configuration(path, read_configuration(path))
 
@@ -256,6 +283,75 @@ def test_configuration_publication_failure_preserves_existing_authority_and_bear
         existing.credential_reference,
     ):
         assert private not in rendered
+
+
+def test_a_newer_configuration_is_not_overwritten_at_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publication compare-and-swap preserves an explicit configure winner."""
+    path = legacy_file(tmp_path)
+    legacy = read_configuration(path)
+    existing = setup_view("codex")
+    store_setup(path, existing)
+    peer = ControlPeer(setups={"codex": existing})
+    attach_control(monkeypatch, peer)
+    concurrent = configured_document(path)
+    actual_replace = replace_owner_private_if_current
+    calls = 0
+
+    def configure_before_replace(
+        target: Path,
+        expected: bytes,
+        replacement: bytes,
+        *,
+        maximum_bytes: int,
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert write_owner_private(path, concurrent)
+        return actual_replace(
+            target,
+            expected,
+            replacement,
+            maximum_bytes=maximum_bytes,
+        )
+
+    monkeypatch.setattr(
+        server, "replace_owner_private_if_current", configure_before_replace
+    )
+    with pytest.raises(server.StartupError):
+        server.upgrade_legacy_configuration(path, legacy)
+
+    assert calls == 1
+    assert peer.events == ["status", "admission"]
+    assert path.read_bytes() == concurrent
+
+
+def test_exact_original_bytes_must_represent_the_callers_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale parsed generation is refused before a service is contacted."""
+    path = legacy_file(tmp_path)
+    stale = read_configuration(path)
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    changed["principal_id"] = "legacy-concurrent-user"
+    assert write_owner_private(
+        path, (json.dumps(changed, sort_keys=True) + "\n").encode("utf-8")
+    )
+    called = False
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("stale configuration reached the service")
+
+    monkeypatch.setattr(server, "connect_managed_local", unexpected)
+    with pytest.raises(server.StartupError):
+        server.upgrade_legacy_configuration(path, stale)
+
+    assert called is False
+    assert read_configuration(path).principal_id == "legacy-concurrent-user"
 
 
 def test_a_present_but_wrong_bearer_refuses_before_publication(
@@ -308,6 +404,86 @@ def test_revocation_after_publication_restores_the_exact_legacy_document(
     assert peer.events == ["status", "admission", "admission"]
     assert path.read_bytes() == original
     assert read_configuration(path).credential_reference is None
+
+
+def test_failed_rollback_is_reported_as_unrecovered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = legacy_file(tmp_path, mutation_enabled=True)
+    existing = setup_view("codex")
+    store_setup(path, existing)
+    peer = ControlPeer(setups={"codex": existing})
+    attach_control(monkeypatch, peer)
+    admissions = 0
+
+    def revoked_after_first_proof(*args: Any, **kwargs: Any) -> Any:
+        nonlocal admissions
+        admissions += 1
+        if admissions == 2:
+            peer.events.append("admission")
+            raise ClientError("test credential was revoked")
+        return peer.admission(*args, **kwargs)
+
+    actual_replace = replace_owner_private_if_current
+    replacements = 0
+
+    def fail_compensation(
+        target: Path,
+        expected: bytes,
+        replacement: bytes,
+        *,
+        maximum_bytes: int,
+    ) -> str:
+        nonlocal replacements
+        replacements += 1
+        if replacements == 2:
+            return "unavailable"
+        return actual_replace(
+            target,
+            expected,
+            replacement,
+            maximum_bytes=maximum_bytes,
+        )
+
+    monkeypatch.setattr(server, "mcp_authoring_admission", revoked_after_first_proof)
+    monkeypatch.setattr(
+        server, "replace_owner_private_if_current", fail_compensation
+    )
+
+    with pytest.raises(server.StartupError) as refused:
+        server.upgrade_legacy_configuration(path, read_configuration(path))
+
+    assert "could not be restored" in str(refused.value)
+    assert replacements == 2
+    assert read_configuration(path).credential_reference is not None
+
+
+def test_rollback_does_not_overwrite_a_concurrent_configure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = legacy_file(tmp_path, mutation_enabled=True)
+    existing = setup_view("codex")
+    store_setup(path, existing)
+    peer = ControlPeer(setups={"codex": existing})
+    attach_control(monkeypatch, peer)
+    concurrent = configured_document(path, suffix="newer")
+    admissions = 0
+
+    def configure_then_revoke(*args: Any, **kwargs: Any) -> Any:
+        nonlocal admissions
+        admissions += 1
+        if admissions == 2:
+            assert write_owner_private(path, concurrent)
+            peer.events.append("admission")
+            raise ClientError("test credential was revoked")
+        return peer.admission(*args, **kwargs)
+
+    monkeypatch.setattr(server, "mcp_authoring_admission", configure_then_revoke)
+    with pytest.raises(server.StartupError) as refused:
+        server.upgrade_legacy_configuration(path, read_configuration(path))
+
+    assert "could not be restored" in str(refused.value)
+    assert path.read_bytes() == concurrent
 
 
 def test_readback_must_match_the_whole_published_authority(

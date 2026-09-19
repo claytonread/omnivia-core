@@ -19,6 +19,8 @@ import ctypes
 import os
 import stat
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -1060,6 +1062,123 @@ def test_a_rewrite_replaces_the_whole_document_and_leaves_no_temporary(
     assert owner_private.write_owner_private(path, b"second") is True
     assert path.read_bytes() == b"second"
     assert [entry.name for entry in tmp_path.iterdir()] == ["document.json"]
+
+
+def test_compare_and_replace_refuses_stale_bytes_without_overwriting_them(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "document.json"
+    assert owner_private.write_owner_private(path, b"current") is True
+
+    assert (
+        owner_private.replace_owner_private_if_current(
+            path, b"stale", b"upgrade", maximum_bytes=64
+        )
+        == "mismatch"
+    )
+    assert path.read_bytes() == b"current"
+    assert (
+        owner_private.replace_owner_private_if_current(
+            path, b"current", b"upgrade", maximum_bytes=64
+        )
+        == "replaced"
+    )
+    assert path.read_bytes() == b"upgrade"
+
+
+def test_compare_and_replace_serializes_with_an_ordinary_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configure-style write cannot land inside a migration compare-and-swap."""
+    path = tmp_path / "document.json"
+    assert owner_private.write_owner_private(path, b"legacy") is True
+    entered = threading.Event()
+    release = threading.Event()
+    writer_finished = threading.Event()
+    actual_write = owner_private._write_owner_private_unlocked
+    results: dict[str, object] = {}
+
+    def delayed_write(target: Path, content: bytes) -> bool:
+        if content == b"upgrade":
+            entered.set()
+            assert release.wait(timeout=5)
+        return actual_write(target, content)
+
+    monkeypatch.setattr(owner_private, "_write_owner_private_unlocked", delayed_write)
+
+    def migrate() -> None:
+        results["migration"] = owner_private.replace_owner_private_if_current(
+            path, b"legacy", b"upgrade", maximum_bytes=64
+        )
+
+    def configure() -> None:
+        results["configure"] = owner_private.write_owner_private(path, b"configured")
+        writer_finished.set()
+
+    migration = threading.Thread(target=migrate)
+    migration.start()
+    assert entered.wait(timeout=5)
+    configuration = threading.Thread(target=configure)
+    configuration.start()
+    assert not writer_finished.wait(timeout=0.1)
+    release.set()
+    migration.join(timeout=5)
+    configuration.join(timeout=5)
+
+    assert results == {"migration": "replaced", "configure": True}
+    assert path.read_bytes() == b"configured"
+
+
+def test_owner_private_writers_serialize_across_processes(tmp_path: Path) -> None:
+    """The OS half of the transaction, not only the in-process mutex, coordinates."""
+    path = tmp_path / "document.json"
+    assert owner_private.write_owner_private(path, b"legacy") is True
+    child_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from omnivia_core_client.owner_private import owner_private_transaction\n"
+        "with owner_private_transaction(Path(sys.argv[1])) as acquired:\n"
+        "    print('locked' if acquired else 'refused', flush=True)\n"
+        "    if acquired:\n"
+        "        sys.stdin.readline()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None
+    assert child.stdin is not None
+    started = threading.Event()
+    finished = threading.Event()
+    result: list[bool] = []
+
+    def write() -> None:
+        started.set()
+        result.append(owner_private.write_owner_private(path, b"configured"))
+        finished.set()
+
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        writer = threading.Thread(target=write)
+        writer.start()
+        assert started.wait(timeout=5)
+        assert not finished.wait(timeout=0.1)
+        child.stdin.write("release\n")
+        child.stdin.flush()
+        assert child.wait(timeout=5) == 0
+        writer.join(timeout=5)
+    finally:
+        if child.poll() is None:
+            child.stdin.write("release\n")
+            child.stdin.flush()
+            child.kill()
+            child.wait(timeout=5)
+
+    assert result == [True]
+    assert path.read_bytes() == b"configured"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")

@@ -1056,6 +1056,54 @@ def test_replacement_is_atomic_under_a_concurrent_configuration_reader(
     assert seen
 
 
+def test_configuration_store_writes_share_the_compare_and_swap_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit configure cannot be overwritten by an in-flight legacy upgrade."""
+    keeper = configs(tmp_path)
+    assert keeper.write(HOST, DOCUMENT) is True
+    path = keeper.path(HOST)
+    migration_document = b'{"migration":true}\n'
+    entered = threading.Event()
+    release = threading.Event()
+    configured = threading.Event()
+    actual_write = owner_private._write_owner_private_unlocked
+    results: dict[str, object] = {}
+
+    def delayed_write(target: Path, content: bytes) -> bool:
+        if content == migration_document:
+            entered.set()
+            assert release.wait(timeout=5)
+        return actual_write(target, content)
+
+    monkeypatch.setattr(owner_private, "_write_owner_private_unlocked", delayed_write)
+
+    def migrate() -> None:
+        results["migration"] = owner_private.replace_owner_private_if_current(
+            path,
+            DOCUMENT,
+            migration_document,
+            maximum_bytes=MAXIMUM_CONFIGURATION_BYTES,
+        )
+
+    def configure() -> None:
+        results["configure"] = keeper.write(HOST, REWRITTEN)
+        configured.set()
+
+    migration = threading.Thread(target=migrate)
+    migration.start()
+    assert entered.wait(timeout=5)
+    configuration = threading.Thread(target=configure)
+    configuration.start()
+    assert not configured.wait(timeout=0.1)
+    release.set()
+    migration.join(timeout=5)
+    configuration.join(timeout=5)
+
+    assert results == {"migration": "replaced", "configure": True}
+    assert keeper.read(HOST) == REWRITTEN
+
+
 def test_more_than_three_successive_rewrites_are_not_reported_as_unusable(
     tmp_path: Path, form: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

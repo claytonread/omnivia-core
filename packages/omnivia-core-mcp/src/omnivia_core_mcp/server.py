@@ -143,8 +143,8 @@ from omnivia_core_client import (
     mcp_authoring_admission,
     mcp_status,
     read_owner_private,
-    write_owner_private,
 )
+from omnivia_core_client.owner_private import replace_owner_private_if_current
 
 from omnivia_core.contracts.v1 import (
     EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
@@ -173,6 +173,7 @@ from omnivia_core_mcp.configuration import (
     AuthoringAdmission,
     McpConfiguration,
     McpConfigurationError,
+    _parse_configuration_bytes,
     effective_profile,
     read_configuration,
 )
@@ -344,6 +345,11 @@ _LEGACY_UPGRADE_REFUSED: Final = (
     "the legacy managed-local MCP configuration could not be upgraded safely. "
     "Run the installed OmniVia MCP configure command for this host with the "
     "restricted profile and start the server again"
+)
+_LEGACY_UPGRADE_UNRECOVERED: Final = (
+    "the legacy managed-local MCP configuration could not be restored after a "
+    "failed upgrade. Run the installed OmniVia MCP configure command for this host "
+    "with the restricted profile before starting the server again"
 )
 
 
@@ -670,6 +676,15 @@ def upgrade_legacy_configuration(
     )
     if original_document is None:
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
+    original_configuration = None
+    try:
+        original_configuration = _parse_configuration_bytes(original_document)
+    except McpConfigurationError:
+        original_configuration = None
+    if original_configuration != configuration:
+        # The caller parsed one generation and this function read another. Only
+        # the exact generation represented by ``configuration`` may be migrated.
+        raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     deadline = Deadline.after(MANAGED_START_TIMEOUT_SECONDS)
     connected = None
@@ -725,7 +740,15 @@ def upgrade_legacy_configuration(
         principal_id=setup.principal_id,
         credential_reference=setup.credential_reference,
     )
-    if not write_owner_private(path, document):
+    if (
+        replace_owner_private_if_current(
+            path,
+            original_document,
+            document,
+            maximum_bytes=MAXIMUM_CONFIGURATION_BYTES,
+        )
+        != "replaced"
+    ):
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     # Publication never outruns the authority it names. A revocation, rotation,
@@ -734,7 +757,16 @@ def upgrade_legacy_configuration(
     if not _legacy_setup_authenticates(
         control, store, reference, setup, deadline=deadline
     ):
-        write_owner_private(path, original_document)
+        if (
+            replace_owner_private_if_current(
+                path,
+                document,
+                original_document,
+                maximum_bytes=MAXIMUM_CONFIGURATION_BYTES,
+            )
+            != "replaced"
+        ):
+            raise StartupError(_LEGACY_UPGRADE_UNRECOVERED)
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
 
     upgraded = None
@@ -755,7 +787,16 @@ def upgrade_legacy_configuration(
         credential_reference=reference,
     )
     if upgraded != expected:
-        write_owner_private(path, original_document)
+        if (
+            replace_owner_private_if_current(
+                path,
+                document,
+                original_document,
+                maximum_bytes=MAXIMUM_CONFIGURATION_BYTES,
+            )
+            != "replaced"
+        ):
+            raise StartupError(_LEGACY_UPGRADE_UNRECOVERED)
         raise StartupError(_LEGACY_UPGRADE_REFUSED)
     return upgraded
 
