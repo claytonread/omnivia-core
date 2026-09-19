@@ -650,11 +650,11 @@ class LocalSocketServer:
     #: would introduce both, and a worker connection would be a second writer on a
     #: workspace whose whole ownership model says there is one.
     #:
-    #: **Why twice.** After, because work a request enqueued has to run whether or not
-    #: another request ever arrives, and running it after the response is written is
-    #: what keeps the enqueuing operation asynchronous. Before, because the first
-    #: request after a restart must not be answered from state that startup recovery
-    #: requeued and nothing has yet resumed.
+    #: **Why twice.** After handling, because work a request enqueued has to run whether
+    #: or not its response was delivered or another request ever arrives; running it
+    #: only once response delivery has been attempted keeps the enqueuing operation
+    #: asynchronous. Before, because the first request after a restart must not be
+    #: answered from state that startup recovery requeued and nothing has yet resumed.
     #:
     #: Bounded by whatever is passed: this is the sole accept loop, so a pass that ran
     #: to exhaustion would be a pass that stops answering.
@@ -844,7 +844,7 @@ class LocalSocketServer:
             self._run_service_work()
             try:
                 self._handle(channel)
-            except Exception:  # noqa: BLE001, S112 - see below
+            except Exception:  # noqa: BLE001, S110 - see below
                 # One bad client must not take the server down, and the set of
                 # ways a client can be bad is not enumerable from here.
                 # `TransportError, OSError` looked like the complete list and was
@@ -862,9 +862,18 @@ class LocalSocketServer:
                 # writes to stderr on every malformed frame hands any local
                 # client a way to fill the service's output. Containment is the
                 # contract; observability belongs to whoever runs the service.
-                continue
+                # Do not continue from here. Dispatch may already have committed work
+                # before the unary-boundary check or response write failed, and the
+                # post-request pass below is what guarantees that queued work runs even
+                # when its caller disconnects before receiving the answer.
+                pass
             finally:
-                channel.close()
+                try:
+                    channel.close()
+                except Exception:  # noqa: BLE001, S110 - per-connection containment
+                    # A peer disappearing can make both the response and cleanup fail.
+                    # Neither failure may skip the work pass or end the sole accept loop.
+                    pass
                 self._active_channel = None
             if not self._stop.is_set():
                 # Not after a stop was requested. `stop()` waits a bounded moment for

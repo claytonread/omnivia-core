@@ -574,8 +574,9 @@ def _blob_text(blobs_root: Path, digest: str) -> str | None:
     Opened with `O_NOFOLLOW` and re-checked through the descriptor, exactly as
     `blob_publication._verify` opens the same objects: a symlink or a non-regular file
     standing where the object should be is skipped rather than followed to whatever it
-    points at. The read is bounded before it allocates, so a larger object costs one
-    `fstat` rather than its own size in memory.
+    points at. The read is bounded both by the initial `fstat` and cumulatively while it
+    runs, so an initially small object that grows concurrently cannot evade the memory
+    ceiling.
 
     **The bytes are verified against the address they were read from.** A content-
     addressed store's whole claim is that the digest names the content, and an object
@@ -602,20 +603,27 @@ def _blob_text(blobs_root: Path, digest: str) -> str | None:
         if status.st_size > MAX_INDEXED_CONTENT_BYTES:
             return None
         chunks: list[bytes] = []
+        total = 0
         # Looped rather than one `os.read`, because a short read is a legal thing for
         # the operating system to do and silently indexing a prefix of a document is
-        # the one failure this whole path exists to avoid.
+        # the one failure this whole path exists to avoid. Each request is capped at the
+        # remaining allowance plus one sentinel byte, so concurrent growth is detected
+        # without first allocating an arbitrarily large chunk.
         while True:
-            chunk = os.read(descriptor, 1024 * 1024)
+            remaining = MAX_INDEXED_CONTENT_BYTES - total
+            chunk = os.read(descriptor, min(1024 * 1024, remaining + 1))
             if not chunk:
                 break
+            total += len(chunk)
+            if total > MAX_INDEXED_CONTENT_BYTES:
+                return None
             chunks.append(chunk)
     except OSError:
         return None
     finally:
         os.close(descriptor)
     content = b"".join(chunks)
-    if len(content) != status.st_size:
+    if total != status.st_size:
         return None
     if hashlib.sha256(content).hexdigest() != path.name:
         return None

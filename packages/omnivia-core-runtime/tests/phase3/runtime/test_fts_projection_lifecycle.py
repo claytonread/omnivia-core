@@ -207,6 +207,41 @@ def scalar(holder: m2.Owned, sql: str, *parameters: object) -> Any:
     return holder.connection.execute(sql, parameters).fetchone()[0]
 
 
+def test_blob_reader_enforces_its_limit_against_concurrent_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An object growing after `fstat` costs at most one sentinel byte over the cap."""
+    reads: list[int] = []
+    chunks = iter((b"abcd", b"e"))
+    closed: list[int] = []
+
+    class InitialStatus:
+        st_size = 4
+
+    class GrowingObject:
+        @staticmethod
+        def fstat(_: int) -> InitialStatus:
+            return InitialStatus()
+
+        @staticmethod
+        def read(_: int, limit: int) -> bytes:
+            reads.append(limit)
+            return next(chunks)
+
+        @staticmethod
+        def close(descriptor: int) -> None:
+            closed.append(descriptor)
+
+    monkeypatch.setattr(fts, "MAX_INDEXED_CONTENT_BYTES", 4)
+    monkeypatch.setattr(fts, "_opened_blob", lambda _: 17)
+    monkeypatch.setattr(fts, "os", GrowingObject())
+
+    digest = f"sha256:{hashlib.sha256(b'abcd').hexdigest()}"
+    assert fts._blob_text(tmp_path, digest) is None
+    assert reads == [5, 1]
+    assert closed == [17]
+
+
 def add_artifact(holder: m2.Owned, evidence_id: str, *, recorded_at: int) -> None:
     m2.write(
         holder,

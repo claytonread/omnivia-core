@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -585,6 +586,47 @@ def test_service_work_that_raises_does_not_end_the_accept_loop(
         second = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
     assert isinstance(first, SuccessResponseEnvelope)
     assert isinstance(second, SuccessResponseEnvelope)
+
+
+def test_service_work_runs_after_a_post_dispatch_transport_failure(
+    socket_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost response cannot strand work the dispatched request already committed."""
+    events: list[str] = []
+
+    class Channel:
+        def close(self) -> None:
+            events.append("closed")
+            raise OSError("the disconnected channel could not be closed cleanly")
+
+    channel = Channel()
+
+    class Listener:
+        def accept(self) -> Channel:
+            return channel
+
+    server = LocalSocketServer(
+        dispatcher=make_dispatcher(), path=socket_dir / "s.sock"
+    )
+    server._listener = Listener()  # type: ignore[assignment]
+    server._stop = threading.Event()
+
+    def fail_after_dispatch(_: object) -> None:
+        events.append("dispatched")
+        raise OSError("the response could not be delivered")
+
+    def work() -> None:
+        events.append("work")
+        if events.count("work") == 2:
+            assert server._stop is not None
+            server._stop.set()
+
+    server.service_work = work
+    monkeypatch.setattr(server, "_handle", fail_after_dispatch)
+
+    server._serve()
+
+    assert events == ["work", "dispatched", "closed", "work"]
 
 
 def test_frame_encoding_round_trips() -> None:
