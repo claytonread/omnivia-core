@@ -66,6 +66,23 @@ def _init(home: Path) -> WorkspaceInitResult:
     )
 
 
+def test_windows_directory_creation_verifies_but_never_creates_the_volume_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recursive Windows creation stops safely at an existing drive/volume root."""
+    anchor = Path(tmp_path.anchor)
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+
+    def forbidden_mkdir(
+        _path: Path, *args: object, **kwargs: object
+    ) -> None:
+        raise AssertionError("the filesystem anchor must never be passed to mkdir")
+
+    monkeypatch.setattr(Path, "mkdir", forbidden_mkdir)
+
+    assert workspace_init_module._ensure_workspace_directory(anchor) is False
+
+
 def test_windows_allocated_init_restricts_the_restart_authorization_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

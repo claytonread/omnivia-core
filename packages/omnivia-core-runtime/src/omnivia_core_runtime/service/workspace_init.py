@@ -1267,11 +1267,18 @@ def _ensure_workspace_directory(path: Path) -> bool:
     if not _WINDOWS_OWNER_CONTROL:
         path.mkdir(parents=True, exist_ok=True)
         return False
-    if path.parent != path:
-        # Validate (or create and secure) every parent before asking the filesystem
-        # to create a child.  Calling ``mkdir`` on the child first follows an
-        # existing junction in the parent and creates outside the intended tree.
-        _ensure_workspace_directory(path.parent)
+    if path.parent == path:
+        # A Windows drive/UNC anchor already exists, but ``mkdir`` on it raises
+        # access denied rather than ``FileExistsError``.  Verify and pin the
+        # anchor without trying to create or restrict the filesystem root.
+        if not _is_real_directory_no_follow(path):
+            raise OSError(f"refusing non-directory or reparse-point path: {path}")
+        _pin_current_windows_path(path, directory=True)
+        return False
+    # Validate (or create and secure) every parent before asking the filesystem
+    # to create a child.  Calling ``mkdir`` on the child first follows an
+    # existing junction in the parent and creates outside the intended tree.
+    _ensure_workspace_directory(path.parent)
     path_already_existed = False
     try:
         path.mkdir(mode=0o700)
