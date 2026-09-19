@@ -18,7 +18,9 @@ import hashlib
 import inspect
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from types import ModuleType
 
 import pytest
@@ -86,6 +88,36 @@ def test_republishing_the_same_bytes_verifies_rather_than_rewrites(
     other = publish_blob(root, OTHER_DIGEST, OTHER_CONTENT)
     assert other != first
     assert first.read_bytes() == CONTENT
+
+
+def test_concurrent_first_publications_share_the_fanout_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first-directory race is idempotent, while the winning object is verified."""
+    root = blobs_root(tmp_path)
+    directory = root / "sha256"
+    rendezvous = Barrier(2)
+    real_mkdir = Path.mkdir
+
+    def racing_mkdir(
+        path: Path,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        if path == directory:
+            rendezvous.wait(timeout=5)
+        real_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        published = tuple(
+            executor.map(lambda _attempt: publish_blob(root, DIGEST, CONTENT), range(2))
+        )
+
+    assert published == (address(root), address(root))
+    assert address(root).read_bytes() == CONTENT
+    assert temporaries(root) == []
 
 
 def test_refuses_an_object_whose_bytes_are_not_the_ones_published(

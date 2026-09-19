@@ -174,6 +174,19 @@ def _blob_path(blobs_root: Path, digest: str, content: bytes) -> Path:
     return target
 
 
+def _is_real_directory_no_follow(path: Path) -> bool:
+    """Whether ``path`` is an existing directory, never a link/reparse point."""
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        == 0
+    )
+
+
 def _verify(path: Path, content: bytes) -> None:
     """Read the published object back and compare it with `content` byte for byte.
 
@@ -211,8 +224,17 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
     """
     target = _blob_path(blobs_root, digest, content)
     directory = target.parent
-    if not directory.exists():
+    try:
         directory.mkdir(mode=0o700, parents=False)
+    except FileExistsError as error:
+        # Two first publications may both observe the absent fanout directory.
+        # Accept the race winner's directory, but never a file, link or reparse
+        # point that appeared at the name instead.
+        if not _is_real_directory_no_follow(directory):
+            raise BlobPublicationRefused(
+                "the content-addressed blob directory is not one real directory"
+            ) from error
+    else:
         fsync_directory(directory.parent)
     if target.exists() or target.is_symlink():
         _verify(target, content)
