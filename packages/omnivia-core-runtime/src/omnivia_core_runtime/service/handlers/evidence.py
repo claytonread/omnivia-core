@@ -534,16 +534,19 @@ class EvidenceHandlers:
         )
 
         def publish() -> None:
+            published = True
             try:
                 publish_blob(blobs_root, checksum, content)
             except (BlobPublicationRefused, OSError):
                 # Contained rather than chained: the primitive's message names a path
                 # under the workspace root, and this refusal becomes a wire error.
+                published = False
+            if not published:
                 raise OperationError(
                     ERROR_CODE_INTERNAL_RECOVERABLE,
                     _MESSAGE_BLOB_UNPUBLISHED,
                     retry_class=RETRY_CLASS_RETRYABLE,
-                ) from None
+                )
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext

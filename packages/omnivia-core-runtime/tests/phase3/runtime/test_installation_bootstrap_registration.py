@@ -500,6 +500,7 @@ def test_windows_catalogue_busy_refusal_secures_workspace_but_not_catalogue(
         (workspace_root / "workspace.sqlite", False),
         (workspace_root / "workspace.json", False),
         (workspace_root / "locks", True),
+        (workspace_root / "blobs", True),
     ]
 
 
