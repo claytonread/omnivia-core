@@ -22,9 +22,10 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Protocol, TypeVar
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
@@ -41,11 +42,25 @@ from omnivia_core_runtime.service.application import (
     build_installation_registry,
     installation_owner_session,
 )
-from omnivia_core_runtime.service.authorization import ServiceBinding
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ServiceBinding,
+)
 from omnivia_core_runtime.service.handlers.workspace_family import (
     RemoteInstallationWorkspaceHandlers,
 )
 from omnivia_core_runtime.service.installation import InstallationApplicationService
+from omnivia_core_runtime.service.installed_mcp import InstalledMcpAuthority
+from omnivia_core_runtime.service.local_control import (
+    LocalControlError,
+    LocalControlRefusal,
+    LocalControlRequest,
+)
+from omnivia_core_runtime.service.mcp_control import (
+    InstalledMcpSeam,
+    OwnedInstalledMcp,
+    ProxiedInstalledMcp,
+)
 from omnivia_core_runtime.service.operations import failure, server_capability_snapshot
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -76,6 +91,11 @@ AUTHORITY_FAILOVER_TIMEOUT_SECONDS: Final = 2.0
 AUTHORITY_POLL_SECONDS: Final = 0.05
 _UNAVAILABLE_MESSAGE: Final = "the installation authority is not available"
 
+#: What one installed-MCP seam call returns. The two calls return different
+#: things and the failover around them is identical, so the loop is written
+#: once over this rather than twice over the two.
+_Answer = TypeVar("_Answer")
+
 
 @dataclass(frozen=True)
 class _AuthorityDescriptor:
@@ -105,6 +125,7 @@ class InstallationAuthorityCoordinator:
     _local: ApplicationDispatcher | None = field(default=None, init=False)
     _server: LocalSocketServer | None = field(default=None, init=False)
     _descriptor: _AuthorityDescriptor | None = field(default=None, init=False)
+    _mcp: OwnedInstalledMcp | None = field(default=None, init=False)
     _closed: bool = field(default=False, init=False)
 
     @property
@@ -191,7 +212,14 @@ class InstallationAuthorityCoordinator:
         )
 
     def close(self) -> None:
-        """Stop the private endpoint before releasing catalogue authority."""
+        """Stop the private endpoint before releasing catalogue authority.
+
+        The owned MCP seam is cleared here, in the same guarded block and before
+        the store is closed. `OwnedInstalledMcp` holds an `InstalledMcpAuthority`
+        built on this catalogue, so a seam left on this object after `close` is a
+        seam whose next call reaches a closed database -- the one internal
+        reference that would outlive the thing it reads.
+        """
         with self._mutex:
             self._closed = True
             server = self._server
@@ -201,6 +229,7 @@ class InstallationAuthorityCoordinator:
             self._store = None
             self._local = None
             self._descriptor = None
+            self._mcp = None
         if server is not None:
             server.stop()
         if descriptor is not None:
@@ -239,7 +268,20 @@ class InstallationAuthorityCoordinator:
             ),
             dispatch=route.dispatch,
         )
-        server = LocalSocketServer(router=router, endpoint=self._endpoint)
+        # The catalogue this process just won is the only place installed-MCP
+        # authority lives, so the seam is built from *this* store and served on
+        # the private endpoint. Every other service in the installation reaches
+        # it by forwarding a control here rather than by opening the database.
+        mcp = OwnedInstalledMcp(
+            authority=InstalledMcpAuthority(store),
+            administrator=installation_owner_session(
+                principal_id=self.principal_id,
+                installation_id=store.authority.installation_id,
+            ),
+        )
+        server = LocalSocketServer(
+            router=router, mcp_administration=mcp, endpoint=self._endpoint
+        )
         try:
             server.start()
             descriptor = _AuthorityDescriptor(
@@ -256,7 +298,95 @@ class InstallationAuthorityCoordinator:
         self._local = route
         self._server = server
         self._descriptor = descriptor
+        self._mcp = mcp
         return True
+
+    # --- the installed-MCP seam, from whichever side this process is on -------
+    #
+    # Both methods satisfy `InstalledMcpSeam`, and both resolve which side they
+    # are on at the moment of the call rather than at start up. A process that
+    # became the owner mid-session answers locally from then on, and a former
+    # owner that lost the catalogue starts forwarding -- the alternative, a seam
+    # chosen once and held, is a follower still answering from a store it no
+    # longer owns, which is the one failure a fencing generation cannot catch
+    # because no write is attempted.
+
+    def authenticate(self, credential: str) -> AuthenticatedSession:
+        """Resolve one presented bearer through the authoritative catalogue."""
+        return self._through_owner(lambda seam: seam.authenticate(credential))
+
+    def administer(self, control: LocalControlRequest) -> Mapping[str, object]:
+        """Answer one installed-MCP control through the authoritative catalogue."""
+        return self._through_owner(lambda seam: seam.administer(control))
+
+    def _through_owner(self, ask: Callable[[InstalledMcpSeam], _Answer]) -> _Answer:
+        """Ask the current owner, re-running the election if there is not one.
+
+        The same bounded failover :meth:`forward` gives installation requests,
+        for the same reason: a descriptor names the owner as it was *published*,
+        and an owner that exited leaves one behind. Without this, one stale
+        descriptor makes every control on this process permanently `unavailable`
+        even though the catalogue is free for the taking.
+
+        The election is the existing one and nothing else: `_try_become_owner`
+        opens the catalogue only by winning the lifetime lock, so a process that
+        loses simply re-reads the descriptor the winner published and forwards
+        there. Nothing here opens the store directly and nothing bypasses the
+        fencing generation.
+
+        Fail-closed on both edges. Once `close` has run this refuses without
+        touching the lock, and a bounded wait ends in `unavailable` rather than
+        in a retry loop with no end.
+        """
+        deadline = time.monotonic() + AUTHORITY_FAILOVER_TIMEOUT_SECONDS
+        while True:
+            with self._mutex:
+                if self._closed:
+                    break
+                owned = self._mcp
+                descriptor = self._descriptor or self._read_descriptor()
+            if owned is not None:
+                return ask(owned)
+            if descriptor is not None:
+                answer = self._ask_owner(ask, descriptor)
+                if answer is not None:
+                    return answer
+
+            # The published owner may have exited. Re-run the lock election; the
+            # catalogue lock and generation decide the winner, not this
+            # observation. A bounded retry bridges the old owner's short window
+            # between stopping its endpoint and releasing the lifetime lock.
+            with self._mutex:
+                if not self._closed:
+                    self._try_become_owner()
+                owned = self._mcp
+            if owned is not None:
+                return ask(owned)
+            if self._closed or time.monotonic() >= deadline:
+                break
+            time.sleep(AUTHORITY_POLL_SECONDS)
+        raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
+
+    @staticmethod
+    def _ask_owner(
+        ask: Callable[[InstalledMcpSeam], _Answer], descriptor: _AuthorityDescriptor
+    ) -> _Answer | None:
+        """One forwarded attempt: the owner's answer, or `None` to elect again.
+
+        Only `unavailable` becomes `None`. Every other refusal is the owner's own
+        decision about this control -- `unauthenticated` most of all -- and
+        re-running an election over one would turn a correctly rejected bearer
+        into a retry storm, and then into a different answer.
+        """
+        answer: _Answer | None = None
+        unreachable = False
+        try:
+            answer = ask(ProxiedInstalledMcp(endpoint=descriptor.endpoint))
+        except LocalControlRefusal as refusal:
+            if refusal.code is not LocalControlError.UNAVAILABLE:
+                raise
+            unreachable = True
+        return None if unreachable else answer
 
     def _proxy_dispatcher(self, installation_id: str) -> ApplicationDispatcher:
         handlers = RemoteInstallationWorkspaceHandlers(forward=self.forward)

@@ -2,7 +2,8 @@
 
 Date: 2026-09-10
 
-Status: Ready for implementation planning; contract-first cross-repository handoff
+Status: Core contract implemented; Platform integration implemented and verified;
+production release proof remains open
 
 Core repository: `/Users/claytonread/Projects/omnivia-core`
 
@@ -11,6 +12,58 @@ Core baseline inspected: `5797d52b8bb6f916789400d94995d8720605494f`
 Platform consumer checkout: `/Users/claytonread/Projects/worktree-omnivia-platform-assistant-ui-wrapper-spike`
 
 Platform consumer baseline: `656ae59e0352150c1a443195c4dc973d3f660d87`
+
+## Implementation status (2026-09-11)
+
+The contract-first implementation described by this handoff is complete in
+source and focused integration evidence:
+
+- Core PR #104 landed the trusted-runtime contract, verifier, conformance
+  corpus, Workspace init/adopt qualification and managed-start behavior at
+  `190a7742393aa7b259630de89871566b188bc2f5`.
+- Platform consumes the signed cross-language corpus, verifies the selected
+  immutable payload before either launch, invokes the exact verified service
+  path for `--init` and `--managed-start`, persists the resulting Workspace
+  binding, restores it after restart and maps only stable failure codes to the
+  renderer.
+- Core MCP evidence is reconciled with the current 27-operation catalogue at
+  integration commit `a94efd6`: exactly six reviewed read operations are
+  exposed and the other 21 operations have explicit omission reasons. The
+  accepted architecture evidence is intentionally limited to gates g07, g08,
+  g17, g20 and g29. Gate g16 remains pending because the candidate proof uses
+  simulated Claude-format host rows rather than launching a real Claude client;
+  g22 retains partial MCP, CLI and managed-start evidence but remains pending.
+- That six-tool result completes the approved MCP retrieval profile, not the
+  intended bidirectional standalone product. An MCP-only Claude or Codex host
+  cannot currently populate an empty Workspace, and `import.start` cannot solve
+  that alone because it accepts only an already-staged source. The corrective
+  authoring and ingestion requirements are specified in
+  `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12.md`.
+- Platform has supporting structural evidence that Desktop quit retains no Core
+  process or lease handle and issues no Core stop operation. This is not a
+  packaged real-Core lifetime test, so it does not by itself accept g19 or g22.
+  Gate g18 also remains pending because Desktop does not yet execute the same
+  canonical Application Contract conformance corpus as CLI and MCP.
+
+The remaining work is release/integration acceptance, not an unresolved Core
+bootstrap API. The separately specified MCP authoring and ingestion work is a
+standalone-product requirement and is not part of this bootstrap handoff:
+
+1. release engineering must supply the production public trust-anchor document
+   and keep the corresponding signing private key outside source and packages;
+2. the product build still needs the payload assembler and artifacts that place
+   the native `omnivia` and `omnivia-core-service` pair into the signed immutable
+   runtime layout;
+3. a packaged Desktop must run against that real production Core payload to
+   prove end-to-end bootstrap and that Core outlives Desktop quit; and
+4. Desktop, CLI and MCP must run one shared canonical application-contract
+   conformance suite before g18 can be accepted.
+
+The current packaged onboarding smoke remains deliberately labelled as a
+packaged host journey with a simulated Core lifecycle. It proves packaging,
+trust verification, onboarding persistence, restart restoration, tamper refusal
+and target readiness without pretending to be the missing production-payload
+exercise.
 
 ## 1. Decision
 
@@ -260,6 +313,8 @@ and then:
   --workspace <same canonical folder>
   --installation-state <same installation state>
   --endpoint <Platform-main-generated local endpoint>
+  --expected-manifest-digest <sha256 over the selected workspace.json bytes>
+  [--required-absent-manifest <preferred registered workspace.json>]
   --core-version <same verified release version>
 ```
 
@@ -272,6 +327,10 @@ implementation comment.
 The `--init` stdout document remains the authority for the minted or retained
 `workspace_id`. The `--managed-start` stdout document remains the authority for
 attached/started status and live readiness. Human diagnostics remain on stderr.
+The digest and optional absence guard freeze the caller's final workspace
+selection through both the launcher and the service process; older bootstrap
+consumers may omit them, but a consumer that independently selects a workspace
+should carry both parts of that selection rather than authorize by path twice.
 
 If implementation finds either output contract insufficient, widen it only by
 the repository's versioning rules, with fixtures and a published compatibility

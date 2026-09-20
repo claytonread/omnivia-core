@@ -84,7 +84,10 @@ from omnivia_core_runtime.storage.migrations import (
     record_open_event,
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
-from omnivia_core_runtime.workspace.manifest_store import read_manifest
+from omnivia_core_runtime.workspace.manifest_store import (
+    manifest_authorization,
+    read_manifest_snapshot,
+)
 
 #: How often a served instance renews its lease.
 #:
@@ -114,6 +117,8 @@ class ServiceSettings:
     core_version: str = "0.1.0"
     endpoint: str | None = None
     probe_filesystem: bool = True
+    expected_manifest_digest: str | None = None
+    required_absent_manifest: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,10 @@ class ServiceRunner:
         self.generation: int | None = None
         self.workspace_id: str | None = None
         self.workspace_format_ordinal: str | None = None
+        #: Opaque path-plus-byte binding returned only by the local readiness
+        #: operation. A managed launcher must match this before it may attach to
+        #: whichever instance won a startup race.
+        self.workspace_authorization: str | None = None
         #: What the fenced runtime startup pass found and repaired, once it has run.
         #: `None` before startup and for an instance whose recovery refused, so a reader
         #: can tell "nothing was found" from "the pass never reached a verdict".
@@ -220,7 +229,15 @@ class ServiceRunner:
 
         # 1. Compatibility first, before anything is acquired, so a refusal has
         #    nothing to unwind.
-        manifest = read_manifest(self.layout)
+        snapshot = read_manifest_snapshot(
+            self.layout,
+            expected_digest=settings.expected_manifest_digest,
+            required_absent_path=settings.required_absent_manifest,
+        )
+        manifest = snapshot.manifest
+        self.workspace_authorization = manifest_authorization(
+            self.layout.root, snapshot.digest
+        )
         self.workspace_id = manifest.workspace_id
         self.workspace_format_ordinal = manifest.compatibility.workspace_format_version
         compatibility = evaluate_compatibility(manifest, settings.core_version)

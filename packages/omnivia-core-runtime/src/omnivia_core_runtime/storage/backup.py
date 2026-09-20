@@ -12,7 +12,11 @@ backup; it is a file that might be one.
 
 from __future__ import annotations
 
+import os
+import re
 import sqlite3
+import stat
+import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,9 +47,190 @@ CATALOGUE_DIR = "catalogue"
 INSTALLATION_DATABASE = "installation.sqlite"
 INSTALLATION_LOCK = "installation.lock"
 
+_IS_WINDOWS = os.name == "nt"
+
+#: `whoami /user` reports the SID in this form, mixed into a CSV row. The same
+#: closed grammar `omnivia_core_client.owner_private` and this package's own
+#: `ownership/discovery.py` parse it with.
+_SID_RE = re.compile(r"S-1-[0-9-]+")
+
+#: Full control for the owner alone, inherited by anything created beneath the
+#: root -- the closest Windows has to leaving a POSIX `mkdir`'s mode untouched.
+_WINDOWS_ROOT_RIGHTS = "(OI)(CI)F"
+
+#: What a freshly created installation-state root is made with, at the `mkdir`
+#: syscall itself rather than left to its default 0o777 filtered by whatever
+#: umask this process happens to run under: a permissive umask (0) would
+#: otherwise hand a fresh root group- or world-writable, off Windows, where
+#: nothing later in `_ensure_root` tightens it. The same value
+#: `omnivia_core_client.owner_private` gives its own freshly created
+#: directories, for the same reason.
+_ROOT_MODE = 0o700
+
+#: Fixed and path-free, for the one failure `_ensure_root` raises directly.
+#: This reaches a caller through `workspace_init`'s public refusal reason, and
+#: that surface carries no path, no SID and no subprocess output -- R004-10
+#: requires it free of exactly this kind of payload.
+_ROOT_RESTRICTION_FAILURE = (
+    "could not restrict a newly created installation-state root to its owner"
+)
+
+#: Fixed and path-free, for the one failure `_create_owner_private_component`
+#: raises directly -- same reasoning as `_ROOT_RESTRICTION_FAILURE`, for a
+#: layout component beneath the root rather than the root itself.
+_COMPONENT_RESTRICTION_FAILURE = (
+    "could not restrict a newly created installation-state component to its owner"
+)
+
+#: Windows marks a junction or mount point with this attribute; the entry is a
+#: directory to `stat` regardless, so this is the only signal that tells the
+#: two apart. Mirrors `distribution/trusted_runtime.py`'s
+#: `_FILE_ATTRIBUTE_REPARSE_POINT`, restated here rather than imported --
+#: `storage` and `distribution` do not otherwise depend on each other.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
 
 class BackupError(StorageError):
     """A backup could not be created or could not be verified."""
+
+
+def _system32(program: str) -> str:
+    """An absolute path to a Windows system tool, never resolved through PATH."""
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
+
+
+def _windows_restrict_root(path: Path) -> bool:
+    """The Windows mechanism for :func:`_restrict_root_to_owner`, unconditionally.
+
+    `icacls`, not `ctypes`, and the same three-invocation sequence
+    `omnivia_core_client.owner_private` and this package's own
+    `ownership/discovery.py` use, repeated here rather than imported: this
+    package declares a dependency on `omnivia-core` alone, and
+    `omnivia-core-client` is a sibling distribution, not one of them --
+    reaching into it is exactly the edge `scripts/check-package-boundaries.py`
+    exists to keep closed. `/setowner` first, because ownership comes from the
+    token rather than the DACL; `/reset` drops explicit entries `/inheritance:r`
+    does not touch; `/inheritance:r` with `/grant:r` drops the inherited entries
+    too and leaves one allow ACE naming the owning OS user's own SID, read from
+    `whoami /user`'s closed CSV grammar. Every invocation carries `/L`, so a raced
+    symbolic link cannot redirect the ACL write onto its target. Every step runs in
+    order and the first failure ends the sequence.
+    """
+    try:
+        identity = subprocess.run(
+            [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        found = _SID_RE.search(identity.stdout) if identity.returncode == 0 else None
+        if found is None:
+            return False
+        sid = found.group()
+        for arguments in (
+            ("/setowner", f"*{sid}"),
+            ("/reset",),
+            ("/inheritance:r", "/grant:r", f"*{sid}:{_WINDOWS_ROOT_RIGHTS}"),
+        ):
+            completed = subprocess.run(
+                [_system32("icacls.exe"), str(path), *arguments, "/L", "/q"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if completed.returncode != 0:
+                return False
+    except Exception:  # noqa: BLE001 -- platform writer must fail closed.
+        return False
+    return True
+
+
+def _restrict_root_to_owner(path: Path) -> bool:
+    """Reduce a freshly created installation-state root to an owner-only DACL.
+
+    A no-op success off Windows: `_ensure_root` creates the root at an
+    explicit, restrictive mode a permissive umask cannot widen, so there is
+    nothing further to enforce there. On Windows a brand new directory
+    inherits whatever DACL its parent's inheritance supplies -- routinely
+    SYSTEM or the local administrators, on a hosted runner's temp tree -- and
+    every store under `runtime/` proves this exact root out with the parent
+    policy (owned by this user, writable by nobody else) before it creates
+    anything beneath it. Left alone, that first proof is what
+    `omnivia_core_client.installed_credentials` fails on, before it ever
+    reaches the `runtime/` component publication already restricts.
+
+    Fails closed, including when the native tool itself does not complete: an
+    installation root this call could not restrict is never treated as
+    restricted merely because nothing has proved otherwise yet.
+    """
+    if not _IS_WINDOWS:
+        return True
+    return _windows_restrict_root(path)
+
+
+def _is_real_directory_no_follow(path: Path) -> bool:
+    """Whether a path `mkdir` found already there is a real, unlinked directory
+    rather than something merely shaped like one.
+
+    Decided from `os.lstat` metadata, never from `Path.is_dir()`: `is_dir()`
+    follows a POSIX symlink to whatever it names, and on Windows does not
+    distinguish an ordinary directory from a junction or mount point --
+    either one is a directory to every check but this one, and either would
+    let a pre-existing path silently redirect where a later child actually
+    gets created. `S_ISDIR` alone already excludes a symlink: `lstat` reports
+    the link itself, never the kind of what it points at.
+    """
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        == 0
+    )
+
+
+def _create_owner_private_component(path: Path) -> None:
+    """Create exactly `path` -- not its parents -- owner-private, restricting
+    it before returning if this call is the one that created it.
+
+    The same invariant `InstallationLayout._ensure_root` establishes for the
+    root, extended to every component `create()` makes beneath it: a brand
+    new directory inherits whatever DACL its parent's inheritance supplies on
+    Windows, and `runtime/<workspace-id>` left at that inherited DACL is what
+    a hosted Windows runner's `InstalledCredentialStore` parent-chain proof
+    refused, even with an owner-private root above it.
+
+    A `FileExistsError` is accepted only when `path` is already a real
+    directory -- left exactly as found, never re-restricted, since it may be
+    this call's own prior work or a pre-existing directory of somebody
+    else's that downstream store proofs remain responsible for refusing.
+    Any other pre-existing component, including a file, propagates that
+    error closed.
+
+    Fails closed the same way the root does: a component this call created
+    but could not restrict is rolled back -- a plain, non-recursive `rmdir`
+    of that exact empty directory, never a pre-existing path or anything
+    created beneath it -- before raising one fixed, path-free `BackupError`,
+    so a retry finds it absent and creates and restricts it again rather
+    than reading a bare, unrestricted directory as somebody else's.
+    """
+    try:
+        path.mkdir(mode=_ROOT_MODE)
+    except FileExistsError:
+        if _is_real_directory_no_follow(path):
+            return
+        raise
+    if _restrict_root_to_owner(path):
+        return
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+    raise BackupError(_COMPONENT_RESTRICTION_FAILURE)
 
 
 @dataclass(frozen=True)
@@ -89,12 +274,86 @@ class InstallationLayout:
         return self.catalogue / INSTALLATION_LOCK
 
     def create(self, workspace_id: str) -> None:
-        for path in (
+        """Bring this workspace's directories into being under an
+        already owner-private root.
+
+        Each component is created and restricted to its owner in turn,
+        before its descendant is created -- `backups`, then its workspace
+        child, then `attempts` and its workspace child, then `runtime` and
+        its workspace child -- rather than `mkdir(parents=True)`, which
+        would create the whole chain in one call and leave every
+        intermediate directory to inherit its parent's DACL on Windows
+        instead of the owner-only one `_create_owner_private_component`
+        applies to each.
+        """
+        self._ensure_root()
+        for component in (
+            self.root / BACKUPS_DIR,
             self.root / BACKUPS_DIR / workspace_id,
+            self.root / ATTEMPTS_DIR,
             self.attempts_for(workspace_id),
+            self.root / RUNTIME_DIR,
             self.runtime_for(workspace_id),
         ):
-            path.mkdir(parents=True, exist_ok=True)
+            _create_owner_private_component(component)
+
+    def _ensure_root(self) -> None:
+        """Bring the installation-state root into being, owner-private from the
+        instant this call is the one that creates it.
+
+        A root this call *finds* already there is left exactly as it is: it may
+        be the caller's own pre-existing directory, and every store that walks
+        beneath it proves the parent policy out on every use regardless of who
+        made it. A root this call *creates* has no owner yet: it is made at
+        `_ROOT_MODE`, explicitly, at the `mkdir` syscall itself -- `mkdir`'s own
+        default of 0o777 is filtered by whatever umask this process runs under,
+        and a permissive one would otherwise hand a fresh root group- or
+        world-writable before anything below gets a chance to narrow it -- and,
+        on Windows, where that mode is not a promise the filesystem keeps, then
+        reduced to an owner-only DACL before a single child exists: a freshly
+        created directory there inherits whatever DACL its parent's inheritance
+        supplies, which a hosted runner's temp tree can make writable by SYSTEM
+        or the local administrators alongside this user. Restricting it here
+        establishes the invariant `InstalledCredentialStore` and
+        `InstalledConfigStore` require of this exact root rather than leaving
+        them to discover it missing.
+
+        `exist_ok=False` (the default) is the mechanism: a `FileExistsError`
+        from this exact call is the only way to learn the root was already
+        there rather than just created, since asking first and creating second
+        would leave a window in which a concurrent creator's answer is stale.
+
+        Fails closed, including when the native tool itself does not complete:
+        an installation root this call could not restrict is never treated as
+        restricted merely because nothing has proved otherwise yet. And because
+        this call is the one that just created it, with nothing yet made
+        inside it, it rolls that creation back before raising -- a plain,
+        non-recursive `rmdir` of that exact empty directory -- so the ordinary
+        failure leaves the path absent and a retry re-creates and re-restricts
+        it, rather than finding a bare root already there, taking that for a
+        pre-existing directory of somebody else's, and populating it
+        unrestricted while appearing to succeed.
+
+        That rollback is itself best-effort, and the failure path is honest
+        about it rather than assuming it: a root this call cannot even remove
+        (an `OSError`, the same way a racing writer would produce one) is left
+        exactly as the restriction failure made it, bare and unrestricted, and
+        the error raised is the same fail-closed one either way -- it does not
+        claim the rollback succeeded.
+        """
+        try:
+            self.root.mkdir(parents=True, mode=_ROOT_MODE)
+        except OSError:
+            if not _is_real_directory_no_follow(self.root):
+                raise
+            return
+        if _restrict_root_to_owner(self.root):
+            return
+        try:
+            self.root.rmdir()
+        except OSError:
+            pass
+        raise BackupError(_ROOT_RESTRICTION_FAILURE)
 
 
 @dataclass(frozen=True)

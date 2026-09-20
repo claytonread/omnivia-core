@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -528,6 +529,104 @@ def test_a_malformed_frame_does_not_take_the_server_down(socket_dir: Path) -> No
             request_for("core.health")
         )
         assert isinstance(response, SuccessResponseEnvelope)
+
+
+def test_service_work_runs_before_a_request_and_after_its_response(
+    socket_dir: Path,
+) -> None:
+    """The between-request seam runs on both sides of a call, in that order.
+
+    Both sides are load-bearing and neither is implied by the other. The pass *after*
+    a response is how work a request committed gets executed at all -- an operation
+    that settles a job and answers has nothing else that will run it, and running it
+    before the response would make an asynchronous operation synchronous. The pass
+    *before* a request is how the first call after a restart is answered from a
+    workspace whose recovered work has already resumed, rather than from one where it
+    is still waiting for a second call to arrive.
+
+    Counted rather than interleaved with the handler, because the count is the same
+    claim and needs no second dispatcher: the accept loop is serial, so by the time the
+    *second* response is in hand a before-and-after seam has run three passes -- before
+    the first request, after its response, and before the second. An after-only seam
+    would have run one by then and a before-only seam two, so the three separate the
+    design from both of the ways it could be half-implemented. The fourth pass is the
+    trailing one, which the caller may return ahead of.
+    """
+    passes: list[int] = []
+    socket_path = socket_dir / "s.sock"
+    with LocalSocketServer(
+        dispatcher=make_dispatcher(),
+        path=socket_path,
+        service_work=lambda: passes.append(len(passes) + 1),
+    ):
+        first = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
+        second = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
+        observed = len(passes)
+
+    assert isinstance(first, SuccessResponseEnvelope)
+    assert isinstance(second, SuccessResponseEnvelope)
+    assert 3 <= observed <= 4, (
+        "service work did not run both before a request and after its response"
+    )
+
+
+def test_service_work_that_raises_does_not_end_the_accept_loop(
+    socket_dir: Path,
+) -> None:
+    """A failing pass is contained exactly as a bad client is, and for the same reason."""
+
+    def explode() -> None:
+        raise RuntimeError("a unit of service work failed")
+
+    socket_path = socket_dir / "s.sock"
+    with LocalSocketServer(
+        dispatcher=make_dispatcher(), path=socket_path, service_work=explode
+    ):
+        first = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
+        second = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
+    assert isinstance(first, SuccessResponseEnvelope)
+    assert isinstance(second, SuccessResponseEnvelope)
+
+
+def test_service_work_runs_after_a_post_dispatch_transport_failure(
+    socket_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost response cannot strand work the dispatched request already committed."""
+    events: list[str] = []
+
+    class Channel:
+        def close(self) -> None:
+            events.append("closed")
+            raise OSError("the disconnected channel could not be closed cleanly")
+
+    channel = Channel()
+
+    class Listener:
+        def accept(self) -> Channel:
+            return channel
+
+    server = LocalSocketServer(
+        dispatcher=make_dispatcher(), path=socket_dir / "s.sock"
+    )
+    server._listener = Listener()  # type: ignore[assignment]
+    server._stop = threading.Event()
+
+    def fail_after_dispatch(_: object) -> None:
+        events.append("dispatched")
+        raise OSError("the response could not be delivered")
+
+    def work() -> None:
+        events.append("work")
+        if events.count("work") == 2:
+            assert server._stop is not None
+            server._stop.set()
+
+    server.service_work = work
+    monkeypatch.setattr(server, "_handle", fail_after_dispatch)
+
+    server._serve()
+
+    assert events == ["work", "dispatched", "closed", "work"]
 
 
 def test_frame_encoding_round_trips() -> None:

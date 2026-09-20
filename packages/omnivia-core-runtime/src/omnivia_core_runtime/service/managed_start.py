@@ -87,13 +87,19 @@ from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 from omnivia_core_runtime.workspace.manifest_store import (
     ManifestStoreError,
-    read_manifest,
+    manifest_authorization,
+    read_manifest_snapshot,
 )
 
 #: The console script this spawns. The same name the CLI locates, because it is the
 #: same executable: a managed start runs *as* `omnivia-core-service` and starts
 #: another one.
 SERVICE_EXECUTABLE: Final = "omnivia-core-service"
+
+#: The module :data:`SERVICE_EXECUTABLE`'s entry point lives in, run directly on
+#: Windows. See :func:`_service_command` for why the console script is not what is
+#: spawned there.
+SERVICE_MODULE: Final = "omnivia_core_runtime.service.main"
 
 #: Version of the machine-readable result document below. Bumped when a consumer
 #: would have to change to keep reading it; additive fields do not bump it.
@@ -213,6 +219,8 @@ def managed_start(
     workspace_root: Path,
     installation_root: Path,
     endpoint_uri: str,
+    expected_manifest_digest: str | None = None,
+    required_absent_manifest: Path | None = None,
     core_version: str = "0.1.0",
     log_path: Path | None = None,
     timeout_seconds: float = MANAGED_START_TIMEOUT_SECONDS,
@@ -226,7 +234,11 @@ def managed_start(
     """
     layout = WorkspaceLayout(root=workspace_root)
     try:
-        manifest = read_manifest(layout)
+        snapshot = read_manifest_snapshot(
+            layout,
+            expected_digest=expected_manifest_digest,
+            required_absent_path=required_absent_manifest,
+        )
     except ManifestStoreError as refusal:
         # Nothing is created here. `omnivia init` is a separate authorised command
         # and this one starts an existing workspace only.
@@ -238,6 +250,10 @@ def managed_start(
                 "starts an existing workspace and creates none"
             ),
         )
+
+    manifest = snapshot.manifest
+    bound_digest = snapshot.digest
+    expected_authorization = manifest_authorization(workspace_root, bound_digest)
 
     try:
         contract_version = workspace_contract_version(
@@ -277,8 +293,20 @@ def managed_start(
             ):
                 existing = decision.existing
                 assert existing is not None  # both outcomes carry one
-                answer = _dial_readiness(existing, workspace_id=manifest.workspace_id)
-                if answer is not None and answer.get("ready"):
+                answer = _dial_readiness(
+                    existing,
+                    workspace_id=manifest.workspace_id,
+                    expected_authorization=expected_authorization,
+                )
+                if (
+                    answer is not None
+                    and answer.get("ready")
+                    and _authorization_holds(
+                        layout,
+                        expected_digest=bound_digest,
+                        required_absent_manifest=required_absent_manifest,
+                    )
+                ):
                     return ManagedStartResult(
                         status=ManagedStartStatus.ATTACHED,
                         reason=decision.reason,
@@ -299,6 +327,9 @@ def managed_start(
                     runtime_directory=runtime_directory,
                     workspace_id=manifest.workspace_id,
                     endpoint_uri=endpoint_uri,
+                    expected_manifest_digest=bound_digest,
+                    required_absent_manifest=required_absent_manifest,
+                    expected_authorization=expected_authorization,
                     core_version=core_version,
                     log_path=(
                         runtime_directory / "service.log"
@@ -332,6 +363,9 @@ def _spawn_and_wait(
     runtime_directory: Path,
     workspace_id: str,
     endpoint_uri: str,
+    expected_manifest_digest: str,
+    required_absent_manifest: Path | None,
+    expected_authorization: str,
     core_version: str,
     log_path: Path,
     deadline: float,
@@ -360,6 +394,8 @@ def _spawn_and_wait(
             workspace_root=workspace_root,
             installation_root=installation_root,
             endpoint_uri=endpoint_uri,
+            expected_manifest_digest=expected_manifest_digest,
+            required_absent_manifest=required_absent_manifest,
             core_version=core_version,
             log_path=log_path,
         )
@@ -388,8 +424,20 @@ def _spawn_and_wait(
             )
         advertised = discover(runtime_directory)
         if advertised is not None:
-            answer = _dial_readiness(advertised, workspace_id=workspace_id)
-            if answer is not None and answer.get("ready"):
+            answer = _dial_readiness(
+                advertised,
+                workspace_id=workspace_id,
+                expected_authorization=expected_authorization,
+            )
+            if (
+                answer is not None
+                and answer.get("ready")
+                and _authorization_holds(
+                    WorkspaceLayout(root=workspace_root),
+                    expected_digest=expected_manifest_digest,
+                    required_absent_manifest=required_absent_manifest,
+                )
+            ):
                 return ManagedStartResult(
                     status=ManagedStartStatus.STARTED,
                     reason=f"started {SERVICE_EXECUTABLE} (pid {child.pid})",
@@ -414,12 +462,43 @@ def _spawn_and_wait(
     )
 
 
+def _service_command(executable: str, *, windows: bool | None = None) -> list[str]:
+    """The argv whose *first* process is the one that serves and advertises itself.
+
+    On POSIX an installed console script is a shebang shim: the interpreter
+    replaces it in the same process, so the process `Popen` creates is the process
+    that serves, and `child.pid` is the pid its descriptor later advertises.
+
+    **On Windows the same console script is an `.exe` launcher that runs the
+    interpreter as a child and waits for it**, so those are two processes. The
+    `CREATE_NEW_PROCESS_GROUP` below then applies to the launcher stub -- it is the
+    root of the new group -- while the process that serves is an ordinary member of
+    that group, and the pid it publishes is not a process group id at all. Two
+    things this tree already relies on stop being true: `_clean_child_descriptor`
+    compares an advertised pid with `child.pid` and can never match, and a caller's
+    graceful stop addresses `CTRL_BREAK_EVENT` to the advertised pid *as a process
+    group*, so the console event is not contained to this service's own group.
+    Running the entry point's module through this interpreter keeps the spawned
+    process, the advertised pid and the process group root one process, which is
+    the arrangement `test_service_and_adapters` already proves on every platform.
+
+    It is *this* interpreter rather than a second lookup, so what serves is the
+    payload already running as this launcher: a hostile `omnivia-core-service`
+    first on `PATH` is no more reachable from here than `_service_executable()`
+    makes it, and `executable` stays the POSIX command for the same reason.
+    """
+    on_windows = os.name == "nt" if windows is None else windows
+    return [sys.executable, "-m", SERVICE_MODULE] if on_windows else [executable]
+
+
 def _spawn(
     executable: str,
     *,
     workspace_root: Path,
     installation_root: Path,
     endpoint_uri: str,
+    expected_manifest_digest: str | None,
+    required_absent_manifest: Path | None,
     core_version: str,
     log_path: Path,
 ) -> subprocess.Popen[bytes]:
@@ -428,7 +507,9 @@ def _spawn(
     Detached because the started service outlives this launcher: on POSIX
     `start_new_session=True` puts it in its own session, so a terminal's `SIGINT`
     cannot reach it, and on Windows a new process group is what makes
-    `CTRL_BREAK_EVENT` deliverable later.
+    `CTRL_BREAK_EVENT` deliverable later -- addressed to the pid of the process
+    created here, which :func:`_service_command` is what keeps equal to the pid the
+    service goes on to advertise.
 
     Output goes to a file rather than a pipe. A pipe whose read end dies when this
     launcher exits leaves the service writing into a closed descriptor, and the file
@@ -440,18 +521,27 @@ def _spawn(
     # failure diagnostic cannot be read off a previous attempt.
     log = log_path.open("wb")
     try:
+        arguments = [
+            *_service_command(executable),
+            "--workspace",
+            str(workspace_root),
+            "--installation-state",
+            str(installation_root),
+            "--endpoint",
+            endpoint_uri,
+            "--core-version",
+            core_version,
+        ]
+        if expected_manifest_digest is not None:
+            arguments.extend(
+                ["--expected-manifest-digest", expected_manifest_digest]
+            )
+        if required_absent_manifest is not None:
+            arguments.extend(
+                ["--required-absent-manifest", str(required_absent_manifest)]
+            )
         return subprocess.Popen(
-            [
-                executable,
-                "--workspace",
-                str(workspace_root),
-                "--installation-state",
-                str(installation_root),
-                "--endpoint",
-                endpoint_uri,
-                "--core-version",
-                core_version,
-            ],
+            arguments,
             stdout=log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -532,6 +622,7 @@ def _dial_readiness(
     descriptor: ServiceEndpointDescriptor,
     *,
     workspace_id: str,
+    expected_authorization: str,
 ) -> dict[str, Any] | None:
     """Ask the advertised service whether it is writable-ready for `workspace_id`.
 
@@ -568,7 +659,34 @@ def _dial_readiness(
         return None
     if not isinstance(response, SuccessResponseEnvelope):
         return None
-    return dict(response.result)
+    answer = dict(response.result)
+    if answer.get("workspace_authorization") != expected_authorization:
+        return None
+    return answer
+
+
+def _authorization_holds(
+    layout: WorkspaceLayout,
+    *,
+    expected_digest: str,
+    required_absent_manifest: Path | None,
+) -> bool:
+    """Re-prove the frozen selection immediately before reporting success.
+
+    The readiness binding proves what the answering service consumed. This second
+    read proves the selected bytes and, for legacy fallback, the preferred
+    registered manifest's absence still hold at the success boundary. Both are
+    required: either one alone leaves a different startup race admissible.
+    """
+    try:
+        snapshot = read_manifest_snapshot(
+            layout,
+            expected_digest=expected_digest,
+            required_absent_path=required_absent_manifest,
+        )
+    except ManifestStoreError:
+        return False
+    return snapshot.digest == expected_digest
 
 
 def _readiness_request(workspace_id: str) -> RequestEnvelope:
@@ -607,6 +725,7 @@ __all__ = [
     "MANAGED_START_TIMEOUT_SECONDS",
     "MANAGED_START_VERSION",
     "SERVICE_EXECUTABLE",
+    "SERVICE_MODULE",
     "ManagedStartFailure",
     "ManagedStartResult",
     "ManagedStartStatus",

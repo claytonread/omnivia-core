@@ -286,6 +286,25 @@ verified executable. That property is pinned by
 `test_the_exact_invoked_service_spawns_itself_and_never_a_path_substitute`
 against a hostile `omnivia-core-service` placed first on `PATH`.
 
+A consumer that selects a workspace from the filesystem should additionally
+pass `--expected-manifest-digest` over the exact selected `workspace.json` bytes.
+For legacy fallback it should pass the preferred registered manifest path as
+`--required-absent-manifest`. Managed start validates and propagates both to the
+service, so the manifest and precedence decision are consumed as one snapshot
+rather than repeated from mutable pathnames. The service's live readiness answer
+also carries an opaque authorization over the lexical workspace path and the exact
+bytes it consumed. Every attach/race-winner path must match that value and revalidate
+the digest plus any required absence immediately before returning success. The
+consumer's final reconnect must then return the same service-instance id as the
+launcher, so descriptor replacement across that last boundary also fails closed.
+
+On Windows, successful initialization establishes the matching owner-controlled
+DACL from the managed home trust anchor through `workspaces/<id>` (or the legacy
+`workspace`) and the manifest. Directories created by the attempt are restricted
+before descendants are written; existing ACLs are deferred until storage ownership
+and unrelated-content refusals have passed, so a refused init cannot silently
+rewrite a user's existing access policy.
+
 The other half of the seam is that a ready answer is about the workspace the
 caller selected. Managed start dials `core.readiness` with the *expected*
 workspace id rather than the advertised descriptor's own claim, and refuses a

@@ -5,6 +5,15 @@ This is a maintenance path, not an application operation.  It runs only while a
 exclusive connection, lease, mutation guard and fencing transaction as the live
 service.  The source path is input to this one process only: it is never persisted,
 returned, logged or accepted over the frozen application catalogue.
+
+Publishing the bytes is not part of that boundary and no longer lives here: it is
+`workspace.blob_publication`, which knows only a blob root, a digest and bytes.
+`publish_blob` is re-exported for the callers that already reach it through this
+module, but there is one implementation of it and this is not it: this module's
+`publish_blob` delegates to that implementation and translates its
+`BlobPublicationRefused` into `SourceCaptureRefused`, so callers that already catch
+`SourceCaptureRefused` through this module keep catching publication failures reached
+through this facade.
 """
 
 from __future__ import annotations
@@ -22,7 +31,10 @@ from typing import Final
 from omnivia_core.contracts.v1 import to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
-from omnivia_core_runtime.workspace.filesystem import fsync_directory
+from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
+from omnivia_core_runtime.workspace.blob_publication import (
+    publish_blob as _publish_blob,
+)
 
 SOURCE_CAPTURE_FORMAT: Final = "omnivia.source-capture-result.v1"
 SOURCE_KIND: Final = "document"
@@ -35,7 +47,26 @@ _MEDIA_TYPE = re.compile(
 
 
 class SourceCaptureRefused(RuntimeError):
-    """The requested source cannot be captured without weakening the boundary."""
+    """The requested source cannot be captured without weakening the boundary.
+
+    Not a subclass of `BlobPublicationRefused`: a base-class refusal raised by the
+    provider-neutral primitive is not an instance of this subclass, so that
+    inheritance would not actually let a caller catching this also catch publication
+    failures. Instead this module's `publish_blob` facade catches
+    `BlobPublicationRefused` itself and raises this in its place.
+    """
+
+
+def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
+    """Legacy facade over the one provider-neutral publication implementation.
+
+    Translates `BlobPublicationRefused` into `SourceCaptureRefused` so callers that
+    reach publication through this module keep catching `SourceCaptureRefused`.
+    """
+    try:
+        return _publish_blob(blobs_root, digest, content)
+    except BlobPublicationRefused as error:
+        raise SourceCaptureRefused(str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,61 +153,6 @@ def _read_source(path: Path) -> bytes:
     ):
         raise SourceCaptureRefused("source changed while it was being captured")
     return content
-
-
-def _blob_path(blobs_root: Path, digest: str) -> Path:
-    return blobs_root / "sha256" / digest.removeprefix("sha256:")
-
-
-def _verify_published_blob(path: Path, content: bytes) -> None:
-    existing = _read_source(path)
-    if existing != content:
-        raise SourceCaptureRefused("the content-addressed blob does not verify")
-
-
-def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
-    """Publish bytes before the database may refer to them.
-
-    Takes the blob root rather than a runner so every path that captures
-    content-addressed bytes -- local capture and connector synchronisation
-    alike -- writes them through this exact atomic-rename-and-fsync sequence
-    instead of a second copy of it.
-    """
-    target = _blob_path(blobs_root, digest)
-    directory = target.parent
-    if not directory.exists():
-        directory.mkdir(mode=0o700, parents=False)
-        fsync_directory(directory.parent)
-    if target.exists() or target.is_symlink():
-        _verify_published_blob(target, content)
-        return target
-
-    temporary = directory / f".{target.name}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
-        0o600,
-    )
-    try:
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:  # pragma: no cover - defensive operating-system failure
-                raise OSError("short write while publishing blob")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    try:
-        os.replace(temporary, target)
-        fsync_directory(directory)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-    _verify_published_blob(target, content)
-    return target
 
 
 def _existing_capture(
@@ -419,6 +395,7 @@ def capture_local_source(
 __all__ = [
     "MAX_SOURCE_BYTES",
     "SOURCE_CAPTURE_FORMAT",
+    "BlobPublicationRefused",
     "SourceCaptureRefused",
     "SourceCaptureResult",
     "capture_local_source",

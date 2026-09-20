@@ -1,6 +1,6 @@
 """V06-6: the parser is the surface, and the surface is all it is.
 
-Three claims about `main.py`, each asserted over data rather than by example.
+Four claims about `main.py`, each asserted over data rather than by example.
 
 - **Every frozen command parses from its exact two segments.** The parser is
   built from `APPLICATION_COMMANDS` and `PROBE_COMMANDS`, so each is walked and
@@ -9,6 +9,9 @@ Three claims about `main.py`, each asserted over data rather than by example.
 - **Nothing else parses.** The commands the CLI is documented not to have --
   `init`, `start`, `status`, `workspace show`, a `core.*` path -- and every
   prefix abbreviation of a real one exit 2 and print nothing to stdout.
+- **The catalogue's mutation postures are enforced here.** An operation that
+  requires an idempotency key or a record version and was given none exits 2
+  before a connection, and one that honours neither is refused for supplying it.
 - **A refused value is never echoed.** A secret can be passed to any flag, and
   the flags that refuse one locally are exactly the ones whose refusal reaches a
   shell history or a CI log. Each rejection is checked for the sentinel in both
@@ -90,6 +93,20 @@ _NO_VERSION = _first_command(
     lambda entry: not entry.precondition.supports_mutation_precondition
 )
 
+#: Commands the catalogue says *must* carry one: omitting it is a usage error too,
+#: for the opposite reason. Derived rather than listed, so an operation that gains
+#: the posture is covered without anything here being edited.
+_REQUIRES_KEY = tuple(
+    command
+    for command in APPLICATION_COMMANDS
+    if get_operation_metadata(command.operation).idempotency.required
+)
+_REQUIRES_VERSION = tuple(
+    command
+    for command in APPLICATION_COMMANDS
+    if get_operation_metadata(command.operation).precondition.required
+)
+
 #: Every way a caller-supplied value is refused locally. The parametrisation is
 #: named so a failure says which flag leaked.
 SECRET_BEARING = {
@@ -149,6 +166,24 @@ def test_a_refused_value_never_reaches_either_stream(
     assert SECRET not in captured.out
     assert SECRET not in captured.err
     assert captured.out == ""
+
+
+@pytest.mark.parametrize("command", _REQUIRES_KEY, ids=lambda c: ".".join(c.path))
+def test_a_required_idempotency_key_is_refused_locally_when_absent(
+    command: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The catalogue's `required` posture, enforced before a socket is opened."""
+    assert main([*BASE, *command.path]) == 2
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("command", _REQUIRES_VERSION, ids=lambda c: ".".join(c.path))
+def test_a_required_record_version_is_refused_locally_when_absent(
+    command: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Supplying the key is not enough for an operation that also guards a version."""
+    assert main([*BASE, *command.path, "--idempotency-key", "k"]) == 2
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize(

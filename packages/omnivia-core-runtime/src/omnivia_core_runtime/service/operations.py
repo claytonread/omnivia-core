@@ -534,7 +534,7 @@ def health(context: OperationContext) -> Mapping[str, Any]:
 
 
 def readiness(context: OperationContext) -> Mapping[str, Any]:
-    """Writable readiness, reported as the nine facts rather than one boolean."""
+    """Writable readiness plus the service's opaque workspace snapshot binding."""
     service = context.service
     lifecycle = getattr(service, "lifecycle", None)
     if lifecycle is None:
@@ -545,6 +545,11 @@ def readiness(context: OperationContext) -> Mapping[str, Any]:
         "ready": lifecycle.state.advertises_writable,
         "state": lifecycle.state.value,
         "unmet": lifecycle.readiness.unmet(),
+        # Local launch coordination, not authority granted by a caller. A managed
+        # launcher compares this path-plus-manifest binding with the snapshot it
+        # authorized before accepting a race winner. It is opaque so the readiness
+        # response does not disclose a local workspace path.
+        "workspace_authorization": getattr(service, "workspace_authorization", None),
     }
 
 

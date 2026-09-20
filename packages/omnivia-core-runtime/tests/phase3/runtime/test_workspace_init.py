@@ -35,6 +35,7 @@ from typing import Any
 
 import pytest
 from omnivia_core_runtime.ownership import locks as locks_module
+from omnivia_core_runtime.service import workspace_init as workspace_init_module
 from omnivia_core_runtime.service.workspace_init import (
     WORKSPACE_FORMAT_VERSION,
     WORKSPACE_INIT_VERSION,
@@ -44,6 +45,7 @@ from omnivia_core_runtime.service.workspace_init import (
     initialise_allocated_workspace,
     initialise_workspace,
 )
+from omnivia_core_runtime.storage import backup
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
@@ -62,6 +64,645 @@ def _init(home: Path) -> WorkspaceInitResult:
         workspace_root=home / "workspace",
         installation_root=home / "installation-state",
     )
+
+
+def test_windows_directory_creation_verifies_but_never_creates_the_volume_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recursive Windows creation stops safely at an existing drive/volume root."""
+    anchor = Path(tmp_path.anchor)
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+
+    def forbidden_mkdir(
+        _path: Path, *args: object, **kwargs: object
+    ) -> None:
+        raise AssertionError("the filesystem anchor must never be passed to mkdir")
+
+    monkeypatch.setattr(Path, "mkdir", forbidden_mkdir)
+
+    assert workspace_init_module._ensure_workspace_directory(anchor) is False
+
+
+def test_windows_allocated_init_restricts_the_restart_authorization_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hosted Windows writer produces the DACL shape the client verifies."""
+    storage = tmp_path / "workspaces"
+    workspace = storage / "ws-allocated-owner-control"
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = initialise_allocated_workspace(
+        workspace_root=workspace,
+        installation_root=tmp_path / "installation-state",
+        target_workspace_id="ws-allocated-owner-control",
+        display_name="Owner controlled",
+    )
+
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    installation = tmp_path / "installation-state"
+    assert seen == [
+        (storage, True),
+        (workspace, True),
+        (workspace / "locks", True),
+        (tmp_path, True),
+        (storage, True),
+        (workspace, True),
+        (workspace / "blobs", True),
+        (workspace / "indexes", True),
+        (installation, True),
+        (installation / "backups", True),
+        (installation / "backups" / "ws-allocated-owner-control", True),
+        (installation / "attempts", True),
+        (installation / "attempts" / "ws-allocated-owner-control", True),
+        (installation / "runtime", True),
+        (installation / "runtime" / "ws-allocated-owner-control", True),
+        (installation / "catalogue", True),
+    ]
+
+
+def test_windows_legacy_init_restricts_the_workspace_and_its_trust_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert result.workspace_id is not None
+    installation = tmp_path / "installation-state"
+    assert seen == [
+        (workspace, True),
+        (workspace / "locks", True),
+        (tmp_path, True),
+        (workspace, True),
+        (workspace / "blobs", True),
+        (workspace / "indexes", True),
+        (installation, True),
+        (installation / "backups", True),
+        (installation / "backups" / result.workspace_id, True),
+        (installation / "attempts", True),
+        (installation / "attempts" / result.workspace_id, True),
+        (installation / "runtime", True),
+        (installation / "runtime" / result.workspace_id, True),
+        (installation / "catalogue", True),
+    ]
+
+
+def test_windows_pin_refresh_stabilises_an_entry_that_appears_during_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    installation = tmp_path / "installation-state"
+    workspace.mkdir()
+    installation.mkdir()
+    manifest = workspace / "workspace.json"
+
+    class _Api:
+        def __init__(self) -> None:
+            self.opened: list[Path] = []
+
+        def CreateFileW(self, path: str, *_arguments: object) -> int:
+            self.opened.append(Path(path))
+            return len(self.opened) + 100
+
+        def CloseHandle(self, _handle: object) -> int:
+            return 1
+
+    api = _Api()
+    real_entries = workspace_init_module._windows_initialisation_entries
+    scans = {"count": 0}
+
+    def _entries(
+        workspace_root: Path, installation_root: Path
+    ) -> tuple[tuple[Path, bool], ...]:
+        scans["count"] += 1
+        if scans["count"] == 2:
+            manifest.write_text("{}", encoding="utf-8")
+        return real_entries(workspace_root, installation_root)
+
+    monkeypatch.setattr(
+        workspace_init_module, "_windows_initialisation_entries", _entries
+    )
+    pins = workspace_init_module._WindowsInitialisationPins(
+        api, workspace, installation
+    )
+    try:
+        pins.refresh()
+    finally:
+        pins.close()
+
+    assert Path(os.path.abspath(manifest)) in api.opened
+
+
+class _RecordingApi:
+    """A `CreateFileW` that keeps the access and share masks it was asked for."""
+
+    def __init__(self) -> None:
+        self.opened: list[tuple[str, int, int, int]] = []
+
+    def CreateFileW(
+        self,
+        path: str,
+        access: int,
+        share: int,
+        _security: object,
+        _disposition: int,
+        flags: int,
+        _template: object,
+    ) -> int:
+        self.opened.append((path, access, share, flags))
+        return len(self.opened) + 100
+
+    def CloseHandle(self, _handle: object) -> int:
+        return 1
+
+
+def test_a_windows_pin_asks_for_the_access_that_makes_windows_arbitrate_sharing(
+    tmp_path: Path,
+) -> None:
+    """A zero-access pin is invisible to Windows, so the masks are pinned by value.
+
+    `IoCheckShareAccess` runs no check at all for a handle that requested none of
+    read-data, write-data, append-data, execute or delete, and `IoUpdateShareAccess`
+    records no share mode for one either. Pins opened that way let every rename
+    through while reading exactly like pins that work, which is what the hosted row
+    `test_windows_guard_adds_new_directories_files_and_manifests` caught. No POSIX
+    host can observe the kernel behaviour, so the masks themselves are the control.
+    """
+    workspace = tmp_path / "workspace"
+    installation = tmp_path / "installation-state"
+    workspace.mkdir()
+    installation.mkdir()
+    api = _RecordingApi()
+
+    pins = workspace_init_module._WindowsInitialisationPins(
+        api, workspace, installation
+    )
+    try:
+        pins.refresh()
+    finally:
+        pins.close()
+
+    assert api.opened
+    assert workspace_init_module._FILE_READ_DATA != 0
+    for path, access, share, _flags in api.opened:
+        assert access == workspace_init_module._FILE_READ_DATA, path
+        assert share == workspace_init_module._PIN_SHARE, path
+    # Read and write sharing keep the pinned database, manifest and lock usable;
+    # withholding FILE_SHARE_DELETE is the whole of the rename/replace refusal.
+    assert workspace_init_module._PIN_SHARE == (
+        workspace_init_module._FILE_SHARE_READ | workspace_init_module._FILE_SHARE_WRITE
+    )
+
+
+def test_a_quiescing_open_admits_a_reader_and_no_writer_deleter_or_renamer(
+    tmp_path: Path,
+) -> None:
+    """The share mask is the whole of "a retained handle fails this init closed"."""
+    api = _RecordingApi()
+    database = tmp_path / "workspace.sqlite"
+
+    assert (
+        workspace_init_module._open_windows_entry(
+            api, tmp_path, share=workspace_init_module._QUIESCE_SHARE, directory=True
+        )
+        is not None
+    )
+    assert (
+        workspace_init_module._open_windows_entry(
+            api, database, share=workspace_init_module._QUIESCE_SHARE, directory=False
+        )
+        is not None
+    )
+
+    reparse = workspace_init_module._FILE_FLAG_OPEN_REPARSE_POINT
+    assert api.opened == [
+        (
+            str(tmp_path),
+            workspace_init_module._FILE_READ_DATA,
+            workspace_init_module._QUIESCE_SHARE,
+            reparse | workspace_init_module._FILE_FLAG_BACKUP_SEMANTICS,
+        ),
+        (
+            str(database),
+            workspace_init_module._FILE_READ_DATA,
+            workspace_init_module._QUIESCE_SHARE,
+            reparse,
+        ),
+    ]
+    # Read sharing is granted because this guard's own pin holds FILE_READ_DATA on
+    # the same object. Write sharing is not, and that is what turns a pre-existing
+    # writer, deleter or renamer into the sharing violation this refuses on.
+    assert (
+        workspace_init_module._QUIESCE_SHARE == workspace_init_module._FILE_SHARE_READ
+    )
+    assert not (
+        workspace_init_module._QUIESCE_SHARE & workspace_init_module._FILE_SHARE_WRITE
+    )
+
+
+@pytest.mark.parametrize("refused", [0, workspace_init_module._INVALID_HANDLE_VALUE])
+def test_a_refused_windows_open_is_reported_as_no_handle(
+    tmp_path: Path, refused: int
+) -> None:
+    """A sharing violation has to read as a refusal, not as a usable handle."""
+
+    class _Refusing:
+        def CreateFileW(self, *_arguments: Any) -> int:
+            return refused
+
+    assert (
+        workspace_init_module._open_windows_entry(
+            _Refusing(),
+            tmp_path,
+            share=workspace_init_module._QUIESCE_SHARE,
+            directory=True,
+        )
+        is None
+    )
+
+
+#: The access and share bits Windows arbitrates on, named here rather than in the
+#: module under test because production asks for exactly one of them.
+_FILE_WRITE_DATA = 0x00000002
+_DELETE = 0x00010000
+_FILE_SHARE_DELETE = 0x00000004
+
+
+class _ShareArbitration:
+    """`IoCheckShareAccess` and `IoUpdateShareAccess`, in about as few lines.
+
+    The kernel arbitrates sharing only for a handle that asked for read-data,
+    write-data, append-data, execute or delete. Every other open -- `dwDesiredAccess`
+    of zero above all -- skips the check *and* contributes no share mode, so it
+    neither notices a conflicting opener nor denies anything to a later one. That one
+    rule is the whole of this repair and nothing on a POSIX host can observe it, so
+    it is modelled here and the production masks are run against the model.
+    """
+
+    def __init__(self) -> None:
+        self.open_count = self.readers = self.writers = self.deleters = 0
+        self.shared_read = self.shared_write = self.shared_delete = 0
+
+    def open(self, access: int, share: int) -> bool:
+        read = bool(access & workspace_init_module._FILE_READ_DATA)
+        write = bool(access & _FILE_WRITE_DATA)
+        delete = bool(access & _DELETE)
+        if not (read or write or delete):
+            return True
+        if (
+            (read and self.shared_read < self.open_count)
+            or (write and self.shared_write < self.open_count)
+            or (delete and self.shared_delete < self.open_count)
+            or (self.readers and not share & workspace_init_module._FILE_SHARE_READ)
+            or (self.writers and not share & workspace_init_module._FILE_SHARE_WRITE)
+            or (self.deleters and not share & _FILE_SHARE_DELETE)
+        ):
+            return False
+        self.open_count += 1
+        self.readers += read
+        self.writers += write
+        self.deleters += delete
+        self.shared_read += bool(share & workspace_init_module._FILE_SHARE_READ)
+        self.shared_write += bool(share & workspace_init_module._FILE_SHARE_WRITE)
+        self.shared_delete += bool(share & _FILE_SHARE_DELETE)
+        return True
+
+
+#: What a rename or delete of the entry asks Windows for.
+_RENAME = (_DELETE, workspace_init_module._FILE_SHARE_READ | _FILE_SHARE_DELETE)
+
+#: What SQLite, Python's `open(..., "r+b")` and `os.open` all ask for: read and
+#: write, shared with other readers and writers but not with a deleter.
+_READ_WRITE = (
+    workspace_init_module._FILE_READ_DATA | _FILE_WRITE_DATA,
+    workspace_init_module._FILE_SHARE_READ | workspace_init_module._FILE_SHARE_WRITE,
+)
+
+_PIN = (workspace_init_module._FILE_READ_DATA, workspace_init_module._PIN_SHARE)
+_QUIESCE = (workspace_init_module._FILE_READ_DATA, workspace_init_module._QUIESCE_SHARE)
+
+
+def test_a_zero_access_handle_neither_detects_nor_blocks_anything() -> None:
+    """The defect, stated as the kernel sees it rather than as an outcome."""
+    object_with_a_writer = _ShareArbitration()
+    assert object_with_a_writer.open(*_READ_WRITE)
+
+    # The old quiescing open: it "proved" the object closed against a live writer.
+    assert object_with_a_writer.open(0, 0)
+
+    # The old pin: taken on a free object, it let the rename straight through.
+    free = _ShareArbitration()
+    assert free.open(0, workspace_init_module._PIN_SHARE)
+    assert free.open(*_RENAME)
+
+
+def test_the_windows_pin_blocks_rename_while_sqlite_and_the_lock_keep_working() -> None:
+    """One pin, three outcomes: rename refused, database and lock file still open."""
+    pinned = _ShareArbitration()
+    assert pinned.open(*_PIN)
+
+    assert not pinned.open(*_RENAME)
+    assert pinned.open(*_READ_WRITE)  # SQLite opening the pinned database
+    assert pinned.open(*_READ_WRITE)  # the storage lock writing its holder record
+
+
+def test_the_windows_quiesce_coexists_with_our_own_pin_on_the_same_object() -> None:
+    """Why read sharing is granted: both handles are ours, on one object, at once."""
+    pinned = _ShareArbitration()
+    assert pinned.open(*_PIN)
+
+    assert pinned.open(*_QUIESCE), "the guard must not collide with its own pin"
+
+
+def test_a_retained_handle_fails_the_windows_guard_closed() -> None:
+    """Each hosted row's retained handle, met by whichever of our opens reaches it.
+
+    A retained writer -- the `r+b` blob, the outsider SQLite connection, the
+    `FILE_WRITE_DATA` workspace-directory handle -- has to be tolerated by the pin,
+    because the pin has to tolerate SQLite too; the quiescing open is what refuses
+    it. A retained *deleter* never gets that far: the pin withholds delete sharing,
+    so the pin itself is the refusal.
+    """
+    for held in (_READ_WRITE, (_FILE_WRITE_DATA, 0x7)):
+        occupied = _ShareArbitration()
+        assert occupied.open(*held)
+        assert occupied.open(*_PIN)
+        assert not occupied.open(*_QUIESCE)
+
+    deleting = _ShareArbitration()
+    assert deleting.open(*_RENAME)
+    assert not deleting.open(*_PIN)
+
+
+def test_no_windows_handle_is_opened_without_a_share_arbitrated_access_right() -> None:
+    """One native open, one access mask, and a named share mode at every call site.
+
+    The defect this guards is not a wrong constant but a *plausible* one: `0` is the
+    documented way to ask Windows for metadata without touching the object, it
+    succeeds against a file another process holds exclusively, and it silently opts
+    the handle out of share arbitration in both directions.
+    """
+    import ast
+
+    source = Path(inspect.getfile(workspace_init_module)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    native = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "CreateFileW"
+    ]
+    assert len(native) == 1, "every Windows open belongs to _open_windows_entry"
+    access = native[0].args[1]
+    assert isinstance(access, ast.Name) and access.id == "_FILE_READ_DATA"
+
+    shares = [
+        keyword.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_open_windows_entry"
+        for keyword in node.keywords
+        if keyword.arg == "share"
+    ]
+    assert all(isinstance(value, ast.Name) for value in shares), (
+        "a share mode was inlined rather than named"
+    )
+    assert {value.id for value in shares} == {"_PIN_SHARE", "_QUIESCE_SHARE"}
+
+
+def test_windows_init_refuses_a_reparse_point_in_the_managed_home_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_home = tmp_path / "actual-home"
+    actual_home.mkdir()
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(actual_home, target_is_directory=True)
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = initialise_workspace(
+        workspace_root=linked_home / "workspace",
+        installation_root=linked_home / "installation-state",
+    )
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert not (actual_home / "workspace").exists()
+    assert seen == []
+
+
+def test_windows_allocated_init_refuses_a_reparse_workspaces_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    redirected = tmp_path / "redirected"
+    home.mkdir()
+    redirected.mkdir()
+    (home / "workspaces").symlink_to(redirected, target_is_directory=True)
+    workspace = home / "workspaces" / "ws-redirected"
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = initialise_allocated_workspace(
+        workspace_root=workspace,
+        installation_root=home / "installation-state",
+        target_workspace_id="ws-redirected",
+        display_name="Redirected",
+    )
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert not (redirected / "ws-redirected").exists()
+    assert seen == []
+
+
+def test_windows_init_refuses_a_symlinked_manifest_before_read_or_acl_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside-manifest.json"
+    outside.write_text('{"outside":true}', encoding="utf-8")
+    (workspace / "workspace.json").symlink_to(outside)
+    before = outside.read_bytes()
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == before
+    assert seen == []
+
+
+@pytest.mark.parametrize("name", ["workspace.json", "workspace.sqlite"])
+def test_windows_init_refuses_a_hard_linked_workspace_file_without_changing_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / f"outside-{name}"
+    outside.write_bytes(b"must stay unchanged")
+    os.link(outside, workspace / name)
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"must stay unchanged"
+    assert seen == []
+
+
+def test_windows_reinitialisation_secures_every_existing_blob_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _init(tmp_path)
+    assert first.status is WorkspaceInitStatus.INITIALISED
+    blob_directory = tmp_path / "workspace" / "blobs" / "sha256"
+    blob_directory.mkdir()
+    blob = blob_directory / ("a" * 64)
+    blob.write_bytes(b"existing content")
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.ALREADY_INITIALISED
+    assert (tmp_path / "workspace" / "blobs", True) in seen
+    assert (blob_directory, True) in seen
+    assert (blob, False) in seen
+
+
+@pytest.mark.parametrize("damage", ["symlink", "hardlink"])
+def test_windows_reinitialisation_refuses_an_unsafe_blob_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    first = _init(tmp_path)
+    assert first.status is WorkspaceInitStatus.INITIALISED
+    blob_directory = tmp_path / "workspace" / "blobs" / "sha256"
+    blob_directory.mkdir()
+    outside = tmp_path / "outside-blob"
+    outside.write_bytes(b"must remain unchanged")
+    blob = blob_directory / ("b" * 64)
+    if damage == "symlink":
+        blob.symlink_to(outside)
+    else:
+        os.link(outside, blob)
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda _path, *, directory: None,
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"must remain unchanged"
+
+
+def test_windows_init_rejects_a_manifest_published_after_provisional_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absent guard entry is re-decided after its parent becomes private."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "late-manifest.json"
+    outside.write_text('{"outside":true}', encoding="utf-8")
+    published = {"done": False}
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+
+    def _restrict(path: Path, *, directory: bool) -> None:
+        if path == workspace and directory and not published["done"]:
+            (workspace / "workspace.json").symlink_to(outside)
+            published["done"] = True
+
+    monkeypatch.setattr(workspace_init_module, "restrict_to_owner", _restrict)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert published["done"]
+    assert outside.read_bytes() == b'{"outside":true}'
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        "installation.sqlite-wal",
+        "installation.sqlite-shm",
+        "installation.sqlite-journal",
+    ],
+)
+def test_windows_init_refuses_a_symlinked_catalogue_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sidecar: str
+) -> None:
+    catalogue = tmp_path / "installation-state" / "catalogue"
+    catalogue.mkdir(parents=True)
+    outside = tmp_path / "outside-wal"
+    outside.write_bytes(b"must stay unchanged")
+    (catalogue / sidecar).symlink_to(outside)
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert outside.read_bytes() == b"must stay unchanged"
+    assert seen == []
 
 
 #: The lock file every refusal below is decided under.
@@ -174,7 +815,9 @@ def _digest(root: Path) -> dict[str, str]:
 
 def _changed(before: dict[str, str], after: dict[str, str]) -> set[str]:
     """Every entry the two digests disagree about -- created, removed or rewritten."""
-    return {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+    return {
+        name for name in set(before) | set(after) if before.get(name) != after.get(name)
+    }
 
 
 def _applied(layout: WorkspaceLayout) -> set[int]:
@@ -559,9 +1202,10 @@ def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
     An installation-state root that is a regular file reaches it by a route with no
     mocking in it: `_unrecognised_installation_state` returns early because
     `root.is_dir()` is false, and `InstallationLayout.create` then raises
-    `NotADirectoryError` with a whole workspace already on disk. The claim is
-    therefore about the three refusals that decide *whether this workspace is ours
-    to touch*, and this test is what keeps that qualification honest.
+    `FileExistsError` trying to establish the root itself, with a whole workspace
+    already on disk. The claim is therefore about the three refusals that decide
+    *whether this workspace is ours to touch*, and this test is what keeps that
+    qualification honest.
     """
     (tmp_path / "installation-state").write_text("not a directory", encoding="utf-8")
 
@@ -574,6 +1218,42 @@ def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
     assert layout.manifest_path.is_file()
     assert layout.database_path.is_file()
     assert layout.blobs_path.is_dir()
+
+
+def test_a_root_this_call_cannot_restrict_is_the_same_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling of the test above: a fresh root, but not an owner-private one.
+
+    `InstallationLayout.create` establishes the installation-state root's
+    owner-only Windows ACL the instant it creates it -- see
+    `packages/omnivia-core-runtime/tests/phase2/test_backup.py` for that
+    mechanism in isolation -- and fails closed exactly like every other
+    creation step this sequence guards when it cannot. Forcing that one step
+    to fail here proves it is bounded the same way: `WRITE_FAILURE`, with a
+    whole workspace already on disk and the bare root itself rolled back --
+    `test_backup.py` proves the rollback mechanism directly; this proves it
+    reaches all the way to the public refusal, and not just the bare root
+    it once left behind.
+
+    The reason string is checked for what it must not carry, too: the
+    installation root never appears in it, unlike the workspace root that
+    every `WRITE_FAILURE` deliberately names.
+    """
+    monkeypatch.setattr(backup, "_restrict_root_to_owner", lambda _path: False)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert backup._ROOT_RESTRICTION_FAILURE in result.reason
+    installation = tmp_path / "installation-state"
+    assert str(installation) not in result.reason
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    assert layout.manifest_path.is_file()
+    assert layout.database_path.is_file()
+    assert layout.blobs_path.is_dir()
+    assert not installation.exists()
 
 
 def test_a_busy_workspace_is_refused_before_any_directory_is_created(
@@ -618,10 +1298,37 @@ def test_a_busy_workspace_is_refused_before_any_directory_is_created(
     assert not (tmp_path / "installation-state").exists()
 
 
+def test_windows_busy_refusal_does_not_rewrite_any_existing_acl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trust-anchor repair belongs to acceptance, never the busy path."""
+    from omnivia_core_runtime.ownership.locks import LockRole, create_lock
+
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    layout.locks_path.mkdir(parents=True)
+    held = create_lock(layout.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE)
+    assert held.acquire()
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+    try:
+        result = _init(tmp_path)
+    finally:
+        held.release()
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
+    assert seen == []
+
+
 def test_a_workspace_missing_its_migrations_is_finished_and_reported_as_changed(
     tmp_path: Path,
 ) -> None:
-    """"nothing was changed" used to be emitted after applying every pending migration.
+    """ "nothing was changed" used to be emitted after applying every pending migration.
 
     `bootstrap_generation_one` and `apply_pending_migrations` are separate
     transactions, so a workspace holding the substrate row and none of the
@@ -1195,6 +1902,40 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
         connection.close()
 
 
+def test_windows_foreign_database_refusal_secures_only_the_sqlite_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parent and file are owner-only before vetting; database bytes stay untouched."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    database = workspace / "workspace.sqlite"
+    connection = sqlite3.connect(str(database))
+    try:
+        connection.execute("CREATE TABLE receipts (id INTEGER PRIMARY KEY)")
+        connection.commit()
+    finally:
+        connection.close()
+
+    seen: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(workspace_init_module, "_WINDOWS_OWNER_CONTROL", True)
+    monkeypatch.setattr(
+        workspace_init_module,
+        "restrict_to_owner",
+        lambda path, *, directory: seen.append((path, directory)),
+    )
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.UNRELATED_DIRECTORY
+    assert seen == [
+        (workspace / "locks", True),
+        (workspace, True),
+        (database, False),
+    ]
+    assert all(path != tmp_path for path, _ in seen)
+
+
 def test_a_workspace_another_process_owns_is_refused_without_waiting(
     tmp_path: Path,
 ) -> None:
@@ -1250,7 +1991,7 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
         "reason",
         "workspace",
     }
-    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.1"
+    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.2"
     workspace = document["workspace"]
     assert isinstance(workspace, dict)
     assert set(workspace) == {
@@ -1310,6 +2051,21 @@ WORKSPACE_INIT_WIRE_1_1 = {
     },
 }
 
+#: The whole wire vocabulary of `workspace_init_version` 1.2, on the same terms.
+#:
+#: One code more than 1.1 and not one character different anywhere else.
+#: `workspace_registration_conflict` is the state 1.1 had no name for: `--init` now
+#: registers its bootstrapped workspace in the installation catalogue
+#: (`installation_bootstrap.py`), and a workspace id already registered there under
+#: a different path is refused rather than silently re-pointed.
+WORKSPACE_INIT_WIRE_1_2 = {
+    "status": dict(WORKSPACE_INIT_WIRE_1_1["status"]),
+    "refusal": {
+        **WORKSPACE_INIT_WIRE_1_1["refusal"],
+        "WORKSPACE_REGISTRATION_CONFLICT": "workspace_registration_conflict",
+    },
+}
+
 
 def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     """The 1.0 -> 1.1 compatibility claim, as an assertion rather than a comment.
@@ -1323,7 +2079,6 @@ def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     unknown `refusal` as fatal is the case this bump exists to warn, and the bump is
     a minor one because the codes it already understands are untouched.
     """
-    assert WORKSPACE_INIT_VERSION == "1.1"
     assert WORKSPACE_INIT_WIRE_1_1["status"] == WORKSPACE_INIT_WIRE_1_0["status"]
     for name, wire in WORKSPACE_INIT_WIRE_1_0["refusal"].items():
         assert WORKSPACE_INIT_WIRE_1_1["refusal"][name] == wire, (
@@ -1335,8 +2090,28 @@ def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
     assert added == {"UNQUALIFIED_FILESYSTEM"}
 
 
+def test_the_published_vocabulary_widened_additively_from_1_1() -> None:
+    """The 1.1 -> 1.2 compatibility claim, on the same terms as the 1.0 -> 1.1 one.
+
+    Kept beside it rather than in place of it: 1.1's fixture is frozen now the same
+    way 1.0's was, so a later packet that renames one of its seven codes or moves a
+    case between them fails here even though the 1.2 fixture beside it would have
+    been edited to agree.
+    """
+    assert WORKSPACE_INIT_VERSION == "1.2"
+    assert WORKSPACE_INIT_WIRE_1_2["status"] == WORKSPACE_INIT_WIRE_1_1["status"]
+    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
+        assert WORKSPACE_INIT_WIRE_1_2["refusal"][name] == wire, (
+            f"{name} changed its wire value; that is a break, not a widening"
+        )
+    added = set(WORKSPACE_INIT_WIRE_1_2["refusal"]) - set(
+        WORKSPACE_INIT_WIRE_1_1["refusal"]
+    )
+    assert added == {"WORKSPACE_REGISTRATION_CONFLICT"}
+
+
 def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
-    """R006-07: the published vocabulary of 1.1, by exact serialised value.
+    """R006-07: the published vocabulary of 1.2, by exact serialised value.
 
     Two hops are checked, because a value can be right in the enum and wrong on
     the wire. First the enums against the fixture above, by dict equality in both
@@ -1350,17 +2125,17 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
     code compared it to `WorkspaceInitRefusal.X.value` and to `WORKSPACE_INIT_VERSION`,
     both of which move with the mutation.
 
-    `1.1` is asserted as a literal for the same reason.
+    `1.2` is asserted as a literal for the same reason.
     """
-    assert WORKSPACE_INIT_VERSION == "1.1"
+    assert WORKSPACE_INIT_VERSION == "1.2"
     assert {
         member.name: member.value for member in WorkspaceInitStatus
-    } == WORKSPACE_INIT_WIRE_1_1["status"]
+    } == WORKSPACE_INIT_WIRE_1_2["status"]
     assert {
         member.name: member.value for member in WorkspaceInitRefusal
-    } == WORKSPACE_INIT_WIRE_1_1["refusal"]
+    } == WORKSPACE_INIT_WIRE_1_2["refusal"]
 
-    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
+    for name, wire in WORKSPACE_INIT_WIRE_1_2["refusal"].items():
         document = WorkspaceInitResult(
             status=WorkspaceInitStatus.REFUSED,
             reason="pinning the wire value",
@@ -1368,7 +2143,7 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
         ).to_dict()
         assert document["refusal"] == wire
         assert document["status"] == "refused"
-        assert document["workspace_init_version"] == "1.1"
+        assert document["workspace_init_version"] == "1.2"
 
 
 def test_a_refusal_code_never_depends_on_its_declaration_position() -> None:

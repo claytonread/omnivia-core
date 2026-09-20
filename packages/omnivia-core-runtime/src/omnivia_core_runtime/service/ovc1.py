@@ -21,6 +21,9 @@ from omnivia_core.contracts.v1.canonical_json import (
 MAGIC: Final = b"OVC1"
 LENGTH_BYTES: Final = 4
 HEADER_BYTES: Final = 8
+#: Frozen OVC1 v1 limit. Application adapters compact alternate semantic
+#: representations before this framing boundary when their literal JSON spelling
+#: would exceed it; changing this value would require a negotiated wire revision.
 MAXIMUM_JSON_BYTES: Final = 4 * 1024 * 1024
 
 

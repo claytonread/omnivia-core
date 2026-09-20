@@ -141,6 +141,7 @@ class FakeService:
             fields = dict.fromkeys(vars(ReadinessRequirements()), True)
             self.lifecycle.publish_readiness(ReadinessRequirements(**fields))
         self.workspace_id = WORKSPACE
+        self.workspace_authorization = "sha256:" + "a" * 64
         self.generation = 2
         self.identity = type("I", (), {"service_instance_id": "svc-one"})()
 
@@ -202,6 +203,7 @@ def test_health_readiness_and_discovery_dispatch_successfully() -> None:
     assert isinstance(ready, SuccessResponseEnvelope)
     assert ready.result["ready"] is True
     assert ready.result["unmet"] == []
+    assert ready.result["workspace_authorization"] == "sha256:" + "a" * 64
 
     found = dispatcher.dispatch(request_for("core.discovery"))
     assert isinstance(found, SuccessResponseEnvelope)

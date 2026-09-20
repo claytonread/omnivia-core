@@ -30,7 +30,9 @@ JSON byte length                   4 bytes, unsigned big-endian uint32
 canonical UTF-8 JSON               exactly that many bytes, nothing after
 ```
 
-- The JSON payload is at most **4 MiB (4194304 bytes), inclusive**.
+- The JSON payload is at most **4 MiB (4194304 bytes), inclusive**. This is part
+  of frozen OVC1 v1; application adapters use a compact equivalent input form
+  when a literal JSON spelling would exceed it.
 - A frame's root is always a **JSON object**.
 - Decoding re-encodes what it parsed and requires the bytes to match exactly,
   so a non-canonical spelling of a valid value is rejected rather than silently
@@ -448,6 +450,21 @@ initialised workspace), the `omnivia-core-service --managed-start` program is
 located and run once, its bounded versioned result is read, and the same
 `Deadline` object is used to reconnect. A launcher that reports success while
 nothing is reachable is a failure.
+
+The start authorization is a snapshot, not a pathname checked and then trusted
+later. The client passes `--expected-manifest-digest` over the exact bounded
+manifest bytes it selected; the Runtime launcher validates it and propagates it
+to the service's first manifest read. A legacy fallback also passes
+`--required-absent-manifest` for the preferred registered layout, so a registered
+workspace appearing across either process boundary refuses the legacy start. A
+ready service returns an opaque path-plus-byte authorization in its live readiness
+answer. The launcher accepts an existing or concurrently started service only when
+that value matches its own snapshot, then re-reads the digest/absence guards at the
+success boundary. Thus neither a race winner that opened different bytes nor a
+legacy service advertising under the same workspace id as a registered path can be
+reported as the selected service. The final client reconnect must also name the
+same service-instance id the launcher returned, closing the last handoff race where
+an authorized winner exits and another descriptor appears before reconnect.
 
 This is the one place in the repository that locates or runs a service process;
 the CLI and the MCP server hold no launcher, no path convention and no argv, and

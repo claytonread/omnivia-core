@@ -852,91 +852,109 @@ class InstallationApplicationService:
         *,
         expected_display_name: str,
     ) -> Mapping[str, Any]:
+        return verify_workspace_result(
+            allocation, expected_display_name=expected_display_name
+        )
+
+
+def verify_workspace_result(
+    allocation: InstallationAllocation,
+    *,
+    expected_display_name: str,
+) -> Mapping[str, Any]:
+    """The canonical `WorkspaceCreateResult` for one settled allocation's target.
+
+    Module-level so a caller that has no `InstallationApplicationService` -- the
+    trusted `--init` bootstrap registration in `installation_bootstrap.py` is the
+    one that exists -- can verify a workspace against the exact same identity,
+    manifest and schema checks `workspace.create` settles on, rather than a second,
+    looser copy of them.
+    """
+    try:
+        layout = WorkspaceLayout(root=allocation.target_path)
+        problems = layout.validate(require_database=True)
+        if problems:
+            raise ValueError("allocated workspace layout is not complete")
+        manifest = read_manifest(layout)
+        if manifest.workspace_id != allocation.target_workspace_id:
+            raise ValueError("workspace manifest identity differs from allocation")
+        if manifest.name != expected_display_name:
+            raise ValueError("workspace manifest label differs from request")
+        if (
+            manifest.integrity is None
+            or not manifest.integrity_matches()
+            or manifest.compatibility.workspace_format_version
+            != WORKSPACE_FORMAT_VERSION
+        ):
+            raise ValueError("workspace manifest is not an exact current target")
+
+        connection = open_database(
+            layout.database_path,
+            OpenMode.EXCLUSIVE_MAINTENANCE,
+            enable_wal=False,
+        )
         try:
-            layout = WorkspaceLayout(root=allocation.target_path)
-            problems = layout.validate(require_database=True)
-            if problems:
-                raise ValueError("allocated workspace layout is not complete")
-            manifest = read_manifest(layout)
-            if manifest.workspace_id != allocation.target_workspace_id:
-                raise ValueError("workspace manifest identity differs from allocation")
-            if manifest.name != expected_display_name:
-                raise ValueError("workspace manifest label differs from request")
+            state = read_workspace_state(connection)
+            migrations = load_migrations()
+            expected_ledger = {
+                migration.version: migration.checksum for migration in migrations
+            }
+            user_version = connection.execute("PRAGMA user_version").fetchone()
+            started = connection.execute(
+                "SELECT COUNT(*) FROM omnivia_migration_attempts "
+                "WHERE outcome = 'started'"
+            ).fetchone()
             if (
-                manifest.integrity is None
-                or not manifest.integrity_matches()
-                or manifest.compatibility.workspace_format_version
-                != WORKSPACE_FORMAT_VERSION
+                state is None
+                or state.workspace_id != allocation.target_workspace_id
+                or state.workspace_format_version != WORKSPACE_FORMAT_VERSION
+                or state.baseline_state != BASELINE_PRISTINE
+                or applied_migrations(connection) != expected_ledger
+                or user_version is None
+                or not migrations
+                or int(user_version[0]) != migrations[-1].version
+                or started is None
+                or int(started[0]) != 0
+                or not fingerprint_schema(connection).matches(
+                    canonical_schema_fingerprint()
+                )
+                or integrity_check(connection)
+                or foreign_key_check(connection)
             ):
-                raise ValueError("workspace manifest is not an exact current target")
+                raise ValueError(
+                    "workspace database is not the exact settled target"
+                )
+        finally:
+            connection.close()
 
-            connection = open_database(
-                layout.database_path,
-                OpenMode.EXCLUSIVE_MAINTENANCE,
-                enable_wal=False,
-            )
-            try:
-                state = read_workspace_state(connection)
-                migrations = load_migrations()
-                expected_ledger = {
-                    migration.version: migration.checksum for migration in migrations
-                }
-                user_version = connection.execute("PRAGMA user_version").fetchone()
-                started = connection.execute(
-                    "SELECT COUNT(*) FROM omnivia_migration_attempts "
-                    "WHERE outcome = 'started'"
-                ).fetchone()
-                if (
-                    state is None
-                    or state.workspace_id != allocation.target_workspace_id
-                    or state.workspace_format_version != WORKSPACE_FORMAT_VERSION
-                    or state.baseline_state != BASELINE_PRISTINE
-                    or applied_migrations(connection) != expected_ledger
-                    or user_version is None
-                    or not migrations
-                    or int(user_version[0]) != migrations[-1].version
-                    or started is None
-                    or int(started[0]) != 0
-                    or not fingerprint_schema(connection).matches(
-                        canonical_schema_fingerprint()
-                    )
-                    or integrity_check(connection)
-                    or foreign_key_check(connection)
-                ):
-                    raise ValueError(
-                        "workspace database is not the exact settled target"
-                    )
-            finally:
-                connection.close()
-
-            version = workspace_contract_version(
-                manifest.compatibility.workspace_format_version
-            )
-            descriptor = WorkspaceDescriptor(
-                workspace_id=allocation.target_workspace_id,
-                display_name=manifest.name or allocation.target_workspace_id,
-                status=WORKSPACE_STATUS_ACTIVE,
-                compatibility=WorkspaceCompatibility(
-                    workspace_format_version=version,
-                    supported_workspace_versions=_SUPPORTED_WORKSPACE_VERSIONS,
-                    status=classify_version_compatibility(
-                        version, _SUPPORTED_WORKSPACE_VERSIONS
-                    ),
+        version = workspace_contract_version(
+            manifest.compatibility.workspace_format_version
+        )
+        descriptor = WorkspaceDescriptor(
+            workspace_id=allocation.target_workspace_id,
+            display_name=manifest.name or allocation.target_workspace_id,
+            status=WORKSPACE_STATUS_ACTIVE,
+            compatibility=WorkspaceCompatibility(
+                workspace_format_version=version,
+                supported_workspace_versions=_SUPPORTED_WORKSPACE_VERSIONS,
+                status=classify_version_compatibility(
+                    version, _SUPPORTED_WORKSPACE_VERSIONS
                 ),
-                created_at=canonical_timestamp(manifest.created_at),
-            )
-            result = WorkspaceCreateResult(workspace=descriptor).to_wire()
-            WorkspaceCreateResult.from_wire(result)
-            return result
-        except (
-            OSError,
-            ValueError,
-            ContractDecodeError,
-            ManifestStoreError,
-            sqlite3.Error,
-            StorageError,
-        ) as error:
-            raise InstallationSeamFault() from error
+            ),
+            created_at=canonical_timestamp(manifest.created_at),
+        )
+        result = WorkspaceCreateResult(workspace=descriptor).to_wire()
+        WorkspaceCreateResult.from_wire(result)
+        return result
+    except (
+        OSError,
+        ValueError,
+        ContractDecodeError,
+        ManifestStoreError,
+        sqlite3.Error,
+        StorageError,
+    ) as error:
+        raise InstallationSeamFault() from error
 
 
 def _decode_outcome(outcome: InstallationOutcome) -> Mapping[str, Any]:
@@ -972,4 +990,5 @@ __all__ = [
     "InstallationSeamFault",
     "PreparedWorkspaceCreate",
     "WorkspaceCreateExecution",
+    "verify_workspace_result",
 ]

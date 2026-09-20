@@ -130,7 +130,7 @@ A bound rather than no bound, because a length field is a promise from a peer
 and a reader that trusts it allocates whatever it is told to. Refusing an
 over-large frame is how a malfunctioning or hostile local peer fails as one
 bad frame instead of as memory exhaustion somewhere else entirely. The limit is
-part of the frozen format: both peers must agree on it, or one will send frames
+part of the frozen v1 format: both peers must agree on it, or one will send frames
 the other structurally cannot accept."""
 
 CANONICAL_JSON_ALGORITHM: Final = "rfc8785"

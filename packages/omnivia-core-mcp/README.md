@@ -72,6 +72,55 @@ server delegates the whole attach/start/reconnect decision to the shared
 published. The MCP package owns no launcher, path convention, or service argv;
 it requires a live connection before advertising any tool.
 
+A managed-local document written by the installed setup path additionally names
+an opaque `credential_reference`: the name under which that installation filed
+the dedicated MCP principal's bearer in its own protected store. The document
+carries the name and never the material, and never the store's location — the
+store derives that from `installation_state` alone. The server resolves the
+bearer through the shared client's `InstalledCredentialStore` and issues every
+application request over the local endpoint's authenticated control, so calls
+are dispatched under that dedicated principal rather than the service's own. The
+bearer is read again for each call, so revoking or rotating it takes effect on
+the next call rather than at the next restart, and a reference this installation
+cannot produce a usable credential for refuses startup rather than falling back.
+
+A managed-local document with **no** reference is the pre-setup shape. The
+console entry point may finish a matching interrupted restricted setup before
+MCP initialization, but only when exactly one active restricted setup and its
+protected bearer already exist. Migration never creates a grant or guesses a
+host. It atomically narrows the document to one workspace and
+`mutation_enabled: false`; a legacy true byte never becomes authoring consent.
+Otherwise startup refuses with a fixed diagnostic directing the user to the
+explicit `omnivia mcp configure --host ...` action. A direct
+library caller that bypasses the entry point is still refused by `connect`.
+There is no unauthenticated fallback, because the local endpoint would admit one
+as the service's own principal.
+
+`server.verify_installed_setup(path)` is the check R004 section 9.2 step 7
+requires an installed setup to pass before it reports success, and it lives here
+because every part of it does. It is a **real MCP exchange with a real child**:
+it runs this package's own entry point as a subprocess — this interpreter,
+`-m omnivia_core_mcp.server --config <absolute path>`, and nothing else on the
+command line — drives it with the official SDK's `stdio_client` and
+`ClientSession`, and completes `initialize` and `tools/list` over the transport
+a host would use. The peer must identify itself as `omnivia-core` at this
+package's version; the advertised inventory must be exactly one profile's own
+tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — six or
+eleven; and the document's `allowed_purposes` must be exactly that profile's
+manifest purposes. Which profile is in force is read off the inventory the child
+advertised, never assumed from the document, so a `mutation_enabled: true`
+configuration the protected authority declines to admit is refused here.
+
+No credential appears in the child's argument vector or its environment: it is
+told a path and resolves its own bearer from this installation's protected
+store, exactly as it does under a host. The whole exchange is bounded, the
+child's stderr is discarded at the descriptor, and the child is terminated on
+success and on every failure. Every refusal is one of this module's fixed,
+payload-free sentences — nothing a peer, an exception, a path or a credential
+contributed. `omnivia mcp configure` calls this and holds none of it. The CLI
+distribution does not depend on this one, so it resolves this function by name
+at the moment it is needed and fails closed when it is absent.
+
 Remote `service_client` mode names an HTTPS origin and an opaque credential
 reference. The console entry point has no ambient credential resolver and
 therefore refuses remote mode. An embedding host may inject its trusted resolver

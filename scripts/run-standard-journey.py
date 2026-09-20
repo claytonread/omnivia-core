@@ -450,20 +450,19 @@ def _windows_owner_only(path: Path) -> bool:
     protected so a permissive parent cannot re-supply them, and leaves one allow
     ACE naming this process's own SID -- the SID `whoami /user` reports, not an
     account name, which is a second lookup that can resolve to another principal.
+    `/L` keeps a raced symbolic link from redirecting the ACL write onto its target.
 
     Short-circuits at the first failing step: a partly applied sequence is not a
     restriction, and the caller fails closed on the `False`.
     """
-    identity = _run(
-        [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"], timeout=15
-    )
+    identity = _run([_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"], timeout=15)
     found = _SID_RE.search(identity.stdout) if identity.returncode == 0 else None
     if found is None:
         return False
     sid = found.group()
     return all(
         _run(
-            [_system32("icacls.exe"), str(path), *arguments, "/q"], timeout=60
+            [_system32("icacls.exe"), str(path), *arguments, "/L", "/q"], timeout=60
         ).returncode
         == 0
         for arguments in (
@@ -496,27 +495,71 @@ def _restrict(path: Path) -> None:
         raise JourneyError(_RESTRICTION_FAILED)
 
 
-def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "format": "omnivia.mcp-config.v1",
-                "principal_id": PRINCIPAL,
-                "allowed_workspace_ids": [workspace_id],
-                "default_workspace_id": workspace_id,
-                "allowed_purposes": [
-                    "workspace_inspection",
-                    "knowledge_retrieval",
-                ],
-                "mutation_enabled": False,
-                "service_mode": "managed_local",
-                "installation_state": str(installation),
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+#: The installed-administration host and profile this journey provisions. Fixed
+#: to `claude-code`/`restricted`: the protected configuration `configure` writes
+#: is the one file every client family below then reads through its own launch
+#: form, and `restricted` is the six-tool, read-only profile the Standard
+#: distribution ships -- this journey does not exercise `authoring` and must
+#: not broaden mutation authority for this distribution.
+_ADMIN_HOST: Final = "claude-code"
+_ADMIN_PROFILE: Final = "restricted"
+
+
+def _provisioned_configuration(
+    cli: Path, installation: Path, workspace_id: str
+) -> Path:
+    """Provision this installation's protected MCP setup through the real CLI.
+
+    `omnivia mcp configure` is R004 section 9.2's installed administration path:
+    it mints a dedicated principal at the running service, files the bearer in
+    this installation's owner-private credential store, writes the protected
+    `omnivia.mcp-config.v1` document -- carrying the opaque credential
+    *reference* rather than the bearer -- and, only once its own real MCP
+    handshake against that file has passed, prints the host-native snippet
+    naming where it wrote it. This journey forges neither file: the snippet on
+    stdout is the sole channel back, and only the `--config` path inside it is
+    read out of it. Nothing else this command could print -- and it prints no
+    credential, by construction -- is kept.
+    """
+    completed = _run(
+        [
+            str(cli),
+            "--installation-state",
+            str(installation),
+            "mcp",
+            "configure",
+            "--host",
+            _ADMIN_HOST,
+            "--workspace",
+            workspace_id,
+            "--profile",
+            _ADMIN_PROFILE,
+        ]
     )
-    _restrict(path)
+    _require_status(completed, 0, "MCP administration configure")
+    if completed.stderr:
+        raise JourneyError(
+            "MCP administration configure wrote an unexpected diagnostic"
+        )
+    snippet = _document(completed.stdout, "MCP administration configure")
+    servers = snippet.get("mcpServers")
+    entry = servers.get(SERVER_KEY) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or set(entry) != ACCEPTED_ENTRY_FIELDS:
+        raise JourneyError(
+            "MCP administration configure did not name its configuration"
+        )
+    arguments = entry["args"]
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 2
+        or arguments[0] != "--config"
+        or not isinstance(arguments[1], str)
+        or not arguments[1]
+    ):
+        raise JourneyError(
+            "MCP administration configure did not name its configuration"
+        )
+    return Path(arguments[1])
 
 
 def _exception_leaves(error: BaseException) -> list[BaseException]:
@@ -551,7 +594,9 @@ def _mcp_error_codes(error: BaseException) -> list[int]:
     return sorted(codes)
 
 
-def _mcp_failure_message(stage: str, error: BaseException, server_diagnostic: bool) -> str:
+def _mcp_failure_message(
+    stage: str, error: BaseException, server_diagnostic: bool
+) -> str:
     classes = _exception_class_names(error)
     codes = _mcp_error_codes(error)
     return (
@@ -694,7 +739,9 @@ def _mcp_journey(
     """
     host = profile.name
     stage: list[str] = ["transport_entry"]
-    with tempfile.TemporaryDirectory(prefix="omnivia-mcp-diagnostic-") as diagnostic_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="omnivia-mcp-diagnostic-"
+    ) as diagnostic_dir:
         diagnostic_path = Path(diagnostic_dir) / "mcp-server-stderr.txt"
         try:
             with open(diagnostic_path, "w", encoding="utf-8") as diagnostic:
@@ -792,7 +839,9 @@ def _replacement_pid(descriptor: Path) -> int:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if descriptor.is_file():
-            document = _document(descriptor.read_text(encoding="utf-8"), "replacement descriptor")
+            document = _document(
+                descriptor.read_text(encoding="utf-8"), "replacement descriptor"
+            )
             process = document.get("process")
             pid = process.get("pid") if isinstance(process, dict) else None
             if isinstance(pid, int) and document.get("ready") is True:
@@ -945,9 +994,7 @@ def run(output: Path) -> dict[str, Any]:
                         "domain_scope": "standalone.qualification",
                         "evidence_disposition": "available",
                         "record_type": "memory.fact",
-                        "sources": [
-                            {"kind": "document", "source_id": SOURCE_ID}
-                        ],
+                        "sources": [{"kind": "document", "source_id": SOURCE_ID}],
                     },
                     idempotency_key="standard-memory-create-1",
                 ),
@@ -1016,10 +1063,11 @@ def run(output: Path) -> dict[str, Any]:
             )
             records = searched.get("records")
             if not isinstance(records, list) or not records:
-                raise JourneyError("CLI knowledge search did not find the approved record")
+                raise JourneyError(
+                    "CLI knowledge search did not find the approved record"
+                )
 
-            config = root / "omnivia-mcp.json"
-            _write_mcp_configuration(config, installation, workspace_id)
+            config = _provisioned_configuration(cli, installation, workspace_id)
             hosts = root / "host-configurations"
             hosts.mkdir()
             mcp_result = _host_interoperability(
@@ -1032,9 +1080,7 @@ def run(output: Path) -> dict[str, Any]:
                     "knowledge_search": {"query": QUERY_TOKEN},
                     "memory_search": {"query": QUERY_TOKEN},
                     "graph_traverse": {
-                        "start": [
-                            {"record_id": record_id, "version": approved_version}
-                        ]
+                        "start": [{"record_id": record_id, "version": approved_version}]
                     },
                     "context_pack_build": {
                         "query": QUERY_TOKEN,
@@ -1125,7 +1171,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"standalone journey failed: {error}", file=sys.stderr)
         return 1
     path = args.output / "standalone-journey-result.json"
-    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
