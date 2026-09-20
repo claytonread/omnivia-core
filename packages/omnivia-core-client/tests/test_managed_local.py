@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import uuid
@@ -1177,3 +1178,78 @@ def test_windows_stop_retains_the_identity_handle_through_signal_and_exit(
     ]
     assert api.waited == [(api.handle, 0)]
     assert api.closed == [api.handle]
+
+
+# --- the stop signal, and what it is addressed to -----------------------------
+#
+# Portable on purpose. The hosted Windows row proves the real named-pipe
+# start/attach/stop, but it cannot prove the *selection* -- which signal, and
+# which identifier it is addressed to -- because a POSIX host never reaches that
+# branch and a Windows host never reaches the other one. Both are decided by
+# `_stop_signal` and `_request_stop`, so both are checked here on every platform.
+
+
+def test_the_graceful_stop_signal_is_the_one_the_platform_installs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSIX gets `SIGTERM`; Windows gets `CTRL_BREAK_EVENT` and never `SIGTERM`.
+
+    `os.kill(pid, SIGTERM)` on Windows is `TerminateProcess`: no handler runs, so
+    the descriptor is left advertising a ready service at a pid that has gone.
+    `service/main.py` installs a `SIGBREAK` handler precisely so a caller has a
+    stop that unwinds, and `CTRL_BREAK_EVENT` is what raises it.
+    """
+    assert managed_local._stop_signal(windows=False) == signal.SIGTERM
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", 1, raising=False)
+    assert managed_local._stop_signal(windows=True) == 1
+    assert managed_local._stop_signal(windows=True) != signal.SIGTERM
+
+
+def test_a_stop_is_addressed_to_the_corroborated_service_and_never_to_group_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`CTRL_BREAK_EVENT` names a *console process group*, and zero means all of them.
+
+    `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)` signals every process sharing
+    this process's console -- on a hosted runner that is the shell the job is
+    running under, which takes the break itself and fails the step. The only
+    identifier that may ever be sent is the corroborated pid the descriptor
+    advertised, which the managed launcher keeps equal to the root of the group it
+    started the service in.
+    """
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        managed_local.os, "kill", lambda pid, number: sent.append((pid, number))
+    )
+
+    managed_local._request_stop(4242)
+
+    assert sent == [(4242, managed_local._stop_signal())]
+
+
+def test_stop_never_signals_a_process_whose_pid_is_not_a_positive_identifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero is the console-wide group, so a descriptor claiming it never signals.
+
+    The pin refuses it before `_request_stop` is reached, which is what makes the
+    "never group zero" claim above a property of `stop_managed_local` rather than
+    only of the one helper.
+    """
+    for pid in (0, -1):
+        process = SimpleNamespace(pid=pid, start_time="published-start")
+        connected = cast(
+            ServiceClient, SimpleNamespace(descriptor=SimpleNamespace(process=process))
+        )
+        connects(monkeypatch, [connected])
+        monkeypatch.setattr(
+            managed_local,
+            "_request_stop",
+            lambda _pid: pytest.fail("a pid that cannot pin must not be signalled"),
+        )
+
+        stopped = managed_local.stop_managed_local(
+            config(tmp_path), deadline=Deadline.after(30)
+        )
+
+        assert stopped.status == "identity_mismatch", pid

@@ -96,6 +96,11 @@ from omnivia_core_runtime.workspace.manifest_store import (
 #: another one.
 SERVICE_EXECUTABLE: Final = "omnivia-core-service"
 
+#: The module :data:`SERVICE_EXECUTABLE`'s entry point lives in, run directly on
+#: Windows. See :func:`_service_command` for why the console script is not what is
+#: spawned there.
+SERVICE_MODULE: Final = "omnivia_core_runtime.service.main"
+
 #: Version of the machine-readable result document below. Bumped when a consumer
 #: would have to change to keep reading it; additive fields do not bump it.
 MANAGED_START_VERSION: Final = "1.0"
@@ -457,6 +462,35 @@ def _spawn_and_wait(
     )
 
 
+def _service_command(executable: str, *, windows: bool | None = None) -> list[str]:
+    """The argv whose *first* process is the one that serves and advertises itself.
+
+    On POSIX an installed console script is a shebang shim: the interpreter
+    replaces it in the same process, so the process `Popen` creates is the process
+    that serves, and `child.pid` is the pid its descriptor later advertises.
+
+    **On Windows the same console script is an `.exe` launcher that runs the
+    interpreter as a child and waits for it**, so those are two processes. The
+    `CREATE_NEW_PROCESS_GROUP` below then applies to the launcher stub -- it is the
+    root of the new group -- while the process that serves is an ordinary member of
+    that group, and the pid it publishes is not a process group id at all. Two
+    things this tree already relies on stop being true: `_clean_child_descriptor`
+    compares an advertised pid with `child.pid` and can never match, and a caller's
+    graceful stop addresses `CTRL_BREAK_EVENT` to the advertised pid *as a process
+    group*, so the console event is not contained to this service's own group.
+    Running the entry point's module through this interpreter keeps the spawned
+    process, the advertised pid and the process group root one process, which is
+    the arrangement `test_service_and_adapters` already proves on every platform.
+
+    It is *this* interpreter rather than a second lookup, so what serves is the
+    payload already running as this launcher: a hostile `omnivia-core-service`
+    first on `PATH` is no more reachable from here than `_service_executable()`
+    makes it, and `executable` stays the POSIX command for the same reason.
+    """
+    on_windows = os.name == "nt" if windows is None else windows
+    return [sys.executable, "-m", SERVICE_MODULE] if on_windows else [executable]
+
+
 def _spawn(
     executable: str,
     *,
@@ -473,7 +507,9 @@ def _spawn(
     Detached because the started service outlives this launcher: on POSIX
     `start_new_session=True` puts it in its own session, so a terminal's `SIGINT`
     cannot reach it, and on Windows a new process group is what makes
-    `CTRL_BREAK_EVENT` deliverable later.
+    `CTRL_BREAK_EVENT` deliverable later -- addressed to the pid of the process
+    created here, which :func:`_service_command` is what keeps equal to the pid the
+    service goes on to advertise.
 
     Output goes to a file rather than a pipe. A pipe whose read end dies when this
     launcher exits leaves the service writing into a closed descriptor, and the file
@@ -486,7 +522,7 @@ def _spawn(
     log = log_path.open("wb")
     try:
         arguments = [
-            executable,
+            *_service_command(executable),
             "--workspace",
             str(workspace_root),
             "--installation-state",
@@ -689,6 +725,7 @@ __all__ = [
     "MANAGED_START_TIMEOUT_SECONDS",
     "MANAGED_START_VERSION",
     "SERVICE_EXECUTABLE",
+    "SERVICE_MODULE",
     "ManagedStartFailure",
     "ManagedStartResult",
     "ManagedStartStatus",

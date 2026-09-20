@@ -87,25 +87,33 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 # OVC1 framing or waiting without a bound.
 UNARY_BOUNDARY_SECONDS = 0.05
 
-#: How many accepts may fail in a row before the accept loop gives up.
+#: The accept failures that mean the listener itself is gone.
 #:
-#: A failed accept is not a failed listener. `ECONNABORTED` -- the peer went away
-#: between the SYN and the accept -- and a transient `EMFILE` both raise from
-#: `accept()` and both leave the listener perfectly able to take the next
-#: connection. Ending the loop on one of them is what leaves the *process* alive
-#: holding the workspace lease and the storage lock, and its endpoint still
-#: advertised ready, with nothing behind it: alive, ready, answering nobody.
+#: These three say the descriptor the loop accepts on is no longer a usable
+#: listening socket -- closed, never listened on, or not a socket at all -- so the
+#: next accept fails exactly as this one did, and so does the one after it.
+#: Retrying that is a thread burning a core until the process exits, not
+#: resilience, so the loop ends on them and ends at once.
 #:
-#: Counted consecutively rather than in total, and cleared by any successful
-#: accept, so a service that meets one bad connect an hour serves forever. Bounded
-#: rather than unbounded because a listener whose descriptor is genuinely gone
-#: fails *every* accept, and retrying that for the life of the process is a hot
-#: loop, not resilience.
-_MAX_CONSECUTIVE_ACCEPT_FAILURES = 8
+#: Everything else is retried without a cap, because a failed accept is not a
+#: failed listener. `ECONNABORTED` -- the peer went away between the SYN and the
+#: accept -- and `EMFILE`, `ENFILE`, `ENOMEM` and `ENOBUFS` -- the host is
+#: momentarily out of descriptors or memory -- all raise from `accept()` and all
+#: leave the listener perfectly able to take the next connection.
+#:
+#: Counting them was the defect this replaces. The bound was eight consecutive
+#: failures at `_ACCEPT_RETRY_PAUSE_SECONDS` apart, so a 1.6-second burst of host
+#: pressure ended the sole accept loop permanently: the *process* stayed alive
+#: holding the workspace lease and the storage lock, renewing it, with its endpoint
+#: still advertised ready and nothing behind it -- alive, ready, answering nobody,
+#: which is what a hosted acceptance run reported as clients timing out against a
+#: service that was plainly still running. No count can tell a burst from a broken
+#: listener, because the burst looks identical while it lasts. The errno can.
+_TERMINAL_ACCEPT_ERRNOS = frozenset({errno.EBADF, errno.EINVAL, errno.ENOTSOCK})
 
-#: How long to wait between those retries. Long enough that eight of them span a
-#: burst rather than a microsecond, short enough not to make a real client wait.
-#: Waited on the stop event rather than slept, so shutdown never waits one out.
+#: How long to wait between those retries. Long enough that a burst is paced
+#: rather than spun on, short enough not to make a real client wait. Waited on the
+#: stop event rather than slept, so shutdown never waits one out.
 _ACCEPT_RETRY_PAUSE_SECONDS = 0.2
 
 #: The size of the `sockaddr_un.sun_path` field: 104 bytes on macOS and BSD, 108 on
@@ -812,19 +820,31 @@ class LocalSocketServer:
     def _serve(self) -> None:
         assert self._listener is not None
         assert self._stop is not None
-        failures = 0
         while not self._stop.is_set():
             try:
                 channel = self._listener.accept()
-            except OSError:
+            except Exception as error:  # noqa: BLE001 - see below
                 # Contained the same way a bad client is contained below, and for
                 # the same reason: this is the sole accept loop, so ending it takes
                 # the service's only ear with it while everything else about the
-                # process still says it is serving. See
-                # `_MAX_CONSECUTIVE_ACCEPT_FAILURES` for why the retry is bounded
-                # and why the count is consecutive.
-                failures += 1
-                if failures >= _MAX_CONSECUTIVE_ACCEPT_FAILURES:
+                # process still says it is serving.
+                #
+                # Only a listener that cannot accept again ends it; see
+                # `_TERMINAL_ACCEPT_ERRNOS`. Everything else is paced and retried
+                # for the life of the process, including a failure that is not an
+                # `OSError` at all -- the set of those is no more enumerable here
+                # than the set of ways a client can be bad is below, and one of
+                # them reaching the `while` would kill the sole service thread
+                # silently. An error carrying no errno is retried for the same
+                # reason: unrecognised is not evidence the listener is gone, and
+                # going deaf is the one outcome that cannot be recovered from.
+                #
+                # `BaseException` is deliberately not caught: `KeyboardInterrupt`
+                # and `SystemExit` are shutdown, not a failed accept.
+                if (
+                    isinstance(error, OSError)
+                    and error.errno in _TERMINAL_ACCEPT_ERRNOS
+                ):
                     break
                 # `wait`, not `sleep`: the pause is on the shutdown signal itself,
                 # so a stop during a retry is answered immediately rather than
@@ -832,7 +852,6 @@ class LocalSocketServer:
                 # accept is one of the ways this branch is reached.
                 self._stop.wait(_ACCEPT_RETRY_PAUSE_SECONDS)
                 continue
-            failures = 0
             if channel is None:
                 continue
             if self._stop.is_set():

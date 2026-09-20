@@ -4,6 +4,10 @@ The ACL writer and reader live in sibling distributions and can each satisfy the
 own doubled tests while disagreeing on a real host. These cases deliberately begin
 under pytest's inherited temp-directory ACL, run the production initializer, then
 drive the installed client through a real named-pipe service start and attachment.
+
+The last two cases are the exception and are deliberately portable: *which* process
+a managed start creates decides which pid the stop half may address as a Windows
+console process group, and that is a property of the argv rather than of the host.
 """
 
 from __future__ import annotations
@@ -12,7 +16,9 @@ import ctypes
 import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from omnivia_core_client import (
@@ -23,6 +29,7 @@ from omnivia_core_client import (
     stop_managed_local,
 )
 from omnivia_core_runtime.ownership.locks import LockRole, create_lock
+from omnivia_core_runtime.service import managed_start
 from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitRefusal,
     WorkspaceInitResult,
@@ -35,7 +42,13 @@ from omnivia_core_runtime.service.workspace_init import (
     initialise_workspace,
 )
 
-pytestmark = pytest.mark.skipif(
+#: Per-test rather than a module-level `pytestmark`, so that the one claim in
+#: this file that needs no Windows host -- which process a managed start creates,
+#: and therefore which pid a graceful stop may address as a process group -- runs
+#: on every platform instead of being skipped exactly where it is cheapest to
+#: check. Every real-ACL and real-named-pipe row below still states its own
+#: requirement, and `-rs` still reports it.
+windows_only = pytest.mark.skipif(
     os.name != "nt", reason="exercises real Windows ACLs and named pipes"
 )
 
@@ -79,6 +92,7 @@ def _reinitialise(home: Path) -> WorkspaceInitResult:
     )
 
 
+@windows_only
 def test_legacy_init_creates_the_complete_windows_restart_trust_chain(
     tmp_path: Path,
 ) -> None:
@@ -96,6 +110,7 @@ def test_legacy_init_creates_the_complete_windows_restart_trust_chain(
     _start_attach_stop(home, result.workspace_id)
 
 
+@windows_only
 def test_allocated_init_creates_the_complete_windows_restart_trust_chain(
     tmp_path: Path,
 ) -> None:
@@ -113,6 +128,7 @@ def test_allocated_init_creates_the_complete_windows_restart_trust_chain(
     _start_attach_stop(home, workspace_id)
 
 
+@windows_only
 def test_windows_init_refuses_a_real_junction_before_writing_through_it(
     tmp_path: Path,
 ) -> None:
@@ -147,6 +163,7 @@ def test_windows_init_refuses_a_real_junction_before_writing_through_it(
     assert not (redirected / workspace_id).exists()
 
 
+@windows_only
 def test_windows_guard_pins_existing_directories_against_rename(
     tmp_path: Path,
 ) -> None:
@@ -165,6 +182,7 @@ def test_windows_guard_pins_existing_directories_against_rename(
     moved.rename(home)
 
 
+@windows_only
 def test_windows_reinitialisation_refuses_a_retained_blob_write_handle(
     tmp_path: Path,
 ) -> None:
@@ -180,6 +198,7 @@ def test_windows_reinitialisation_refuses_a_retained_blob_write_handle(
     assert _reinitialise(home).status is WorkspaceInitStatus.ALREADY_INITIALISED
 
 
+@windows_only
 def test_windows_reinitialisation_refuses_a_blob_symlink(tmp_path: Path) -> None:
     home, _workspace_id, directory = _existing_blob_tree(tmp_path)
     outside = tmp_path / "outside-symlink-blob"
@@ -197,6 +216,7 @@ def test_windows_reinitialisation_refuses_a_blob_symlink(tmp_path: Path) -> None
     assert outside.read_bytes() == b"content"
 
 
+@windows_only
 def test_windows_reinitialisation_refuses_a_blob_junction(tmp_path: Path) -> None:
     home, _workspace_id, directory = _existing_blob_tree(tmp_path)
     outside = tmp_path / "outside-junction-blobs"
@@ -220,6 +240,7 @@ def test_windows_reinitialisation_refuses_a_blob_junction(tmp_path: Path) -> Non
     assert refused.refusal is WorkspaceInitRefusal.WRITE_FAILURE
 
 
+@windows_only
 def test_windows_reinitialisation_refuses_a_hard_linked_blob(tmp_path: Path) -> None:
     home, _workspace_id, directory = _existing_blob_tree(tmp_path)
     outside = tmp_path / "outside-hard-linked-blob"
@@ -233,6 +254,7 @@ def test_windows_reinitialisation_refuses_a_hard_linked_blob(tmp_path: Path) -> 
     assert outside.read_bytes() == b"content"
 
 
+@windows_only
 def test_windows_guard_adds_new_directories_files_and_manifests(
     tmp_path: Path,
 ) -> None:
@@ -255,6 +277,7 @@ def test_windows_guard_adds_new_directories_files_and_manifests(
                 path.rename(path.with_name(f"moved-{path.name}"))
 
 
+@windows_only
 def test_windows_guard_allows_sqlite_to_delete_its_sidecars(
     tmp_path: Path,
 ) -> None:
@@ -296,6 +319,7 @@ def test_windows_guard_allows_sqlite_to_delete_its_sidecars(
         reopened.close()
 
 
+@windows_only
 def test_windows_lock_pins_its_parent_chain_for_its_full_lifetime(
     tmp_path: Path,
 ) -> None:
@@ -315,6 +339,7 @@ def test_windows_lock_pins_its_parent_chain_for_its_full_lifetime(
     moved.rename(parent)
 
 
+@windows_only
 def test_windows_lock_refuses_a_preexisting_hard_link_without_truncating_target(
     tmp_path: Path,
 ) -> None:
@@ -334,6 +359,7 @@ def test_windows_lock_refuses_a_preexisting_hard_link_without_truncating_target(
     assert lock_path.read_bytes() == b"must remain byte-for-byte"
 
 
+@windows_only
 def test_windows_init_refuses_a_database_open_outside_the_lifetime_lock(
     tmp_path: Path,
 ) -> None:
@@ -365,6 +391,7 @@ def test_windows_init_refuses_a_database_open_outside_the_lifetime_lock(
     assert retry.status is WorkspaceInitStatus.ALREADY_INITIALISED
 
 
+@windows_only
 def test_windows_init_refuses_a_live_access_capable_workspace_directory_handle(
     tmp_path: Path,
 ) -> None:
@@ -418,3 +445,91 @@ def test_windows_init_refuses_a_live_access_capable_workspace_directory_handle(
         installation_root=installation,
     )
     assert retry.status is WorkspaceInitStatus.ALREADY_INITIALISED
+
+
+# --- which process a managed start creates, and therefore which pid may be signalled
+
+
+def test_a_managed_start_creates_the_process_whose_pid_a_stop_may_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spawned process, the advertised pid and the process group root are one.
+
+    `_spawn` asks for `CREATE_NEW_PROCESS_GROUP`, and everything downstream reads
+    the pid the started service advertises as that group's identifier:
+    `_clean_child_descriptor` compares it with `child.pid`, and the client's
+    `stop_managed_local` hands it to `GenerateConsoleCtrlEvent`, whose argument is
+    a process group rather than a process.
+
+    A Windows console script is an `.exe` launcher that runs the interpreter as a
+    *child*, so spawning it puts the group root and the serving process in two
+    different processes and makes both of those readings wrong -- the descriptor
+    cleanup can never match, and the console event is addressed to a group that
+    does not exist, escaping the service it was meant for. This is the portable
+    half of that claim: the argv on Windows is this interpreter running the entry
+    point's own module, so one process is created, serves, and roots the group.
+
+    The POSIX arm is asserted beside it because it must *not* change: there the
+    console script is a shebang shim the interpreter replaces in place, so the
+    located executable is already the one process, and `start_new_session` rather
+    than a process group is what detaches it.
+    """
+    recorded: dict[str, Any] = {}
+
+    class _Spawned:
+        pid = 4242
+
+    def popen(arguments: list[str], **keywords: Any) -> _Spawned:
+        recorded["arguments"] = list(arguments)
+        recorded["keywords"] = keywords
+        return _Spawned()
+
+    monkeypatch.setattr(managed_start.subprocess, "Popen", popen)
+    monkeypatch.setattr(
+        managed_start.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
+    )
+
+    def spawn(executable: str) -> None:
+        managed_start._spawn(
+            executable,
+            workspace_root=tmp_path / "workspace",
+            installation_root=tmp_path / "installation-state",
+            endpoint_uri="pipe://omnivia-core-portable",
+            expected_manifest_digest=None,
+            required_absent_manifest=None,
+            core_version="0.1.0",
+            log_path=tmp_path / "run" / "service.log",
+        )
+
+    monkeypatch.setattr(managed_start.os, "name", "nt")
+    spawn("C:\\env\\Scripts\\omnivia-core-service.exe")
+    assert recorded["arguments"][:3] == [
+        sys.executable,
+        "-m",
+        managed_start.SERVICE_MODULE,
+    ]
+    assert managed_start.SERVICE_EXECUTABLE not in " ".join(recorded["arguments"])
+    assert recorded["keywords"]["creationflags"] == 0x200
+    assert recorded["keywords"]["start_new_session"] is False
+
+    monkeypatch.setattr(managed_start.os, "name", "posix")
+    spawn("/opt/omnivia/bin/omnivia-core-service")
+    assert recorded["arguments"][0] == "/opt/omnivia/bin/omnivia-core-service"
+    assert recorded["keywords"]["start_new_session"] is True
+
+
+def test_the_service_command_never_reresolves_the_executable_on_windows() -> None:
+    """A second lookup is what `_service_executable()` exists to avoid, so there is none.
+
+    The Windows argv names this interpreter and this package's own module, which
+    is the payload already running as the launcher. Nothing about `PATH`, and
+    nothing about the string a caller passed, can put a different
+    `omnivia-core-service` in it.
+    """
+    hostile = "C:\\attacker\\omnivia-core-service.exe"
+    assert managed_start._service_command(hostile, windows=True) == [
+        sys.executable,
+        "-m",
+        managed_start.SERVICE_MODULE,
+    ]
+    assert managed_start._service_command(hostile, windows=False) == [hostile]

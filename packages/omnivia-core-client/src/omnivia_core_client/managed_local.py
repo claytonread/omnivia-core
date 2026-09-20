@@ -742,10 +742,43 @@ def _same_process(process: ServiceProcessEvidence) -> bool:
     return observed is not None and observed == process.start_time
 
 
+def _stop_signal(*, windows: bool | None = None) -> int:
+    """The graceful stop signal Runtime installs a handler for on this platform.
+
+    Windows has no signal delivery: ``os.kill(pid, SIGTERM)`` there is
+    ``TerminateProcess``, which runs no handler and would leave the descriptor
+    advertising a ready service at a pid that no longer exists.
+    ``CTRL_BREAK_EVENT`` raises ``SIGBREAK`` in the target, which
+    ``service/main.py`` installs a handler for, and it is the one stop signal a
+    Windows caller can send that the service can act on.
+    """
+    on_windows = os.name == "nt" if windows is None else windows
+    if not on_windows:
+        return int(signal.SIGTERM)
+    return int(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+
+
 def _request_stop(pid: int) -> None:
-    """Use the graceful signal Runtime installs on this platform."""
-    break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
-    os.kill(pid, signal.SIGTERM if break_event is None else break_event)
+    """Ask exactly the corroborated service to stop, and nothing else.
+
+    **On Windows the argument is read as a process group id, not as a pid.**
+    ``os.kill(pid, CTRL_BREAK_EVENT)`` is ``GenerateConsoleCtrlEvent``, whose
+    target is a console process group: zero means every process sharing this
+    process's console -- a hosted runner's own shell included -- and any other
+    value is only contained to the intended service while it is the root of the
+    group that service was started in. That is what
+    ``managed_start._service_command`` exists to keep true: the managed launcher
+    creates the serving process itself with ``CREATE_NEW_PROCESS_GROUP``, so the
+    pid this descriptor advertises is that group's root and this event reaches
+    that group alone. A caller's own group is a different group and cannot
+    receive it.
+
+    The caller has already corroborated process identity and holds the pinning
+    handle, so there is no probe here; the pid is never zero, because
+    :func:`stop_managed_local` refuses a descriptor whose process evidence does
+    not pin.
+    """
+    os.kill(pid, _stop_signal())
 
 
 def _windows_kernel32() -> Any | None:
