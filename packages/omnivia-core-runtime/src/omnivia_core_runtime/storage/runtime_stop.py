@@ -25,18 +25,54 @@ event stream is not touched, so a late cancellation cannot reopen a closed run.
 returns its stored outcome and writes nothing. The second contender for the same
 run settles as `ignored_already_terminal` instead, because the first one's
 `cancelled` event made the run terminal inside the same fence.
+
+Stop progress, over migration 0042
+----------------------------------
+
+0025 answers whether a run was asked to stop and how that request settled. It does
+not answer what the stop is still *waiting on*, and for a run holding material
+effects that is the question a caller actually has. Migration 0042 adds the durable
+half of that answer -- numbered progress observations, the unresolved effects each
+observation identified, and per-stop cleanup receipts -- and the reads below fold
+those rows into the contract's `RuntimeStopProjection`.
+
+Three properties of those reads are worth stating where they are implemented.
+
+*A projection is never invented.* A stop identifier this workspace does not hold,
+and a recorded request carrying neither a progress observation nor a settled
+outcome, both refuse. "I know nothing about this stop" is not reported as a stop
+that is merely early.
+
+*Pending means unresolved at the effect ledger, not unresolved here.* An obligation
+row says an effect was unresolved when it was observed. Whether it still is comes
+from :mod:`omnivia_core_runtime.storage.runtime_effect_head`, which walks 0024's
+reconciliation links -- so a branched chain counts as pending, because a stop is
+not clear of an effect nobody can say the outcome of.
+
+*`retry_eligible` is always false here.* The contract is explicit that it reports an
+owner-authorized recovery decision and never a grant inferred from cancellation,
+from an empty pending-effect count, or from a settled phase. This layer holds no
+such authorization, so it reports none.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Final
 
+from omnivia_core.contracts.v1.generated import RuntimeStopProjection
 from omnivia_core.contracts.v1.semantics_runtime import (
     RUN_STATUS_CANCELLED,
+    RUNTIME_STOP_CLEANUP_STATE_COMPLETED,
+    RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED,
+    RUNTIME_STOP_PHASE_PENDING_RECONCILIATION,
+    RUNTIME_STOP_PHASE_REQUESTED,
+    RUNTIME_STOP_PHASE_SETTLED,
+    RUNTIME_STOP_SETTLED_CLEANUP_STATES,
     is_terminal_run_status,
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
@@ -46,8 +82,12 @@ from omnivia_core_runtime.storage.agent_runtime import (
     transaction_local_writer,
 )
 from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.runtime_effect_head import read_effect_heads
 
 __all__ = [
+    "CLEANUP_RECEIPT_OUTCOMES",
+    "MAX_STOP_OBLIGATIONS",
+    "MAX_STOP_PENDING_EFFECT_IDS",
     "STOP_OUTCOMES",
     "STOP_OUTCOME_ACCEPTED",
     "STOP_OUTCOME_IGNORED_ALREADY_TERMINAL",
@@ -55,7 +95,14 @@ __all__ = [
     "RunStopOutcome",
     "RunStopRequest",
     "RuntimeStopWriter",
+    "StopCleanupReceipt",
+    "StopObligation",
+    "StopProgress",
     "read_run_stop_outcome",
+    "read_stop_cleanup_receipts",
+    "read_stop_obligations",
+    "read_stop_progress",
+    "read_stop_projection",
     "runtime_stop_writer",
     "stop_run",
     "transaction_local_stop_writer",
@@ -63,6 +110,26 @@ __all__ = [
 
 _REQUESTS: Final = "omnivia_runtime_stop_requests"
 _OUTCOMES: Final = "omnivia_runtime_stop_outcomes"
+_PROGRESS: Final = "omnivia_runtime_stop_progress"
+_OBLIGATIONS: Final = "omnivia_runtime_stop_obligations"
+_CLEANUP_RECEIPTS: Final = "omnivia_runtime_stop_cleanup_receipts"
+
+#: The per-resource cleanup answers 0042 admits. The first three are migration
+#: 0019's historical `CleanupOutcome` vocabulary; `unknown` is the fourth this
+#: table adds, because `RuntimeStopCleanupState` has `uncertain` and a rolled-up
+#: `uncertain` needs a resource that was actually recorded as not established.
+CLEANUP_RECEIPT_OUTCOMES: Final[tuple[str, ...]] = (
+    "released",
+    "not_required",
+    "failed",
+    "unknown",
+)
+
+#: Restated from the accepted schema, which caps `pending_effect_count` at 256 and
+#: `pending_effect_ids` at 128 items. 0042's own trigger refuses the 257th
+#: obligation against one observation, so the count is always expressible.
+MAX_STOP_OBLIGATIONS: Final = 256
+MAX_STOP_PENDING_EFFECT_IDS: Final = 128
 
 STOP_OUTCOME_ACCEPTED: Final = "accepted"
 STOP_OUTCOME_IGNORED_ALREADY_TERMINAL: Final = "ignored_already_terminal"
@@ -110,11 +177,135 @@ class RunStopOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class StopObligation:
+    """One effect a stop was observed to be blocked on, exactly as 0042 holds it.
+
+    `effect_settlement_id` is the `unknown` settlement that was the effect's answer
+    at the moment of observation. It is a starting point for the chain walk, not a
+    verdict: 0024 may already have superseded it by the time anyone reads.
+    """
+
+    effect_intent_id: str
+    effect_settlement_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class StopProgress:
+    """One numbered observation of where a stop request stands."""
+
+    stop_progress_id: str
+    stop_request_id: str
+    progress_number: int
+    observed_at_us: int
+    cleanup_required: bool
+    reason: str
+    audit_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class StopCleanupReceipt:
+    """What cleanup for one stop achieved for one resource."""
+
+    stop_cleanup_receipt_id: str
+    stop_request_id: str
+    resource_kind: str
+    outcome: str
+    performed_at_us: int
+    reason: str
+    audit_ref: str
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeStopWriter:
     """The stop writes, issued into a transaction that is already open."""
 
     connection: sqlite3.Connection
     workspace_id: str
+
+    def record_progress(
+        self,
+        *,
+        stop_progress_id: str,
+        stop_request_id: str,
+        observed_at_us: int,
+        cleanup_required: bool,
+        reason: str,
+        audit_ref: str,
+        obligations: Sequence[StopObligation] = (),
+    ) -> StopProgress:
+        """Append one observation of a stop's progress, with what it found pending.
+
+        The observation's number is allocated here rather than taken as an argument.
+        0042 requires it to be contiguous from 1 per stop request, and a caller that
+        could name its own would be choosing where in a durable history its
+        observation sits -- including over the top of one already recorded.
+
+        The observation and its obligations land together or neither does. An
+        observation with its obligation rows missing would read as a stop that found
+        nothing pending, which is the one reading this ledger exists to prevent.
+        """
+        recorded = StopProgress(
+            stop_progress_id=stop_progress_id,
+            stop_request_id=stop_request_id,
+            progress_number=_next_progress_number(
+                self.connection, self.workspace_id, stop_request_id
+            ),
+            observed_at_us=observed_at_us,
+            cleanup_required=cleanup_required,
+            reason=reason,
+            audit_ref=audit_ref,
+        )
+        self.connection.execute(
+            f"INSERT INTO {_PROGRESS} (workspace_id, stop_progress_id, stop_request_id, "
+            "progress_number, observed_at_us, cleanup_required, reason, audit_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                recorded.stop_progress_id,
+                recorded.stop_request_id,
+                recorded.progress_number,
+                recorded.observed_at_us,
+                int(recorded.cleanup_required),
+                recorded.reason,
+                recorded.audit_ref,
+            ),
+        )
+        for obligation in obligations:
+            self.connection.execute(
+                f"INSERT INTO {_OBLIGATIONS} (workspace_id, stop_progress_id, "
+                "effect_intent_id, effect_settlement_id) VALUES (?, ?, ?, ?)",
+                (
+                    self.workspace_id,
+                    recorded.stop_progress_id,
+                    obligation.effect_intent_id,
+                    obligation.effect_settlement_id,
+                ),
+            )
+        return recorded
+
+    def record_cleanup_receipt(self, receipt: StopCleanupReceipt) -> StopCleanupReceipt:
+        """Append what cleanup for one stop achieved for one resource.
+
+        Written for the attempt rather than for the success, as 0019's receipts are:
+        a release that failed, or one whose result could not be established, is a row
+        rather than a silence indistinguishable from cleanup that never ran.
+        """
+        self.connection.execute(
+            f"INSERT INTO {_CLEANUP_RECEIPTS} (workspace_id, stop_cleanup_receipt_id, "
+            "stop_request_id, resource_kind, outcome, performed_at_us, reason, audit_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                receipt.stop_cleanup_receipt_id,
+                receipt.stop_request_id,
+                receipt.resource_kind,
+                receipt.outcome,
+                receipt.performed_at_us,
+                receipt.reason,
+                receipt.audit_ref,
+            ),
+        )
+        return receipt
 
     def stop_run(
         self,
@@ -301,6 +492,219 @@ def read_run_stop_outcome(
         reason=str(row[3]),
         audit_ref=str(row[4]),
     )
+
+
+def read_stop_progress(
+    connection: sqlite3.Connection, *, workspace_id: str, stop_request_id: str
+) -> tuple[StopProgress, ...]:
+    """Every observation recorded for one stop, oldest first."""
+    return tuple(
+        StopProgress(
+            stop_progress_id=str(row[0]),
+            stop_request_id=stop_request_id,
+            progress_number=int(row[1]),
+            observed_at_us=int(row[2]),
+            cleanup_required=bool(row[3]),
+            reason=str(row[4]),
+            audit_ref=str(row[5]),
+        )
+        for row in connection.execute(
+            "SELECT stop_progress_id, progress_number, observed_at_us, "
+            f"cleanup_required, reason, audit_ref FROM {_PROGRESS} "
+            "WHERE workspace_id = ? AND stop_request_id = ? ORDER BY progress_number",
+            (workspace_id, stop_request_id),
+        )
+    )
+
+
+def read_stop_obligations(
+    connection: sqlite3.Connection, *, workspace_id: str, stop_progress_id: str
+) -> tuple[StopObligation, ...]:
+    """The unresolved effects one observation identified, in identifier order.
+
+    Ordered by `effect_intent_id` rather than by any instant, because this ordering
+    decides which identifiers a bounded `pending_effect_ids` carries and which it
+    truncates away. A wall-clock ordering would make that selection depend on a
+    value no invariant pins.
+    """
+    return tuple(
+        StopObligation(
+            effect_intent_id=str(row[0]), effect_settlement_id=str(row[1])
+        )
+        for row in connection.execute(
+            f"SELECT effect_intent_id, effect_settlement_id FROM {_OBLIGATIONS} "
+            "WHERE workspace_id = ? AND stop_progress_id = ? ORDER BY effect_intent_id",
+            (workspace_id, stop_progress_id),
+        )
+    )
+
+
+def read_stop_cleanup_receipts(
+    connection: sqlite3.Connection, *, workspace_id: str, stop_request_id: str
+) -> tuple[StopCleanupReceipt, ...]:
+    """Every cleanup receipt recorded for one stop, oldest first."""
+    return tuple(
+        StopCleanupReceipt(
+            stop_cleanup_receipt_id=str(row[0]),
+            stop_request_id=stop_request_id,
+            resource_kind=str(row[1]),
+            outcome=str(row[2]),
+            performed_at_us=int(row[3]),
+            reason=str(row[4]),
+            audit_ref=str(row[5]),
+        )
+        for row in connection.execute(
+            "SELECT stop_cleanup_receipt_id, resource_kind, outcome, performed_at_us, "
+            f"reason, audit_ref FROM {_CLEANUP_RECEIPTS} "
+            "WHERE workspace_id = ? AND stop_request_id = ? "
+            "ORDER BY performed_at_us, stop_cleanup_receipt_id",
+            (workspace_id, stop_request_id),
+        )
+    )
+
+
+def read_stop_projection(
+    connection: sqlite3.Connection, *, workspace_id: str, stop_request_id: str
+) -> RuntimeStopProjection:
+    """Truthful progress of one recorded stop, as the contract carries it.
+
+    Two refusals rather than a fabricated projection. A `stop_request_id` this
+    workspace holds no request for refuses, because reporting `requested` for it
+    would state that a stop exists. A request holding neither a progress
+    observation nor a settled 0025 outcome refuses too: nothing in the workspace
+    says anything about it beyond its own existence, and the phase `requested`
+    means "recorded, and nothing further is yet known" -- a claim that at least
+    the recording was completed, which is what the outcome row evidences.
+
+    Everything else is read rather than assumed. The phase is `settled` only where
+    no obligation is still pending *at the effect ledger* and cleanup has resolved,
+    and `retry_eligible` is false in every case -- see the module docstring.
+    """
+    request = _read_stop_request(connection, workspace_id, stop_request_id)
+    if request is None:
+        raise StorageError(
+            f"stop request {stop_request_id!r} is not a stop request of this workspace"
+        )
+
+    observations = read_stop_progress(
+        connection, workspace_id=workspace_id, stop_request_id=stop_request_id
+    )
+    if not observations and (
+        read_run_stop_outcome(
+            connection, workspace_id=workspace_id, stop_request_id=stop_request_id
+        )
+        is None
+    ):
+        raise StorageError(
+            f"stop request {stop_request_id!r} is recorded with neither progress nor "
+            "an outcome"
+        )
+
+    receipts = read_stop_cleanup_receipts(
+        connection, workspace_id=workspace_id, stop_request_id=stop_request_id
+    )
+
+    if not observations:
+        # Recorded and settled by 0025, and nothing has looked at what it is waiting
+        # on. Cleanup is read from whatever receipts exist; with none, nothing about
+        # cleanup has been established, which is what `uncertain` is for.
+        return RuntimeStopProjection(
+            stop_request_id=stop_request_id,
+            phase=RUNTIME_STOP_PHASE_REQUESTED,
+            requested_at=_timestamp(request.requested_at_us),
+            request_audit_ref=request.audit_ref,
+            pending_effect_count=0,
+            pending_effect_ids=(),
+            pending_effects_truncated=False,
+            retry_eligible=False,
+            cleanup_state=_cleanup_state(None, receipts),
+        )
+
+    latest = observations[-1]
+    obligations = read_stop_obligations(
+        connection, workspace_id=workspace_id, stop_progress_id=latest.stop_progress_id
+    )
+    heads = read_effect_heads(
+        connection,
+        workspace_id=workspace_id,
+        effect_intent_ids=[o.effect_intent_id for o in obligations],
+    )
+    pending = tuple(
+        obligation.effect_intent_id
+        for obligation in obligations
+        if not heads[obligation.effect_intent_id].settled
+    )
+    cleanup_state = _cleanup_state(latest.cleanup_required, receipts)
+    resolved = not pending and cleanup_state in RUNTIME_STOP_SETTLED_CLEANUP_STATES
+
+    return RuntimeStopProjection(
+        stop_request_id=stop_request_id,
+        phase=(
+            RUNTIME_STOP_PHASE_SETTLED
+            if resolved
+            else RUNTIME_STOP_PHASE_PENDING_RECONCILIATION
+        ),
+        requested_at=_timestamp(request.requested_at_us),
+        request_audit_ref=request.audit_ref,
+        pending_effect_count=len(pending),
+        pending_effect_ids=pending[:MAX_STOP_PENDING_EFFECT_IDS],
+        pending_effects_truncated=len(pending) > MAX_STOP_PENDING_EFFECT_IDS,
+        retry_eligible=False,
+        cleanup_state=cleanup_state,
+    )
+
+
+def _cleanup_state(
+    cleanup_required: bool | None, receipts: Sequence[StopCleanupReceipt]
+) -> str:
+    """One stop's rolled-up cleanup progress, from its receipts and nothing else.
+
+    `cleanup_required` is the latest observation's own answer to "was there anything
+    to free", or `None` where no observation has been recorded. It is what keeps an
+    empty receipt set readable: nothing to free reads as `not_required`, cleanup
+    that was asked for and has reported nothing back reads as `requested`, and a
+    stop nobody has looked at reads as `uncertain` rather than as either.
+
+    `unknown` dominates every other receipt. A resource whose release could not be
+    established leaves the aggregate unestablished too, and reporting `failed` or
+    `partial` over it would state something about that resource which no receipt
+    says. That is the same refusal the effect-head reader makes for a branched
+    chain, for the same reason.
+    """
+    outcomes = {receipt.outcome for receipt in receipts}
+    if not outcomes:
+        if cleanup_required is None:
+            return "uncertain"
+        return "requested" if cleanup_required else RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED
+    if "unknown" in outcomes:
+        return "uncertain"
+    if "failed" in outcomes:
+        return "partial" if "released" in outcomes else "failed"
+    if "released" in outcomes:
+        return RUNTIME_STOP_CLEANUP_STATE_COMPLETED
+    return RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED
+
+
+def _next_progress_number(
+    connection: sqlite3.Connection, workspace_id: str, stop_request_id: str
+) -> int:
+    row = connection.execute(
+        f"SELECT COALESCE(MAX(progress_number), 0) + 1 FROM {_PROGRESS} "
+        "WHERE workspace_id = ? AND stop_request_id = ?",
+        (workspace_id, stop_request_id),
+    ).fetchone()
+    return int(row[0])
+
+
+def _timestamp(microseconds: int) -> str:
+    """One microsecond instant as the contract's `Timestamp`.
+
+    Millisecond precision with a `Z` suffix, which is what the contract's pattern
+    accepts and what every other application-facing timestamp this service emits
+    already looks like.
+    """
+    moment = datetime.fromtimestamp(microseconds / 1_000_000, tz=UTC)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
 def _read_stop_request(

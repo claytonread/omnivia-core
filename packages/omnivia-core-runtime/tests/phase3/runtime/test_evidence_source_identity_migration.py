@@ -147,20 +147,25 @@ def add(connection: sqlite3.Connection, evidence_id: str, **identity: object) ->
 # --- the migration itself -----------------------------------------------------------
 
 
-def test_0041_applies_cleanly_as_the_consecutive_head(migrated: Path) -> None:
-    """A pristine catalogue reaches 41, records it, and stays internally consistent."""
+def test_0041_applies_cleanly_as_the_consecutive_successor(migrated: Path) -> None:
+    """A pristine catalogue reaches 41, records it, and stays internally consistent.
+
+    A prefix claim, not a claim about the head, as every sibling slice test makes:
+    41 must be the 41st of a gapless sequence and must be applied and recorded, and
+    a later slice appending 42 is not this file's business.
+    """
     versions = [m.version for m in load_migrations()]
-    assert versions == list(range(1, MIGRATION_VERSION + 1))
+    assert versions[:MIGRATION_VERSION] == list(range(1, MIGRATION_VERSION + 1))
     assert MIGRATION.name == MIGRATION_NAME
 
     connection = open_database(migrated, OpenMode.READ_ONLY)
     try:
         recorded = applied_migrations(connection)
-        assert max(recorded) == MIGRATION_VERSION
+        assert MIGRATION_VERSION in recorded
         assert recorded[MIGRATION_VERSION] == MIGRATION.checksum
         assert recorded[PREDECESSOR_VERSION] != MIGRATION.checksum
         assert connection.execute("PRAGMA user_version").fetchone() == (
-            MIGRATION_VERSION,
+            max(m.version for m in load_migrations()),
         )
         assert integrity_check(connection) == []
         assert foreign_key_check(connection) == []
