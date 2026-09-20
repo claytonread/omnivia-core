@@ -122,6 +122,7 @@ STOP_EFFECT_NOT_DISPATCHABLE: Final = "effect_not_dispatchable"
 STOP_EFFECT_NOT_RECONCILABLE: Final = "effect_not_reconcilable"
 STOP_EFFECT_STATE_RACED: Final = "effect_state_raced"
 STOP_PURE_NOT_PERMITTED_WHILE_LATCHED: Final = "pure_not_permitted_while_latched"
+STOP_RUN_STOP_REQUESTED: Final = "run_stop_requested"
 STOP_STALE_FENCE: Final = "stale_fence"
 STOP_UNKNOWN_COMMIT_OUTCOME: Final = "unknown_commit_outcome"
 STOP_UNKNOWN_COMPUTATION_CLASS: Final = "unknown_computation_class"
@@ -238,6 +239,15 @@ CommitJournal = Callable[[str, str], str]
 #: `(effect_id) -> None`. Raising is treated as *uncertain*, never as "not sent".
 DispatchEffect = Callable[[str], None]
 
+#: `() -> bool`: whether a stop has been recorded for the work this Attempt belongs to.
+#: Re-read at every authorization rather than captured once, for the same reason the
+#: latch is: the durable answer may change under a coordinator that is already
+#: constructed, and a cancellation recorded a moment ago must inhibit the next dispatch
+#: rather than the one after a restart. Authoritative evidence only -- in this repository
+#: that is migration 0025's stop request, read through
+#: :func:`omnivia_core_runtime.storage.runtime_stop.read_unsettled_stop_request`.
+StopIntent = Callable[[], bool]
+
 
 class MaterialDispatchCoordinator:
     """Guards material-effect dispatch for exactly one Attempt."""
@@ -252,6 +262,7 @@ class MaterialDispatchCoordinator:
         fence: int,
         commit_retry_limit: int,
         pure_permitted_while_latched: bool = False,
+        stop_intent: StopIntent | None = None,
     ) -> None:
         if not isinstance(commit_retry_limit, int) or isinstance(
             commit_retry_limit, bool
@@ -279,6 +290,7 @@ class MaterialDispatchCoordinator:
         self._fence = fence
         self._commit_retry_limit = commit_retry_limit
         self._pure_permitted_while_latched = pure_permitted_while_latched
+        self._stop_intent = stop_intent
 
     @property
     def attempt_id(self) -> str:
@@ -302,11 +314,35 @@ class MaterialDispatchCoordinator:
         """The Attempt's durable stop, re-read from authoritative evidence."""
         return self._store.read_latch(self._attempt_id)
 
+    def stop_requested(self) -> bool:
+        """Whether a stop is recorded for the work this Attempt belongs to.
+
+        `False` where no stop authority was supplied, which is the only honest reading
+        available to a coordinator that was given none: absence of an authority is not
+        evidence that nothing was cancelled, and this method says nothing more than "this
+        build has no recorded stop to act on". A build that must not dispatch under an
+        unsettled stop supplies the seam; one that does not supply it gets exactly the
+        behaviour it had before it existed.
+        """
+        return self._stop_intent is not None and self._stop_intent()
+
     def authorize(self, computation_class: str) -> ComputationDecision:
-        """Decide whether a computation of this class may proceed."""
+        """Decide whether a computation of this class may proceed.
+
+        A recorded stop refuses a *material* computation ahead of the latch, because it
+        is a refusal about different work: the latch says this Attempt stopped and owes
+        something, and a stop says no further effect of this run is authorised at all --
+        including the first one, by an Attempt that has never stopped. It does not touch
+        a pure computation: a stop inhibits new dispatch, and reading, deciding and
+        recording are how anyone establishes what the stop is still waiting on.
+        """
         if computation_class not in COMPUTATION_CLASSES:
             return ComputationDecision(
                 computation_class, False, STOP_UNKNOWN_COMPUTATION_CLASS
+            )
+        if computation_class == COMPUTATION_MATERIAL and self.stop_requested():
+            return ComputationDecision(
+                computation_class, False, STOP_RUN_STOP_REQUESTED
             )
         latch = self.read_latch()
         if latch is None:
@@ -568,6 +604,7 @@ __all__ = [
     "STOP_EFFECT_NOT_RECONCILABLE",
     "STOP_EFFECT_STATE_RACED",
     "STOP_PURE_NOT_PERMITTED_WHILE_LATCHED",
+    "STOP_RUN_STOP_REQUESTED",
     "STOP_STALE_FENCE",
     "STOP_UNKNOWN_COMMIT_OUTCOME",
     "STOP_UNKNOWN_COMPUTATION_CLASS",
@@ -581,4 +618,5 @@ __all__ = [
     "DispatchOutcome",
     "MaterialDispatchCoordinator",
     "StaleFencingWrite",
+    "StopIntent",
 ]
