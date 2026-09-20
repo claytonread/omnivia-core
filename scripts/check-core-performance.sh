@@ -10,10 +10,6 @@ REPORT_DIR="${OMNIVIA_BENCHMARK_REPORT_DIR:-${REPO_ROOT}/benchmarks/reports}"
 WARNING_THRESHOLD="${OMNIVIA_BENCHMARK_WARNING_THRESHOLD:-10}"
 FAIL_THRESHOLD="${OMNIVIA_BENCHMARK_FAIL_THRESHOLD:-25}"
 FAIL_ON_WARNING="${OMNIVIA_BENCHMARK_FAIL_ON_WARNING:-0}"
-PYTHON_BIN="${OMNIVIA_BENCHMARK_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="python3"
-fi
 
 mkdir -p "${REPORT_DIR}"
 
@@ -57,13 +53,12 @@ if [[ "${FAIL_ON_WARNING}" == "1" || "${FAIL_ON_WARNING}" == "true" ]]; then
   COMPARE_ARGS+=(--fail-on-warning)
 fi
 
-REPO_SRC="${REPO_ROOT}/src"
 CORE_SRC="${REPO_ROOT}/services/omnivia-memory/src"
 if [[ -n "${PYTHONPATH:-}" ]]; then
-  export PYTHONPATH="${REPO_SRC}:${CORE_SRC}:${PYTHONPATH}"
+  export PYTHONPATH="${CORE_SRC}:${PYTHONPATH}"
 else
-  export PYTHONPATH="${REPO_SRC}:${CORE_SRC}"
+  export PYTHONPATH="${CORE_SRC}"
 fi
 
 cd "${REPO_ROOT}"
-"${PYTHON_BIN}" "${COMPARE_ARGS[@]}"
+python3 "${COMPARE_ARGS[@]}"

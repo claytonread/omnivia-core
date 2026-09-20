@@ -1,0 +1,9 @@
+{
+  "protocolVersion": "1.0",
+  "commandId": "cmd-amend-0001",
+  "failure": {
+    "code": "idempotency_conflict",
+    "safeMessage": "commandId reused with different content",
+    "correlationId": "corr-0002"
+  }
+}

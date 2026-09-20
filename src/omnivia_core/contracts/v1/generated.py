@@ -17,6 +17,7 @@
 #   contracts/application/v1/schemas/context-pack.schema.json
 #   contracts/application/v1/schemas/compatibility-matrix.schema.json
 #   contracts/application/v1/schemas/runtime.schema.json
+#   contracts/application/v1/schemas/chat.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
 #
@@ -39,7 +40,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Final, TypeAlias, cast
@@ -168,6 +169,12 @@ __all__ = [
     "CapabilityRef",
     "CapabilityRequirement",
     "CapabilitySet",
+    "ChatCommandInput",
+    "ChatCommandResult",
+    "ChatConversationExpectation",
+    "ChatEventsInput",
+    "ChatEventsResult",
+    "ChatGenerationEvent",
     "CleanupOutcome",
     "CleanupReceipt",
     "ClientIdentity",
@@ -175,7 +182,6 @@ __all__ = [
     "CompatibilityMetadata",
     "ComponentKind",
     "ContentChecksum",
-    "ContextCursor",
     "ContextPackAuthorizationContext",
     "ContextPackAuthorizedCandidate",
     "ContextPackAuthorizedCandidateSetManifest",
@@ -292,9 +298,7 @@ __all__ = [
     "MemorySearchInput",
     "MemorySearchOrder",
     "MemorySearchResult",
-    "MutationEvidence",
     "MutationPrecondition",
-    "MutationTarget",
     "Omission",
     "OpaqueToken",
     "OpenCode",
@@ -383,9 +387,6 @@ __all__ = [
     "WorkspaceListInput",
     "WorkspaceListResult",
     "WorkspaceStatus",
-    "WorktreeLease",
-    "WorktreeLeaseLifecycle",
-    "WorktreeRef",
     "context_pack_authorized_candidate_from_wire",
     "context_pack_authorized_candidate_to_wire",
     "context_pack_citation_from_wire",
@@ -1072,7 +1073,15 @@ def is_timestamp(value: object) -> bool:
     ):
         return False
     try:
-        datetime.fromisoformat(value)
+        datetime(
+            int(value[0:4]),
+            int(value[5:7]),
+            int(value[8:10]),
+            int(value[11:13]),
+            int(value[14:16]),
+            int(value[17:19]),
+            tzinfo=UTC,
+        )
     except ValueError:
         return False
     return True
@@ -2432,16 +2441,6 @@ here, because none of those is a definition a run executes. Closed at the schema
 wire, with the same fail-safe reading as `RunStatus`.
 """
 
-WorktreeLeaseLifecycle: TypeAlias = str
-"""Where one `WorktreeLease` stands in its own life: `acquiring` is taking the worktree and may not
-yet mutate it, `held` is the only lifecycle a mutation may commit under, `draining` is finishing
-in-flight work and admits no new mutation, and `released` handed the worktree back. Deliberately
-the same four words the durable workspace service lease already records, because two vocabularies
-for one lifecycle are two things that have to be kept in agreement. Closed at the schema and open
-on the wire, with the same fail-safe reading as `RunStatus` -- an unrecognized lifecycle is not
-`held`, so it permits nothing.
-"""
-
 ProbeKind: TypeAlias = str
 """Open, dot-namespaced code naming which runtime probe is being requested or answered. The frozen,
 currently known probe kinds are exactly `service.health`, `service.readiness`, and
@@ -2591,6 +2590,239 @@ class WorkspaceInspectInput:
         """
         _require_mapping(payload, path)
         return cls(
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatConversationExpectation:
+    """The conversation a chat command changes, and the revision the caller believes it is at.
+    Optimistic concurrency for the conversation aggregate, stated as both counters rather
+    than one: a conversation's `graph_revision` and its append position move independently,
+    so expecting only one of them admits a command whose view is stale in exactly the half it
+    did not state. A mismatch is a `conflict` the caller re-reads and re-decides against; it
+    is not a `mutation_precondition_failed`, which names a record version the caller
+    refreshes and retries.
+    """
+
+    conversation_id: Identifier
+    graph_revision: int
+    latest_conversation_sequence: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["conversation_id"] = self.conversation_id
+        wire["graph_revision"] = self.graph_revision
+        wire["latest_conversation_sequence"] = self.latest_conversation_sequence
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ChatConversationExpectation"
+    ) -> ChatConversationExpectation:
+        """Decode a wire payload into a ChatConversationExpectation.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_conversation_id = _decode_str(
+            _require_field(mapping, "conversation_id", path),
+            f"{path}.conversation_id",
+        )
+        field_graph_revision = _decode_int(
+            _require_field(mapping, "graph_revision", path),
+            f"{path}.graph_revision",
+        )
+        field_latest_conversation_sequence = _decode_int(
+            _require_field(mapping, "latest_conversation_sequence", path),
+            f"{path}.latest_conversation_sequence",
+        )
+        return cls(
+            conversation_id=field_conversation_id,
+            graph_revision=field_graph_revision,
+            latest_conversation_sequence=field_latest_conversation_sequence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCommandResult:
+    """Result of `chat.command`: the settled command's own Chat Contract v1 result envelope,
+    echoed with the command name it answers. The chat result is carried opaquely for the same
+    reason the request is. A replayed submission returns the stored result of the command
+    that already ran, not a second settlement.
+    """
+
+    command_name: Identifier
+    command_result: JsonObject
+    conversation_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["command_name"] = self.command_name
+        wire["command_result"] = _encode_json_object(self.command_result)
+        if self.conversation_id is not None:
+            wire["conversation_id"] = self.conversation_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatCommandResult") -> ChatCommandResult:
+        """Decode a wire payload into a ChatCommandResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_command_name = _decode_str(
+            _require_field(mapping, "command_name", path),
+            f"{path}.command_name",
+        )
+        field_command_result = _decode_json_object(
+            _require_field(mapping, "command_result", path),
+            f"{path}.command_result",
+        )
+        field_conversation_id: Identifier | None = None
+        if "conversation_id" in mapping:
+            raw_conversation_id = mapping["conversation_id"]
+            if raw_conversation_id is None:
+                raise ContractDecodeError(
+                    f"{path}.conversation_id: null is not a valid value"
+                )
+            field_conversation_id = _decode_str(raw_conversation_id, f"{path}.conversation_id")
+        return cls(
+            command_name=field_command_name,
+            command_result=field_command_result,
+            conversation_id=field_conversation_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGenerationEvent:
+    """One durable generation-lifecycle event, as the workspace recorded it. Provider content is
+    never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
+    persisted, and no request body, response body, header, URL or credential has a path into
+    it.
+    """
+
+    event_id: Identifier
+    event_type: OpenCode
+    generation_event_sequence: int
+    cursor: OpaqueToken
+    occurred_at: Timestamp
+    payload: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["event_id"] = self.event_id
+        wire["event_type"] = self.event_type
+        wire["generation_event_sequence"] = self.generation_event_sequence
+        wire["cursor"] = self.cursor
+        wire["occurred_at"] = self.occurred_at
+        if self.payload is not None:
+            wire["payload"] = _encode_json_object(self.payload)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatGenerationEvent") -> ChatGenerationEvent:
+        """Decode a wire payload into a ChatGenerationEvent.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_event_id = _decode_str(_require_field(mapping, "event_id", path), f"{path}.event_id")
+        field_event_type = _decode_str(
+            _require_field(mapping, "event_type", path),
+            f"{path}.event_type",
+        )
+        field_generation_event_sequence = _decode_int(
+            _require_field(mapping, "generation_event_sequence", path),
+            f"{path}.generation_event_sequence",
+        )
+        field_cursor = _decode_str(_require_field(mapping, "cursor", path), f"{path}.cursor")
+        field_occurred_at = _decode_str(
+            _require_field(mapping, "occurred_at", path),
+            f"{path}.occurred_at",
+        )
+        field_payload: JsonObject | None = None
+        if "payload" in mapping:
+            raw_payload = mapping["payload"]
+            if raw_payload is None:
+                raise ContractDecodeError(
+                    f"{path}.payload: null is not a valid value"
+                )
+            field_payload = _decode_json_object(raw_payload, f"{path}.payload")
+        return cls(
+            event_id=field_event_id,
+            event_type=field_event_type,
+            generation_event_sequence=field_generation_event_sequence,
+            cursor=field_cursor,
+            occurred_at=field_occurred_at,
+            payload=field_payload,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatEventsInput:
+    """Input for `chat.events`: replay one generation's durable event history after a cursor. A
+    request carrying no `after_cursor` replays the whole history. Transport-level streaming
+    is out of scope: this is a replay of what was recorded, not a subscription. Workspace-
+    scoped through the request envelope's selected workspace, so this payload never carries a
+    second, independent workspace identifier.
+    """
+
+    generation_job_id: Identifier
+    after_cursor: OpaqueToken | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["generation_job_id"] = self.generation_job_id
+        if self.after_cursor is not None:
+            wire["after_cursor"] = self.after_cursor
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatEventsInput") -> ChatEventsInput:
+        """Decode a wire payload into a ChatEventsInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_generation_job_id = _decode_str(
+            _require_field(mapping, "generation_job_id", path),
+            f"{path}.generation_job_id",
+        )
+        field_after_cursor: OpaqueToken | None = None
+        if "after_cursor" in mapping:
+            raw_after_cursor = mapping["after_cursor"]
+            if raw_after_cursor is None:
+                raise ContractDecodeError(
+                    f"{path}.after_cursor: null is not a valid value"
+                )
+            field_after_cursor = _decode_str(raw_after_cursor, f"{path}.after_cursor")
+        return cls(
+            generation_job_id=field_generation_job_id,
+            after_cursor=field_after_cursor,
         )
 
 
@@ -5031,63 +5263,6 @@ class ExternalReference:
 
 
 @dataclass(frozen=True, slots=True)
-class WorktreeRef:
-    """The source-qualified identity of one worktree: which workspace, which source root within
-    it, and which worktree of that root. All three, always. None of them is unique on its own
-    -- the same worktree identifier can be issued under two source roots, and the same source
-    root identifier can exist in two workspaces -- so an identity missing either qualifier
-    can be resolved against a tree it was never issued for, which is the one confusion a
-    mutation must never make. Two references name the same worktree exactly when all three
-    members are equal; a shared spelling of any one member implies nothing about the other
-    two. Carries no filesystem path, mount point, device, remote or repository URL: where a
-    worktree lives is a host decision and never a wire fact, which is the rule `Artifact`
-    already obeys.
-    """
-
-    workspace_id: WorkspaceId
-    source_root_id: Identifier
-    worktree_id: Identifier
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["workspace_id"] = self.workspace_id
-        wire["source_root_id"] = self.source_root_id
-        wire["worktree_id"] = self.worktree_id
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "WorktreeRef") -> WorktreeRef:
-        """Decode a wire payload into a WorktreeRef.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_workspace_id = _decode_str(
-            _require_field(mapping, "workspace_id", path),
-            f"{path}.workspace_id",
-        )
-        field_source_root_id = _decode_str(
-            _require_field(mapping, "source_root_id", path),
-            f"{path}.source_root_id",
-        )
-        field_worktree_id = _decode_str(
-            _require_field(mapping, "worktree_id", path),
-            f"{path}.worktree_id",
-        )
-        return cls(
-            workspace_id=field_workspace_id,
-            source_root_id=field_source_root_id,
-            worktree_id=field_worktree_id,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class RunDefinitionRef:
     """The exact executable definition a run was admitted to execute: which kind, which
     definition, and at which released version. Immutable for the life of the run -- a run
@@ -5433,90 +5608,6 @@ class CapabilityGrant:
             expires_at=field_expires_at,
             scopes=field_scopes,
             purpose=field_purpose,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ContextCursor:
-    """The immutable watermark that makes context delivery to one attempt bounded and
-    replayable. It states the lineage it was issued to -- workspace, run, step and attempt,
-    all four, because an attempt is the thing that actually reads context and an identifier
-    without its lineage could be resolved against the wrong one -- the sequence of the first
-    `RuntimeEvent` the attempt has *not* seen, and the ceiling on how many entries one
-    delivery may carry. Deliberately not an opaque server token: every field is a value both
-    sides can recompute and compare, so a caller can prove a delivery is the next one rather
-    than being told so. Deliberately not a second event stream either -- it is a position in
-    the run's own `RuntimeEvent` sequence, which is already contiguous from zero, so a cursor
-    is replayable exactly because the stream it indexes never renumbers. Presenting the same
-    cursor twice yields the same delivery; presenting the cursor a delivery returned yields
-    only what came after it.
-    """
-
-    workspace_id: WorkspaceId
-    run_id: Identifier
-    run_step_id: Identifier
-    attempt_id: Identifier
-    next_sequence: int
-    max_items: int
-    issued_at: Timestamp
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["workspace_id"] = self.workspace_id
-        wire["run_id"] = self.run_id
-        wire["run_step_id"] = self.run_step_id
-        wire["attempt_id"] = self.attempt_id
-        wire["next_sequence"] = self.next_sequence
-        wire["max_items"] = self.max_items
-        wire["issued_at"] = self.issued_at
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "ContextCursor") -> ContextCursor:
-        """Decode a wire payload into a ContextCursor.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_workspace_id = _decode_str(
-            _require_field(mapping, "workspace_id", path),
-            f"{path}.workspace_id",
-        )
-        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
-        field_run_step_id = _decode_str(
-            _require_field(mapping, "run_step_id", path),
-            f"{path}.run_step_id",
-        )
-        field_attempt_id = _decode_str(
-            _require_field(mapping, "attempt_id", path),
-            f"{path}.attempt_id",
-        )
-        field_next_sequence = _decode_int(
-            _require_field(mapping, "next_sequence", path),
-            f"{path}.next_sequence",
-        )
-        field_max_items = _decode_int(
-            _require_field(mapping, "max_items", path),
-            f"{path}.max_items",
-        )
-        field_issued_at = _decode_str(
-            _require_field(mapping, "issued_at", path),
-            f"{path}.issued_at",
-        )
-        return cls(
-            workspace_id=field_workspace_id,
-            run_id=field_run_id,
-            run_step_id=field_run_step_id,
-            attempt_id=field_attempt_id,
-            next_sequence=field_next_sequence,
-            max_items=field_max_items,
-            issued_at=field_issued_at,
         )
 
 
@@ -6631,6 +6722,140 @@ class CoreTargetV1:
             workspace_ref=field_workspace_ref,
             management=field_management,
             endpoint_profile_ref=field_endpoint_profile_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCommandInput:
+    """Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's
+    single mutation seam. `command_name` names a member of the Chat Contract's own closed
+    command registry and `command` is that command's request document, carried verbatim and
+    opaque to this envelope. Workspace-scoped through the request envelope's selected
+    workspace, so this payload never carries a second, independent workspace identifier. The
+    envelope's `idempotency_key` is required by the catalogue and is what makes a repeated
+    submission answer from the settled outcome rather than appending a second message.
+    """
+
+    command_name: Identifier
+    command: JsonObject
+    expected_conversation: ChatConversationExpectation | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["command_name"] = self.command_name
+        wire["command"] = _encode_json_object(self.command)
+        if self.expected_conversation is not None:
+            wire["expected_conversation"] = self.expected_conversation.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatCommandInput") -> ChatCommandInput:
+        """Decode a wire payload into a ChatCommandInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_command_name = _decode_str(
+            _require_field(mapping, "command_name", path),
+            f"{path}.command_name",
+        )
+        field_command = _decode_json_object(
+            _require_field(mapping, "command", path),
+            f"{path}.command",
+        )
+        field_expected_conversation: ChatConversationExpectation | None = None
+        if "expected_conversation" in mapping:
+            raw_expected_conversation = mapping["expected_conversation"]
+            if raw_expected_conversation is None:
+                raise ContractDecodeError(
+                    f"{path}.expected_conversation: null is not a valid value"
+                )
+            field_expected_conversation = ChatConversationExpectation.from_wire(
+                raw_expected_conversation,
+                f"{path}.expected_conversation",
+            )
+        return cls(
+            command_name=field_command_name,
+            command=field_command,
+            expected_conversation=field_expected_conversation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatEventsResult:
+    """Result of `chat.events`: the durable event suffix after the requested cursor, or the
+    demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events`
+    is empty and `resnapshot_reason` states why the requested position could not be honoured;
+    a fabricated continuation is exactly what that answer exists to prevent. Events are
+    strictly increasing, duplicate-free and contiguous from the position the request
+    continued from.
+    """
+
+    generation_job_id: Identifier
+    events: tuple[ChatGenerationEvent, ...]
+    requires_resnapshot: bool
+    resnapshot_reason: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["generation_job_id"] = self.generation_job_id
+        wire["events"] = [item.to_wire() for item in self.events]
+        wire["requires_resnapshot"] = self.requires_resnapshot
+        if self.resnapshot_reason is not None:
+            wire["resnapshot_reason"] = self.resnapshot_reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatEventsResult") -> ChatEventsResult:
+        """Decode a wire payload into a ChatEventsResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_generation_job_id = _decode_str(
+            _require_field(mapping, "generation_job_id", path),
+            f"{path}.generation_job_id",
+        )
+        field_events_items = _decode_sequence(
+            _require_field(mapping, "events", path),
+            f"{path}.events",
+        )
+        field_events = tuple(
+            ChatGenerationEvent.from_wire(item, f"{path}.events[{index}]")
+            for index, item in enumerate(field_events_items)
+        )
+        field_requires_resnapshot = _decode_bool(
+            _require_field(mapping, "requires_resnapshot", path),
+            f"{path}.requires_resnapshot",
+        )
+        field_resnapshot_reason: OpenCode | None = None
+        if "resnapshot_reason" in mapping:
+            raw_resnapshot_reason = mapping["resnapshot_reason"]
+            if raw_resnapshot_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.resnapshot_reason: null is not a valid value"
+                )
+            field_resnapshot_reason = _decode_str(
+                raw_resnapshot_reason,
+                f"{path}.resnapshot_reason",
+            )
+        return cls(
+            generation_job_id=field_generation_job_id,
+            events=field_events,
+            requires_resnapshot=field_requires_resnapshot,
+            resnapshot_reason=field_resnapshot_reason,
         )
 
 
@@ -8608,53 +8833,6 @@ class RecordIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class MutationTarget:
-    """Exactly what one mutation acted on: a source-qualified worktree, and a digest of the
-    target's worktree-relative path within it. The path itself is deliberately absent. A
-    digest is comparable -- two mutations of one path in one worktree agree, two paths do not
-    -- without disclosing a filesystem layout, so a target can be recorded, exported and
-    retained with no redaction pass over it and nothing to redact. Both members are bounded
-    canonical scalars this contract already publishes, so a target can never carry free text,
-    a caller-shaped blob or an unbounded field.
-    """
-
-    worktree: WorktreeRef
-    path_digest: ContentChecksum
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["worktree"] = self.worktree.to_wire()
-        wire["path_digest"] = self.path_digest
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "MutationTarget") -> MutationTarget:
-        """Decode a wire payload into a MutationTarget.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_worktree = WorktreeRef.from_wire(
-            _require_field(mapping, "worktree", path),
-            f"{path}.worktree",
-        )
-        field_path_digest = _decode_str(
-            _require_field(mapping, "path_digest", path),
-            f"{path}.path_digest",
-        )
-        return cls(
-            worktree=field_worktree,
-            path_digest=field_path_digest,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class Attempt:
     """One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run,
     workspace and start instant never change, and an attempt terminalizes exactly once.
@@ -8951,132 +9129,6 @@ class EvidenceItem:
             captured_at=field_captured_at,
             authoritative=field_authoritative,
             retained=field_retained,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class WorktreeLease:
-    """One run's exclusive claim on one worktree, held under the workspace service lease rather
-    than beside it. This is a sublease, not a second authority: `service_instance_id` and
-    `fencing_generation` restate the exact holder and generation the durable workspace lease
-    already recorded, so a worktree claim can never be current while the workspace lease that
-    issued it is not. `lease_generation` is this worktree's own monotonic counter,
-    incremented by every acquisition and every takeover, and it is what a writer carries into
-    a mutation so a resumed predecessor's write is refused rather than accepted under a
-    generation that has moved on. Ownership fails closed on every axis: a lease whose fencing
-    generation is not the current one is superseded whatever its own record says, a released
-    lease is not a free one, `expires_at` is a ceiling and never a renewal, and a lifecycle
-    other than `held` -- including an unrecognized one -- permits no mutation at all. Expiry
-    alone is never proof the previous holder is gone; it is what makes a takeover permissible
-    to investigate, and the successor's generation is what makes the predecessor's writes
-    refusable.
-    """
-
-    workspace_id: WorkspaceId
-    worktree_lease_id: Identifier
-    worktree: WorktreeRef
-    run_id: Identifier
-    service_instance_id: Identifier
-    fencing_generation: int
-    lease_generation: int
-    lifecycle: WorktreeLeaseLifecycle
-    acquired_at: Timestamp
-    expires_at: Timestamp
-    audit_reference: AuditReference
-    released_at: Timestamp | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["workspace_id"] = self.workspace_id
-        wire["worktree_lease_id"] = self.worktree_lease_id
-        wire["worktree"] = self.worktree.to_wire()
-        wire["run_id"] = self.run_id
-        wire["service_instance_id"] = self.service_instance_id
-        wire["fencing_generation"] = self.fencing_generation
-        wire["lease_generation"] = self.lease_generation
-        wire["lifecycle"] = self.lifecycle
-        wire["acquired_at"] = self.acquired_at
-        wire["expires_at"] = self.expires_at
-        if self.released_at is not None:
-            wire["released_at"] = self.released_at
-        wire["audit_reference"] = self.audit_reference
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "WorktreeLease") -> WorktreeLease:
-        """Decode a wire payload into a WorktreeLease.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_workspace_id = _decode_str(
-            _require_field(mapping, "workspace_id", path),
-            f"{path}.workspace_id",
-        )
-        field_worktree_lease_id = _decode_str(
-            _require_field(mapping, "worktree_lease_id", path),
-            f"{path}.worktree_lease_id",
-        )
-        field_worktree = WorktreeRef.from_wire(
-            _require_field(mapping, "worktree", path),
-            f"{path}.worktree",
-        )
-        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
-        field_service_instance_id = _decode_str(
-            _require_field(mapping, "service_instance_id", path),
-            f"{path}.service_instance_id",
-        )
-        field_fencing_generation = _decode_int(
-            _require_field(mapping, "fencing_generation", path),
-            f"{path}.fencing_generation",
-        )
-        field_lease_generation = _decode_int(
-            _require_field(mapping, "lease_generation", path),
-            f"{path}.lease_generation",
-        )
-        field_lifecycle = _decode_str(
-            _require_field(mapping, "lifecycle", path),
-            f"{path}.lifecycle",
-        )
-        field_acquired_at = _decode_str(
-            _require_field(mapping, "acquired_at", path),
-            f"{path}.acquired_at",
-        )
-        field_expires_at = _decode_str(
-            _require_field(mapping, "expires_at", path),
-            f"{path}.expires_at",
-        )
-        field_released_at: Timestamp | None = None
-        if "released_at" in mapping:
-            raw_released_at = mapping["released_at"]
-            if raw_released_at is None:
-                raise ContractDecodeError(
-                    f"{path}.released_at: null is not a valid value"
-                )
-            field_released_at = _decode_str(raw_released_at, f"{path}.released_at")
-        field_audit_reference = _decode_str(
-            _require_field(mapping, "audit_reference", path),
-            f"{path}.audit_reference",
-        )
-        return cls(
-            workspace_id=field_workspace_id,
-            worktree_lease_id=field_worktree_lease_id,
-            worktree=field_worktree,
-            run_id=field_run_id,
-            service_instance_id=field_service_instance_id,
-            fencing_generation=field_fencing_generation,
-            lease_generation=field_lease_generation,
-            lifecycle=field_lifecycle,
-            acquired_at=field_acquired_at,
-            expires_at=field_expires_at,
-            released_at=field_released_at,
-            audit_reference=field_audit_reference,
         )
 
 
@@ -10321,11 +10373,7 @@ class RunStep:
     `1..N` contiguously within a run and never renumbered; the history is append-only, so a
     correction is a further attempt rather than an edit to a recorded one. A step that is
     `waiting` names the `Wait` holding it, because a suspended step that cannot say what it
-    is suspended on cannot be resolved. A step that was spawned by another names it in
-    `parent_run_step_id`: parentage is stated by the child and never by a list on the parent,
-    so a child and the parent it claims cannot disagree. Parentage is a link inside one run
-    -- both steps restate the same `run_id` and `workspace_id` -- and it never crosses into
-    another run or workspace, however similarly spelled the identifier.
+    is suspended on cannot be resolved.
     """
 
     workspace_id: WorkspaceId
@@ -10337,7 +10385,6 @@ class RunStep:
     created_at: Timestamp
     updated_at: Timestamp
     attempts: tuple[Attempt, ...]
-    parent_run_step_id: Identifier | None = None
     wait_id: Identifier | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -10350,8 +10397,6 @@ class RunStep:
         wire["workspace_id"] = self.workspace_id
         wire["run_step_id"] = self.run_step_id
         wire["run_id"] = self.run_id
-        if self.parent_run_step_id is not None:
-            wire["parent_run_step_id"] = self.parent_run_step_id
         wire["ordinal"] = self.ordinal
         wire["step_kind"] = self.step_kind
         wire["status"] = self.status
@@ -10379,17 +10424,6 @@ class RunStep:
             f"{path}.run_step_id",
         )
         field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
-        field_parent_run_step_id: Identifier | None = None
-        if "parent_run_step_id" in mapping:
-            raw_parent_run_step_id = mapping["parent_run_step_id"]
-            if raw_parent_run_step_id is None:
-                raise ContractDecodeError(
-                    f"{path}.parent_run_step_id: null is not a valid value"
-                )
-            field_parent_run_step_id = _decode_str(
-                raw_parent_run_step_id,
-                f"{path}.parent_run_step_id",
-            )
         field_ordinal = _decode_int(_require_field(mapping, "ordinal", path), f"{path}.ordinal")
         field_step_kind = _decode_str(
             _require_field(mapping, "step_kind", path),
@@ -10424,7 +10458,6 @@ class RunStep:
             workspace_id=field_workspace_id,
             run_step_id=field_run_step_id,
             run_id=field_run_id,
-            parent_run_step_id=field_parent_run_step_id,
             ordinal=field_ordinal,
             step_kind=field_step_kind,
             status=field_status,
@@ -10432,168 +10465,6 @@ class RunStep:
             updated_at=field_updated_at,
             attempts=field_attempts,
             wait_id=field_wait_id,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class MutationEvidence:
-    """The record that one run changed one thing in one worktree, and everything a reader needs
-    to decide whether it was allowed to. It never stands alone: it names the `EffectIntent`
-    that authorized it, exactly as an `EffectReceipt` does, so a change nobody declared is a
-    change nobody can reconcile. It names the `WorktreeLease` it committed under and restates
-    that lease's `lease_generation` and `fencing_generation`, so a write made under authority
-    that had already moved on is refusable after the fact and not merely at the time. It
-    names the `PolicySnapshot` revision in force, so what was permitted is read from the
-    policy the run was actually pinned to rather than from whatever policy is current when
-    the record is read. `before_digest` and `after_digest` state what changed: an absent
-    `before_digest` is a target that did not exist, an absent `after_digest` is one that no
-    longer does, and a record with neither -- or with two equal digests -- describes no
-    mutation at all and is refused rather than recorded. `cleanup_receipt_id` links the
-    change to the cleanup that undid or released it, so a mutation and its reversal are one
-    story instead of two. Redaction-safe by construction: every field is an identifier, a
-    digest, a bounded code or an instant, there is no path, no content, no diff and no
-    message, so this record is publishable and retainable as written.
-    """
-
-    workspace_id: WorkspaceId
-    mutation_evidence_id: Identifier
-    run_id: Identifier
-    effect_intent_id: Identifier
-    target: MutationTarget
-    worktree_lease_id: Identifier
-    lease_generation: int
-    fencing_generation: int
-    policy_snapshot_id: Identifier
-    policy_revision: int
-    recorded_at: Timestamp
-    audit_reference: AuditReference
-    before_digest: ContentChecksum | None = None
-    after_digest: ContentChecksum | None = None
-    cleanup_receipt_id: Identifier | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["workspace_id"] = self.workspace_id
-        wire["mutation_evidence_id"] = self.mutation_evidence_id
-        wire["run_id"] = self.run_id
-        wire["effect_intent_id"] = self.effect_intent_id
-        wire["target"] = self.target.to_wire()
-        wire["worktree_lease_id"] = self.worktree_lease_id
-        wire["lease_generation"] = self.lease_generation
-        wire["fencing_generation"] = self.fencing_generation
-        wire["policy_snapshot_id"] = self.policy_snapshot_id
-        wire["policy_revision"] = self.policy_revision
-        if self.before_digest is not None:
-            wire["before_digest"] = self.before_digest
-        if self.after_digest is not None:
-            wire["after_digest"] = self.after_digest
-        wire["recorded_at"] = self.recorded_at
-        if self.cleanup_receipt_id is not None:
-            wire["cleanup_receipt_id"] = self.cleanup_receipt_id
-        wire["audit_reference"] = self.audit_reference
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "MutationEvidence") -> MutationEvidence:
-        """Decode a wire payload into a MutationEvidence.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_workspace_id = _decode_str(
-            _require_field(mapping, "workspace_id", path),
-            f"{path}.workspace_id",
-        )
-        field_mutation_evidence_id = _decode_str(
-            _require_field(mapping, "mutation_evidence_id", path),
-            f"{path}.mutation_evidence_id",
-        )
-        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
-        field_effect_intent_id = _decode_str(
-            _require_field(mapping, "effect_intent_id", path),
-            f"{path}.effect_intent_id",
-        )
-        field_target = MutationTarget.from_wire(
-            _require_field(mapping, "target", path),
-            f"{path}.target",
-        )
-        field_worktree_lease_id = _decode_str(
-            _require_field(mapping, "worktree_lease_id", path),
-            f"{path}.worktree_lease_id",
-        )
-        field_lease_generation = _decode_int(
-            _require_field(mapping, "lease_generation", path),
-            f"{path}.lease_generation",
-        )
-        field_fencing_generation = _decode_int(
-            _require_field(mapping, "fencing_generation", path),
-            f"{path}.fencing_generation",
-        )
-        field_policy_snapshot_id = _decode_str(
-            _require_field(mapping, "policy_snapshot_id", path),
-            f"{path}.policy_snapshot_id",
-        )
-        field_policy_revision = _decode_int(
-            _require_field(mapping, "policy_revision", path),
-            f"{path}.policy_revision",
-        )
-        field_before_digest: ContentChecksum | None = None
-        if "before_digest" in mapping:
-            raw_before_digest = mapping["before_digest"]
-            if raw_before_digest is None:
-                raise ContractDecodeError(
-                    f"{path}.before_digest: null is not a valid value"
-                )
-            field_before_digest = _decode_str(raw_before_digest, f"{path}.before_digest")
-        field_after_digest: ContentChecksum | None = None
-        if "after_digest" in mapping:
-            raw_after_digest = mapping["after_digest"]
-            if raw_after_digest is None:
-                raise ContractDecodeError(
-                    f"{path}.after_digest: null is not a valid value"
-                )
-            field_after_digest = _decode_str(raw_after_digest, f"{path}.after_digest")
-        field_recorded_at = _decode_str(
-            _require_field(mapping, "recorded_at", path),
-            f"{path}.recorded_at",
-        )
-        field_cleanup_receipt_id: Identifier | None = None
-        if "cleanup_receipt_id" in mapping:
-            raw_cleanup_receipt_id = mapping["cleanup_receipt_id"]
-            if raw_cleanup_receipt_id is None:
-                raise ContractDecodeError(
-                    f"{path}.cleanup_receipt_id: null is not a valid value"
-                )
-            field_cleanup_receipt_id = _decode_str(
-                raw_cleanup_receipt_id,
-                f"{path}.cleanup_receipt_id",
-            )
-        field_audit_reference = _decode_str(
-            _require_field(mapping, "audit_reference", path),
-            f"{path}.audit_reference",
-        )
-        return cls(
-            workspace_id=field_workspace_id,
-            mutation_evidence_id=field_mutation_evidence_id,
-            run_id=field_run_id,
-            effect_intent_id=field_effect_intent_id,
-            target=field_target,
-            worktree_lease_id=field_worktree_lease_id,
-            lease_generation=field_lease_generation,
-            fencing_generation=field_fencing_generation,
-            policy_snapshot_id=field_policy_snapshot_id,
-            policy_revision=field_policy_revision,
-            before_digest=field_before_digest,
-            after_digest=field_after_digest,
-            recorded_at=field_recorded_at,
-            cleanup_receipt_id=field_cleanup_receipt_id,
-            audit_reference=field_audit_reference,
         )
 
 
@@ -13290,6 +13161,113 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.command",
+        scope=OperationScope(
+            required_scopes=("chat:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatCommandInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatCommandResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.command",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.events",
+        scope=OperationScope(
+            required_scopes=("chat:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatEventsInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatEventsResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

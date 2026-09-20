@@ -1,0 +1,17 @@
+{
+  "messageType": "bridge.command",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "commandId": "cmd-hosted-0009",
+  "commandKind": "SubmitMessage",
+  "payload": {
+    "protocolVersion": "1.0",
+    "commandId": "cmd-hosted-0009",
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "actorId": "actor-alice",
+    "title": "Renamed title"
+  },
+  "sentAt": "2026-08-20T10:01:00Z"
+}

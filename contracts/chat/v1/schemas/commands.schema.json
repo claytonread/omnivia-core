@@ -1,0 +1,573 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/commands.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - W2-W4 command surface",
+  "description": "Freezes the initial Chat command names (technical delivery specification §10) as a closed registry and gives each a bounded wire shape, without turning the Chat family into an Application Contract v1/v2-style exhaustive operation catalogue. `CommitMessageAmendment` is deliberately not repeated here: it closes CGAP-042-006 with its own dedicated request/result pair in amendment.schema.json. Commands that trigger App, Workflow, Agent, Tool or Artifact execution (`InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact`, `PlaceArtifactVersion`) carry only a `TargetReference` and a bounded opaque `input`; Chat originates no operation semantics for those owning authorities (`generation.schema.json` WorkKind/WorkProjection). Every command declares idempotency by `commandId` (REF042-INV-015, REF042-INV-016) and every result distinguishes a fresh commit from an idempotent replay.",
+  "type": "object",
+  "$defs": {
+    "ChatCommandName": {
+      "title": "ChatCommandName",
+      "description": "The closed v1 initial Chat command registry (technical delivery specification §10). Fail closed on an unknown name.",
+      "enum": [
+        "CreateConversation", "CreateScopedConversation", "RenameConversation", "ArchiveConversation", "DeleteConversation",
+        "SaveDraft", "DiscardDraft",
+        "EnqueueMessage", "UpdateQueuedSubmission", "ReorderQueuedSubmission", "CancelQueuedSubmission",
+        "SubmitMessage", "StopGeneration", "RetryGeneration", "RegenerateResponse", "CommitMessageAmendment",
+        "SelectConversationPath", "SetDefaultConversationPath",
+        "StageAttachment", "RemoveStagedAttachment",
+        "RespondToWorkRequest", "SubmitSteeringInput",
+        "InvokeTool", "InvokeApp", "StartWorkflow", "StartAgentRun",
+        "ReviseArtifact", "PlaceArtifactVersion",
+        "CreateConversationShare", "ExportConversation"
+      ]
+    },
+    "CommandResultEnvelope": {
+      "title": "CommandResultEnvelope",
+      "description": "The one stable command-result envelope frozen by the accepted technical delivery specification §10: every Chat command result is reportable through this closed shape regardless of its own richer, typed result record (`CommandAck`, `MessageSubmittedResult`, etc., which MAY be carried by reference in `resultRef`). `status` is closed to `accepted | completed | rejected | conflict`. Deterministic error/version rule: `error` is required for `rejected`; `error` and `currentVersion` are both optional for `conflict`, so a caller may see a stable error explaining the conflict, a `currentVersion` to re-read and retry, both, or neither; `error` is forbidden for `accepted` and `completed`. `error.code` is a value from the frozen, stable, shared `ErrorCode` registry (`common.schema.json#/$defs/ErrorCode`), never an arbitrary string, and `error.message` is bounded and display-safe, never a raw exception. `currentVersion` is generic command-conflict resource-version context, not itself a `ConversationViewState` optimistic-concurrency token: it uses the generic `ResourceVersion` type because the resource in conflict is not always a view-state row.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "status"],
+      "properties": {
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "status": { "enum": ["accepted", "completed", "rejected", "conflict"] },
+        "resultRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Optional opaque reference to this command's own typed result record, when one exists."
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ErrorCode" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 2048 }
+          }
+        },
+        "currentVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ResourceVersion" }
+      },
+      "if": {
+        "properties": { "status": { "const": "rejected" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["error"]
+      },
+      "else": {
+        "if": {
+          "properties": { "status": { "const": "conflict" } },
+          "required": ["status"]
+        },
+        "then": {},
+        "else": { "not": { "required": ["error"] } }
+      }
+    },
+    "CommandAck": {
+      "title": "CommandAck",
+      "description": "The shared result shape for a command whose only durable effect is a state transition already fully described elsewhere (for example `RenameConversation`, `ArchiveConversation`, `DeleteConversation`, `SelectConversationPath`, `SetDefaultConversationPath`, `DiscardDraft`, `CancelQueuedSubmission`, `ReorderQueuedSubmission`, `RemoveStagedAttachment`, `StopGeneration`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "idempotentReplay", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "CreateConversationRequest": {
+      "title": "CreateConversationRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "protocolVersion", "requestedAt", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "title": { "type": "string", "maxLength": 512 },
+        "requestedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "CreateScopedConversationRequest": {
+      "title": "CreateScopedConversationRequest",
+      "description": "Creates a Conversation pre-scoped to a Chat command target (technical delivery specification §10), for example a Conversation opened from within an App or Workflow context.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "protocolVersion", "requestedAt", "targetReference", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "title": { "type": "string", "maxLength": 512 },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "requestedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ConversationCreatedResult": {
+      "title": "ConversationCreatedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "commandId", "conversationId", "idempotentReplay", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "RenameConversationRequest": {
+      "title": "RenameConversationRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "protocolVersion", "title", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "title": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "ArchiveConversationRequest": {
+      "title": "ArchiveConversationRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "DeleteConversationRequest": {
+      "title": "DeleteConversationRequest",
+      "description": "Realised as tombstone-under-policy, never a physical purge of a shared ancestor (REF-042 §25.1, §25.3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "SaveDraftRequest": {
+      "title": "SaveDraftRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferences", "commandId", "contextReferences", "conversationId", "mode", "protocolVersion", "text", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" },
+        "mode": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ComposerDraftMode" },
+        "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "text": { "type": "string", "maxLength": 262144 },
+        "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 64 },
+        "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 64 },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "expectedVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      }
+    },
+    "DraftSavedResult": {
+      "title": "DraftSavedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "draftId", "idempotentReplay", "protocolVersion", "version"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" },
+        "version": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "DiscardDraftRequest": {
+      "title": "DiscardDraftRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "draftId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" }
+      }
+    },
+    "EnqueueMessageRequest": {
+      "title": "EnqueueMessageRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferences", "branchId", "commandId", "contextReferences", "conversationId", "editableParts", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "editableParts": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/EditablePartInput" }, "minItems": 1, "maxItems": 4096 },
+        "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 64 },
+        "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 64 },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" }
+      }
+    },
+    "QueuedSubmissionResult": {
+      "title": "QueuedSubmissionResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "idempotentReplay", "position", "protocolVersion", "queuedSubmissionId", "version"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "queuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" },
+        "position": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "version": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "UpdateQueuedSubmissionRequest": {
+      "title": "UpdateQueuedSubmissionRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "editableParts", "expectedVersion", "protocolVersion", "queuedSubmissionId", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "queuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" },
+        "editableParts": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/EditablePartInput" }, "minItems": 1, "maxItems": 4096 },
+        "expectedVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      }
+    },
+    "ReorderQueuedSubmissionRequest": {
+      "title": "ReorderQueuedSubmissionRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "expectedVersion", "protocolVersion", "queuedSubmissionId", "targetPosition", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "queuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" },
+        "targetPosition": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "expectedVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      }
+    },
+    "CancelQueuedSubmissionRequest": {
+      "title": "CancelQueuedSubmissionRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "protocolVersion", "queuedSubmissionId", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "queuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" }
+      }
+    },
+    "SubmitMessageRequest": {
+      "title": "SubmitMessageRequest",
+      "description": "Normal continuation on the actor's resolved active branch (REF-042 §9.2, §15.4). Carries expected branch head to prevent accidental append to a stale head (REF-042 §15.4, §21.4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferences", "branchId", "commandId", "contextReferences", "conversationId", "editableParts", "expectedHeadMessageId", "expectedHeadVersion", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "expectedHeadMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "expectedHeadVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/HeadVersion" },
+        "newMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "editableParts": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/EditablePartInput" }, "minItems": 1, "maxItems": 4096 },
+        "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 64 },
+        "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 64 },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "fromQueuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" },
+        "clientCorrelationHint": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ClientCorrelationHint" }
+      }
+    },
+    "MessageSubmittedResult": {
+      "title": "MessageSubmittedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attachmentWarnings", "branchId", "commandId", "conversationSequence", "generationJobId", "graphRevision", "headMessageId", "idempotentReplay", "messageId", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "messageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "attachmentWarnings": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ReferenceFailure" }, "maxItems": 64 },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "StopGenerationRequest": {
+      "title": "StopGenerationRequest",
+      "description": "Cancellation changes Generation Job state; it does not remove committed Messages (REF-042 §17.6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "jobId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "RetryGenerationRequest": {
+      "title": "RetryGenerationRequest",
+      "description": "Creates a new Generation Attempt under the same Job (REF-042 §17.4). Distinct from `RegenerateResponse`, which creates a new sibling assistant Message on a new branch (ADR-022 §4.14).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "jobId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "GenerationRetriedResult": {
+      "title": "GenerationRetriedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "commandId", "idempotentReplay", "jobId", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "RegenerateResponseRequest": {
+      "title": "RegenerateResponseRequest",
+      "description": "Creates a sibling assistant Message under the same user parent with a `regeneration` derivation relation (ADR-022 §4.14, REF-042 §9.4). The original assistant Message and its descendants remain (REF-042 §9.4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "newBranchId", "protocolVersion", "sourceMessageId", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "newBranchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "RegenerationStartedResult": {
+      "title": "RegenerationStartedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "commandId", "generationJobId", "idempotentReplay", "protocolVersion", "sourceMessageId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "SelectConversationPathRequest": {
+      "title": "SelectConversationPathRequest",
+      "description": "REF-042 §15.3 `SelectConversationBranch`. Updates view state only; never increments graph revision (REF042-RULE-009).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "deviceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DeviceId" },
+        "expectedViewStateVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      }
+    },
+    "SetDefaultConversationPathRequest": {
+      "title": "SetDefaultConversationPathRequest",
+      "description": "Sets `Conversation.defaultBranchId` (REF-042 §7.1, §4.18). Not organisational truth and does not invalidate alternatives.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "StageAttachmentRequest": {
+      "title": "StageAttachmentRequest",
+      "description": "Stages an already-uploaded File Reference for composition. Never accepts raw bytes on this wire boundary.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferenceId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "attachmentReferenceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReferenceId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" }
+      }
+    },
+    "AttachmentStagedResult": {
+      "title": "AttachmentStagedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attachmentReference", "commandId", "idempotentReplay", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "attachmentReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "RemoveStagedAttachmentRequest": {
+      "title": "RemoveStagedAttachmentRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferenceId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "attachmentReferenceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReferenceId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" }
+      }
+    },
+    "CreateConversationShareRequest": {
+      "title": "CreateConversationShareRequest",
+      "description": "REF-042 §18.1-§18.2. Shares the selected branch snapshot by default; sharing all branches requires an explicit, separately permission-checked scope.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accessPolicy", "actorId", "branchId", "commandId", "conversationId", "protocolVersion", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "accessPolicy": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SharePolicy" },
+        "expiresAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ConversationShareCreatedResult": {
+      "title": "ConversationShareCreatedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "graphRevision", "headMessageId", "idempotentReplay", "protocolVersion", "shareId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "shareId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ShareId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "ExportConversationRequest": {
+      "title": "ExportConversationRequest",
+      "description": "REF-042 §18.3. `branchIds` names one branch for `selected_branch_snapshot` and one or more for `all_accessible_branches_snapshot`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchIds", "commandId", "conversationId", "protocolVersion", "scope", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "scope": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ExportScope" },
+        "branchIds": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" }, "minItems": 1, "maxItems": 4096 }
+      },
+      "if": { "properties": { "scope": { "const": "selected_branch_snapshot" } }, "required": ["scope"] },
+      "then": { "properties": { "branchIds": { "minItems": 1, "maxItems": 1 } } }
+    },
+    "ConversationExportCreatedResult": {
+      "title": "ConversationExportCreatedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "exportId", "graphRevision", "idempotentReplay", "protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "exportId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ExportId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
+    "ReferencedWorkCommandRequest": {
+      "title": "ReferencedWorkCommandRequest",
+      "description": "The shared shape for `RespondToWorkRequest`, `SubmitSteeringInput`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact` and `PlaceArtifactVersion`. Every one of these commands triggers or responds to execution owned entirely by another authority (App, Workflow, Agent, Tool or Artifact ownership); Chat contributes only the triggering Message context, a `TargetReference` and a bounded opaque `input`, and never originates operation semantics for the referenced authority (freeze §7).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "commandName", "conversationId", "input", "protocolVersion", "targetReference", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "commandName": {
+          "enum": ["RespondToWorkRequest", "SubmitSteeringInput", "InvokeTool", "InvokeApp", "StartWorkflow", "StartAgentRun", "ReviseArtifact", "PlaceArtifactVersion"]
+        },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "triggerMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "input": { "type": "object", "additionalProperties": true, "maxProperties": 256 }
+      }
+    },
+    "ReferencedWorkStartedResult": {
+      "title": "ReferencedWorkStartedResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "idempotentReplay", "protocolVersion", "work"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "work": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/WorkProjection" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    }
+  }
+}

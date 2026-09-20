@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/generation.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - GenerationJob, GenerationAttempt and Work projections",
+  "description": "Freezes the W2-W4 Generation Job surface (REF-042 §7.9, §17) and an authorised, read-only Work/Run/wait projection over App, Workflow and Agent execution that a Generation may depend on (Chat technical delivery specification §10, §12.6: `InvokeApp`, `InvokeWorkflow`/`StartWorkflow`, `StartAgentRun`, `RespondToWorkRequest`). This is not a foundational contract family: it reuses DOC-005 Attempt semantics, REF-033 Workflow Run identity and REF-032 Human Task identity by opaque reference only. `WorkProjection.displayState` is an open, owner-supplied display string precisely because Chat does not own or redefine the Workflow Run or Human Task state machine; Chat never derives control-flow behaviour from it beyond the closed `terminal` flag.",
+  "type": "object",
+  "$defs": {
+    "GenerationJob": {
+      "title": "GenerationJob",
+      "description": "Distinct from the final Message record it may produce (REF-042 §7.9, REF042-RULE-008). A failed Attempt does not require a failed assistant Message; the branch may remain headed by the triggering user Message (REF-042 §17.4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "createdAt", "graphRevisionObserved", "jobId", "schemaVersion", "state", "triggerMessageId", "updatedAt", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "triggerMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobState" },
+        "graphRevisionObserved": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision",
+          "description": "The graph revision observed at Job creation (REF-042 §17.1)."
+        },
+        "promptContextManifest": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/PromptContextManifest" },
+        "currentAttemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "resultMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Present only when `state` is `succeeded` (REF-042 §17.3)."
+        },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "GenerationAttempt": {
+      "title": "GenerationAttempt",
+      "description": "One bounded execution attempt for one Generation Job, conceptually aligned to the DOC-005 §4.12 Attempt pattern by concept, not by shared schema. A retry creates a new Attempt identity (DOC-005 §4.12, DRT-INV-025) rather than reopening a terminal Job.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "conversationId", "jobId", "schemaVersion", "startedAt", "state", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "retryOfAttemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptState" },
+        "providerInvocationId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId",
+          "description": "Present once this Attempt has an associated F2a provider invocation (provider.schema.json)."
+        },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "startedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "endedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "WorkKind": {
+      "title": "WorkKind",
+      "description": "The closed v1 discriminator naming which existing owning authority a `WorkProjection` reflects. Chat originates no execution semantics for any of these kinds.",
+      "enum": ["app_run", "workflow_run", "agent_run", "human_task"]
+    },
+    "WorkProjection": {
+      "title": "WorkProjection",
+      "description": "A bounded, read-only projection over App, Workflow, Agent or Human Task state that a Generation Job or a Message may reference (`InvokeApp`, `StartWorkflow`, `StartAgentRun`, `RespondToWorkRequest`). Identity is opaque and re-authorised by the owning authority at read time; this record never redefines REF-033 or REF-032 state semantics. `displayState` is an owner-supplied, display-safe status string, not a Chat-closed enum.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "referenceId", "terminal", "updatedAt"],
+      "properties": {
+        "kind": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/WorkKind" },
+        "referenceId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId",
+          "description": "The owning authority's own stable identifier (for example a `WorkflowRunId` or `HumanTaskId`), reused by reference only."
+        },
+        "displayState": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Owner-supplied display-safe status label. Never parsed as a Chat-closed enum or branched on beyond `terminal`."
+        },
+        "terminal": {
+          "type": "boolean",
+          "description": "Whether the referenced Work has reached a terminal state, as reported by its owning authority."
+        },
+        "waitingOnActor": {
+          "type": "boolean",
+          "description": "True when the referenced Work is currently waiting on input from the requesting actor (for example a Human Task claim or `RespondToWorkRequest` target)."
+        },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "GenerationJobQuery": {
+      "title": "GenerationJobQuery",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "conversationId", "jobId", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+      }
+    },
+    "GenerationJobResult": {
+      "title": "GenerationJobResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "job"],
+      "properties": {
+        "job": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationAttempt" },
+          "maxItems": 200
+        },
+        "work": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/WorkProjection" },
+          "maxItems": 64,
+          "description": "Present only when this Job or its triggering interaction referenced App, Workflow, Agent or Human Task execution."
+        }
+      }
+    }
+  }
+}

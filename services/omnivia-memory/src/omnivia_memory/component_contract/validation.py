@@ -13,7 +13,7 @@ Deprecated: import ``ComponentContractValidationError`` /
 # bindings (`TYPE_CHECKING`, `Any`, `Dict`, `Enum`, `List`, `Optional`) -- names
 # the canonical module's own imports left at its module scope and that this
 # leaf's historical namespace still has to resolve. No other code is suppressed.
-from omnivia_core.component_contract.validation import (  # type: ignore[attr-defined]
+from omnivia_core.component_contract.validation import (  # type: ignore[attr-defined,unused-ignore]
     TYPE_CHECKING,
     Any,
     ComponentContractValidationError,

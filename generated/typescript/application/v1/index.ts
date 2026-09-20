@@ -17,6 +17,7 @@
 //   contracts/application/v1/schemas/context-pack.schema.json
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 //   contracts/application/v1/schemas/runtime.schema.json
+//   contracts/application/v1/schemas/chat.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -1766,39 +1767,6 @@ export function isRunDefinitionKind(value: unknown): value is RunDefinitionKind 
 }
 
 /**
- * Where one `WorktreeLease` stands in its own life: `acquiring` is taking the worktree and may
- * not yet mutate it, `held` is the only lifecycle a mutation may commit under, `draining` is
- * finishing in-flight work and admits no new mutation, and `released` handed the worktree back.
- * Deliberately the same four words the durable workspace service lease already records, because
- * two vocabularies for one lifecycle are two things that have to be kept in agreement. Closed at
- * the schema and open on the wire, with the same fail-safe reading as `RunStatus` -- an
- * unrecognized lifecycle is not `held`, so it permits nothing.
- */
-export type WorktreeLeaseLifecycle = string;
-
-/**
- * The closed `WorktreeLeaseLifecycle` vocabulary, emitted from the schema's `enum`.
- */
-export const WORKTREE_LEASE_LIFECYCLE_VALUES = [
-  "acquiring",
-  "held",
-  "draining",
-  "released",
-] as const;
-
-/**
- * Return whether a value is a declared `WorktreeLeaseLifecycle`. The generated decoders do not
- * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
- * primitive a caller enforcing the closed domain validates with.
- */
-export function isWorktreeLeaseLifecycle(value: unknown): value is WorktreeLeaseLifecycle {
-  return (
-    typeof value === "string" &&
-    (WORKTREE_LEASE_LIFECYCLE_VALUES as readonly string[]).includes(value)
-  );
-}
-
-/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -2180,6 +2148,102 @@ export interface WorkspaceCreateInput {
  * identifier.
  */
 export interface WorkspaceInspectInput {
+}
+
+/**
+ * The conversation a chat command changes, and the revision the caller believes it is at.
+ * Optimistic concurrency for the conversation aggregate, stated as both counters rather than
+ * one: a conversation's `graph_revision` and its append position move independently, so
+ * expecting only one of them admits a command whose view is stale in exactly the half it did not
+ * state. A mismatch is a `conflict` the caller re-reads and re-decides against; it is not a
+ * `mutation_precondition_failed`, which names a record version the caller refreshes and retries.
+ */
+export interface ChatConversationExpectation {
+  /**
+   * Identifier of the conversation this command expects to change.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The conversation graph's optimistic revision token as the caller last observed it.
+   */
+  readonly graph_revision: number;
+  /**
+   * The conversation's latest append position as the caller last observed it.
+   */
+  readonly latest_conversation_sequence: number;
+}
+
+/**
+ * Result of `chat.command`: the settled command's own Chat Contract v1 result envelope, echoed
+ * with the command name it answers. The chat result is carried opaquely for the same reason the
+ * request is. A replayed submission returns the stored result of the command that already ran,
+ * not a second settlement.
+ */
+export interface ChatCommandResult {
+  /**
+   * The Chat Contract v1 command name this result answers. Echoes the request.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 `CommandResultEnvelope` the command produced, carried verbatim.
+   */
+  readonly command_result: JsonObject;
+  /**
+   * The conversation the settled command changed, where it changed one.
+   */
+  readonly conversation_id?: Identifier;
+}
+
+/**
+ * One durable generation-lifecycle event, as the workspace recorded it. Provider content is
+ * never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
+ * persisted, and no request body, response body, header, URL or credential has a path into it.
+ */
+export interface ChatGenerationEvent {
+  /**
+   * Identifier of this durable event.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The durable event type, such as `chat.generation.started`. Open by design so a compatible
+   * minor release can add lifecycle vocabulary.
+   */
+  readonly event_type: OpenCode;
+  /**
+   * This event's position in its generation's contiguous history, counting from one.
+   */
+  readonly generation_event_sequence: number;
+  /**
+   * The server-issued cursor naming this position. Round-tripped verbatim as a later request's
+   * `after_cursor`; never parsed.
+   */
+  readonly cursor: OpaqueToken;
+  /**
+   * When the workspace recorded this event.
+   */
+  readonly occurred_at: Timestamp;
+  /**
+   * The event's sanitised durable payload.
+   */
+  readonly payload?: JsonObject;
+}
+
+/**
+ * Input for `chat.events`: replay one generation's durable event history after a cursor. A
+ * request carrying no `after_cursor` replays the whole history. Transport-level streaming is out
+ * of scope: this is a replay of what was recorded, not a subscription. Workspace-scoped through
+ * the request envelope's selected workspace, so this payload never carries a second, independent
+ * workspace identifier.
+ */
+export interface ChatEventsInput {
+  /**
+   * Identifier of the generation whose events to replay.
+   */
+  readonly generation_job_id: Identifier;
+  /**
+   * Replay strictly after this position. Absent replays from the beginning.
+   */
+  readonly after_cursor?: OpaqueToken;
 }
 
 /**
@@ -3174,34 +3238,6 @@ export interface ExternalReference {
 }
 
 /**
- * The source-qualified identity of one worktree: which workspace, which source root within it,
- * and which worktree of that root. All three, always. None of them is unique on its own -- the
- * same worktree identifier can be issued under two source roots, and the same source root
- * identifier can exist in two workspaces -- so an identity missing either qualifier can be
- * resolved against a tree it was never issued for, which is the one confusion a mutation must
- * never make. Two references name the same worktree exactly when all three members are equal; a
- * shared spelling of any one member implies nothing about the other two. Carries no filesystem
- * path, mount point, device, remote or repository URL: where a worktree lives is a host decision
- * and never a wire fact, which is the rule `Artifact` already obeys.
- */
-export interface WorktreeRef {
-  /**
-   * Workspace this worktree belongs to.
-   */
-  readonly workspace_id: WorkspaceId;
-  /**
-   * The source root within that workspace this worktree was created under. Unique within its
-   * workspace, and never assumed to mean the same root in another one.
-   */
-  readonly source_root_id: Identifier;
-  /**
-   * This worktree, unique within its source root. Never unique on its own: it is read only
-   * together with the two qualifiers above.
-   */
-  readonly worktree_id: Identifier;
-}
-
-/**
  * The exact executable definition a run was admitted to execute: which kind, which definition,
  * and at which released version. Immutable for the life of the run -- a run does not change what
  * it is running -- so the definition reported on a completed run is the one it was admitted
@@ -3368,57 +3404,6 @@ export interface CapabilityGrant {
    * The purpose limitation this grant was issued under.
    */
   readonly purpose: Purpose;
-}
-
-/**
- * The immutable watermark that makes context delivery to one attempt bounded and replayable. It
- * states the lineage it was issued to -- workspace, run, step and attempt, all four, because an
- * attempt is the thing that actually reads context and an identifier without its lineage could
- * be resolved against the wrong one -- the sequence of the first `RuntimeEvent` the attempt has
- * *not* seen, and the ceiling on how many entries one delivery may carry. Deliberately not an
- * opaque server token: every field is a value both sides can recompute and compare, so a caller
- * can prove a delivery is the next one rather than being told so. Deliberately not a second
- * event stream either -- it is a position in the run's own `RuntimeEvent` sequence, which is
- * already contiguous from zero, so a cursor is replayable exactly because the stream it indexes
- * never renumbers. Presenting the same cursor twice yields the same delivery; presenting the
- * cursor a delivery returned yields only what came after it.
- */
-export interface ContextCursor {
-  /**
-   * Workspace this cursor was issued in. A cursor is never workspace-free: it is refused
-   * against any other workspace rather than resolved there.
-   */
-  readonly workspace_id: WorkspaceId;
-  /**
-   * The run whose event stream this cursor indexes.
-   */
-  readonly run_id: Identifier;
-  /**
-   * The step this cursor was issued to. Must be a step of `run_id`.
-   */
-  readonly run_step_id: Identifier;
-  /**
-   * The attempt this cursor was issued to. Must be an attempt of `run_step_id`, not merely one
-   * existing somewhere in the run.
-   */
-  readonly attempt_id: Identifier;
-  /**
-   * Sequence of the first `RuntimeEvent` this attempt has not been delivered. Zero on a fresh
-   * cursor; equal to the stream length when the attempt is caught up. A cursor pointing past
-   * the end of a contiguous stream claims to have seen events that do not exist and is
-   * refused.
-   */
-  readonly next_sequence: number;
-  /**
-   * Ceiling on how many entries one delivery against this cursor may carry. Required and
-   * bounded on both ends: an absent, zero or unbounded ceiling is an unbounded delivery, which
-   * is the thing this record exists to prevent.
-   */
-  readonly max_items: number;
-  /**
-   * When this cursor was issued.
-   */
-  readonly issued_at: Timestamp;
 }
 
 /**
@@ -4049,6 +4034,62 @@ export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]):
   } catch {
     return false;
   }
+}
+
+/**
+ * Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's single
+ * mutation seam. `command_name` names a member of the Chat Contract's own closed command
+ * registry and `command` is that command's request document, carried verbatim and opaque to this
+ * envelope. Workspace-scoped through the request envelope's selected workspace, so this payload
+ * never carries a second, independent workspace identifier. The envelope's `idempotency_key` is
+ * required by the catalogue and is what makes a repeated submission answer from the settled
+ * outcome rather than appending a second message.
+ */
+export interface ChatCommandInput {
+  /**
+   * The Chat Contract v1 command name, such as `SubmitMessage`. Refused when it is not a
+   * member of that contract's closed registry.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 request document for `command_name`, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly command: JsonObject;
+  /**
+   * The conversation revision this command expects. Absent for a command that touches no
+   * existing conversation.
+   */
+  readonly expected_conversation?: ChatConversationExpectation;
+}
+
+/**
+ * Result of `chat.events`: the durable event suffix after the requested cursor, or the demand
+ * for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events` is empty and
+ * `resnapshot_reason` states why the requested position could not be honoured; a fabricated
+ * continuation is exactly what that answer exists to prevent. Events are strictly increasing,
+ * duplicate-free and contiguous from the position the request continued from.
+ */
+export interface ChatEventsResult {
+  /**
+   * Identifier of the generation these events belong to. Echoes the request.
+   */
+  readonly generation_job_id: Identifier;
+  /**
+   * The durable events after the requested cursor, in ascending sequence order. Empty when a
+   * resnapshot is required.
+   */
+  readonly events: readonly ChatGenerationEvent[];
+  /**
+   * Whether the caller must take a fresh snapshot instead of continuing from the cursor it
+   * presented.
+   */
+  readonly requires_resnapshot: boolean;
+  /**
+   * Why a fresh snapshot is required, such as `cursor_unknown_or_expired`. Present only when
+   * `requires_resnapshot` is true.
+   */
+  readonly resnapshot_reason?: OpenCode;
 }
 
 /**
@@ -4850,27 +4891,6 @@ export interface RecordIdentity {
 }
 
 /**
- * Exactly what one mutation acted on: a source-qualified worktree, and a digest of the target's
- * worktree-relative path within it. The path itself is deliberately absent. A digest is
- * comparable -- two mutations of one path in one worktree agree, two paths do not -- without
- * disclosing a filesystem layout, so a target can be recorded, exported and retained with no
- * redaction pass over it and nothing to redact. Both members are bounded canonical scalars this
- * contract already publishes, so a target can never carry free text, a caller-shaped blob or an
- * unbounded field.
- */
-export interface MutationTarget {
-  /**
-   * The worktree this mutation acted inside, qualified by workspace and source root.
-   */
-  readonly worktree: WorktreeRef;
-  /**
-   * Digest of the target's worktree-relative path. Identity, not location: it proves two
-   * mutations touched the same target without saying where that target is.
-   */
-  readonly path_digest: ContentChecksum;
-}
-
-/**
  * One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run,
  * workspace and start instant never change, and an attempt terminalizes exactly once. Within a
  * step, attempts are numbered `1..N` contiguously and never overlap; only a `failed`,
@@ -5017,79 +5037,6 @@ export interface EvidenceItem {
    * True while this evidence is still held. Cancelling a run never sets it false.
    */
   readonly retained: boolean;
-}
-
-/**
- * One run's exclusive claim on one worktree, held under the workspace service lease rather than
- * beside it. This is a sublease, not a second authority: `service_instance_id` and
- * `fencing_generation` restate the exact holder and generation the durable workspace lease
- * already recorded, so a worktree claim can never be current while the workspace lease that
- * issued it is not. `lease_generation` is this worktree's own monotonic counter, incremented by
- * every acquisition and every takeover, and it is what a writer carries into a mutation so a
- * resumed predecessor's write is refused rather than accepted under a generation that has moved
- * on. Ownership fails closed on every axis: a lease whose fencing generation is not the current
- * one is superseded whatever its own record says, a released lease is not a free one,
- * `expires_at` is a ceiling and never a renewal, and a lifecycle other than `held` -- including
- * an unrecognized one -- permits no mutation at all. Expiry alone is never proof the previous
- * holder is gone; it is what makes a takeover permissible to investigate, and the successor's
- * generation is what makes the predecessor's writes refusable.
- */
-export interface WorktreeLease {
-  /**
-   * Workspace this lease was issued in. Always the workspace its `worktree` names.
-   */
-  readonly workspace_id: WorkspaceId;
-  /**
-   * Identifier of this lease, unique within its workspace.
-   */
-  readonly worktree_lease_id: Identifier;
-  /**
-   * The worktree this lease claims, qualified by workspace and source root so one lease can
-   * never be read against another root's tree of the same name.
-   */
-  readonly worktree: WorktreeRef;
-  /**
-   * The run holding this lease. A worktree is claimed by one run at a time.
-   */
-  readonly run_id: Identifier;
-  /**
-   * The workspace service instance this lease was issued under -- the same holder identity the
-   * durable workspace lease records, restated rather than reinvented.
-   */
-  readonly service_instance_id: Identifier;
-  /**
-   * The workspace lease's fencing generation this sublease was issued under. Not this lease's
-   * own counter: it is the generation the workspace lease had, so a sublease surviving a
-   * takeover is detectably stale.
-   */
-  readonly fencing_generation: number;
-  /**
-   * This worktree's own monotonic claim counter, incremented by every acquisition and
-   * takeover. Strictly increasing per worktree; a number that repeats or goes backwards makes
-   * two holders indistinguishable.
-   */
-  readonly lease_generation: number;
-  /**
-   * Where this lease stands. Only `held` permits a mutation.
-   */
-  readonly lifecycle: WorktreeLeaseLifecycle;
-  /**
-   * When this lease was taken.
-   */
-  readonly acquired_at: Timestamp;
-  /**
-   * When this lease stops being current, always after `acquired_at`. A ceiling on how long the
-   * holder may act without renewing, never a promise that the holder is gone once it passes.
-   */
-  readonly expires_at: Timestamp;
-  /**
-   * When the worktree was handed back. Present exactly when `lifecycle` is `released`.
-   */
-  readonly released_at?: Timestamp;
-  /**
-   * Immutable reference to the audit record for this claim.
-   */
-  readonly audit_reference: AuditReference;
 }
 
 /**
@@ -5794,11 +5741,7 @@ export interface ProvenanceEntry {
  * `1..N` contiguously within a run and never renumbered; the history is append-only, so a
  * correction is a further attempt rather than an edit to a recorded one. A step that is
  * `waiting` names the `Wait` holding it, because a suspended step that cannot say what it is
- * suspended on cannot be resolved. A step that was spawned by another names it in
- * `parent_run_step_id`: parentage is stated by the child and never by a list on the parent, so a
- * child and the parent it claims cannot disagree. Parentage is a link inside one run -- both
- * steps restate the same `run_id` and `workspace_id` -- and it never crosses into another run or
- * workspace, however similarly spelled the identifier.
+ * suspended on cannot be resolved.
  */
 export interface RunStep {
   /**
@@ -5813,13 +5756,6 @@ export interface RunStep {
    * The run this step belongs to.
    */
   readonly run_id: Identifier;
-  /**
-   * The step that spawned this one, when one did. Absent on a root step. The parent is a step
-   * of this same run, and it is an earlier one: a step's ordinal is greater than its parent's,
-   * so a parent chain is finite and acyclic by construction rather than by a cycle check
-   * nobody can see.
-   */
-  readonly parent_run_step_id?: Identifier;
   /**
    * 1-based position of this step within its run.
    */
@@ -5850,95 +5786,6 @@ export interface RunStep {
    * The wait holding this step, present exactly when the step is `waiting`.
    */
   readonly wait_id?: Identifier;
-}
-
-/**
- * The record that one run changed one thing in one worktree, and everything a reader needs to
- * decide whether it was allowed to. It never stands alone: it names the `EffectIntent` that
- * authorized it, exactly as an `EffectReceipt` does, so a change nobody declared is a change
- * nobody can reconcile. It names the `WorktreeLease` it committed under and restates that
- * lease's `lease_generation` and `fencing_generation`, so a write made under authority that had
- * already moved on is refusable after the fact and not merely at the time. It names the
- * `PolicySnapshot` revision in force, so what was permitted is read from the policy the run was
- * actually pinned to rather than from whatever policy is current when the record is read.
- * `before_digest` and `after_digest` state what changed: an absent `before_digest` is a target
- * that did not exist, an absent `after_digest` is one that no longer does, and a record with
- * neither -- or with two equal digests -- describes no mutation at all and is refused rather
- * than recorded. `cleanup_receipt_id` links the change to the cleanup that undid or released it,
- * so a mutation and its reversal are one story instead of two. Redaction-safe by construction:
- * every field is an identifier, a digest, a bounded code or an instant, there is no path, no
- * content, no diff and no message, so this record is publishable and retainable as written.
- */
-export interface MutationEvidence {
-  /**
-   * Workspace this mutation was made in. Always the workspace its target's worktree names.
-   */
-  readonly workspace_id: WorkspaceId;
-  /**
-   * Identifier of this record, unique within its workspace.
-   */
-  readonly mutation_evidence_id: Identifier;
-  /**
-   * The run that made this mutation.
-   */
-  readonly run_id: Identifier;
-  /**
-   * The intent that authorized this mutation. Required: nothing is changed that was not first
-   * declared.
-   */
-  readonly effect_intent_id: Identifier;
-  /**
-   * The source-qualified target this mutation acted on.
-   */
-  readonly target: MutationTarget;
-  /**
-   * The worktree lease this mutation committed under.
-   */
-  readonly worktree_lease_id: Identifier;
-  /**
-   * The worktree lease's own generation when this mutation committed. Together with
-   * `fencing_generation` this is the fencing token the write actually carried, so a resumed
-   * predecessor's mutation is identifiable as such rather than merely undated.
-   */
-  readonly lease_generation: number;
-  /**
-   * The workspace fencing generation in force when this mutation committed. Restated here
-   * rather than looked up, so a write made under a superseded generation stays visible once
-   * the lease record is gone.
-   */
-  readonly fencing_generation: number;
-  /**
-   * The policy snapshot in force when this mutation was authorized.
-   */
-  readonly policy_snapshot_id: Identifier;
-  /**
-   * The revision of that snapshot. A run's policy may be re-pinned, so the revision is what
-   * makes 'what was permitted' answerable at all.
-   */
-  readonly policy_revision: number;
-  /**
-   * Digest of the target's content before this mutation. Absent exactly when the target did
-   * not exist.
-   */
-  readonly before_digest?: ContentChecksum;
-  /**
-   * Digest of the target's content after this mutation. Absent exactly when the target no
-   * longer exists.
-   */
-  readonly after_digest?: ContentChecksum;
-  /**
-   * When this mutation committed. The instant the lease is judged current at.
-   */
-  readonly recorded_at: Timestamp;
-  /**
-   * The cleanup that released or reversed this mutation, when one has. Absent while nothing
-   * has cleaned it up.
-   */
-  readonly cleanup_receipt_id?: Identifier;
-  /**
-   * Immutable reference to the audit record for this mutation.
-   */
-  readonly audit_reference: AuditReference;
 }
 
 /**
@@ -7418,6 +7265,71 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.command",
+    scope: { required_scopes: ["chat:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult",
+    required_capability: { id: "chat.command", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.events",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

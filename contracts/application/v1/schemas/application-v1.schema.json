@@ -20,7 +20,8 @@
     "https://contracts.omnivia.dev/application/v1/graph.schema.json",
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
-    "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
+    "https://contracts.omnivia.dev/application/v1/chat.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -662,17 +663,8 @@
     "RunDefinitionKind": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionKind"
     },
-    "WorktreeLeaseLifecycle": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeLeaseLifecycle"
-    },
     "ExternalReference": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ExternalReference"
-    },
-    "WorktreeRef": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeRef"
-    },
-    "MutationTarget": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/MutationTarget"
     },
     "RunDefinitionRef": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionRef"
@@ -691,9 +683,6 @@
     },
     "RunStep": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStep"
-    },
-    "ContextCursor": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ContextCursor"
     },
     "Wait": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Wait"
@@ -722,17 +711,29 @@
     "CleanupReceipt": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CleanupReceipt"
     },
-    "WorktreeLease": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeLease"
-    },
-    "MutationEvidence": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/MutationEvidence"
-    },
     "Run": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run"
     },
     "ResolveWait": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait"
+    },
+    "ChatConversationExpectation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation"
+    },
+    "ChatCommandInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput"
+    },
+    "ChatCommandResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult"
+    },
+    "ChatGenerationEvent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
+    },
+    "ChatEventsInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput"
+    },
+    "ChatEventsResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult"
     }
   }
 }

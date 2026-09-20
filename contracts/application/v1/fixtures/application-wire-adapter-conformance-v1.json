@@ -309,6 +309,228 @@
       }
     },
     {
+      "description": "chat.command answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "chat.command/primary-success",
+      "operation": "chat.command",
+      "request": {
+        "input": {
+          "command": {
+            "actorId": "actor-1",
+            "commandId": "cmd-chat-1",
+            "protocolVersion": "1.0",
+            "requestedAt": "2024-01-01T00:00:00Z",
+            "title": "hello",
+            "workspaceId": "ws-1"
+          },
+          "command_name": "CreateConversation"
+        },
+        "metadata": {
+          "idempotency_key": "idem-chat.command",
+          "request_id": "req-chat.command-success",
+          "required_capabilities": [
+            {
+              "id": "chat.command",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.command"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-chat.command",
+          "request_id": "req-chat.command-success"
+        },
+        "result": {
+          "command_name": "CreateConversation",
+          "command_result": {
+            "commandId": "cmd-chat-1",
+            "status": "accepted"
+          },
+          "conversation_id": "conv-chat-1"
+        }
+      },
+      "trusted": {
+        "expected_actor_kind": "user"
+      }
+    },
+    {
+      "description": "chat.command repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "chat.command/primary-success"
+      },
+      "id": "chat.command/honest-replay",
+      "operation": "chat.command",
+      "request": {
+        "input": {
+          "command": {
+            "actorId": "actor-1",
+            "commandId": "cmd-chat-1",
+            "protocolVersion": "1.0",
+            "requestedAt": "2024-01-01T00:00:00Z",
+            "title": "hello",
+            "workspaceId": "ws-1"
+          },
+          "command_name": "CreateConversation"
+        },
+        "metadata": {
+          "idempotency_key": "idem-chat.command",
+          "request_id": "req-chat.command-replay",
+          "required_capabilities": [
+            {
+              "id": "chat.command",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.command"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-chat.command",
+          "request_id": "req-chat.command-replay"
+        },
+        "result": {
+          "command_name": "CreateConversation",
+          "command_result": {
+            "commandId": "cmd-chat-1",
+            "status": "accepted"
+          },
+          "conversation_id": "conv-chat-1"
+        }
+      },
+      "trusted": {
+        "expected_actor_kind": "user"
+      }
+    },
+    {
+      "description": "chat.command reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "chat.command/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "chat.command/idempotency-conflict",
+      "operation": "chat.command",
+      "request": {
+        "input": {
+          "command": {
+            "actorId": "actor-1",
+            "commandId": "cmd-chat-1b",
+            "protocolVersion": "1.0",
+            "requestedAt": "2024-01-01T00:00:00Z",
+            "title": "different",
+            "workspaceId": "ws-1"
+          },
+          "command_name": "CreateConversation"
+        },
+        "metadata": {
+          "idempotency_key": "idem-chat.command",
+          "request_id": "req-chat.command-conflict",
+          "required_capabilities": [
+            {
+              "id": "chat.command",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.command"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-chat.command",
+          "request_id": "req-chat.command-conflict"
+        }
+      },
+      "trusted": {
+        "expected_actor_kind": "user"
+      }
+    },
+    {
+      "description": "chat.events answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "chat.events/primary-success",
+      "operation": "chat.events",
+      "request": {
+        "input": {
+          "generation_job_id": "gen-chat-1"
+        },
+        "metadata": {
+          "request_id": "req-chat.events-success",
+          "required_capabilities": [
+            {
+              "id": "chat.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.events"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-chat.events-success"
+        },
+        "result": {
+          "events": [
+            {
+              "cursor": "gen-chat-1:000001",
+              "event_id": "event-chat-1",
+              "event_type": "chat.generation.queued",
+              "generation_event_sequence": 1,
+              "occurred_at": "2024-01-01T00:00:00Z"
+            },
+            {
+              "cursor": "gen-chat-1:000002",
+              "event_id": "event-chat-2",
+              "event_type": "chat.generation.started",
+              "generation_event_sequence": 2,
+              "occurred_at": "2024-01-01T00:01:00Z"
+            }
+          ],
+          "generation_job_id": "gen-chat-1",
+          "requires_resnapshot": false
+        }
+      },
+      "trusted": {
+        "generation_job_id": "gen-chat-1",
+        "workspace_id": "ws-1"
+      }
+    },
+    {
       "description": "context_pack.build answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"

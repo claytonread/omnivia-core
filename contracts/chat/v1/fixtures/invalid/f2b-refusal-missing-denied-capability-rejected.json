@@ -1,0 +1,7 @@
+{
+  "messageType": "bridge.refusal",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "reason": "forbidden_capability",
+  "contextId": "bctx-0001"
+}

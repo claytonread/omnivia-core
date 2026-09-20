@@ -1,0 +1,41 @@
+{
+  "invocationId": "invocation-rec-07",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "jobId": "job-0002",
+  "generationAttemptId": "attempt-0007",
+  "operation": "language.stream",
+  "connectionId": "conn-primary-anthropic",
+  "modelId": "claude-sonnet-5",
+  "attemptIds": [],
+  "lifecycleState": "succeeded",
+  "createdAt": "2026-08-20T10:00:00Z",
+  "updatedAt": "2026-08-20T10:00:10Z",
+  "terminalAt": "2026-08-20T10:00:10Z",
+  "routeEvidence": {
+    "configuredPreference": {
+      "connectionId": "conn-primary-anthropic",
+      "modelId": "claude-sonnet-5"
+    },
+    "admittedRoute": {
+      "connectionId": "conn-primary-anthropic",
+      "modelId": "claude-sonnet-5",
+      "adapterName": "anthropic-adapter",
+      "adapterVersion": "1.4.0"
+    },
+    "routeDecision": "configured",
+    "sameRouteRetryCount": 0,
+    "fallbackAuthorised": false,
+    "attemptStartedAt": "2026-08-20T10:00:00Z",
+    "attemptEndedAt": "2026-08-20T10:00:10Z",
+    "terminalReason": "stop",
+    "usage": {
+      "reported": {
+        "inputTokens": 100,
+        "outputTokens": 50,
+        "totalTokens": 150
+      }
+    },
+    "reconciliationState": "reconciled"
+  }
+}

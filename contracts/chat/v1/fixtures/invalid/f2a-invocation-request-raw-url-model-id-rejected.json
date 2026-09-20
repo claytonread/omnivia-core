@@ -1,0 +1,31 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "jobId": "job-0002",
+  "attemptId": "attempt-0007",
+  "invocationId": "invocation-0007",
+  "connectionId": "conn-fallback-openai",
+  "modelId": "https://models.example.com/openai/gpt-4.1",
+  "operation": "language.stream",
+  "idempotencyKey": "idem-invocation-0007",
+  "correlationId": "corr-invocation-0007",
+  "classificationRef": "classification-standard",
+  "residencyRef": "residency-au",
+  "policyRef": "policy-default",
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Summarise the attached report."
+        }
+      ]
+    }
+  ],
+  "responseFormat": {
+    "kind": "text"
+  },
+  "deadlineAt": "2026-08-20T10:01:30Z",
+  "requestedAt": "2026-08-20T10:00:05Z"
+}

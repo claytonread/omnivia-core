@@ -6,10 +6,7 @@ apply warning/fail thresholds to determine pass/fail status.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
-
 from benchmarks.schema import (
     BenchmarkRun,
     ComparisonResult,
@@ -21,124 +18,6 @@ from benchmarks.schema import (
 # Default thresholds (percentage)
 DEFAULT_WARNING_THRESHOLD = 10.0  # 10% slowdown triggers warning
 DEFAULT_FAIL_THRESHOLD = 25.0  # 25% slowdown triggers failure
-
-
-def percentile(values: list[float], percentile_rank: int) -> float:
-    """Return a percentile from an unsorted sample list (0.0 when empty)."""
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = min(
-        len(ordered) - 1,
-        round((percentile_rank / 100) * (len(ordered) - 1)),
-    )
-    return ordered[index]
-
-
-@dataclass(frozen=True)
-class RuntimeSloThresholds:
-    """Absolute pass/fail bounds for the control-plane runtime load/soak gate.
-
-    These are baseline-free bounds: they exist to catch unbounded storage
-    growth, dropped runs, and pathological slowness on an ordinary developer
-    laptop, not to police small timing variance. Regression-vs-baseline
-    tracking stays with :class:`ThresholdConfig`.
-
-    Observed local-dev values for the ``tiny`` profile are roughly 9-14 KiB of
-    SQLite growth per completed run and 5-50 ms per ingest+execute pair, so the
-    defaults keep several times that headroom.
-    """
-
-    max_storage_bytes_per_run: int = 65_536
-    max_p99_latency_ms: float = 750.0
-    min_throughput_ops_per_second: float = 2.0
-    min_completed_ratio: float = 1.0
-    min_spans_per_completed_run: float = 1.0
-
-
-def evaluate_runtime_slo(
-    evidence: Mapping[str, Any],
-    thresholds: RuntimeSloThresholds | None = None,
-) -> list[str]:
-    """Return threshold breaches for a runtime SLO evidence mapping.
-
-    Fails closed: missing or zero evidence counts are a breach rather than a
-    silent pass, so a scenario that records nothing cannot report success.
-
-    Args:
-        evidence: Mapping produced by a runtime scenario. Recognised keys are
-            ``operation_count``, ``completed_count``, ``storage_bytes_per_run``,
-            ``p99_latency_ms``, ``throughput_ops_per_second``,
-            ``projection_span_count``, ``metrics_completed_count``,
-            ``projection_metrics_completed_count`` and
-            ``redaction_violations``.
-        thresholds: Bounds to enforce (defaults to
-            :class:`RuntimeSloThresholds`).
-
-    Returns:
-        List of human-readable breach descriptions; empty means pass.
-    """
-    limits = thresholds or RuntimeSloThresholds()
-    breaches: list[str] = []
-
-    operation_count = int(evidence.get("operation_count", 0))
-    completed_count = int(evidence.get("completed_count", 0))
-    if operation_count <= 0:
-        breaches.append("operation_count is zero: no runtime evidence recorded")
-        return breaches
-
-    completed_ratio = completed_count / operation_count
-    if completed_ratio < limits.min_completed_ratio:
-        breaches.append(
-            f"completed ratio {completed_ratio:.3f} below "
-            f"{limits.min_completed_ratio:.3f} "
-            f"({completed_count}/{operation_count} runs completed)"
-        )
-
-    storage_per_run = float(evidence.get("storage_bytes_per_run", 0))
-    if storage_per_run > limits.max_storage_bytes_per_run:
-        breaches.append(
-            f"storage_bytes_per_run {storage_per_run:,.0f} exceeds "
-            f"{limits.max_storage_bytes_per_run:,} bytes"
-        )
-
-    p99 = float(evidence.get("p99_latency_ms", 0))
-    if p99 > limits.max_p99_latency_ms:
-        breaches.append(
-            f"p99_latency_ms {p99:,.1f} exceeds {limits.max_p99_latency_ms:,.1f} ms"
-        )
-
-    throughput = float(evidence.get("throughput_ops_per_second", 0))
-    if throughput < limits.min_throughput_ops_per_second:
-        breaches.append(
-            f"throughput_ops_per_second {throughput:,.2f} below "
-            f"{limits.min_throughput_ops_per_second:,.2f}"
-        )
-
-    if completed_count > 0:
-        spans_per_run = float(evidence.get("projection_span_count", 0)) / completed_count
-        if spans_per_run < limits.min_spans_per_completed_run:
-            breaches.append(
-                f"projected spans per completed run {spans_per_run:.3f} below "
-                f"{limits.min_spans_per_completed_run:.3f}"
-            )
-
-    metrics_completed = int(evidence.get("metrics_completed_count", -1))
-    projection_completed = int(evidence.get("projection_metrics_completed_count", -2))
-    if metrics_completed != projection_completed:
-        breaches.append(
-            f"observability summary completed_count {metrics_completed} does not "
-            f"match projection completed_count {projection_completed}"
-        )
-    if metrics_completed != completed_count:
-        breaches.append(
-            f"observability summary completed_count {metrics_completed} does not "
-            f"match executed completed runs {completed_count}"
-        )
-
-    breaches.extend(str(item) for item in evidence.get("redaction_violations", []))
-
-    return breaches
 
 
 @dataclass

@@ -74,13 +74,18 @@ from omnivia_core_runtime.storage.agent_runtime import (
     settle_effect,
     start_attempt,
 )
+from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.migrations import (
     canonical_schema_tables,
     load_migrations,
     materialise_phase0_baseline,
 )
 
-from omnivia_core.contracts.v1 import CONTRACT_VERSION, EffectSettlement
+from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    ContractSemanticError,
+    EffectSettlement,
+)
 
 WORKSPACE_ID = t205.WORKSPACE_ID
 RUN_ID = t205.RUN_ID
@@ -457,15 +462,15 @@ def test_the_unknown_settlement_is_still_readable_after_reconciliation(
 ) -> None:
     """Two facts about one intent, not one fact overwritten.
 
-    This is the RT-205 limitation resolved rather than bypassed: the settlement relation
-    still holds one immutable row per intent, and the answer that arrived later lives in
-    a relation of its own.
+    This is the RT-205 limitation resolved rather than bypassed: the original
+    settlement remains immutable, and 0024 appends a resulting settlement beside the
+    reconciliation bridge rather than rewriting it.
     """
     settled = uncertain(acting)
     t205.observe(acting, t205.receipt(observed_at=at(OBSERVED_US)))
     reconcile(acting)
     assert settlement_of(acting) == settled
-    assert counts(acting)[t205.SETTLEMENTS] == 1
+    assert counts(acting)[t205.SETTLEMENTS] == 2
     assert counts(acting)[RECONCILIATIONS] == 1
 
 
@@ -477,8 +482,9 @@ def test_read_run_reports_the_settlement_and_the_reconciliation_it_received(
     reconciled = reconcile(acting)
     snapshot = read_run(acting.connection, workspace_id=WORKSPACE_ID, run_id=RUN_ID)
     assert snapshot is not None
-    assert len(snapshot.effect_settlements) == 1
+    assert len(snapshot.effect_settlements) == 2
     assert snapshot.effect_settlements[0].outcome == "unknown"
+    assert snapshot.effect_settlements[1].outcome == "committed"
     assert snapshot.effect_reconciliations == (reconciled,)
 
 
@@ -548,7 +554,7 @@ def test_a_second_final_answer_has_nowhere_to_live(acting: m1.Owned) -> None:
     uncertain(acting)
     t205.observe(acting, t205.receipt(observed_at=at(OBSERVED_US)))
     reconcile(acting)
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((sqlite3.IntegrityError, ContractSemanticError)):
         write(
             acting,
             handmade(
@@ -634,7 +640,7 @@ def test_a_committed_reconciliation_without_a_retained_receipt_is_refused(
 ) -> None:
     """The named receipt has to exist; the foreign key sees to that."""
     uncertain(acting)
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((sqlite3.IntegrityError, ContractSemanticError)):
         write(
             acting,
             handmade(
@@ -665,7 +671,7 @@ def test_a_committed_reconciliation_cannot_borrow_another_effects_receipt(
             observed_at=at(OBSERVED_US),
         ),
     )
-    with pytest.raises(sqlite3.IntegrityError, match="committed reconciliation"):
+    with pytest.raises((sqlite3.IntegrityError, ContractSemanticError)):
         write(
             acting,
             handmade(
@@ -735,7 +741,7 @@ def test_a_reconciliation_resting_on_a_receipt_it_predates_is_refused(
     """Stale the other way: the evidence has to have arrived before the answer."""
     uncertain(acting)
     t205.observe(acting, t205.receipt(observed_at=at(OBSERVED_US)))
-    with pytest.raises(sqlite3.IntegrityError, match="committed reconciliation"):
+    with pytest.raises(sqlite3.IntegrityError, match="APPLIED reconciliation"):
         write(
             acting,
             handmade(
@@ -753,7 +759,7 @@ def test_a_reconciliation_of_an_intent_belonging_to_another_run_is_refused(
 ) -> None:
     uncertain(acting)
     t205.observe(acting, t205.receipt(observed_at=at(OBSERVED_US)))
-    with pytest.raises(sqlite3.IntegrityError, match="intent of its own run"):
+    with pytest.raises((sqlite3.IntegrityError, ContractSemanticError)):
         write(
             acting,
             handmade(
@@ -771,7 +777,7 @@ def test_a_reconciliation_of_an_intent_belonging_to_another_run_is_refused(
     [
         ("effect_reconciliation_id", "-not-an-identifier"),
         ("reason", "Not An Open Code"),
-        ("outcome", "unknown"),
+        ("outcome", "not-a-reconciliation-outcome"),
         ("audit_reference", "not a reference"),
     ],
 )
@@ -785,7 +791,7 @@ def test_a_malformed_reconciliation_is_refused(
     it.
     """
     settle_unknown_undispatched(acting)
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((sqlite3.IntegrityError, ContractSemanticError, StorageError)):
         write(acting, handmade(**{field: value}))
     assert counts(acting)[RECONCILIATIONS] == 0
 

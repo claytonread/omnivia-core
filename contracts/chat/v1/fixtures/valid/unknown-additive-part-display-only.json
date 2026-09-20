@@ -1,0 +1,34 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "messageId": "msg-0009-future",
+  "parentMessageId": "msg-0002-a1",
+  "role": "assistant",
+  "authorType": "provider",
+  "conversationSequence": 9,
+  "schemaVersion": 1,
+  "contentHash": "ebb3de8a3d9a40366132eb5deb5af44e4c96c11696f8fc34ea2c1d8bd8399171",
+  "completionStatus": "complete",
+  "visibility": "standard",
+  "parts": [
+    {
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "messageId": "msg-0009-future",
+      "partId": "part-0009",
+      "index": 0,
+      "type": "app.future_widget",
+      "schemaVersion": 1,
+      "visibility": "standard",
+      "payload": {
+        "anything": "the decoder cannot interpret"
+      },
+      "provenance": "ai",
+      "contentHash": "26148c43a19c95f0115e594c688e9f6e92d0bcdbdb6a75187b732fc593875e7e",
+      "createdAt": "2026-08-20T10:05:00Z"
+    }
+  ],
+  "createdOnBranchId": "branch-0001-original",
+  "createdAt": "2026-08-20T10:05:00Z",
+  "committedAt": "2026-08-20T10:05:00Z"
+}

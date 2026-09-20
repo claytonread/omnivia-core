@@ -106,6 +106,7 @@ step_from_workflow() {
 
 step "Check package boundaries" python scripts/check-package-boundaries.py
 step "Run package boundary tests" python -m pytest tests/test_package_boundaries.py -q
+step "Check migration allocations" python scripts/check-migration-allocations.py
 step "Build and install-check all distributions" env PYTHON=python scripts/check-package-builds.sh
 step "Check application contracts" python scripts/check-application-contracts.py
 step "Check generated Host Contract" python scripts/generate-host-contract.py --check

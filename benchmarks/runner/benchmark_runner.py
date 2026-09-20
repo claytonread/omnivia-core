@@ -26,7 +26,6 @@ from benchmarks.dataset import PROFILE_SIZES, get_item_count
 from benchmarks.report import export_csv_file, export_json_file, export_markdown_file
 from benchmarks.registry import get_registry
 from benchmarks.schema import BenchmarkRun, EnvironmentInfo, ScenarioResult, get_git_commit
-from benchmarks.thresholds import percentile as percentile_of
 
 # Import scenarios to register them
 from benchmarks.scenarios import *  # noqa: F401, F403
@@ -208,13 +207,15 @@ def run_scenario(
         database_size_mb=result.get("database_size_mb"),
         error_count=1 if result.get("error") else int(result.get("error_count", 0)),
         warnings=warnings,
-        slo=dict(result.get("slo") or {}),
     )
 
 
 def _percentile(sorted_values: list[float], percentile: int) -> float:
     """Return a percentile from a sorted sample list."""
-    return percentile_of(sorted_values, percentile)
+    if not sorted_values:
+        return 0.0
+    index = min(len(sorted_values) - 1, round((percentile / 100) * (len(sorted_values) - 1)))
+    return sorted_values[index]
 
 
 def run_benchmarks(

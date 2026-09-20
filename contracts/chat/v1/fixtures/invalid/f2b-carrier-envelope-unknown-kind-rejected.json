@@ -1,0 +1,17 @@
+{
+  "v": "1.0",
+  "dir": "host->module",
+  "kind": "host/chat.telemetry",
+  "payload": {
+    "messageType": "bridge.snapshot-page",
+    "bridgeProtocolVersion": "1.0",
+    "schemaVersion": 1,
+    "contextId": "bctx-carrier-03",
+    "snapshotId": "bsnap-carrier-03",
+    "snapshotGraphRevision": 1,
+    "pageIndex": 0,
+    "items": [],
+    "hasMore": false,
+    "snapshotBoundaryCursor": "cursor-x"
+  }
+}

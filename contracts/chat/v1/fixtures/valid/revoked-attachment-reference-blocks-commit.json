@@ -1,0 +1,10 @@
+{
+  "kind": "attachment",
+  "referenceId": "att-0002",
+  "outcome": "invalid",
+  "failure": {
+    "referenceId": "att-0002",
+    "reason": "permission_denied",
+    "safeMessage": "Access to this attachment was revoked."
+  }
+}

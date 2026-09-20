@@ -1,0 +1,35 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "messageId": "msg-0002-a1",
+  "parentMessageId": "msg-0001-root",
+  "role": "assistant",
+  "authorType": "provider",
+  "conversationSequence": 2,
+  "schemaVersion": 1,
+  "contentHash": "f55ff16f66f43360266b95db6f8fec01d76031054306ae4a4b380598f6cfd114",
+  "completionStatus": "complete",
+  "visibility": "standard",
+  "parts": [
+    {
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "messageId": "msg-0002-a1",
+      "partId": "part-0002",
+      "index": 0,
+      "type": "markdown",
+      "schemaVersion": 1,
+      "visibility": "standard",
+      "payload": {
+        "markdown": "Here is a comparison."
+      },
+      "provenance": "ai",
+      "contentHash": "3946ca64ff78d93ca61090a437cbb6b3d2ca0d488f5f9ccf3059608368b27693",
+      "createdAt": "2026-08-20T10:00:05Z"
+    }
+  ],
+  "createdOnBranchId": "branch-0001-original",
+  "createdAt": "2026-08-20T10:00:05Z",
+  "committedAt": "2026-08-20T10:00:05Z",
+  "_mutated": "attempted content mutation of a committed Message"
+}

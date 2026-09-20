@@ -11,7 +11,7 @@ Deprecated: import these from ``omnivia_core.app_shell_bridge.models`` instead.
 # bindings (`Enum`, `List`, `dataclass`, `field`) -- names the canonical module's
 # own imports left at its module scope and that this leaf's historical namespace
 # still has to resolve. No other error code is suppressed.
-from omnivia_core.app_shell_bridge.models import (  # type: ignore[attr-defined]
+from omnivia_core.app_shell_bridge.models import (  # type: ignore[attr-defined,unused-ignore]
     AppShellBodyDescriptor,
     AppShellHostContext,
     AppShellRuntimeState,

@@ -27,36 +27,6 @@ effect nobody authorized and nobody can reconcile, so it is refused outright -- 
 holding one may not close: it is `uncertain`, not `failed`, because reporting it as failed
 would licence a retry that duplicates a committed effect.
 
-*A step tree is bounded, and it does not leave its run.* A step may name the step that spawned
-it, and only the child states the link, so there is no list on the parent to disagree with it.
-The parent is a step of the same run at a lower ordinal, which makes the chain acyclic without
-a cycle check; depth and fan-out are capped; and a parent is only ever resolved among the steps
-of this run, so a link into another run or workspace resolves to nothing. A child's `Wait` is
-not duplicated onto its parent -- there is one wait authority per run and
-:func:`waits_under_step` is how a parent looks at it.
-
-*Context delivery is bounded and replayable.* A `ContextCursor` is a position in the run's own
-event stream, scoped to the workspace, run, step and attempt it was issued to. Because that
-stream is contiguous from zero, :func:`deliver_context` is a slice: the same cursor always
-yields the same events, and the cursor a delivery returns yields only what came after them.
-
-*A worktree is claimed under the workspace lease, not beside it.* A `WorktreeLease` restates
-the service instance and fencing generation the durable workspace lease already holds, so a
-worktree claim cannot be current while the lease that issued it is not, and it adds one
-counter of its own -- `lease_generation` -- which is what a mutation carries so a resumed
-predecessor's write is refusable rather than merely late. Every axis fails closed:
-:func:`worktree_lease_status` reads the fencing generation first because it is the only fact
-the holder cannot forge about itself, and only the exact lifecycle `held` reaches `current`,
-so an unrecognized one permits nothing. Expiry permits investigating a takeover; it never
-proves the holder is gone.
-
-*A mutation is evidence, source-qualified and redaction-safe.* A `MutationEvidence` names the
-intent that declared it, the lease and generations it committed under, the policy revision in
-force, and its target as a worktree qualified by workspace and source root together -- so the
-same worktree name under another root is a mismatch, not a match. It carries digests rather
-than paths and content, so it is publishable as written, and it links to the cleanup that
-reversed it so a change and its undoing are one story.
-
 *Idempotency is logical and stable.* Two admissions carrying the same `logical_key` are one
 run replayed; the same key over a different definition is a conflict. The same rule applies
 one level down to effects, keyed by `idempotency_key` over `request_digest`. The three
@@ -108,9 +78,9 @@ and this module writes no SQL and knows no table.
 
 from __future__ import annotations
 
-import dataclasses
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 from typing import Final
@@ -138,14 +108,11 @@ from omnivia_core.contracts.v1.generated import (
     BudgetSnapshot,
     CapabilityGrant,
     CleanupReceipt,
-    ContextCursor,
     EffectIntent,
     EffectReceipt,
     EffectSettlement,
     EvidenceItem,
     ExternalReference,
-    MutationEvidence,
-    MutationTarget,
     PolicySnapshot,
     ResolveWait,
     Run,
@@ -153,8 +120,6 @@ from omnivia_core.contracts.v1.generated import (
     RunStep,
     RuntimeEvent,
     Wait,
-    WorktreeLease,
-    WorktreeRef,
 )
 from omnivia_core.contracts.v1.semantics_jobs import (
     IDEMPOTENCY_CONFLICT,
@@ -179,9 +144,6 @@ __all__ = [
     "EFFECT_OUTCOME_COMMITTED",
     "EFFECT_OUTCOME_NOT_COMMITTED",
     "EFFECT_OUTCOME_UNKNOWN",
-    "MAX_CHILD_RUN_STEPS",
-    "MAX_CONTEXT_DELIVERY_ITEMS",
-    "MAX_RUN_STEP_DEPTH",
     "RUNTIME_AUTHORITATIVE_SOURCE_KIND",
     "RUNTIME_SOURCE_KINDS",
     "RUN_DEFINITION_KINDS",
@@ -204,17 +166,8 @@ __all__ = [
     "WAIT_RESOLUTION_FOR_KIND",
     "WAIT_STATUSES",
     "WAIT_STATUS_PENDING",
-    "WORKTREE_LEASE_LIFECYCLES",
-    "WORKTREE_LEASE_LIFECYCLE_ACQUIRING",
-    "WORKTREE_LEASE_LIFECYCLE_DRAINING",
-    "WORKTREE_LEASE_LIFECYCLE_HELD",
-    "WORKTREE_LEASE_LIFECYCLE_RELEASED",
-    "WORKTREE_LEASE_STATUSES",
-    "WORKTREE_LEASE_STATUS_CURRENT",
-    "WORKTREE_LEASE_STATUS_EXPIRED",
-    "WORKTREE_LEASE_STATUS_NOT_HELD",
-    "WORKTREE_LEASE_STATUS_RELEASED",
-    "WORKTREE_LEASE_STATUS_SUPERSEDED",
+    "ContextCursor",
+    "WorktreeRef",
     "child_run_steps",
     "classify_effect_replay",
     "classify_run_replay",
@@ -226,7 +179,6 @@ __all__ = [
     "is_terminal_run_status",
     "is_waiting_run_status",
     "permits_new_effect",
-    "permits_worktree_mutation",
     "validate_approval",
     "validate_artifact",
     "validate_attempt",
@@ -235,13 +187,11 @@ __all__ = [
     "validate_budget_snapshot_progression",
     "validate_capability_grant",
     "validate_cleanup_receipt",
-    "validate_context_cursor",
     "validate_effect_intent",
     "validate_effect_receipt",
     "validate_effect_settlement",
     "validate_evidence_item",
     "validate_external_reference",
-    "validate_mutation_evidence",
     "validate_policy_snapshot",
     "validate_policy_snapshot_progression",
     "validate_resolve_wait",
@@ -252,10 +202,8 @@ __all__ = [
     "validate_runtime_event_stream",
     "validate_terminal_run",
     "validate_wait",
-    "validate_worktree_lease",
     "validate_worktree_ref",
     "waits_under_step",
-    "worktree_lease_status",
 ]
 
 # --- bounds restated from the schema ------------------------------------------
@@ -286,30 +234,6 @@ _MAX_ARTIFACTS: Final = 256
 _MAX_EVIDENCE: Final = 256
 _MAX_CLEANUP_RECEIPTS: Final = 64
 _MAX_CORRELATIONS: Final = 16
-
-# --- bounds the schema cannot state --------------------------------------------
-#
-# Published rather than private, unlike the restated bounds above: these three are not a
-# second spelling of a `maxItems` a strict validator already applies. Step parentage is a
-# link, so its depth and its fan-out are properties of the graph the links form, and JSON
-# Schema cannot see a graph. A caller that has to decide whether it may spawn one more child
-# needs the same number this module refuses on, not a number of its own.
-
-MAX_RUN_STEP_DEPTH: Final = 8
-"""How deeply steps may nest. A root step is depth zero.
-
-Bounded because an unbounded parent chain is an unbounded fan-out of context, waits and
-cleanup hanging off one admission: the run's `maxItems` caps how many steps exist, never how
-they are shaped."""
-
-MAX_CHILD_RUN_STEPS: Final = 64
-"""How many children one step may spawn."""
-
-MAX_CONTEXT_DELIVERY_ITEMS: Final = 256
-"""The ceiling a `ContextCursor.max_items` may itself state.
-
-Bounding the bound is the point: a cursor whose ceiling is the whole stream is an unbounded
-delivery wearing a cursor's clothes."""
 
 _AUDIT_REFERENCE_RE: Final = re.compile(AUDIT_REFERENCE_PATTERN)
 _CAPABILITY_ID_RE: Final = re.compile(CAPABILITY_ID_PATTERN)
@@ -497,57 +421,6 @@ EFFECT_OUTCOMES: Final[tuple[str, ...]] = (
 CLEANUP_OUTCOMES: Final[tuple[str, ...]] = ("released", "not_required", "failed")
 
 RUN_DEFINITION_KINDS: Final[tuple[str, ...]] = ("agent_component", "workflow")
-
-WORKTREE_LEASE_LIFECYCLE_ACQUIRING: Final = "acquiring"
-WORKTREE_LEASE_LIFECYCLE_HELD: Final = "held"
-WORKTREE_LEASE_LIFECYCLE_DRAINING: Final = "draining"
-WORKTREE_LEASE_LIFECYCLE_RELEASED: Final = "released"
-
-WORKTREE_LEASE_LIFECYCLES: Final[tuple[str, ...]] = (
-    WORKTREE_LEASE_LIFECYCLE_ACQUIRING,
-    WORKTREE_LEASE_LIFECYCLE_HELD,
-    WORKTREE_LEASE_LIFECYCLE_DRAINING,
-    WORKTREE_LEASE_LIFECYCLE_RELEASED,
-)
-"""The lifecycle a `WorktreeLease` record may be in.
-
-The same four words the durable workspace service lease already records, deliberately: a
-worktree claim is a sublease under that lease, and a second vocabulary for one lifecycle is a
-second thing to keep in agreement. Only `held` ever permits a mutation."""
-
-_WORKTREE_LEASE_LIFECYCLES_ONCE_HELD: Final[frozenset[str]] = frozenset(
-    {
-        WORKTREE_LEASE_LIFECYCLE_HELD,
-        WORKTREE_LEASE_LIFECYCLE_DRAINING,
-        WORKTREE_LEASE_LIFECYCLE_RELEASED,
-    }
-)
-"""The lifecycles a lease has demonstrably passed through `held` to reach.
-
-Stated as the allow-list rather than as "not `acquiring`", which is the difference between
-failing closed and failing open. `acquiring` is the one *known* lifecycle that has never held
-the worktree, but an open vocabulary may add another, and a build that has not heard of it
-must not be the one deciding a mutation under it was authorized."""
-
-WORKTREE_LEASE_STATUS_CURRENT: Final = "current"
-WORKTREE_LEASE_STATUS_SUPERSEDED: Final = "superseded"
-WORKTREE_LEASE_STATUS_RELEASED: Final = "released"
-WORKTREE_LEASE_STATUS_EXPIRED: Final = "expired"
-WORKTREE_LEASE_STATUS_NOT_HELD: Final = "not_held"
-
-WORKTREE_LEASE_STATUSES: Final[tuple[str, ...]] = (
-    WORKTREE_LEASE_STATUS_CURRENT,
-    WORKTREE_LEASE_STATUS_SUPERSEDED,
-    WORKTREE_LEASE_STATUS_RELEASED,
-    WORKTREE_LEASE_STATUS_EXPIRED,
-    WORKTREE_LEASE_STATUS_NOT_HELD,
-)
-"""What :func:`worktree_lease_status` may answer.
-
-Derived rather than recorded, which is why it is not a wire vocabulary: a lease's standing is
-its own record read against the workspace's current fencing generation and an instant, and
-neither of those is a field the record could carry without going stale. Exactly one of the
-five permits a mutation."""
 
 RUNTIME_AUTHORITATIVE_SOURCE_KIND: Final = "runtime"
 RUNTIME_SOURCE_KINDS: Final[tuple[str, ...]] = (
@@ -774,6 +647,101 @@ def permits_new_effect(status: object) -> bool:
     acts again, and an unrecognized status grants nothing.
     """
     return isinstance(status, str) and status == RUN_STATUS_RUNNING
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeRef:
+    """One resource target: workspace, source root and worktree identity together."""
+
+    workspace_id: str
+    source_root_id: str
+    worktree_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextCursor:
+    """A durable read position in one Run's append-only runtime event stream."""
+
+    workspace_id: str
+    run_id: str
+    run_step_id: str
+    attempt_id: str
+    next_sequence: int
+    max_items: int
+    issued_at: str
+
+
+def validate_worktree_ref(target: WorktreeRef, *, workspace_id: str) -> None:
+    """Raise unless `target` is a well-formed resource target for `workspace_id`."""
+    _require_type(target, WorktreeRef, "target")
+    assert isinstance(target, WorktreeRef)
+    if target.workspace_id != workspace_id:
+        raise ContractSemanticError("target.workspace_id must match the requested workspace")
+    _validate_workspace_id(target.workspace_id, "target.workspace_id")
+    _validate_identifier(target.source_root_id, "target.source_root_id")
+    _validate_identifier(target.worktree_id, "target.worktree_id")
+
+
+def waits_under_step(run: Run, *, run_step_id: str) -> tuple[Wait, ...]:
+    """Return the waits attached to one step of a canonical Run."""
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    _require_known_step(run_step_id, tuple(step.run_step_id for step in run.steps), "run")
+    return tuple(wait for wait in run.waits if wait.run_step_id == run_step_id)
+
+
+def child_run_steps(run: Run, *, run_step_id: str) -> tuple[RunStep, ...]:
+    """Return child steps of `run_step_id` when the contract records parentage.
+
+    The v1 generated `RunStep` shape has no parent-step field. Returning an empty
+    tuple is therefore the fail-safe reading: callers may prove sibling iteration
+    semantics, but this helper must not infer a nested chain from ordinal order.
+    """
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    _require_known_step(run_step_id, tuple(step.run_step_id for step in run.steps), "run")
+    return ()
+
+
+def deliver_context(
+    cursor: ContextCursor, *, run: Run, workspace_id: str
+) -> tuple[tuple[RuntimeEvent, ...], ContextCursor]:
+    """Read events at or after `cursor.next_sequence` and return an advanced cursor."""
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    _require_type(cursor, ContextCursor, "cursor")
+    assert isinstance(cursor, ContextCursor)
+    if cursor.workspace_id != workspace_id or run.workspace_id != workspace_id:
+        raise ContractSemanticError("cursor.workspace_id must match the requested workspace")
+    if cursor.run_id != run.run_id:
+        raise ContractSemanticError("cursor.run_id must match the run")
+    _require_known_step(
+        cursor.run_step_id, tuple(step.run_step_id for step in run.steps), "cursor"
+    )
+    if not isinstance(cursor.next_sequence, int) or cursor.next_sequence < 0:
+        raise ContractSemanticError("cursor.next_sequence must be a non-negative integer")
+    if not isinstance(cursor.max_items, int) or cursor.max_items <= 0:
+        raise ContractSemanticError("cursor.max_items must be a positive integer")
+
+    delivered = tuple(
+        event
+        for event in sorted(run.events, key=lambda item: item.sequence)
+        if event.sequence >= cursor.next_sequence
+    )[: cursor.max_items]
+    next_sequence = (
+        cursor.next_sequence
+        if not delivered
+        else delivered[-1].sequence + 1
+    )
+    return delivered, ContextCursor(
+        workspace_id=cursor.workspace_id,
+        run_id=cursor.run_id,
+        run_step_id=cursor.run_step_id,
+        attempt_id=cursor.attempt_id,
+        next_sequence=next_sequence,
+        max_items=cursor.max_items,
+        issued_at=run.updated_at,
+    )
 
 
 def is_authoritative_source(source_kind: object) -> bool:
@@ -1183,12 +1151,6 @@ def validate_run_step(
     cannot say what it is suspended on cannot be resolved, and a step that is not suspended
     has nothing to name. Whether the named wait exists, and whether it is still pending, are
     whole-run questions, answered by :func:`validate_run`.
-
-    Parentage is checked here only as far as one record can be judged: the parent identifier
-    is well formed, and it is not this step. Whether the parent exists, whether it is earlier,
-    how deep the chain runs and how many children it has are all questions about the other
-    steps, and :func:`validate_run` answers them -- including the one that matters most, that
-    a parent is a step of *this* run in *this* workspace and never one borrowed from another.
     """
     _require_type(step, RunStep, label)
     assert isinstance(step, RunStep)
@@ -1210,13 +1172,6 @@ def validate_run_step(
         workspace_id=expected_workspace,
         label=f"{label}.attempts",
     )
-    if step.parent_run_step_id is not None:
-        parent_id = _validate_identifier(step.parent_run_step_id, f"{label}.parent_run_step_id")
-        if parent_id == step_id:
-            raise ContractSemanticError(
-                f"{label}: a step is not its own parent; parentage names the step that spawned "
-                "this one"
-            )
     waiting = status == _RUN_STEP_STATUS_WAITING
     if waiting and step.wait_id is None:
         raise ContractSemanticError(f"{label}: a waiting step must name the wait holding it")
@@ -1224,58 +1179,6 @@ def validate_run_step(
         raise ContractSemanticError(f"{label}: a {status!r} step names no wait")
     if step.wait_id is not None:
         _validate_identifier(step.wait_id, f"{label}.wait_id")
-
-
-def _validate_step_parentage(
-    steps: Sequence[object], steps_by_id: Mapping[str, RunStep], label: str
-) -> None:
-    """Raise unless the parent links across `steps` form a bounded forest inside this run.
-
-    Called from :func:`validate_run` once the ordinals have been proved contiguous `1..N`, so
-    `steps` is in ordinal order and a parent that is earlier has already been seen. That is
-    what makes acyclicity free: a parent's ordinal must be lower than its child's, so no link
-    can ever point back, and no cycle check is needed to prove it.
-
-    Crossing runs and workspaces is refused by the same rule that refuses a typo. A parent is
-    resolved only against the steps of this run, and every one of those already restated this
-    run's `run_id` and `workspace_id` in :func:`validate_run_step`; a step id from another run
-    -- or the same spelling in another workspace -- therefore resolves to nothing here rather
-    than to a step somewhere else.
-    """
-    depth_of: dict[str, int] = {}
-    children: dict[str, int] = {}
-    for index, step in enumerate(steps):
-        assert isinstance(step, RunStep)
-        step_label = f"{label}.steps[{index}]"
-        parent_id = step.parent_run_step_id
-        if parent_id is None:
-            depth_of[step.run_step_id] = 0
-            continue
-        parent = steps_by_id.get(parent_id)
-        if parent is None:
-            raise ContractSemanticError(
-                f"{step_label}: parent_run_step_id {parent_id!r} names no step of this run; a "
-                "child and its parent are steps of one run in one workspace, and a link that "
-                "resolves nowhere here does not resolve elsewhere"
-            )
-        if parent.ordinal >= step.ordinal:
-            raise ContractSemanticError(
-                f"{step_label}: parent {parent_id!r} is at ordinal {parent.ordinal}, not before "
-                f"this step's {step.ordinal}; a step is spawned by one that already exists"
-            )
-        children[parent_id] = count = children.get(parent_id, 0) + 1
-        if count > MAX_CHILD_RUN_STEPS:
-            raise ContractSemanticError(
-                f"{step_label}: step {parent_id!r} spawns more than {MAX_CHILD_RUN_STEPS} "
-                "children"
-            )
-        depth = depth_of[parent_id] + 1
-        if depth > MAX_RUN_STEP_DEPTH:
-            raise ContractSemanticError(
-                f"{step_label}: nesting reaches depth {depth}, past the ceiling of "
-                f"{MAX_RUN_STEP_DEPTH}"
-            )
-        depth_of[step.run_step_id] = depth
 
 
 # --- waits and approvals -------------------------------------------------------
@@ -1767,11 +1670,6 @@ def validate_run(run: object, *, workspace_id: object, label: str = "run") -> No
       is actually an `approval` wait rather than a timer or a signal, and an effect's attempt
       is one of the attempts of the very step the effect names, rather than each merely
       existing somewhere in the run;
-    - step parentage forms a bounded forest inside this one run: a parent is a step of this
-      run at a lower ordinal, nesting stops at :data:`MAX_RUN_STEP_DEPTH` and fan-out at
-      :data:`MAX_CHILD_RUN_STEPS`. Because a parent is resolved only among steps that have
-      already restated this run's `run_id` and `workspace_id`, a link into another run or
-      another workspace resolves to nothing rather than to a step somewhere else;
     - the step/wait pairing describes the run's *current* suspension and nothing else. A run
       keeps every wait it ever entered, and a resolved, expired or cancelled wait released
       its step when it stopped being pending: the step it named has since resumed and names
@@ -1862,7 +1760,6 @@ def validate_run(run: object, *, workspace_id: object, label: str = "run") -> No
     steps_by_id = {step.run_step_id: step for step in steps if isinstance(step, RunStep)}
     step_ids = [step.run_step_id for step in steps if isinstance(step, RunStep)]
     _require_unique(step_ids, f"{label}.steps", "step")
-    _validate_step_parentage(steps, steps_by_id, label)
     attempt_ids = [
         attempt.attempt_id
         for step in steps
@@ -2104,522 +2001,6 @@ def validate_terminal_run(run: object, *, workspace_id: object, label: str = "ru
         raise ContractSemanticError(
             f"{label}: status {run.status!r}{known} is not a terminal run status, so this run "
             "may not be treated as finished"
-        )
-
-
-# --- reading a run's step tree -------------------------------------------------
-
-
-def _steps_of(run: object, label: str) -> tuple[RunStep, ...]:
-    """The steps of `run`, type-checked, for the readers below.
-
-    These are direct entry points like everything else here, so a `Run` assembled by hand out
-    of the wrong things is refused with a `ContractSemanticError` rather than blowing up on
-    the first attribute access.
-    """
-    _require_type(run, Run, label)
-    assert isinstance(run, Run)
-    steps = _require_sequence(run.steps, f"{label}.steps", _MAX_STEPS)
-    for index, step in enumerate(steps):
-        _require_type(step, RunStep, f"{label}.steps[{index}]")
-    return tuple(step for step in steps if isinstance(step, RunStep))
-
-
-def _subtree_ids(steps: Sequence[RunStep], root: str) -> set[str]:
-    """The ids of `root` and every step descended from it.
-
-    A fixpoint rather than one ordinal-ordered pass, because this reads a `Run` a caller
-    supplies and a reader that quietly returns *fewer* children when the steps arrive out of
-    order is worse than a slower one. It terminates whatever the links look like: each round
-    either adds a step or stops.
-    """
-    # ponytail: O(n^2) over at most 256 steps; one ordinal-ordered pass if that ever matters.
-    inside = {root}
-    growing = True
-    while growing:
-        growing = False
-        for step in steps:
-            if step.run_step_id not in inside and step.parent_run_step_id in inside:
-                inside.add(step.run_step_id)
-                growing = True
-    return inside
-
-
-def _require_step_of(steps: Sequence[RunStep], run_step_id: object, label: str) -> str:
-    step_id = _validate_identifier(run_step_id, "run_step_id")
-    if not any(step.run_step_id == step_id for step in steps):
-        raise ContractSemanticError(f"{label}: {step_id!r} names no step of this run")
-    return step_id
-
-
-def child_run_steps(run: object, *, run_step_id: object, label: str = "run") -> tuple[RunStep, ...]:
-    """The steps of `run` that name `run_step_id` as their parent, in the order they are held.
-
-    The read side of a link the child states. There is no `child_run_step_ids` array on the
-    parent to keep in step with it: a second spelling of one relationship is a second thing
-    that can be wrong, and this function is the whole of what such a field would have offered.
-    """
-    steps = _steps_of(run, label)
-    parent_id = _require_step_of(steps, run_step_id, f"{label}.run_step_id")
-    return tuple(step for step in steps if step.parent_run_step_id == parent_id)
-
-
-def waits_under_step(run: object, *, run_step_id: object, label: str = "run") -> tuple[Wait, ...]:
-    """Every wait of `run` held by `run_step_id` or by a step descended from it.
-
-    How a parent sees what its children are blocked on. It reads `run.waits` and nothing else:
-    a child's wait is already a wait of the run, recorded once, resolved by the one
-    `ResolveWait` that resolves any wait. No second wait authority is created here -- a parent
-    gets no wait record of its own for a child's suspension, and a child's wait needs no
-    duplicate hanging off the parent to be visible from it. What the parent lacked was a way
-    to *look*, and this is it.
-    """
-    steps = _steps_of(run, label)
-    root = _require_step_of(steps, run_step_id, f"{label}.run_step_id")
-    assert isinstance(run, Run)
-    waits = _require_sequence(run.waits, f"{label}.waits", _MAX_WAITS)
-    for index, wait in enumerate(waits):
-        _require_type(wait, Wait, f"{label}.waits[{index}]")
-    inside = _subtree_ids(steps, root)
-    return tuple(
-        wait for wait in waits if isinstance(wait, Wait) and wait.run_step_id in inside
-    )
-
-
-# --- bounded, replayable context delivery ---------------------------------------
-
-
-def validate_context_cursor(
-    cursor: object, *, run_id: object, workspace_id: object, label: str = "cursor"
-) -> None:
-    """Raise unless `cursor` is a well-formed watermark for this run in this workspace.
-
-    Shape and bounds only: whether the lineage it names exists is a whole-run question, and
-    :func:`deliver_context` answers it with the run in hand. What this refuses on its own is
-    the malformed cursor and the unbounded one -- an identifier that is not an `Identifier`, a
-    position past the longest stream a run may have, and a `max_items` of zero or one larger
-    than :data:`MAX_CONTEXT_DELIVERY_ITEMS`. A ceiling a caller may set to anything is not a
-    ceiling.
-    """
-    _require_type(cursor, ContextCursor, label)
-    assert isinstance(cursor, ContextCursor)
-    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
-    expected_run = _validate_identifier(run_id, "run_id")
-    _require_scoped(cursor.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace")
-    _require_scoped(cursor.run_id, expected_run, f"{label}.run_id", "run")
-    _validate_identifier(cursor.run_step_id, f"{label}.run_step_id")
-    _validate_identifier(cursor.attempt_id, f"{label}.attempt_id")
-    sequence = _require_at_least(cursor.next_sequence, 0, f"{label}.next_sequence")
-    if sequence > _MAX_EVENTS:
-        raise ContractSemanticError(
-            f"{label}.next_sequence: {sequence} is past the longest event stream a run may have "
-            f"({_MAX_EVENTS})"
-        )
-    items = _require_at_least(cursor.max_items, 1, f"{label}.max_items")
-    if items > MAX_CONTEXT_DELIVERY_ITEMS:
-        raise ContractSemanticError(
-            f"{label}.max_items: {items} exceeds the delivery ceiling of "
-            f"{MAX_CONTEXT_DELIVERY_ITEMS}; an unbounded delivery is what a cursor exists to "
-            "prevent"
-        )
-    _parse_timestamp(cursor.issued_at, f"{label}.issued_at")
-
-
-def deliver_context(
-    cursor: object, *, run: object, workspace_id: object, label: str = "cursor"
-) -> tuple[tuple[RuntimeEvent, ...], ContextCursor]:
-    """Return the events `cursor` has not seen, bounded by its own ceiling, and the next cursor.
-
-    Deterministic and idempotent, and both for the same reason: the answer is a slice of the
-    run's `RuntimeEvent` stream at a position the cursor states. The stream is contiguous from
-    zero and never renumbered, so sequence *is* index -- presenting the same cursor twice
-    returns the same events, and presenting the cursor this call returns yields only what came
-    after them. Nothing is consumed and nothing is marked; a delivery is a read.
-
-    A cursor caught up on the stream delivers nothing and comes back unchanged, so the fixed
-    point is the cursor itself rather than a second "no more context" state. A cursor pointing
-    *past* the end is refused instead: on a contiguous stream that is a claim to have seen
-    events that do not exist, which is a corrupt cursor, not an empty read.
-
-    The lineage is checked against the run, not assumed from the cursor. The step must be a
-    step of this run and the attempt must be an attempt of *that step* -- not merely an attempt
-    existing somewhere in the run -- which is the same rule an `EffectIntent` obeys, and for
-    the same reason: a cursor is issued to one execution, and one that could name any attempt
-    could be replayed against the wrong one.
-    """
-    _require_type(run, Run, "run")
-    assert isinstance(run, Run)
-    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
-    _require_scoped(run.workspace_id, expected_workspace, "run.workspace_id", "workspace")
-    run_id = _validate_identifier(run.run_id, "run.run_id")
-    validate_context_cursor(cursor, run_id=run_id, workspace_id=expected_workspace, label=label)
-    assert isinstance(cursor, ContextCursor)
-
-    steps = _steps_of(run, "run")
-    issued_to = next(
-        (step for step in steps if step.run_step_id == cursor.run_step_id), None
-    )
-    if issued_to is None:
-        raise ContractSemanticError(
-            f"{label}.run_step_id: {cursor.run_step_id!r} names no step of this run"
-        )
-    attempts = _require_sequence(
-        issued_to.attempts, f"run.steps[{issued_to.ordinal - 1}].attempts", _MAX_ATTEMPTS
-    )
-    if not any(
-        isinstance(attempt, Attempt) and attempt.attempt_id == cursor.attempt_id
-        for attempt in attempts
-    ):
-        raise ContractSemanticError(
-            f"{label}.attempt_id: {cursor.attempt_id!r} is not an attempt of step "
-            f"{cursor.run_step_id!r}; a cursor is issued to one attempt of one step"
-        )
-
-    validate_runtime_event_stream(
-        run.events, run_id=run_id, workspace_id=expected_workspace, label="run.events"
-    )
-    events = tuple(run.events)
-    if cursor.next_sequence > len(events):
-        raise ContractSemanticError(
-            f"{label}.next_sequence: {cursor.next_sequence} is past the end of a "
-            f"{len(events)}-event stream; a cursor cannot have been delivered events that do "
-            "not exist"
-        )
-    delivered = events[cursor.next_sequence : cursor.next_sequence + cursor.max_items]
-    if not delivered:
-        return (), cursor
-    return delivered, dataclasses.replace(
-        cursor, next_sequence=cursor.next_sequence + len(delivered)
-    )
-
-
-# --- worktree leases and mutation evidence --------------------------------------
-
-
-def validate_worktree_ref(ref: object, *, workspace_id: object, label: str = "worktree") -> None:
-    """Raise unless `ref` is a source-qualified worktree identity in this workspace.
-
-    All three members are required by the schema, and this is what they are for: a worktree
-    identifier is unique only inside its source root, and a source root identifier is unique
-    only inside its workspace. Two references name the same worktree exactly when all three
-    are equal -- :class:`WorktreeRef` is frozen, so `==` is that rule -- and a shared spelling
-    of any one member says nothing about the other two.
-    """
-    _require_type(ref, WorktreeRef, label)
-    assert isinstance(ref, WorktreeRef)
-    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
-    _require_scoped(ref.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace")
-    _validate_identifier(ref.source_root_id, f"{label}.source_root_id")
-    _validate_identifier(ref.worktree_id, f"{label}.worktree_id")
-
-
-def _validate_mutation_target(
-    target: object, *, workspace_id: object, label: str = "target"
-) -> None:
-    _require_type(target, MutationTarget, label)
-    assert isinstance(target, MutationTarget)
-    validate_worktree_ref(target.worktree, workspace_id=workspace_id, label=f"{label}.worktree")
-    _validate_content_checksum(target.path_digest, f"{label}.path_digest")
-
-
-def validate_worktree_lease(
-    lease: object, *, workspace_id: object, label: str = "worktree_lease"
-) -> None:
-    """Raise unless `lease` is a well-formed claim on one worktree in this workspace.
-
-    Shape and internal coherence only; whether the claim is *current* is
-    :func:`worktree_lease_status`, because that question needs the workspace's fencing
-    generation and an instant, neither of which the record carries.
-
-    Two coherence rules are worth naming. `expires_at` must be after `acquired_at`: a window
-    that closes before it opens is not a window, and a lease that never granted anything is a
-    record no reader can act on. And `released_at` is present exactly when the lifecycle is
-    `released`: a handover instant on a live lease and a released lease with no handover
-    instant are each a record disagreeing with itself.
-
-    The lifecycle is checked as a bounded code and not as membership of
-    :data:`WORKTREE_LEASE_LIFECYCLES`. That is the same reading `RunStatus` gets and for the
-    same reason: the vocabulary is closed at the schema and open on the wire, so a lifecycle a
-    later release adds decodes here rather than being refused by a build that has not heard of
-    it. Nothing is inferred from it either -- :func:`worktree_lease_status` reports anything
-    that is not `held` as `not_held`, so an unrecognized lifecycle permits nothing.
-    """
-    _require_type(lease, WorktreeLease, label)
-    assert isinstance(lease, WorktreeLease)
-    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
-    _require_scoped(lease.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace")
-    _validate_identifier(lease.worktree_lease_id, f"{label}.worktree_lease_id")
-    validate_worktree_ref(
-        lease.worktree, workspace_id=expected_workspace, label=f"{label}.worktree"
-    )
-    _validate_identifier(lease.run_id, f"{label}.run_id")
-    _validate_identifier(lease.service_instance_id, f"{label}.service_instance_id")
-    _require_at_least(lease.fencing_generation, 1, f"{label}.fencing_generation")
-    _require_at_least(lease.lease_generation, 1, f"{label}.lease_generation")
-    lifecycle = _validate_open_code(lease.lifecycle, f"{label}.lifecycle")
-    acquired_at = _parse_timestamp(lease.acquired_at, f"{label}.acquired_at")
-    expires_at = _parse_timestamp(lease.expires_at, f"{label}.expires_at")
-    if expires_at <= acquired_at:
-        raise ContractSemanticError(
-            f"{label}.expires_at: a lease that expires at or before {lease.acquired_at!r} "
-            "grants no window to act in"
-        )
-    _validate_audit_reference(lease.audit_reference, f"{label}.audit_reference")
-    released = lifecycle == WORKTREE_LEASE_LIFECYCLE_RELEASED
-    if released and lease.released_at is None:
-        raise ContractSemanticError(
-            f"{label}.released_at: a released lease must say when it was handed back"
-        )
-    if not released and lease.released_at is not None:
-        raise ContractSemanticError(
-            f"{label}.released_at: a lease in lifecycle {lifecycle!r} has not been handed back"
-        )
-    if lease.released_at is not None:
-        released_at = _parse_timestamp(lease.released_at, f"{label}.released_at")
-        if released_at < acquired_at:
-            raise ContractSemanticError(
-                f"{label}.released_at: a lease is not handed back before it was taken"
-            )
-
-
-def worktree_lease_status(
-    lease: object,
-    *,
-    workspace_id: object,
-    fencing_generation: object,
-    at: object,
-    label: str = "worktree_lease",
-) -> str:
-    """Return where `lease` stands against the workspace's current authority at instant `at`.
-
-    Fail-closed on every axis, and the order the axes are read in is deliberate.
-
-    The fencing generation is read first, because it is the only axis whose evidence comes
-    from outside the record. A holder that was suspended and resumed still believes its own
-    lifecycle field and its own expiry; what it cannot forge is the workspace lease having
-    moved to a successor. So a lease issued under a superseded generation is `superseded`
-    whatever else it says about itself, and nothing further about it is worth reading.
-
-    Then the record's own statements, most decisive first: a `released` lease was handed back,
-    an `expired` one ran past the window it was granted, and any lifecycle other than `held`
-    -- `acquiring`, `draining`, or a value this build does not recognize -- is `not_held`. An
-    unrecognized lifecycle lands there by falling through rather than by being guessed at,
-    which is the same fail-safe reading `RunStatus` gets: an open vocabulary may add a
-    lifecycle, and a build that has not heard of it must not be the one deciding it permits
-    writing. Only the exact string `held` ever reaches `current`.
-
-    Expiry is a ceiling on acting, never a proof about the holder. That a lease expired does
-    not establish that its holder is gone -- a paused process resumes believing it still owns
-    the worktree -- so `expired` is what permits investigating a takeover, and it is the
-    successor's higher `lease_generation` that makes the predecessor's writes refusable.
-    """
-    validate_worktree_lease(lease, workspace_id=workspace_id, label=label)
-    assert isinstance(lease, WorktreeLease)
-    current_generation = _require_at_least(fencing_generation, 1, "fencing_generation")
-    moment = _parse_timestamp(at, "at")
-    if lease.fencing_generation != current_generation:
-        return WORKTREE_LEASE_STATUS_SUPERSEDED
-    if lease.lifecycle == WORKTREE_LEASE_LIFECYCLE_RELEASED:
-        return WORKTREE_LEASE_STATUS_RELEASED
-    if moment >= _parse_timestamp(lease.expires_at, f"{label}.expires_at"):
-        return WORKTREE_LEASE_STATUS_EXPIRED
-    if lease.lifecycle != WORKTREE_LEASE_LIFECYCLE_HELD:
-        return WORKTREE_LEASE_STATUS_NOT_HELD
-    return WORKTREE_LEASE_STATUS_CURRENT
-
-
-def permits_worktree_mutation(
-    lease: object,
-    *,
-    workspace_id: object,
-    fencing_generation: object,
-    at: object,
-    label: str = "worktree_lease",
-) -> bool:
-    """Whether `lease` may commit a mutation at `at`. True only for the one current case."""
-    return (
-        worktree_lease_status(
-            lease,
-            workspace_id=workspace_id,
-            fencing_generation=fencing_generation,
-            at=at,
-            label=label,
-        )
-        == WORKTREE_LEASE_STATUS_CURRENT
-    )
-
-
-def validate_mutation_evidence(
-    evidence: object,
-    *,
-    lease: object,
-    run: object,
-    workspace_id: object,
-    label: str = "mutation_evidence",
-) -> None:
-    """Raise unless `evidence` records a mutation this lease and this run actually authorized.
-
-    Four bindings, and the record is worth nothing without all four.
-
-    *The target is the leased worktree.* Compared source-qualified, all three members at once,
-    so a mutation of the same worktree name under another source root -- or under the same
-    source root in another workspace -- is a mismatch rather than a match.
-
-    *The fencing token is the lease's.* `lease_generation` and `fencing_generation` are
-    restated on the evidence and must equal the lease's exactly. That is what makes a write by
-    a resumed predecessor refusable after the fact: it carries the generation it believed in,
-    which is not the one the lease holds.
-
-    *The write landed inside the window the lease granted.* Not before it was taken, not at or
-    after it expired, and not after it was handed back. This is a question about history, so
-    it is asked against the lease's own instants rather than against a lifecycle that has
-    since moved on -- but the lifecycle must be one a lease reached *through* `held`, stated
-    as an allow-list, so `acquiring` and any lifecycle this build does not recognize authorize
-    nothing rather than passing a "not acquiring" test they were never measured against.
-
-    *The change is declared, pinned and reconcilable.* The intent exists in this run, the
-    policy snapshot and revision are the ones the run is pinned to, and a named cleanup
-    receipt is one of this run's own -- so a mutation and the cleanup that reversed it are one
-    story rather than two records that merely look related.
-
-    Finally, the digests must describe a change: an absent `before_digest` is a target that
-    did not exist and an absent `after_digest` is one that no longer does, but neither absent
-    is no mutation, and two equal digests are a mutation that changed nothing. Both are
-    refused rather than recorded, because evidence of nothing having happened is exactly what
-    a reader would mistake for evidence that something did.
-    """
-    _require_type(evidence, MutationEvidence, label)
-    assert isinstance(evidence, MutationEvidence)
-    _require_type(run, Run, "run")
-    assert isinstance(run, Run)
-    validate_worktree_lease(lease, workspace_id=workspace_id, label="lease")
-    assert isinstance(lease, WorktreeLease)
-
-    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
-    _require_scoped(run.workspace_id, expected_workspace, "run.workspace_id", "workspace")
-    expected_run = _validate_identifier(run.run_id, "run.run_id")
-    _require_scoped(
-        evidence.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace"
-    )
-    _require_scoped(evidence.run_id, expected_run, f"{label}.run_id", "run")
-    _require_scoped(lease.run_id, expected_run, "lease.run_id", "run")
-    _validate_identifier(evidence.mutation_evidence_id, f"{label}.mutation_evidence_id")
-    _validate_audit_reference(evidence.audit_reference, f"{label}.audit_reference")
-
-    _validate_mutation_target(
-        evidence.target, workspace_id=expected_workspace, label=f"{label}.target"
-    )
-    assert isinstance(evidence.target, MutationTarget)
-    if evidence.target.worktree != lease.worktree:
-        raise ContractSemanticError(
-            f"{label}.target.worktree: {evidence.target.worktree} is not the worktree this "
-            f"lease claims ({lease.worktree}); a worktree is its workspace, its source root "
-            "and its own identifier together"
-        )
-
-    _require_scoped(
-        evidence.worktree_lease_id,
-        lease.worktree_lease_id,
-        f"{label}.worktree_lease_id",
-        "lease",
-    )
-    if _require_at_least(
-        evidence.lease_generation, 1, f"{label}.lease_generation"
-    ) != lease.lease_generation:
-        raise ContractSemanticError(
-            f"{label}.lease_generation: {evidence.lease_generation} is not the lease's current "
-            f"generation ({lease.lease_generation}); a write under a superseded generation is "
-            "refused, not reinterpreted"
-        )
-    if _require_at_least(
-        evidence.fencing_generation, 1, f"{label}.fencing_generation"
-    ) != lease.fencing_generation:
-        raise ContractSemanticError(
-            f"{label}.fencing_generation: {evidence.fencing_generation} is not the generation "
-            f"this lease was issued under ({lease.fencing_generation})"
-        )
-
-    if lease.lifecycle not in _WORKTREE_LEASE_LIFECYCLES_ONCE_HELD:
-        raise ContractSemanticError(
-            f"lease.lifecycle: {lease.lifecycle!r} is not a lifecycle a lease has been held in, "
-            "so it authorized no mutation"
-        )
-    recorded_at = _parse_timestamp(evidence.recorded_at, f"{label}.recorded_at")
-    if recorded_at < _parse_timestamp(lease.acquired_at, "lease.acquired_at"):
-        raise ContractSemanticError(
-            f"{label}.recorded_at: {evidence.recorded_at!r} is before the lease was taken"
-        )
-    if recorded_at >= _parse_timestamp(lease.expires_at, "lease.expires_at"):
-        raise ContractSemanticError(
-            f"{label}.recorded_at: {evidence.recorded_at!r} is at or after the lease expired; "
-            "a window that has closed authorizes nothing"
-        )
-    if lease.released_at is not None and recorded_at > _parse_timestamp(
-        lease.released_at, "lease.released_at"
-    ):
-        raise ContractSemanticError(
-            f"{label}.recorded_at: {evidence.recorded_at!r} is after the worktree was handed "
-            "back"
-        )
-
-    intents = _intents_by_id(run.effect_intents, "run.effect_intents")
-    if _validate_identifier(evidence.effect_intent_id, f"{label}.effect_intent_id") not in intents:
-        raise ContractSemanticError(
-            f"{label}.effect_intent_id: {evidence.effect_intent_id!r} names no intent of this "
-            "run; nothing is changed that was not first declared"
-        )
-    validate_policy_snapshot(
-        run.policy, run_id=expected_run, workspace_id=expected_workspace, label="run.policy"
-    )
-    assert isinstance(run.policy, PolicySnapshot)
-    _require_scoped(
-        evidence.policy_snapshot_id,
-        run.policy.policy_snapshot_id,
-        f"{label}.policy_snapshot_id",
-        "run's policy snapshot",
-    )
-    if _require_at_least(
-        evidence.policy_revision, 1, f"{label}.policy_revision"
-    ) != run.policy.revision:
-        raise ContractSemanticError(
-            f"{label}.policy_revision: {evidence.policy_revision} is not the revision this run "
-            f"is pinned to ({run.policy.revision})"
-        )
-    if evidence.cleanup_receipt_id is not None:
-        cleanup_ids = {
-            receipt.cleanup_receipt_id
-            for receipt in _require_sequence(
-                run.cleanup_receipts, "run.cleanup_receipts", _MAX_CLEANUP_RECEIPTS
-            )
-            if isinstance(receipt, CleanupReceipt)
-        }
-        if (
-            _validate_identifier(evidence.cleanup_receipt_id, f"{label}.cleanup_receipt_id")
-            not in cleanup_ids
-        ):
-            raise ContractSemanticError(
-                f"{label}.cleanup_receipt_id: {evidence.cleanup_receipt_id!r} names no cleanup "
-                "receipt of this run"
-            )
-
-    before = (
-        None
-        if evidence.before_digest is None
-        else _validate_content_checksum(evidence.before_digest, f"{label}.before_digest")
-    )
-    after = (
-        None
-        if evidence.after_digest is None
-        else _validate_content_checksum(evidence.after_digest, f"{label}.after_digest")
-    )
-    if before is None and after is None:
-        raise ContractSemanticError(
-            f"{label}: a mutation with neither a before nor an after digest records no change"
-        )
-    if before is not None and before == after:
-        raise ContractSemanticError(
-            f"{label}: identical before and after digests record no change; evidence of "
-            "nothing having happened reads as evidence that something did"
         )
 
 

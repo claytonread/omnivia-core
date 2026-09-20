@@ -114,6 +114,17 @@ jobs:
       - name: Run package boundary tests
         run: python -m pytest tests/test_package_boundaries.py -q
 
+      # Migration numbers are one global sequence shared by several queued lanes,
+      # and two lanes that each take "the next free number" produce two files
+      # called `0021_*.sql` rather than a merge conflict. This holds the T-0660
+      # allocation in `contracts/migrations/v1/allocations.json` against the
+      # migration directory: no gap, no duplicate, no content drift in a pinned
+      # candidate, and no reserved file appearing before its allocation is
+      # deliberately advanced. Standard library only, so it runs before anything
+      # is installed and costs the gate nothing.
+      - name: Check migration allocations
+        run: python scripts/check-migration-allocations.py
+
       - name: Build and install-check all distributions
         run: PYTHON=python scripts/check-package-builds.sh
 

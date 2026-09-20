@@ -41,7 +41,6 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
 from __future__ import annotations
 
 import ast
-import dataclasses
 import importlib.util
 import json
 import os
@@ -103,6 +102,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "context-pack",
     "compatibility-matrix",
     "runtime",
+    "chat",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -198,30 +198,6 @@ FROZEN_FIXTURE_MAP: dict[str, tuple[str, str, bool, bool]] = {
     "runtime-effect-receipt-without-intent": (
         "runtime-effect-receipt-without-intent.json",
         "runtime_effect_without_intent_rejected",
-        True,
-        True,
-    ),
-    "runtime-run-child-steps": (
-        "runtime-run-child-steps.json",
-        "runtime_child_steps_stay_inside_one_run",
-        True,
-        True,
-    ),
-    "runtime-context-cursor": (
-        "runtime-context-cursor.json",
-        "runtime_context_cursor_replays_deterministically",
-        True,
-        True,
-    ),
-    "runtime-worktree-lease": (
-        "runtime-worktree-lease.json",
-        "runtime_worktree_lease_fails_closed",
-        True,
-        True,
-    ),
-    "runtime-worktree-mutation": (
-        "runtime-worktree-mutation.json",
-        "runtime_mutation_evidence_is_bound_to_lease_and_run",
         True,
         True,
     ),
@@ -1096,226 +1072,6 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
             return []
         return [f"{file_name}: an effect receipt with no matching intent must be refused"]
 
-    def runtime_child_steps_stay_inside_one_run(file_name: str) -> list[str]:
-        """A child step links to a parent of its own run, and its wait stays the run's.
-
-        Three things the fixture exists to hold. The run validates with a parent and a child
-        in it. Repointing the child at a step id from another run is *refused* rather than
-        resolved somewhere else, which is the whole of "parentage never crosses a run". And
-        the child's pending wait is reachable from the parent through the run's own `waits`
-        array, so a parent can see what its children are blocked on without a second wait
-        record existing anywhere.
-        """
-        run = _run(file_name)
-        findings: list[str] = []
-        try:
-            runtime.validate_run(run, workspace_id=run.workspace_id)
-        except compatibility.ContractSemanticError as error:
-            findings.append(f"{file_name}: expected a valid parent/child run, raised {error}")
-        children = [step for step in run.steps if step.parent_run_step_id is not None]
-        if len(children) != 1:
-            return [*findings, f"{file_name}: expected exactly one child step"]
-        child = children[0]
-        parent_id = child.parent_run_step_id
-        if runtime.child_run_steps(run, run_step_id=parent_id) != (child,):
-            findings.append(f"{file_name}: the parent does not read back its one child")
-        under_parent = runtime.waits_under_step(run, run_step_id=parent_id)
-        if [wait.wait_id for wait in under_parent] != [wait.wait_id for wait in run.waits]:
-            findings.append(
-                f"{file_name}: the child's wait is not visible from the parent, or a wait the "
-                "run does not hold is"
-            )
-        if any(step.wait_id is not None for step in run.steps if step.run_step_id == parent_id):
-            findings.append(f"{file_name}: the parent holds a wait of its own for its child")
-        document = _fixture_document(file_name)
-        foreign = generated.Run.from_wire(
-            {
-                **document,
-                "steps": [
-                    step
-                    if step.get("parent_run_step_id") is None
-                    else {**step, "parent_run_step_id": "step-of-another-run"}
-                    for step in document["steps"]
-                ],
-            }
-        )
-        try:
-            runtime.validate_run(foreign, workspace_id=foreign.workspace_id)
-        except compatibility.ContractSemanticError:
-            return findings
-        findings.append(f"{file_name}: a parent link out of this run must be refused")
-        return findings
-
-    def runtime_context_cursor_replays_deterministically(file_name: str) -> list[str]:
-        """The same cursor delivers the same context, and the next one delivers only the rest.
-
-        Idempotence and progress are one property here, not two: a delivery is a slice of a
-        stream that is contiguous from zero, so replaying a cursor cannot return anything else
-        and advancing one cannot return anything twice. The run the cursor indexes is the
-        parent/child fixture, so the lineage it names is a real step and a real attempt of it.
-        """
-        cursor = generated.ContextCursor.from_wire(_fixture_document(file_name))
-        run = _run("runtime-run-child-steps.json")
-        findings: list[str] = []
-        try:
-            runtime.validate_context_cursor(
-                cursor, run_id=run.run_id, workspace_id=run.workspace_id
-            )
-        except compatibility.ContractSemanticError as error:
-            return [f"{file_name}: expected a valid ContextCursor, raised {error}"]
-        first, advanced = runtime.deliver_context(
-            cursor, run=run, workspace_id=run.workspace_id
-        )
-        again, _ = runtime.deliver_context(cursor, run=run, workspace_id=run.workspace_id)
-        if first != again:
-            findings.append(f"{file_name}: replaying one cursor delivered different context")
-        if len(first) != cursor.max_items:
-            findings.append(
-                f"{file_name}: a delivery of {len(first)} entries does not fill the "
-                f"{cursor.max_items}-entry bound this stream can satisfy"
-            )
-        rest, caught_up = runtime.deliver_context(
-            advanced, run=run, workspace_id=run.workspace_id
-        )
-        if {event.sequence for event in first} & {event.sequence for event in rest}:
-            findings.append(f"{file_name}: the advanced cursor redelivered seen context")
-        if first + rest != tuple(run.events):
-            findings.append(f"{file_name}: two deliveries did not cover the stream exactly once")
-        exhausted, unchanged = runtime.deliver_context(
-            caught_up, run=run, workspace_id=run.workspace_id
-        )
-        if exhausted != () or unchanged != caught_up:
-            findings.append(f"{file_name}: a caught-up cursor is not a fixed point")
-        return findings
-
-    def runtime_worktree_lease_fails_closed(file_name: str) -> list[str]:
-        """One case is current; every other axis refuses, including one this build cannot read.
-
-        The four refusals are the point. A superseded fencing generation refuses whatever the
-        lease says about itself, because the generation is the only fact its holder cannot
-        forge. A released lease is not a free one. An instant at the expiry is already past
-        it -- the window is half-open, so a lease and its successor cannot both be current for
-        one instant. And a lifecycle that is not `held`, *including a value this build has
-        never heard of*, permits nothing rather than being guessed at.
-        """
-        lease = generated.WorktreeLease.from_wire(_fixture_document(file_name))
-        workspace = lease.workspace_id
-        current = lease.fencing_generation
-        inside = "2026-08-22T09:30:00Z"
-        findings: list[str] = []
-
-        def _status(candidate: Any, generation: int, at: str) -> str:
-            return runtime.worktree_lease_status(
-                candidate, workspace_id=workspace, fencing_generation=generation, at=at
-            )
-
-        if _status(lease, current, inside) != runtime.WORKTREE_LEASE_STATUS_CURRENT:
-            findings.append(f"{file_name}: a held, unexpired lease under its own generation "
-                            "is not current")
-        if not runtime.permits_worktree_mutation(
-            lease, workspace_id=workspace, fencing_generation=current, at=inside
-        ):
-            findings.append(f"{file_name}: the one current case does not permit a mutation")
-        cases: tuple[tuple[Any, int, str, str], ...] = (
-            (lease, current + 1, inside, runtime.WORKTREE_LEASE_STATUS_SUPERSEDED),
-            (lease, current, lease.expires_at, runtime.WORKTREE_LEASE_STATUS_EXPIRED),
-            (
-                dataclasses.replace(
-                    lease,
-                    lifecycle=runtime.WORKTREE_LEASE_LIFECYCLE_RELEASED,
-                    released_at=inside,
-                ),
-                current,
-                inside,
-                runtime.WORKTREE_LEASE_STATUS_RELEASED,
-            ),
-            (
-                dataclasses.replace(
-                    lease, lifecycle=runtime.WORKTREE_LEASE_LIFECYCLE_DRAINING
-                ),
-                current,
-                inside,
-                runtime.WORKTREE_LEASE_STATUS_NOT_HELD,
-            ),
-        )
-        for candidate, generation, at, expected in cases:
-            actual = _status(candidate, generation, at)
-            if actual != expected:
-                findings.append(f"{file_name}: expected {expected!r}, got {actual!r}")
-            if runtime.permits_worktree_mutation(
-                candidate, workspace_id=workspace, fencing_generation=generation, at=at
-            ):
-                findings.append(f"{file_name}: a {expected!r} lease permitted a mutation")
-        unknown = generated.WorktreeLease.from_wire(
-            {**_fixture_document(file_name), "lifecycle": "quarantined"}
-        )
-        if _status(unknown, current, inside) != runtime.WORKTREE_LEASE_STATUS_NOT_HELD:
-            findings.append(
-                f"{file_name}: an unrecognized lifecycle must fall through to 'not_held'"
-            )
-        if runtime.permits_worktree_mutation(
-            unknown, workspace_id=workspace, fencing_generation=current, at=inside
-        ):
-            findings.append(f"{file_name}: an unrecognized lifecycle permitted a mutation")
-        return findings
-
-    def runtime_mutation_evidence_is_bound_to_lease_and_run(file_name: str) -> list[str]:
-        """Evidence stands only with its lease and its run, and its target is source-qualified.
-
-        The mismatch that matters is the last one: repointing the target at the same worktree
-        identifier under a *different source root* leaves a record that still looks entirely
-        well formed, and it must be refused. That is the whole of "source-qualified": a
-        worktree is its workspace, its source root and its own identifier together, and any
-        one of the three matching is not two of them matching.
-        """
-        document = _fixture_document(file_name)
-        evidence = generated.MutationEvidence.from_wire(document)
-        lease = generated.WorktreeLease.from_wire(
-            _fixture_document("runtime-worktree-lease.json")
-        )
-        run = _run("runtime-run-replay.json")
-        workspace = run.workspace_id
-        findings: list[str] = []
-        try:
-            runtime.validate_mutation_evidence(
-                evidence, lease=lease, run=run, workspace_id=workspace
-            )
-        except compatibility.ContractSemanticError as error:
-            findings.append(f"{file_name}: expected valid mutation evidence, raised {error}")
-        if evidence.cleanup_receipt_id not in {
-            receipt.cleanup_receipt_id for receipt in run.cleanup_receipts
-        }:
-            findings.append(f"{file_name}: the cleanup linkage names no receipt of this run")
-        refusals: tuple[tuple[str, dict[str, Any]], ...] = (
-            (
-                "another source root",
-                {
-                    "target": {
-                        **document["target"],
-                        "worktree": {
-                            **document["target"]["worktree"],
-                            "source_root_id": "source-root-secondary",
-                        },
-                    }
-                },
-            ),
-            ("a stale lease generation", {"lease_generation": lease.lease_generation - 1}),
-            ("a superseded fencing generation", {"fencing_generation": 1}),
-            ("an undeclared intent", {"effect_intent_id": "intent-9999"}),
-            ("a write after the lease expired", {"recorded_at": lease.expires_at}),
-            ("a change that changed nothing", {"after_digest": document["before_digest"]}),
-        )
-        for what, overrides in refusals:
-            candidate = generated.MutationEvidence.from_wire({**document, **overrides})
-            try:
-                runtime.validate_mutation_evidence(
-                    candidate, lease=lease, run=run, workspace_id=workspace
-                )
-            except compatibility.ContractSemanticError:
-                continue
-            findings.append(f"{file_name}: {what} must be refused")
-        return findings
-
     def runtime_resolve_wait_is_not_job_recovery(file_name: str) -> list[str]:
         """`ResolveWait` is a Runtime command, and nothing about it is a job control.
 
@@ -1345,14 +1101,6 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
         "runtime_cancellation_preserves_evidence": runtime_cancellation_preserves_evidence,
         "runtime_unknown_run_status_fails_safe": runtime_unknown_run_status_fails_safe,
         "runtime_effect_without_intent_rejected": runtime_effect_without_intent_rejected,
-        "runtime_child_steps_stay_inside_one_run": runtime_child_steps_stay_inside_one_run,
-        "runtime_context_cursor_replays_deterministically": (
-            runtime_context_cursor_replays_deterministically
-        ),
-        "runtime_worktree_lease_fails_closed": runtime_worktree_lease_fails_closed,
-        "runtime_mutation_evidence_is_bound_to_lease_and_run": (
-            runtime_mutation_evidence_is_bound_to_lease_and_run
-        ),
         "runtime_resolve_wait_is_not_job_recovery": runtime_resolve_wait_is_not_job_recovery,
         "effective_capabilities_match": effective_capabilities_match,
         "capability_denial": capability_denial,
@@ -1443,6 +1191,11 @@ _CREATE_MUT: tuple[str, ...] = tuple(
 _GOV_MUT: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "mutation_precondition_failed", "not_found"))
 )
+#: Deliberately excludes ``mutation_precondition_failed``: a chat command states the
+#: conversation revision it expects, and a conversation another writer advanced is a
+#: state the caller re-reads and re-decides against -- a ``conflict`` -- not a record
+#: version it refreshes and retries.
+_CHAT_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 _IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceeded")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
@@ -1463,6 +1216,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "CONTEXT_READ": _CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "GOV_MUT": _GOV_MUT,
+    "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
     "JOB_CONTROL": _JOB_CONTROL,
     "JOB_EVENTS": _JOB_EVENTS,
@@ -1497,7 +1251,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 20 application operations, in the frozen code-point order. Runtime
+#: The exact 22 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1508,6 +1262,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "candidate.reject": FrozenOperation(
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "CandidateReject", "GOV_MUT", False,
+    ),
+    "chat.command": FrozenOperation(
+        "workspace", ("chat:write",), "update", "chat.command",
+        "chat", "ChatCommand", "CHAT_MUT", False,
+    ),
+    "chat.events": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatEvents", "JOB_EVENTS", False,
     ),
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",

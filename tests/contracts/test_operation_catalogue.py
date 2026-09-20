@@ -76,7 +76,7 @@ def _load_schema(name: str) -> dict[str, Any]:
 FROZEN = _load_fixture()
 FROZEN_NAMES = [entry["name"] for entry in FROZEN]
 #: ``(name, expected wire object)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of twenty.
+#: failure names the operation rather than an index into a list of twenty-two.
 FROZEN_CASES = list(zip(FROZEN_NAMES, FROZEN))
 FROZEN_BY_NAME = dict(FROZEN_CASES)
 
@@ -138,19 +138,19 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_twenty_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 20
+def test_the_catalogue_holds_exactly_the_frozen_twenty_two_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 22
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
     assert FROZEN_NAMES == sorted(FROZEN_NAMES)
-    assert len(set(FROZEN_NAMES)) == 20
+    assert len(set(FROZEN_NAMES)) == 22
 
 
-def test_two_operations_are_installation_scoped_and_eighteen_are_workspace_scoped() -> None:
+def test_two_operations_are_installation_scoped_and_twenty_are_workspace_scoped() -> None:
     installation = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "installation"]
     workspace = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "workspace"]
     assert installation == ["workspace.create", "workspace.list"]
-    assert len(workspace) == 18
-    assert len(installation) + len(workspace) == 20
+    assert len(workspace) == 20
+    assert len(installation) + len(workspace) == 22
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
@@ -175,8 +175,8 @@ def _emitted_typescript_catalogue() -> list[dict[str, Any]]:
     """Parse the emitted TypeScript catalogue literal into plain Python values.
 
     Checking only the sequence of emitted ``name:`` lines would pass against an
-    artifact whose every other field had drifted -- and against a 21st entry
-    appended after the frozen twenty. The literal is delimited exactly rather
+    artifact whose every other field had drifted -- and against a 23rd entry
+    appended after the frozen twenty-two. The literal is delimited exactly rather
     than sliced to end-of-file, so a truncated or unterminated artifact fails
     here instead of being silently accepted.
     """
@@ -880,11 +880,11 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
     it is the one representation nothing else can catch drifting.
     """
     installation = _documented_operations("Two are installation-scoped:")
-    workspace = _documented_operations("Eighteen are workspace-scoped:")
+    workspace = _documented_operations("Twenty are workspace-scoped:")
     documented = installation + workspace
 
     assert sorted(documented) == FROZEN_NAMES
-    assert len(documented) == len(set(documented)) == 20
+    assert len(documented) == len(set(documented)) == 22
     assert installation == [
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "installation"
     ]
@@ -896,6 +896,6 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
 @pytest.mark.parametrize("name", NON_OPERATIONS)
 def test_the_readme_operation_list_names_no_probe_and_no_job_resume(name: str) -> None:
     documented = _documented_operations("Two are installation-scoped:") + _documented_operations(
-        "Eighteen are workspace-scoped:"
+        "Twenty are workspace-scoped:"
     )
     assert name not in documented

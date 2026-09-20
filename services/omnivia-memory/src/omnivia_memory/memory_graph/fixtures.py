@@ -12,7 +12,7 @@ Deprecated: import these from ``omnivia_core.memory_graph.fixtures`` instead.
 # resolve: `TypedDict`, `annotations`, and the sixteen contract names the
 # canonical fixture builder imports from its sibling `models` leaf. No other
 # error code is suppressed.
-from omnivia_core.memory_graph.fixtures import (  # type: ignore[attr-defined]
+from omnivia_core.memory_graph.fixtures import (  # type: ignore[attr-defined,unused-ignore]
     FIXTURE_TIME,
     EvidenceGraphResponse,
     GraphPreviewEdge,

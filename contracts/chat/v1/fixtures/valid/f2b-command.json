@@ -1,0 +1,29 @@
+{
+  "messageType": "bridge.command",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "commandId": "cmd-hosted-0001",
+  "commandKind": "SubmitMessage",
+  "payload": {
+    "protocolVersion": "1.0",
+    "commandId": "cmd-hosted-0001",
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "branchId": "branch-0001-original",
+    "actorId": "actor-alice",
+    "expectedHeadMessageId": "msg-0001-root",
+    "expectedHeadVersion": 1,
+    "editableParts": [
+      {
+        "type": "text",
+        "payload": {
+          "text": "hello from the hosted renderer"
+        }
+      }
+    ],
+    "attachmentReferences": [],
+    "contextReferences": []
+  },
+  "sentAt": "2026-08-20T10:01:00Z"
+}

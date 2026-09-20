@@ -338,12 +338,13 @@ def test_no_pytest_collected_test_performs_a_resolving_install() -> None:
     index either.
 
     Every ``pip install`` command literal in every collected test module must carry
-    ``--no-index``. Three offline artifact installs qualify today -- two in
-    ``tests/compatibility/test_facade_wheel_install.py`` and one in
-    ``tests/host_contract/test_host_wheel_resources.py``, which installs the locally
-    built Core wheel to prove the packaged Host Contract resources import from a
-    real isolated install. A resolving install added to a test module later fails
-    here rather than silently multiplying the network work.
+    ``--no-index``. Four offline artifact installs qualify today -- two in
+    ``tests/compatibility/test_facade_wheel_install.py``, one in
+    ``tests/host_contract/test_host_wheel_resources.py`` and one in
+    ``tests/chat_contract/test_wheel_resources.py``; the latter two install the
+    locally built Core wheel to prove the packaged Host and Chat Contract resources
+    import from a real isolated install. A resolving install added to a test module
+    later fails here rather than silently multiplying the network work.
     """
     checked = 0
     offenders: list[str] = []
@@ -364,9 +365,10 @@ def test_no_pytest_collected_test_performs_a_resolving_install() -> None:
                 if "--no-index" not in literals:
                     offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
     assert offenders == [], f"resolving pip installs inside pytest collection: {offenders}"
-    assert checked == 3, (
+    assert checked == 4, (
         "expected the two offline installs in test_facade_wheel_install.py plus the one "
-        f"in test_host_wheel_resources.py, found {checked} pip install command literals"
+        "in test_host_wheel_resources.py and the one in chat_contract/test_wheel_resources.py, "
+        f"found {checked} pip install command literals"
     )
 
 

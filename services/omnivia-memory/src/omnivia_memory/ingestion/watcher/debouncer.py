@@ -82,8 +82,9 @@ class Debouncer:
 
         The delay increases with event count up to max_delay_ms.
         """
-        delay = self._config.initial_delay_ms * event_count
-        return min(delay, self._config.max_delay_ms)
+        delay: int = self._config.initial_delay_ms * event_count
+        max_delay: int = self._config.max_delay_ms
+        return min(delay, max_delay)
 
     def _get_key(self, change: FileChange) -> str:
         """Get the debounce key for a change. Default to path-based grouping."""

@@ -12,7 +12,7 @@ from ``omnivia_core.app_manifest.validation`` instead.
 # and sibling-imported bindings (`Any`, `Dict`, and the contract classes the
 # canonical validation module imports from its sibling `models`) -- names this
 # leaf's historical namespace still has to resolve. No other code is suppressed.
-from omnivia_core.app_manifest.validation import (  # type: ignore[attr-defined]
+from omnivia_core.app_manifest.validation import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     AppManifest,
     AppManifestValidationError,

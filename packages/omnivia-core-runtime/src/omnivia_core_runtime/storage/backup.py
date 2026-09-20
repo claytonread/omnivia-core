@@ -147,23 +147,7 @@ def backup_database(source: Path, destination: Path) -> Path:
 
 
 def compact_database(source: Path, destination: Path) -> Path:
-    """Write a compacted copy of `source` to `destination` via `VACUUM INTO`.
-
-    Refuses to overwrite an existing destination, for the same reason
-    `backup_database` does: a compaction routine that clobbers can destroy the only
-    remaining copy. `VACUUM INTO` takes its own consistent snapshot of the source, so
-    this is as safe to run against a live database as `backup_database` is -- and,
-    unlike a page-for-page copy, it also defragments and drops free pages, which is
-    the property that makes the result a *compacted* copy rather than merely another
-    one.
-
-    The source is opened `mode=ro` at the connection URI rather than through
-    `open_database`'s `OpenMode.READ_ONLY`: that mode also sets `PRAGMA
-    query_only = ON`, which SQLite applies to every file the connection writes, the
-    fresh `VACUUM INTO` target included -- so the same pragma that protects `source`
-    from a write would refuse the compacted copy's own creation. `mode=ro` alone
-    still makes the source itself un-writable at the VFS level.
-    """
+    """Write a compacted copy of `source` to `destination` via `VACUUM INTO`."""
     if not source.is_file():
         raise BackupError(f"no database to compact at {source}")
     if destination.exists():

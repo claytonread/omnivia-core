@@ -1,0 +1,1622 @@
+{
+  "format": "omnivia.chat-runtime-contract.v1.fixture-manifest",
+  "format_version": 1,
+  "status": "review-candidate",
+  "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
+  "schema_host": "https://contracts.omnivia.dev/chat/v1/",
+  "counts": {
+    "total": 158,
+    "valid": 75,
+    "invalid": 83
+  },
+  "fixtures": [
+    {
+      "path": "fixtures/valid/message-first-submission-success.json",
+      "expect": "valid",
+      "focus": "First committed root Message with one text part, normal-path success.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message"
+    },
+    {
+      "path": "fixtures/valid/assistant-message-success.json",
+      "expect": "valid",
+      "focus": "Committed assistant Message with structural parent, normal continuation.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message"
+    },
+    {
+      "path": "fixtures/valid/message-branch-created.json",
+      "expect": "valid",
+      "focus": "Original MessageBranch record after root Message and first assistant reply.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/MessageBranch"
+    },
+    {
+      "path": "fixtures/valid/branch-head-event-v1.json",
+      "expect": "valid",
+      "focus": "BranchHeadEvent version 1 has no previousHeadMessageId.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/BranchHeadEvent"
+    },
+    {
+      "path": "fixtures/valid/branch-head-event-v2.json",
+      "expect": "valid",
+      "focus": "BranchHeadEvent version 2 requires previousHeadMessageId referencing the prior head.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/BranchHeadEvent"
+    },
+    {
+      "path": "fixtures/invalid/branch-head-event-v1-with-previous-rejected.json",
+      "expect": "invalid",
+      "focus": "headVersion 1 SHALL NOT carry previousHeadMessageId (if/then/else); rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/BranchHeadEvent",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/valid/conversation-view-state.json",
+      "expect": "valid",
+      "focus": "Actor- and device-scoped view state; never carries graph-truth-mutating fields.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState"
+    },
+    {
+      "path": "fixtures/valid/amendment-sibling-message.json",
+      "expect": "valid",
+      "focus": "Amended sibling Message shares the source's structural parent (REF-042 §9.3).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message"
+    },
+    {
+      "path": "fixtures/valid/message-derivation-amendment.json",
+      "expect": "valid",
+      "focus": "Amendment derivation relation from the amended sibling back to its source Message.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/MessageDerivation"
+    },
+    {
+      "path": "fixtures/valid/amendment-branch-success.json",
+      "expect": "valid",
+      "focus": "End-to-end CommitMessageAmendment success: new branch, new head, fresh graph revision.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/CommitMessageAmendmentResult"
+    },
+    {
+      "path": "fixtures/valid/idempotent-replay-same-command-id.json",
+      "expect": "valid",
+      "focus": "Exact commandId replay returns the original result with idempotentReplay true (REF042-INV-015).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/CommitMessageAmendmentResult"
+    },
+    {
+      "path": "fixtures/invalid/commit-amendment-validation-failure-no-partial-state.json",
+      "expect": "invalid",
+      "focus": "A result SHALL NOT carry both a successful body and a failure envelope; REF-042 §13.5 requires validation failure to create no Message or branch, i.e. only a Failure, never a partial result.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/CommitMessageAmendmentResult",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/valid/idempotency-conflict-failure.json",
+      "expect": "valid",
+      "focus": "A commandId reused with different content correctly fails closed as idempotency_conflict (REF042-INV-016).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/CommitMessageAmendmentFailure"
+    },
+    {
+      "path": "fixtures/invalid/stale-expected-version-missing-rejected.json",
+      "expect": "invalid",
+      "focus": "expectedVersion is a required optimistic-concurrency precondition on ReorderQueuedSubmission; omitting it is rejected as incomplete.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ReorderQueuedSubmissionRequest",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/valid/branch-path-pinned-snapshot.json",
+      "expect": "valid",
+      "focus": "Pinned branch-path reconstruction result at a fixed head and graph revision.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathResult"
+    },
+    {
+      "path": "fixtures/invalid/pinned-snapshot-query-missing-revision-rejected.json",
+      "expect": "invalid",
+      "focus": "Supplying pinnedHeadMessageId without pinnedGraphRevision is rejected (if/then).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathQuery",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/valid/cursor-gap-resnapshot-required.json",
+      "expect": "valid",
+      "focus": "A detected delivery gap yields a stable ResnapshotResponse rather than a guessed continuation.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ResnapshotResponse"
+    },
+    {
+      "path": "fixtures/valid/unauthorized-cursor-resnapshot.json",
+      "expect": "valid",
+      "focus": "An unauthorised cursor likewise yields resnapshot, never a guessed continuation.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ResnapshotResponse"
+    },
+    {
+      "path": "fixtures/valid/message-committed-event.json",
+      "expect": "valid",
+      "focus": "Structural event published after commit, carrying graphRevision and conversationSequence.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageCommittedEvent"
+    },
+    {
+      "path": "fixtures/invalid/message-committed-event-extra-field-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an injected raw-content field on a minimised transport event.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageCommittedEvent",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/valid/unknown-additive-part-display-only.json",
+      "expect": "valid",
+      "focus": "An unrecognised but well-formed open MessagePart.type decodes inertly, not rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message"
+    },
+    {
+      "path": "fixtures/valid/share-created-pinned.json",
+      "expect": "valid",
+      "focus": "Share pinned to branch, head and graph revision (REF-042 §18.1).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/sharing.schema.json#/$defs/SharedConversation"
+    },
+    {
+      "path": "fixtures/valid/revoked-share-still-schema-valid.json",
+      "expect": "valid",
+      "focus": "revokedAt is a well-formed, readable field; re-authorisation at read time (not schema shape) is what actually denies access to a revoked share (REF042-RULE-019).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/sharing.schema.json#/$defs/SharedConversation"
+    },
+    {
+      "path": "fixtures/valid/export-created-selected-branch.json",
+      "expect": "valid",
+      "focus": "selected_branch_snapshot export constrained to exactly one BranchSnapshotRef.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/sharing.schema.json#/$defs/ConversationExport"
+    },
+    {
+      "path": "fixtures/invalid/export-selected-branch-multiple-snapshots-rejected.json",
+      "expect": "invalid",
+      "focus": "selected_branch_snapshot scope is constrained to exactly one BranchSnapshotRef by if/then; two is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/sharing.schema.json#/$defs/ConversationExport",
+      "expected_error_contains": "maxItems"
+    },
+    {
+      "path": "fixtures/valid/reference-revalidation-valid.json",
+      "expect": "valid",
+      "focus": "A valid Attachment Reference revalidation carries no failure field.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/references.schema.json#/$defs/ReferenceRevalidation"
+    },
+    {
+      "path": "fixtures/valid/revoked-attachment-reference-blocks-commit.json",
+      "expect": "valid",
+      "focus": "A revoked attachment revalidates to outcome invalid with a structured failure, blocking amendment commit (REF042-INV-017/ADR022-INV-013).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/references.schema.json#/$defs/ReferenceRevalidation"
+    },
+    {
+      "path": "fixtures/invalid/reference-revalidation-invalid-without-failure-rejected.json",
+      "expect": "invalid",
+      "focus": "outcome invalid requires a failure body (if/then); omitting it is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/references.schema.json#/$defs/ReferenceRevalidation",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/valid/generation-job-succeeded.json",
+      "expect": "valid",
+      "focus": "GenerationJob reaching succeeded state with a linked resultMessageId.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob"
+    },
+    {
+      "path": "fixtures/valid/f2a-invocation-request.json",
+      "expect": "valid",
+      "focus": "F2a request carries only opaque connection/model references, structured messages and an absolute deadline.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest"
+    },
+    {
+      "path": "fixtures/valid/f2a-invocation-request-namespaced-model-id.json",
+      "expect": "valid",
+      "focus": "ProviderModelId permits a real namespaced provider/adapter model identity (openai/gpt-4.1), which WorkspaceScopedId's no-`/` shape could not.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest"
+    },
+    {
+      "path": "fixtures/invalid/f2a-invocation-request-raw-url-model-id-rejected.json",
+      "expect": "invalid",
+      "focus": "ProviderModelId rejects a raw URL (the `://` scheme marker) masquerading as a model identity.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "pattern"
+    },
+    {
+      "path": "fixtures/invalid/credential-injection-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an injected credential field on the F2a request boundary.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/arbitrary-url-header-injection-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects injected arbitrary URL and header fields.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/raw-prompt-injection-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an injected raw prompt string.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/policy-internal-leak-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects a leaked policy-internal trace field on the terminal ErrorEvent.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ErrorEvent",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/message-content-mutation-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an out-of-band mutation marker on a committed Message.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/message-parent-field-injection-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an out-of-band parent-override field; parentMessageId itself is immutable post-commit and no schema field exists to bypass that (ADR022-INV-002).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/derivation-cycle-rejected.json",
+      "expect": "invalid",
+      "focus": "sourceMessageId equal to derivedMessageId is a self-cycle, forbidden by REF-042 §7.4 acyclicity (REF042-INV-004); detected by the validator's acyclicity check since JSON Schema cannot compare two dynamic sibling fields for inequality.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/MessageDerivation",
+      "checks": [
+        "derivation_acyclic"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/cross-workspace-message-rejected.json",
+      "expect": "invalid",
+      "focus": "A Message asserting a workspaceId different from the trusted, server-supplied session context is rejected at the authorisation boundary (REF042-RULE-001, REF042-RULE-012); the schema shape alone is valid, so this is proven by the validator's workspace-scope relational check.",
+      "kind": "relational_pair",
+      "partSchemaRefs": {
+        "message": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message"
+      },
+      "checks": [
+        "workspace_scope_enforced"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/cross-conversation-parent-rejected.json",
+      "expect": "invalid",
+      "focus": "A child Message naming a parentMessageId from a different Conversation than its own conversationId violates REF042-RULE-004 (parent writes rejected when they would create a cross-Conversation link); proven by the validator's cross-conversation relational check.",
+      "kind": "relational_pair",
+      "partSchemaRefs": {
+        "parentMessage": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message",
+        "childMessage": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message"
+      },
+      "checks": [
+        "cross_conversation_parent_rejected"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/invalid-derivation-role-mismatch.json",
+      "expect": "invalid",
+      "focus": "An amendment derivation whose source Message is assistant-authored violates REF042-INV-008 (amendment source and derived must both be user-role); proven by the validator's role-pair check.",
+      "kind": "relational_pair",
+      "partSchemaRefs": {
+        "sourceMessage": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message",
+        "derivation": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/MessageDerivation"
+      },
+      "checks": [
+        "amendment_source_role_check"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-01-text-only-success-with-usage.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 1: text-only success terminating in finish(stop) with provider-reported usage."
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-02-multi-part-text-reasoning-lifecycle.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 2: multi-part text/reasoning lifecycle; reasoning events carry no content field."
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-03-repeated-tool-id-distinct-steps.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 3: the provider reuses toolCallId tool-XYZ across step-1 and step-2; disambiguated by (attemptId, stepId, toolCallId) per CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11 rule 4."
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-04-clean-caller-cancellation.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 4: clean caller-initiated cancellation terminates via finish(finishReason=cancelled)."
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-05-deadline-timeout.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 5: absolute deadline exceeded terminates via error(timeout, retryable=true)."
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-06-authentication-rate-limit-endpoint-policy-errors.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 6: three independent attempts, one per error class (authentication, rate-limited, endpoint-policy), each terminating cleanly via error."
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-07-malformed-frame-end-without-terminal.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "invalid",
+      "focus": "F2a canonical trace class 7: the stream ends with no finish or error event, classified malformed-response (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11 rule 1).",
+      "expected_error_contains": "exactly one terminal"
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-08-duplicate-event-and-duplicate-terminal.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "invalid",
+      "focus": "F2a canonical trace class 8: a duplicate providerEventId at ordinal 2/3 (consumer dedupes by providerEventId) and a duplicate finish at ordinal 5/6, which is a protocol violation (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11 rule 2).",
+      "expected_error_contains": "duplicate terminal"
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-09-unknown-additive-event.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "invalid",
+      "focus": "F2a canonical trace class 9: an unrecognised additive eventType (`video-frame`, not in the closed v1 ProviderEventType set) fails strict v1 validation at that item, which is precisely the trigger a real consumer uses to apply the safe-diagnostic/resnapshot policy (freeze §11 rule 6), not a contradiction of that policy.",
+      "expected_error_contains": "oneOf"
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-10-same-route-retry-silent-fallback-denied.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 10: attempt-t10a fails transport/retryable, attempt-t10b retries under the SAME invocationId and route and succeeds with no routeEvidence, because no route change occurred — a same-route retry never needs, and never silently claims, a fallback.",
+      "checks": [
+        "route_evidence_internally_consistent"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-11-explicit-authorized-fallback-route-evidence.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "valid",
+      "focus": "F2a canonical trace class 11: an explicit, authorized fallback carries RouteEvidence naming both the configured and the resolved route on its terminal event (freeze §11 rule 7).",
+      "checks": [
+        "route_evidence_internally_consistent"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2a-silent-fallback-denied.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "invalid",
+      "focus": "The resolved route differs from the configured route but the terminal finish event carries no RouteEvidence: an undeclared, silent fallback, denied by the route-evidence check (freeze §11 rule 7).",
+      "checks": [
+        "route_evidence_internally_consistent"
+      ],
+      "expected_error_contains": "route evidence"
+    },
+    {
+      "path": "fixtures/traces/f2a-trace-route-decision-mismatch-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "invalid",
+      "focus": "routeDecision configured is claimed even though admittedRoute differs from configuredPreference: a changed route may not be labelled configured (freeze §11 rule 7); caught by route_evidence_internally_consistent since JSON Schema cannot compare two nested sibling objects for equality.",
+      "checks": [
+        "route_evidence_internally_consistent"
+      ],
+      "expected_error_contains": "may not be labelled"
+    },
+    {
+      "path": "fixtures/valid/f2b-context-bound.json",
+      "expect": "valid",
+      "focus": "Host-issued admission handshake declaring bounded message/batch/item size and F2b's own independent bridgeProtocolVersion (F2b freeze §12.0-§12.2).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-context-disposed.json",
+      "expect": "valid",
+      "focus": "Terminal lifecycle message for one hosted renderer instance (F2b freeze §12.3).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextDisposedMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-page.json",
+      "expect": "valid",
+      "focus": "One final snapshot page (hasMore false) carrying snapshotId/snapshotGraphRevision/pageIndex and the snapshotBoundaryCursor a subsequent event-batch continues from.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotPageMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-event-batch.json",
+      "expect": "valid",
+      "focus": "One bounded, ordered batch of Chat transport events continuing from the frozen snapshot boundary via fromCursor.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-command.json",
+      "expect": "valid",
+      "focus": "Host-mediated command whose payload validates against the exact D07 SubmitMessageRequest schema its commandKind names.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-command-result-accepted.json",
+      "expect": "valid",
+      "focus": "Carries the exact D07 CommandResultEnvelope with status accepted, never an invented outcome vocabulary.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-result-accepted-with-failure-rejected.json",
+      "expect": "invalid",
+      "focus": "D07's own CommandResultEnvelope if/then/else forbids error when status is accepted; carried through the bridge unchanged, still rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/valid/f2b-command-result-rejected.json",
+      "expect": "valid",
+      "focus": "Carries the exact D07 CommandResultEnvelope with status rejected and a required error.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-refusal-missing-denied-capability-rejected.json",
+      "expect": "invalid",
+      "focus": "reason forbidden_capability requires deniedCapability to be present (if/then); omitting it is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/valid/f2b-resnapshot.json",
+      "expect": "valid",
+      "focus": "Instructs the hosted renderer to discard local state and request a fresh snapshot via an explicit bridge.snapshot-request, never a renderer-side fetch.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ResnapshotMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-backpressure-pause.json",
+      "expect": "valid",
+      "focus": "Module->host pause carrying the required bounded pendingEvents count and watermarkCursor acknowledgement.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BackpressureMessage"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-01-context-mismatch-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A command bearing a contextId other than the bound one is immediately refused as context_mismatch (F2b freeze §12.1, §12.4).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-02-context-mismatch-not-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A context-mismatched command with no following refusal is a protocol violation, caught by the validator's context-mismatch relational check.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "context_mismatch"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-03-dispose-then-late-command-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A command received after bridge.context-disposed is refused as late_command, never queued and replayed against a new context (F2b freeze §12.3, §12.6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-04-dispose-then-late-command-not-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A late command with no following refusal after disposal is a protocol violation, caught by the validator's late-command relational check.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "late_command"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-05-backpressure-honoured.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "No event-batch is sent between a pause and its matching resume (F2b freeze §12.8).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-06-backpressure-not-honoured.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "An event-batch sent while paused, with no intervening resume, is a protocol violation (F2b freeze §12.8).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "backpressure"
+    },
+    {
+      "path": "fixtures/traces/chat-events-duplicate-delivery.json",
+      "expect": "invalid",
+      "focus": "The same eventId is delivered twice (at-least-once transport). A consumer dedupes by eventId (freeze §9 rule 2); presence of an undeduplicated repeat in a recorded consumer log is exactly the condition the duplicate-event check catches.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageCommittedEvent",
+      "kind": "trace",
+      "checks": [
+        "no_duplicate_chat_event_ids"
+      ],
+      "expected_error_contains": "duplicate"
+    },
+    {
+      "path": "fixtures/invalid/pinned-snapshot-query-missing-head-rejected.json",
+      "expect": "invalid",
+      "focus": "Supplying pinnedGraphRevision without pinnedHeadMessageId is likewise rejected (allOf, symmetric direction of the pinned-snapshot invariant).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathQuery",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/traces/f2a-duplicate-ordinal-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderEvent",
+      "expect": "invalid",
+      "focus": "Provider event ordinals are strictly increasing per attempt; a duplicate ordinal (not merely a descending one) is rejected.",
+      "expected_error_contains": "not strictly increasing"
+    },
+    {
+      "path": "fixtures/valid/command-result-envelope-accepted.json",
+      "expect": "valid",
+      "focus": "The stable CommandResultEnvelope with status accepted and no error.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope"
+    },
+    {
+      "path": "fixtures/valid/command-result-envelope-completed.json",
+      "expect": "valid",
+      "focus": "The stable CommandResultEnvelope with status completed and an optional resultRef.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope"
+    },
+    {
+      "path": "fixtures/valid/command-result-envelope-rejected.json",
+      "expect": "valid",
+      "focus": "The stable CommandResultEnvelope with status rejected and a required safe error.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope"
+    },
+    {
+      "path": "fixtures/valid/command-result-envelope-conflict.json",
+      "expect": "valid",
+      "focus": "The stable CommandResultEnvelope with status conflict and an optional currentVersion, no error.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope"
+    },
+    {
+      "path": "fixtures/invalid/command-result-envelope-rejected-without-error-rejected.json",
+      "expect": "invalid",
+      "focus": "status rejected requires error (if/then); omitting it is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/command-result-envelope-accepted-with-error-rejected.json",
+      "expect": "invalid",
+      "focus": "status accepted SHALL NOT carry error; rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/valid/command-result-envelope-conflict-with-error.json",
+      "expect": "valid",
+      "focus": "status conflict MAY carry both an optional stable error and an optional currentVersion together.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope"
+    },
+    {
+      "path": "fixtures/invalid/command-result-envelope-conflict-negative-version-rejected.json",
+      "expect": "invalid",
+      "focus": "currentVersion uses the generic bounded non-negative ResourceVersion type; a negative value is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope",
+      "expected_error_contains": "minimum"
+    },
+    {
+      "path": "fixtures/invalid/command-result-envelope-error-code-not-in-registry-rejected.json",
+      "expect": "invalid",
+      "focus": "error.code must be a member of the shared ErrorCode registry, not an arbitrary string.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/f2a-invalid-operation-rejected.json",
+      "expect": "invalid",
+      "focus": "ProviderInvocationRequest.operation is fixed to the const language.stream; any other value is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/valid/f2a-invocation-request-with-options.json",
+      "expect": "valid",
+      "focus": "A complete F2a request exercising generationOptions, providerOptions and an optional causationId.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest"
+    },
+    {
+      "path": "fixtures/invalid/f2a-provider-options-reserved-key-rejected.json",
+      "expect": "invalid",
+      "focus": "ProviderOptionsNamespaceValue's BoundedExtensiblePropertyName denylist rejects a reserved credential-shaped key (apiKey) before adapter invocation.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "pattern"
+    },
+    {
+      "path": "fixtures/invalid/f2a-provider-options-out-of-bound-number-rejected.json",
+      "expect": "invalid",
+      "focus": "SanitisedScalarValue's number branch is itself finitely bounded (±1,000,000,000); a value past that ceiling satisfies no anyOf branch.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "anyOf"
+    },
+    {
+      "path": "fixtures/invalid/f2a-gate-b-missing-policy-ref-rejected.json",
+      "expect": "invalid",
+      "focus": "The Gate-B launch boundary requires policyRef; omitting it is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRequest",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/provider-message-part-text-with-tool-fields-rejected.json",
+      "expect": "invalid",
+      "focus": "ProviderMessagePart.kind text permits only text; a tool-call field on a text part is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderMessagePart",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/response-format-text-with-schema-ref-rejected.json",
+      "expect": "invalid",
+      "focus": "ResponseFormat.schemaRef is forbidden unless kind is structured; present on a text format is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ResponseFormat",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/tool-input-start-missing-tool-name-rejected.json",
+      "expect": "invalid",
+      "focus": "ToolInputLifecycleEvent.toolName is required on tool-input-start; omitting it is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolInputLifecycleEvent",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/source-event-missing-reference-and-label-rejected.json",
+      "expect": "invalid",
+      "focus": "SourceEvent requires at least evidenceReference or displayLabel; carrying neither is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SourceEvent",
+      "expected_error_contains": "anyOf"
+    },
+    {
+      "path": "fixtures/valid/provider-source-event-display-label-only.json",
+      "expect": "valid",
+      "focus": "A SourceEvent carrying only displayLabel (no evidenceReference) satisfies the anyOf invariant.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SourceEvent"
+    },
+    {
+      "path": "fixtures/invalid/source-event-empty-display-label-rejected.json",
+      "expect": "invalid",
+      "focus": "An empty displayLabel cannot satisfy the at-least-one-source-identity anyOf rule; minLength:1 rejects it.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SourceEvent",
+      "expected_error_contains": "minLength"
+    },
+    {
+      "path": "fixtures/valid/provider-invocation-record-in-progress.json",
+      "expect": "valid",
+      "focus": "A non-terminal ProviderInvocationRecord carries neither terminalAt nor routeEvidence.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord"
+    },
+    {
+      "path": "fixtures/valid/provider-invocation-record-requested.json",
+      "expect": "valid",
+      "focus": "A newly requested ProviderInvocationRecord may have zero Attempts (none admitted yet); attemptIds:[] is permitted only for lifecycleState requested.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord"
+    },
+    {
+      "path": "fixtures/valid/provider-invocation-record-succeeded.json",
+      "expect": "valid",
+      "focus": "A terminal ProviderInvocationRecord requires terminalAt and a complete routeEvidence; routeDecision configured with admittedRoute naming the identical connectionId/modelId (plus required adapter fields configuredPreference never carries) is relationally consistent.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord",
+      "checks": [
+        "provider_invocation_record_route_evidence_consistent"
+      ]
+    },
+    {
+      "path": "fixtures/valid/provider-invocation-record-same-route-retry.json",
+      "expect": "valid",
+      "focus": "A terminal ProviderInvocationRecord with routeDecision same_route_retry and an admittedRoute naming the identical connectionId/modelId as configuredPreference is relationally consistent (positive same-route-retry case).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord",
+      "checks": [
+        "provider_invocation_record_route_evidence_consistent"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/provider-invocation-record-terminal-empty-attempts-rejected.json",
+      "expect": "invalid",
+      "focus": "A terminal lifecycleState (succeeded) with attemptIds:[] is rejected: only a newly requested invocation may have zero Attempts.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord",
+      "expected_error_contains": "minItems"
+    },
+    {
+      "path": "fixtures/invalid/provider-invocation-record-duplicate-attempt-ids-rejected.json",
+      "expect": "invalid",
+      "focus": "attemptIds carrying the same ProviderAttemptId twice violates uniqueItems.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord",
+      "expected_error_contains": "uniqueItems"
+    },
+    {
+      "path": "fixtures/invalid/provider-invocation-record-terminal-without-evidence-rejected.json",
+      "expect": "invalid",
+      "focus": "A terminal lifecycleState (succeeded) without terminalAt/routeEvidence is rejected (if/then).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/provider-invocation-record-route-evidence-mismatch-rejected.json",
+      "expect": "invalid",
+      "focus": "A terminal ProviderInvocationRecord's own routeEvidence names a changed admittedRoute connectionId/modelId but is labelled routeDecision configured: a durable record cannot evade the relational invariant that only F2a event-trace wrappers previously checked.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationRecord",
+      "checks": [
+        "provider_invocation_record_route_evidence_consistent"
+      ],
+      "expected_error_contains": "may not be labelled"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-item-message.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind message maps its payload to graph.schema.json#/$defs/Message.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-item-message-branch.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind message_branch maps its payload to branch.schema.json#/$defs/MessageBranch.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-item-view-state.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind view_state maps its payload to viewstate.schema.json#/$defs/ConversationViewState.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-item-generation-job.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind generation_job maps its payload to generation.schema.json#/$defs/GenerationJob.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-mismatched-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind conversation with a Message-shaped payload is rejected: BridgeSnapshotItem enforces the itemKind/payload mapping, not merely an opaque object.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-arbitrary-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "An arbitrary junk payload for itemKind conversation is rejected against the real Conversation schema.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-event-batch-arbitrary-item-rejected.json",
+      "expect": "invalid",
+      "focus": "EventBatchMessage.events.items $refs the closed ChatEvent union; an arbitrary, unrecognised item is rejected rather than passed through as an opaque object.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage",
+      "expected_error_contains": "oneOf"
+    },
+    {
+      "path": "fixtures/invalid/f2b-backpressure-resume-with-pending-events-rejected.json",
+      "expect": "invalid",
+      "focus": "action resume forbids pendingEvents (and watermarkCursor); carrying pendingEvents on a resume is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BackpressureMessage",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-oversize-rejected.json",
+      "expect": "invalid",
+      "focus": "An envelope whose declared bounds are all in range but whose actual UTF-8 JSON encoding exceeds 65536 bytes is refused, never truncated: the carrier bound is measured on encoded bytes, not on a declared field.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ],
+      "expected_error_contains": "encoded envelope is"
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-unknown-kind-rejected.json",
+      "expect": "invalid",
+      "focus": "A kind outside the ten frozen F2b carrier kinds is rejected by the closed enum, mirroring Platform's contract-unknown-kind refusal.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-unsupported-outer-version-rejected.json",
+      "expect": "invalid",
+      "focus": "An unsupported outer Platform envelope version (v 2.0) is rejected; the outer carrier version is a separate axis from the F2b bridge protocol version and is pinned independently.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "expected_error_contains": "const '1.0'"
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-wrong-direction-rejected.json",
+      "expect": "invalid",
+      "focus": "A module-only kind (module/chat.command) sent as host->module is rejected: each carrier kind is bound to its exact direction, mirroring Platform's contract-unknown-direction refusal.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "expected_error_contains": "const 'module->host'"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-cross-context-workspace-mismatch-rejected.json",
+      "expect": "invalid",
+      "focus": "The D07 request payload's workspaceId claim must match the bound context's own workspaceId; a cross-context mismatch is rejected relationally (F2b freeze §12.9).",
+      "kind": "relational_pair",
+      "partSchemaRefs": {
+        "boundContext": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+        "command": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage"
+      },
+      "checks": [
+        "f2b_command_context_consistent"
+      ],
+      "expected_error_contains": "workspaceId"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-deferred-kind-rejected.json",
+      "expect": "invalid",
+      "focus": "CreateConversationShare is deferred until Gate F CHAT-029 and is not a member of the closed first-horizon HostedCommandKind allowlist; rejected by enum.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-payload-commandid-mismatch-rejected.json",
+      "expect": "invalid",
+      "focus": "payload.commandId must equal the bridge command's own commandId; a mismatch is rejected relationally since JSON Schema cannot compare two sibling fields for equality.",
+      "kind": "relational_pair",
+      "partSchemaRefs": {
+        "boundContext": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+        "command": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage"
+      },
+      "checks": [
+        "f2b_command_context_consistent"
+      ],
+      "expected_error_contains": "commandId"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-payload-kind-mismatch-rejected.json",
+      "expect": "invalid",
+      "focus": "commandKind SubmitMessage binds payload to the exact SubmitMessageRequest schema; a RenameConversation-shaped payload is missing SubmitMessageRequest's required fields and is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-malformed-bridge-protocol-version-rejected.json",
+      "expect": "invalid",
+      "focus": "bridgeProtocolVersion follows the closed major.minor pattern; a malformed value (missing minor) is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "pattern"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-max-message-bytes-exceeds-bound-rejected.json",
+      "expect": "invalid",
+      "focus": "maxMessageBytes is bounded to 61440 (60 KiB), provably encodable inside the evidenced Platform 64 KiB outer carrier; a declared bound above that maximum is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "maximum"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-unsupported-major-rejected.json",
+      "expect": "invalid",
+      "focus": "The supported bridge protocol version is the exact constant 1.0, not merely a major.minor syntax: an unsupported major (2.0) is rejected structurally, never silently downgraded.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "const '1.0'"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-unsupported-minor-rejected.json",
+      "expect": "invalid",
+      "focus": "A version mismatch within the supported major (1.1) is rejected too: the bundle supports exactly 1.0 and never guesses which additive fields an unknown minor added.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "const '1.0'"
+    },
+    {
+      "path": "fixtures/invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json",
+      "expect": "invalid",
+      "focus": "safeMessage is keyed by reason as enforcement, not prose: an oversize refusal carrying the context_disposed copy is rejected by the reason->safeMessage const binding.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage",
+      "expected_error_contains": "This message is too large to send."
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-07-pre-bind-command-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A command arriving before any bridge.context-bound admission is refused as context_mismatch: pre-bind traffic fails closed exactly like a genuine mismatch (F2b freeze §12.0.1).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-08-duplicate-bind-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A second bridge.context-bound for a context already bound, with no intervening disposal, is a duplicate bind and a protocol violation, never a silent rebind.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "duplicate"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-09-snapshot-pagination-and-event-continuity.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A full session lifecycle: host-mediated snapshot-request, a two-page snapshot with stable snapshotId/pageIndex continuity, an event-batch continuing exactly from the frozen snapshotBoundaryCursor, a command/result round trip and clean disposal.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-10-cursor-gap-forces-resnapshot.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "An event-batch whose fromCursor does not continue from the last known position is a cursor gap; it is immediately followed by bridge.resnapshot and a matching bridge.snapshot-request, never a guessed continuation.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-11-cursor-gap-ignored-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A cursor gap with no following resnapshot is a protocol violation.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "cursor gap"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-12-resnapshot-ignored-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A bridge.resnapshot with no following bridge.snapshot-request carrying its exact resnapshotCursor is a protocol violation: the resnapshot request/required flow was not honoured.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "not followed by a matching"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-13-backpressure-overflow-resnapshot.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A pendingEvents count at or beyond the overflow threshold is answered with bridge.resnapshot (backpressure_overflow), terminating and restarting the subscription rather than accumulating unbounded pending state.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-14-backpressure-overflow-ignored-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "An overflowing pendingEvents count answered with a plain resume instead of a backpressure_overflow resnapshot is a protocol violation.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "overflow threshold"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-15-cross-context-event-violation-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "An event carried in a bridge.event-batch whose workspaceId differs from the bound context's workspaceId is a cross-context leak, caught relationally (F2b freeze §12.9).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "workspaceId"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-16-duplicate-event-across-batches-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "The same eventId delivered in two different bridge.event-batch messages is a duplicate, never a new fact.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "duplicate eventId"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-17-dispose-cleanup-violated-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "The host sending a bridge.event-batch for a context after disposing it is a dispose-cleanup violation, distinct from and broader than late-command refusal (host-issued, not module-issued, traffic).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "dispose cleanup violated"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-18-pre-ready-command-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A command sent after bind but before the module opened its snapshot handshake is refused with the precise closed lifecycle reason not_ready, then the handshake proceeds normally.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-19-pre-ready-command-not-refused-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "Pre-ready module traffic silently processed instead of refused not_ready is a protocol violation.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "not_ready"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-20-snapshot-identity-drift-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A second page of one snapshot generation carrying a different snapshotId is identity drift, never a silently accepted new generation.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "snapshot identity drift"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-21-snapshot-revision-drift-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A second page of one snapshot generation carrying a different snapshotGraphRevision is revision drift: the generation is no longer pinned at one structural boundary.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "snapshot revision drift"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-22-snapshot-page-index-discontinuity-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "pageIndex must increment by exactly one per page; a 0 -> 2 jump is a page-index discontinuity and a silently dropped page.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "page-index discontinuity"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-23-snapshot-continuation-cursor-wrong-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A continuation snapshot-request must echo the exact nextCursor the preceding hasMore page issued; a guessed cursor is rejected.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "wrong or missing continuation cursor"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-24-backpressure-overflow-boundary-resnapshot.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "Boundary case: pendingEvents exactly at the frozen overflow threshold (1000) is answered with a backpressure_overflow resnapshot, proving the comparison is at-or-above, not strictly above.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-25-backpressure-below-threshold-resume.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "Boundary case: pendingEvents one below the frozen overflow threshold (999) is a normal pause/resume with a valid watermark, proving the threshold does not fire early.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-26-backpressure-stale-watermark-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A pause whose watermarkCursor names an earlier position the module has already passed is a stale acknowledgement and is rejected.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "is stale"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-27-backpressure-future-watermark-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A pause whose watermarkCursor names a position the host never issued is a future or unknown acknowledgement and is rejected.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "is future or unknown"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-28-snapshot-page-exceeds-negotiated-items-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A page of 3 items is well under the global maxItems of 25 but above this bound context's negotiated maxSnapshotItems of 2, and is rejected relationally.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "negotiated maxSnapshotItems"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-29-event-batch-exceeds-negotiated-events-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A batch of 3 events is well under the global maxItems of 25 but above this bound context's negotiated maxBatchEvents of 2, and is rejected relationally.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "negotiated maxBatchEvents"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-30-message-exceeds-negotiated-bytes-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A message far below the 61440-byte global bound but above this bound context's negotiated maxMessageBytes is rejected on its actual UTF-8 encoded size.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "negotiated maxMessageBytes"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-31-host-data-before-ready-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "Host event delivery in state bound_not_ready, before the module has asked for anything, is a pre-ready protocol violation no refusal can cure.",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "bound_not_ready"
+    },
+    {
+      "path": "fixtures/valid/f2b-backpressure-resume.json",
+      "expect": "valid",
+      "focus": "A clean resume carries neither pendingEvents nor watermarkCursor.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BackpressureMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-carrier-envelope-command.json",
+      "expect": "valid",
+      "focus": "A module->host Platform carrier envelope: exactly v/dir/kind/payload, kind module/chat.command bound to its exact direction and to BridgeCommandMessage, within the 65536-byte encoded carrier bound.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ]
+    },
+    {
+      "path": "fixtures/valid/f2b-carrier-envelope-snapshot-page.json",
+      "expect": "valid",
+      "focus": "A host->module Platform carrier envelope: kind host/chat.snapshot-page bound to its exact direction and to SnapshotPageMessage, within the 65536-byte encoded carrier bound.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ]
+    },
+    {
+      "path": "fixtures/valid/f2b-command-result-conflict.json",
+      "expect": "valid",
+      "focus": "D07 conflict semantics are preserved unchanged through the bridge: status conflict with an optional currentVersion.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-refusal-command-timeout.json",
+      "expect": "valid",
+      "focus": "A bridge-transport command timeout is refused as bridge lifecycle (command_timeout), never a fifth BridgeCommandResultMessage.result.status value.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-refusal-credential-denied.json",
+      "expect": "valid",
+      "focus": "A hosted command payload structurally cannot carry a credential; forbidden_capability/credential_direct refusal with a closed, non-reflective safeMessage.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-refusal-not-ready.json",
+      "expect": "valid",
+      "focus": "Pre-ready module traffic is refused with the precise closed lifecycle reason not_ready and that reason's single mapped safeMessage.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-request-initial.json",
+      "expect": "valid",
+      "focus": "Module->host request for the first snapshot page of a fresh initial snapshot (no cursor).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-request-resnapshot.json",
+      "expect": "valid",
+      "focus": "Module->host request continuing a resnapshot, carrying the exact resnapshotCursor a prior bridge.resnapshot named.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage"
+    }
+  ]
+}

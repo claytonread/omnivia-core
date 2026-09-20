@@ -13,7 +13,7 @@ Deprecated: import these from ``omnivia_core.knowledge.normalize`` instead.
 # module bindings, and the three bounded-vocabulary frozensets the canonical
 # normalizer imports from its sibling `models` leaf. No other error code is
 # suppressed.
-from omnivia_core.knowledge.normalize import (  # type: ignore[attr-defined]
+from omnivia_core.knowledge.normalize import (  # type: ignore[attr-defined,unused-ignore]
     BUILTIN_GRAPH_NODE_KINDS,
     BUILTIN_GRAPH_RELATIONS,
     BUILTIN_OBJECT_KINDS,

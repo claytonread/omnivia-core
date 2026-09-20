@@ -1,0 +1,42 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "jobId": "job-0002",
+  "attemptId": "attempt-0002",
+  "invocationId": "invocation-0002",
+  "connectionId": "conn-primary-anthropic",
+  "modelId": "claude-sonnet-5",
+  "operation": "language.stream",
+  "idempotencyKey": "idem-invocation-0002",
+  "correlationId": "corr-invocation-0002",
+  "causationId": "cmd-message-submitted-0002",
+  "classificationRef": "classification-standard",
+  "residencyRef": "residency-au",
+  "policyRef": "policy-default",
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Summarise the attached report."
+        }
+      ]
+    }
+  ],
+  "responseFormat": {
+    "kind": "text"
+  },
+  "generationOptions": {
+    "temperature": 0.4,
+    "maxOutputTokens": 2048,
+    "stopSequences": ["\n\nEND"]
+  },
+  "providerOptionsByNamespace": {
+    "anthropic": {
+      "thinkingBudgetTokens": 4096
+    }
+  },
+  "deadlineAt": "2026-08-20T10:01:30Z",
+  "requestedAt": "2026-08-20T10:00:05Z"
+}

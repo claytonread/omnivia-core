@@ -13,7 +13,7 @@ Deprecated: import these from ``omnivia_core.control_plane.imports`` instead.
 # classes the canonical imports leaf imports from its sibling `models`) -- names
 # this leaf's historical namespace still has to resolve. No other error code is
 # suppressed.
-from omnivia_core.control_plane.imports import (  # type: ignore[attr-defined]
+from omnivia_core.control_plane.imports import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     Capability,
     CapabilityType,

@@ -1,0 +1,588 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - F2b hosted-bridge projection",
+  "description": "The F2b hosted-bridge projection: a closed, independently versioned message vocabulary for the isolated hosted Chat renderer described by accepted D08 Option A and the W4 launch packet. F2b is a projection of the Chat Runtime Contract, not an independent public authority: it carries only already-defined Chat identities and payload envelopes and adds no domain meaning of its own. F2b's own `bridgeProtocolVersion` (`$defs/BridgeProtocolVersion`) is versioned independently of D07's `protocolVersion`/`schemaVersion`/`chatContractVersion` (CHAT-RUNTIME-CONTRACT-V1-COMPATIBILITY-AND-MIGRATION.md §1): a D07 change does not by itself force a bridge major, and a bridge transport/lifecycle change does not force a D07 major. Every F2b message rides inside the evidenced Platform Module Host Contract's `payload` field (`packages/runtime/src/module-host-contract/contract.ts`, `MODULE_HOST_CONTRACT_VERSION = '1.0'`, exactly four top-level fields `v`/`dir`/`kind`/`payload`); `$defs/F2bCarrierEnvelope` is that projection, closed and executable: ten frozen `kind` values, one per F2b message type, each bound to its exact `dir` and its exact payload schema. Platform implements exactly four non-Chat kinds today (`host/hello`, `host/dispose`, `module/ready`, `module/log`) and none of these ten; adding them is required future W4-H1 Platform work this Review Candidate describes and does not perform -- this change set modifies no Platform file (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §12.0, §12.0.4). The hosted renderer has no direct filesystem, Core, provider, credential or network authority; every `bridge.command` is host-mediated and bound to an exact, closed, first-horizon D07 request schema -- never an arbitrary or deferred payload. A message bearing a `contextId` other than the renderer's currently bound context, any message received before a `bridge.context-bound` admission, or any message received after `bridge.context-disposed`, is refused, never processed (context-rotation leak prevention, pre-bind and late-command refusal).",
+  "type": "object",
+  "$defs": {
+    "BridgeProtocolVersion": {
+      "title": "BridgeProtocolVersion",
+      "description": "The F2b hosted-bridge wire protocol *syntax*: a `major.minor` string, e.g. \"1.0\". Distinct identity from `common.schema.json#/$defs/ProtocolVersion` (D07's own protocol version): F2b's transport/lifecycle surface and D07's domain wire surface are versioned on independent axes (freeze §12.0). This $def states only what a well-formed bridge version string looks like; it never states which version this bundle actually supports -- that is `SupportedBridgeProtocolVersion`, and every F2b message binds to the supported constant, never to this pattern alone (freeze §12.0.3; validator `validate_f2b_supported_bridge_version`).",
+      "type": "string",
+      "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)$"
+    },
+    "SupportedBridgeProtocolVersion": {
+      "title": "SupportedBridgeProtocolVersion",
+      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"1.0\"**, and nothing else. A strict decoder rejects an unsupported major (\"2.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"1.1\") rather than guessing which additive fields it may ignore. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
+      "allOf": [
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeProtocolVersion" },
+        { "const": "1.0" }
+      ]
+    },
+    "BridgeSnapshotId": {
+      "title": "BridgeSnapshotId",
+      "description": "A stable, opaque, host-issued identity for one snapshot generation (the initial snapshot, or one resnapshot). Every page of one snapshot generation shares the same `snapshotId` and `snapshotGraphRevision`, giving page continuity a value a client can check without parsing the cursor (freeze §12.5.1).",
+      "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId"
+    },
+    "HostToModuleMessageType": {
+      "title": "HostToModuleMessageType",
+      "description": "The closed v1 host->module message-type vocabulary. A hosted renderer (module) must never forge one of these; only the host issues them (freeze §12.0.1). Mirrors the direction discipline `packages/runtime/src/module-host-contract/contract.ts` `MODULE_HOST_KINDS['host->module']` already enforces for the evidenced four-kind Platform carrier.",
+      "enum": [
+        "bridge.context-bound",
+        "bridge.context-disposed",
+        "bridge.snapshot-page",
+        "bridge.event-batch",
+        "bridge.command-result",
+        "bridge.resnapshot",
+        "bridge.refusal"
+      ]
+    },
+    "ModuleToHostMessageType": {
+      "title": "ModuleToHostMessageType",
+      "description": "The closed v1 module->host message-type vocabulary. A host must never send one of these to itself as if it were a module response; only the hosted renderer issues them (freeze §12.0.1). Mirrors `MODULE_HOST_KINDS['module->host']`.",
+      "enum": [
+        "bridge.snapshot-request",
+        "bridge.command",
+        "bridge.backpressure"
+      ]
+    },
+    "BridgeMessageType": {
+      "title": "BridgeMessageType",
+      "description": "The closed v1 F2b message-type vocabulary: the exact union of `HostToModuleMessageType` and `ModuleToHostMessageType`, which are disjoint and jointly exhaustive (validator `validate_f2b_direction_partition`).",
+      "enum": [
+        "bridge.context-bound",
+        "bridge.context-disposed",
+        "bridge.snapshot-page",
+        "bridge.event-batch",
+        "bridge.command-result",
+        "bridge.resnapshot",
+        "bridge.refusal",
+        "bridge.snapshot-request",
+        "bridge.command",
+        "bridge.backpressure"
+      ]
+    },
+    "BridgeRefusalReason": {
+      "title": "BridgeRefusalReason",
+      "description": "The closed v1 refusal-reason vocabulary for one host refusal of one specific inbound module message. `forbidden_capability` covers a hosted command payload that structurally attempts to carry a denied capability (freeze §12.4); `command_timeout` covers a bridge-transport timeout waiting for a command to settle, treated as bridge lifecycle rather than a new Chat domain outcome (freeze §12.6.2) -- never `BridgeCommandResultMessage.result.status`, which is exactly D07's closed `accepted | completed | rejected | conflict`; `not_ready` is the precise closed lifecycle reason for module traffic that arrives after `bridge.context-bound` but before the module has opened its snapshot handshake (freeze §12.0.1 pre-ready traffic; validator `f2b_lifecycle_state_machine`), so pre-ready traffic fails closed on its own reason rather than being conflated with `context_mismatch` or silently processed.",
+      "enum": [
+        "context_mismatch",
+        "context_disposed",
+        "late_command",
+        "not_ready",
+        "oversize",
+        "command_timeout",
+        "unrecognised_message_type",
+        "forbidden_capability"
+      ]
+    },
+    "BridgeLifecycleState": {
+      "title": "BridgeLifecycleState",
+      "description": "The closed, ordered v1 lifecycle vocabulary for one hosted renderer instance (freeze §12.0.1): `before_bind` (nothing admitted) -> `bound_not_ready` (`bridge.context-bound` received, the module has not yet opened its snapshot handshake) -> `ready_snapshotting` (a `bridge.snapshot-request` is outstanding; pages arrive until `hasMore: false`) -> `subscribed` (the final page's `snapshotBoundaryCursor` is set; batches are being applied) -> `paused` (a `bridge.backpressure` `action: pause` is in force) -> `resnapshotting` (a `bridge.resnapshot` was issued and the module must re-open the handshake) -> `disposed` (terminal). This is not documentation of a runtime: it is the state vocabulary validator `f2b_lifecycle_state_machine` walks, and traffic inadmissible in the state it arrives in fails closed (`not_ready` for pre-ready module traffic, `late_command` for post-dispose module traffic, and a protocol violation for host data delivery in either).",
+      "enum": [
+        "before_bind",
+        "bound_not_ready",
+        "ready_snapshotting",
+        "subscribed",
+        "paused",
+        "resnapshotting",
+        "disposed"
+      ]
+    },
+    "ResnapshotReason": {
+      "title": "ResnapshotReason",
+      "description": "The closed v1 reason vocabulary for one host-issued `bridge.resnapshot` (freeze §12.7, §12.8). `backpressure_overflow` is the answer to a pending-event backlog at or beyond `BackpressureOverflowThreshold`: the subscription is terminated and restarted rather than accumulating unbounded memory, and a plain resume is forbidden at or above that threshold.",
+      "enum": [
+        "cursor_unknown_or_expired",
+        "context_rotated",
+        "oversize",
+        "unrecognised_message_type",
+        "backpressure_overflow"
+      ]
+    },
+    "ForbiddenHostedCapability": {
+      "title": "ForbiddenHostedCapability",
+      "description": "The closed v1 enumeration of hosted-renderer capabilities a `bridge.command` payload can structurally attempt to smuggle and be refused for, used only to label a `forbidden_capability` refusal. Never itself a grant. Deliberately excludes `network`, `navigation` and `window_open`: no field in this schema bundle's admitted D07 request payloads (`HostedCommandKind`'s exact request-schema binding) or any other F2b message carries a URL, a navigation target or a window-open request, so those three capabilities never reach the F2b wire vocabulary at all -- their denial is Platform host-policy Evidence (webRequest/session policy, navigation and window-open handlers), owned entirely by W4-H1 and never proven by an F2b bridge-message fixture (freeze §12.4.1).",
+      "enum": ["filesystem", "core_direct", "provider_direct", "credential_direct"]
+    },
+    "RefusalSafeMessage": {
+      "title": "RefusalSafeMessage",
+      "description": "The closed v1 catalogue of display-safe refusal copy. A refusal never carries free text: `safeMessage`, when present, is one fixed, pre-approved string from this enum -- never derived from, or echoing any fragment of, the refused message's own content (freeze §12.4.2). The \"keyed by `reason`\" claim is not prose: `RefusalMessage.allOf` binds each `BridgeRefusalReason` member to exactly one member of this enum by `const`, and the mapping is total and bijective (validator `validate_f2b_refusal_safe_message_mapping`), so a refusal cannot pair a reason with another reason's copy. This is what makes non-reflection a structural (schema-closed) property rather than a runtime sanitisation claim.",
+      "enum": [
+        "This message does not belong to your current session.",
+        "Your session has ended.",
+        "This request arrived after your session ended.",
+        "Your session is not ready yet.",
+        "This message is too large to send.",
+        "This request took too long to complete.",
+        "This message type is not recognised.",
+        "This action is not available from the hosted view."
+      ]
+    },
+    "HostedCommandKind": {
+      "title": "HostedCommandKind",
+      "description": "The closed, deliberately narrower v1 first-horizon hosted command allowlist -- a strict subset of `commands.schema.json#/$defs/ChatCommandName` (validator `validate_f2b_command_binding`). Excludes, by design, the eight `ReferencedWorkCommandRequest`-shaped owner-execution commands (`RespondToWorkRequest`, `SubmitSteeringInput`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact`, `PlaceArtifactVersion`), since W4-H3's exit evidence names only send/cancel/retry/composer/thread interaction and D08 §4.3 keeps the renderer from ever calling Core, a provider or another authority directly; and excludes `CreateConversationShare` and `ExportConversation`, deferred until Gate F `CHAT-029` accepts Share (W4 launch packet §4 W4-H3 exit evidence: \"Share remains disabled with an owner-issued reason until Gate F CHAT-029 is accepted\"). A future accepted horizon MAY widen this allowlist; widening is itself a bridge-major change under `BridgeProtocolVersion`, never a silent addition.",
+      "enum": [
+        "CreateConversation", "CreateScopedConversation", "RenameConversation", "ArchiveConversation", "DeleteConversation",
+        "SaveDraft", "DiscardDraft",
+        "EnqueueMessage", "UpdateQueuedSubmission", "ReorderQueuedSubmission", "CancelQueuedSubmission",
+        "SubmitMessage", "StopGeneration", "RetryGeneration", "RegenerateResponse", "CommitMessageAmendment",
+        "SelectConversationPath", "SetDefaultConversationPath",
+        "StageAttachment", "RemoveStagedAttachment"
+      ]
+    },
+    "ContextBoundMessage": {
+      "title": "ContextBoundMessage",
+      "description": "Host-issued admission handshake binding one hosted renderer instance to one trusted context and declaring its bounds (freeze §12.1-§12.2). A second `bridge.context-bound` for a context already bound, with no intervening `bridge.context-disposed`, is a duplicate bind and a protocol violation (validator `f2b_no_duplicate_bind`), not a silent rebind.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "boundAt", "bridgeProtocolVersion", "contextId", "conversationId", "maxBatchEvents", "maxMessageBytes", "maxSnapshotItems", "messageType", "schemaVersion", "workspaceId"],
+      "properties": {
+        "messageType": { "const": "bridge.context-bound" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "maxMessageBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 61440,
+          "description": "The negotiated per-F2b-message byte ceiling for this bound context. Every later F2b message in this context is measured against it as an actual UTF-8 JSON encoded size, not merely declared (validator `f2b_negotiated_bounds_enforced`); a message under the global 61440 maximum but over this context's negotiated value is refused `oversize`. 61440 (60 KiB) is the schema maximum: a conservative bound provably encodable inside the evidenced Platform outer carrier's 65536-byte (64 KiB) `MODULE_HOST_MAX_MESSAGE_BYTES` ceiling once the outer envelope's own `v`/`dir`/`kind` wrapper overhead is reserved (freeze §12.0.2; validator `validate_f2b_carrier_ceiling`, and `f2b_encoded_envelope_within_carrier_bound` for the encoded outer envelope itself). This bundle never raises the Platform carrier's own 64 KiB limit."
+        },
+        "maxBatchEvents": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "maxSnapshotItems": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "boundAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ContextDisposedMessage": {
+      "title": "ContextDisposedMessage",
+      "description": "Terminal lifecycle message. Every message this hosted renderer instance sends or receives after this one is refused as `context_disposed`, and the host sends no further `bridge.snapshot-page`, `bridge.event-batch`, `bridge.command-result` or `bridge.resnapshot` for this `contextId` (dispose cleanup, freeze §12.3; validator `f2b_dispose_cleanup_no_further_host_traffic`). When a context is rotated, the prior `BridgeContextId` is disposed before a new one is bound.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "contextId", "disposedAt", "messageType", "reason", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.context-disposed" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "reason": { "enum": ["navigated_away", "explicit_dispose", "context_rotated", "error"] },
+        "disposedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "BridgeSnapshotItem": {
+      "title": "BridgeSnapshotItem",
+      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`. Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["itemKind", "payload"],
+      "properties": {
+        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job"] },
+        "payload": { "type": "object", "additionalProperties": true, "maxProperties": 128 }
+      },
+      "if": { "properties": { "itemKind": { "const": "conversation" } }, "required": ["itemKind"] },
+      "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Conversation" } } },
+      "else": {
+        "if": { "properties": { "itemKind": { "const": "message" } }, "required": ["itemKind"] },
+        "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message" } } },
+        "else": {
+          "if": { "properties": { "itemKind": { "const": "message_branch" } }, "required": ["itemKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/MessageBranch" } } },
+          "else": {
+            "if": { "properties": { "itemKind": { "const": "view_state" } }, "required": ["itemKind"] },
+            "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState" } } },
+            "else": {
+              "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" } }
+            }
+          }
+        }
+      }
+    },
+    "SnapshotPageMessage": {
+      "title": "SnapshotPageMessage",
+      "description": "One bounded page of a hosted renderer's initial or resnapshot state, host-mediated in direct response to exactly one `bridge.snapshot-request` -- one request per page, never an unrequested page and never two pages for one request (freeze §12.5, §12.7; validator `f2b_snapshot_paging_discipline`). The first page answering a request that carries no `cursor` has `pageIndex: 0`. Every page of one snapshot generation shares `snapshotId` and `snapshotGraphRevision` (the frozen structural boundary this generation is pinned at), and each next page increments `pageIndex` by exactly one: an identity change, a revision change or a page-index discontinuity mid-generation is a protocol violation, never a silently accepted new generation. `hasMore: true` requires `nextCursor` and forbids `snapshotBoundaryCursor`, and that exact `nextCursor` MUST be echoed as the `cursor` of the next `bridge.snapshot-request`; `hasMore: false` (the final page) forbids `nextCursor` and requires `snapshotBoundaryCursor` -- the exact position a subsequent `bridge.event-batch.fromCursor` must continue from (validator `f2b_snapshot_event_cursor_continuity`). Every page's `items` count is additionally bounded by the bound context's negotiated `maxSnapshotItems`, not merely by this schema's global `maxItems` (validator `f2b_negotiated_bounds_enforced`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "contextId", "hasMore", "items", "messageType", "pageIndex", "schemaVersion", "snapshotGraphRevision", "snapshotId"],
+      "properties": {
+        "messageType": { "const": "bridge.snapshot-page" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "snapshotId": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotId" },
+        "snapshotGraphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "pageIndex": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem" },
+          "maxItems": 25
+        },
+        "nextCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "snapshotBoundaryCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "hasMore": { "type": "boolean" }
+      },
+      "if": { "properties": { "hasMore": { "const": true } }, "required": ["hasMore"] },
+      "then": { "required": ["nextCursor"], "not": { "required": ["snapshotBoundaryCursor"] } },
+      "else": { "required": ["snapshotBoundaryCursor"], "not": { "required": ["nextCursor"] } }
+    },
+    "EventBatchMessage": {
+      "title": "EventBatchMessage",
+      "description": "One bounded, ordered batch of Chat transport events forwarded to the hosted renderer (freeze §12.5). Ordering and dedupe follow events.schema.json; the batch adds only bounded transport, never reordering. `fromCursor` is the exact position this batch continues from -- either the most recent snapshot's `snapshotBoundaryCursor` or the previous `bridge.event-batch.nextCursor` -- so a consumer detects a gap by comparing `fromCursor` to its own last-known position; a mismatch forces `bridge.resnapshot`, never a guessed continuation (validator `f2b_snapshot_event_cursor_continuity`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "contextId", "events", "fromCursor", "messageType", "nextCursor", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.event-batch" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ChatEvent" },
+          "minItems": 1,
+          "maxItems": 25,
+          "description": "Each item validates against the closed `events.schema.json#/$defs/ChatEvent` union, identified by its own closed `eventType`. The count is additionally bounded by the bound context's negotiated `maxBatchEvents`, not merely by this global `maxItems` (validator `f2b_negotiated_bounds_enforced`)."
+        },
+        "fromCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "nextCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "SnapshotRequestMessage": {
+      "title": "SnapshotRequestMessage",
+      "description": "Module->host request for exactly one snapshot page: the explicit, host-mediated flow a networkless renderer uses instead of any renderer-side fetch or direct Core handle (freeze §12.7). Omitting `cursor` requests the first page (`pageIndex: 0`) of a fresh initial snapshot. Carrying `cursor` continues an in-progress snapshot page sequence -- and then `cursor` MUST be the exact `nextCursor` the immediately preceding `hasMore: true` page issued, never a guessed, stale or omitted continuation (validator `f2b_snapshot_paging_discipline`) -- or, after a `bridge.resnapshot`, carries that message's exact `resnapshotCursor` back to the host, closing the resnapshot request/required loop (validator `f2b_resnapshot_triggers_snapshot_request`). It is also the transition out of the **bound, not ready** lifecycle state: a `bridge.command` or `bridge.backpressure` sent before it is refused `not_ready` (validator `f2b_lifecycle_state_machine`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "contextId", "messageType", "requestedAt", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.snapshot-request" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "requestedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "BridgeCommandMessage": {
+      "title": "BridgeCommandMessage",
+      "description": "One host-mediated command invocation from the hosted renderer (freeze §12.6). `commandKind` is closed to the first-horizon `HostedCommandKind` allowlist, and `payload` is bound to the exact D07 request schema that `commandKind` names -- never an arbitrary object (validator `validate_f2b_command_binding`). `payload.commandId` MUST equal this message's own `commandId`, and `payload.workspaceId`/`conversationId`/`actorId` MUST match the bound context (validator `f2b_command_context_consistent`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "commandId", "commandKind", "contextId", "messageType", "payload", "schemaVersion", "sentAt"],
+      "properties": {
+        "messageType": { "const": "bridge.command" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "commandKind": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/HostedCommandKind" },
+        "payload": { "type": "object" },
+        "sentAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "commandKind": { "const": "CreateConversation" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CreateConversationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "CreateScopedConversation" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CreateScopedConversationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "RenameConversation" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/RenameConversationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "ArchiveConversation" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ArchiveConversationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "DeleteConversation" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/DeleteConversationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "SaveDraft" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SaveDraftRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "DiscardDraft" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/DiscardDraftRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "EnqueueMessage" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/EnqueueMessageRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "UpdateQueuedSubmission" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/UpdateQueuedSubmissionRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "ReorderQueuedSubmission" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ReorderQueuedSubmissionRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "CancelQueuedSubmission" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CancelQueuedSubmissionRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "SubmitMessage" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitMessageRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "StopGeneration" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/StopGenerationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "RetryGeneration" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/RetryGenerationRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "RegenerateResponse" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/RegenerateResponseRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "CommitMessageAmendment" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/CommitMessageAmendmentRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "SelectConversationPath" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SelectConversationPathRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "SetDefaultConversationPath" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SetDefaultConversationPathRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "StageAttachment" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/StageAttachmentRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "RemoveStagedAttachment" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/RemoveStagedAttachmentRequest" } } }
+        }
+      ]
+    },
+    "BridgeCommandResultMessage": {
+      "title": "BridgeCommandResultMessage",
+      "description": "Carries the exact D07 `CommandResultEnvelope` unchanged (`accepted | completed | rejected | conflict`), never an invented outcome vocabulary (freeze §12.6.2). A transport timeout or a bridge-level refusal of the originating `bridge.command` is a `bridge.refusal` with reason `command_timeout`/`late_command`/etc., never a fifth `BridgeCommandResultMessage.result.status` value -- bridge lifecycle and D07 command outcome are never conflated. `commandId` MUST equal `result.commandId` (validator `f2b_command_context_consistent`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "commandId", "contextId", "messageType", "result", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.command-result" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "result": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/CommandResultEnvelope" }
+      }
+    },
+    "ResnapshotMessage": {
+      "title": "ResnapshotMessage",
+      "description": "Instructs the hosted renderer to discard local state and request a fresh `bridge.snapshot-page` sequence from `resnapshotCursor` via an explicit `bridge.snapshot-request` -- never a renderer-side fetch or direct Core handle (freeze §12.7). `backpressure_overflow` is added to the closed reason vocabulary: an overflowing pending-event backlog terminates and restarts the subscription through resnapshot rather than accumulating unbounded memory (freeze §12.8; validator `f2b_backpressure_pause_watermark_and_overflow`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "contextId", "messageType", "reason", "resnapshotCursor", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.resnapshot" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "reason": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ResnapshotReason" },
+        "resnapshotCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "RefusalMessage": {
+      "title": "RefusalMessage",
+      "description": "Refuses one specific inbound message rather than tearing down the context (freeze §12.4). `deniedCapability` is present if and only if `reason` is `forbidden_capability`. `safeMessage` is optional and, when present, is the single `RefusalSafeMessage` member this `reason` maps to -- never free text, never another reason's copy, never a reflection of the refused message's content (freeze §12.4.2). The `allOf` below is that mapping, executable: eight reasons, eight display strings, one `const` binding each (validator `validate_f2b_refusal_safe_message_mapping`; `invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeProtocolVersion", "messageType", "reason", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.refusal" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "refusedCommandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "reason": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeRefusalReason" },
+        "deniedCapability": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ForbiddenHostedCapability" },
+        "safeMessage": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalSafeMessage" }
+      },
+      "if": { "properties": { "reason": { "const": "forbidden_capability" } }, "required": ["reason"] },
+      "then": { "required": ["deniedCapability"] },
+      "else": { "not": { "required": ["deniedCapability"] } },
+      "allOf": [
+        {
+          "if": { "properties": { "reason": { "const": "context_mismatch" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This message does not belong to your current session." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "context_disposed" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "Your session has ended." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "late_command" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This request arrived after your session ended." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "not_ready" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "Your session is not ready yet." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "oversize" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This message is too large to send." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "command_timeout" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This request took too long to complete." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "unrecognised_message_type" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This message type is not recognised." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "forbidden_capability" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This action is not available from the hosted view." } } }
+        }
+      ]
+    },
+    "BackpressureMessage": {
+      "title": "BackpressureMessage",
+      "description": "Module->host flow-control signal for `bridge.event-batch` delivery (freeze §12.8). `action: pause` SHALL be honoured by the host before its next `bridge.event-batch`, and requires both `pendingEvents` (the bounded pending-event rule) and `watermarkCursor` (the module's enforceable acknowledgement of the last event position it has actually applied). `action: resume` forbids both -- a resume is a clean go-ahead, not a restated backlog claim. A `pendingEvents` count at or beyond the host's overflow threshold is answered with `bridge.resnapshot` (`reason: backpressure_overflow`), never accumulated (validator `f2b_backpressure_pause_watermark_and_overflow`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "bridgeProtocolVersion", "contextId", "messageType", "schemaVersion"],
+      "properties": {
+        "messageType": { "const": "bridge.backpressure" },
+        "bridgeProtocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SupportedBridgeProtocolVersion" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "contextId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BridgeContextId" },
+        "action": { "enum": ["pause", "resume"] },
+        "pendingEvents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "The module's bounded pending-event backlog claim. The frozen overflow threshold is `BackpressureOverflowThreshold` (1000): at or above it the host answers `bridge.resnapshot` (`reason: backpressure_overflow`) and a plain `resume` is forbidden (freeze §12.8; validator `f2b_backpressure_pause_watermark_and_overflow`). The threshold is frozen here and in `CHAT-RUNTIME-CONTRACT-V1-CATALOGUE.json` `f2b.backpressureOverflowThreshold`, not only in validator code."
+        },
+        "watermarkCursor": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor",
+          "description": "The module's enforceable acknowledgement of the last event position it has actually applied. It MUST equal the current last-applied position -- the most recent `bridge.event-batch.nextCursor`, or the most recent snapshot's `snapshotBoundaryCursor` when no batch has yet been delivered. A stale watermark (an earlier position the module already passed) and a future or unknown watermark (a position the host never issued) are both rejected, never treated as an acknowledgement (validator `f2b_backpressure_pause_watermark_and_overflow`)."
+        }
+      },
+      "if": { "properties": { "action": { "const": "pause" } }, "required": ["action"] },
+      "then": { "required": ["pendingEvents", "watermarkCursor"] },
+      "else": {
+        "not": {
+          "anyOf": [
+            { "required": ["pendingEvents"] },
+            { "required": ["watermarkCursor"] }
+          ]
+        }
+      }
+    },
+    "BackpressureOverflowThreshold": {
+      "title": "BackpressureOverflowThreshold",
+      "description": "The frozen numeric pending-event overflow threshold: **1000**. A `bridge.backpressure` `action: pause` whose `pendingEvents` is at or above this value is answered with `bridge.resnapshot` (`reason: backpressure_overflow`) -- terminating and restarting the subscription -- and a plain `resume` is forbidden at or above it (freeze §12.8). Frozen here in the schema bundle and in `CHAT-RUNTIME-CONTRACT-V1-CATALOGUE.json` `f2b.backpressureOverflowThreshold`, so the number is contract, not merely a Python constant inside the validator (validator `validate_f2b_backpressure_threshold` proves schema, catalogue and validator agree).",
+      "type": "integer",
+      "const": 1000
+    },
+    "PlatformCarrierContractVersion": {
+      "title": "PlatformCarrierContractVersion",
+      "description": "The evidenced Platform Module Host Contract envelope version carried in the outer envelope's `v` field: **\"1.0\"**, matching `packages/runtime/src/module-host-contract/contract.ts` `MODULE_HOST_CONTRACT_VERSION = '1.0'`. This is the OUTER carrier's version and is a different axis from `SupportedBridgeProtocolVersion` (F2b's own inner bridge protocol version): a Platform carrier major and an F2b bridge major move independently, and neither is derived from the other (freeze §12.0, §12.0.4). This bundle never modifies Platform; it states the version its projection targets.",
+      "type": "string",
+      "const": "1.0"
+    },
+    "PlatformCarrierDirection": {
+      "title": "PlatformCarrierDirection",
+      "description": "The evidenced Platform outer-envelope `dir` vocabulary, closed to exactly the two values `packages/runtime/src/module-host-contract/contract.ts` already declares. `decodeModuleHostMessage` refuses an undeclared direction as `contract-unknown-direction`; this projection mirrors that closure rather than inventing a third direction.",
+      "enum": ["host->module", "module->host"]
+    },
+    "F2bCarrierKind": {
+      "title": "F2bCarrierKind",
+      "description": "The closed, exact set of ten future Platform outer-envelope `kind` values this projection freezes -- one per F2b message type, one-to-one and onto (validator `validate_f2b_carrier_envelope_projection`). `host/*` kinds are host->module, `module/*` kinds are module->host, matching `HostToModuleMessageType`/`ModuleToHostMessageType` exactly. IMPORTANT, and deliberately not overclaimed: the Platform carrier evidenced today (`live-contract.ts`) implements exactly four kinds -- `host/hello`, `host/dispose`, `module/ready`, `module/log` -- none of them Chat-shaped, and NONE of the ten kinds below exists in Platform yet. Publishing them under `MODULE_HOST_KINDS` is required future Platform work owned by W4-H1; this Review Candidate freezes the vocabulary W4-H1 must add and edits no Platform file (freeze §12.0.4, §17).",
+      "enum": [
+        "host/chat.context-bound",
+        "host/chat.context-disposed",
+        "host/chat.snapshot-page",
+        "host/chat.event-batch",
+        "host/chat.command-result",
+        "host/chat.resnapshot",
+        "host/chat.refusal",
+        "module/chat.snapshot-request",
+        "module/chat.command",
+        "module/chat.backpressure"
+      ]
+    },
+    "F2bCarrierEnvelope": {
+      "title": "F2bCarrierEnvelope",
+      "description": "The closed F2b projection over the evidenced Platform Module Host Contract outer envelope: exactly the four top-level fields `v`, `dir`, `kind`, `payload` and nothing else (`additionalProperties: false`), with `v` pinned to the Platform carrier version, `dir` closed to Platform's own two directions, `kind` closed to the ten frozen F2b kinds, and each `kind` bound by `allOf` to BOTH its exact direction and its exact F2b payload schema. A wrong-direction pairing (`module/chat.command` sent as `host->module`), an unknown `kind` and an unsupported outer `v` are each rejected structurally, mirroring what `decodeModuleHostMessage` already refuses as `contract-unknown-kind`/`contract-unknown-direction`. The entire encoded envelope is additionally bounded to 65536 UTF-8 bytes -- an actual encoded-size measurement, not a declared field (validator check `f2b_encoded_envelope_within_carrier_bound`; freeze §12.0.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "kind", "payload", "v"],
+      "properties": {
+        "v": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/PlatformCarrierContractVersion" },
+        "dir": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/PlatformCarrierDirection" },
+        "kind": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierKind" },
+        "payload": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.context-bound" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.context-disposed" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextDisposedMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.snapshot-page" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotPageMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.event-batch" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.command-result" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.resnapshot" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ResnapshotMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "host/chat.refusal" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "module/chat.snapshot-request" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "module->host" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "module/chat.command" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "module->host" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "module/chat.backpressure" } }, "required": ["kind"] },
+          "then": { "properties": { "dir": { "const": "module->host" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BackpressureMessage" } } }
+        }
+      ]
+    },
+    "BridgeMessage": {
+      "title": "BridgeMessage",
+      "description": "The discriminated union of every F2b message $def, keyed by `messageType`.",
+      "oneOf": [
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextDisposedMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotPageMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ResnapshotMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BackpressureMessage" }
+      ]
+    }
+  }
+}

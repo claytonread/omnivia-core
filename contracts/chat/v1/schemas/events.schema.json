@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/events.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - Transport event envelopes",
+  "description": "Closes CGAP-042-008. Versioned envelopes for the durable Chat transport events named by REF-042 §23, published only after commit and with minimised content (REF042-RULE-010). Every event carries a stable `eventId` for at-least-once consumer dedupe and an opaque `cursor` for stream position; clients round-trip `cursor` verbatim (common.schema.json `OpaqueCursor`). Structural events carry `graphRevision` and `conversationSequence`; Generation events carry `generationEventSequence` instead; `chat.branch.selected` is view-state activity and carries neither (REF-042 §23). Delivery cannot reorder committed events, and an unknown, gapped, expired or unauthorized cursor yields a stable resnapshot response rather than a guessed continuation (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §9).",
+  "type": "object",
+  "$defs": {
+    "ConversationCreatedEvent": {
+      "title": "ConversationCreatedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "conversationSequence", "cursor", "eventId", "eventType", "graphRevision", "occurredAt", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.conversation.created" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "createdBy": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "MessageCommittedEvent": {
+      "title": "MessageCommittedEvent",
+      "description": "Minimised: carries identity, lineage and role, never Message Part content (REF-042 §23, §27).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "conversationSequence", "cursor", "eventId", "eventType", "graphRevision", "messageId", "occurredAt", "role", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.message.committed" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "messageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "parentMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "role": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageRole" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "MessageDerivationRecordedEvent": {
+      "title": "MessageDerivationRecordedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "conversationSequence", "cursor", "derivedMessageId", "eventId", "eventType", "graphRevision", "kind", "occurredAt", "schemaVersion", "sourceMessageId", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.message.derivation_recorded" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "derivedMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "kind": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DerivationKind" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "BranchCreatedEvent": {
+      "title": "BranchCreatedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "conversationSequence", "cursor", "eventId", "eventType", "graphRevision", "occurredAt", "originKind", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.branch.created" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "originKind": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchOriginKind" },
+        "forkParentMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "forkSourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "BranchHeadAdvancedEvent": {
+      "title": "BranchHeadAdvancedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "cause", "conversationId", "conversationSequence", "cursor", "eventId", "eventType", "graphRevision", "headVersion", "newHeadMessageId", "occurredAt", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.branch.head_advanced" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/HeadVersion" },
+        "newHeadMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "cause": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchHeadCause" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "BranchSelectedEvent": {
+      "title": "BranchSelectedEvent",
+      "description": "View-state activity. Never carries a graph revision or Conversation sequence (REF-042 §23, REF042-RULE-009).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "conversationId", "cursor", "eventId", "eventType", "occurredAt", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.branch.selected" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "deviceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DeviceId" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "BranchArchivedEvent": {
+      "title": "BranchArchivedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "conversationSequence", "cursor", "eventId", "eventType", "graphRevision", "occurredAt", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.branch.archived" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "MessageTombstonedEvent": {
+      "title": "MessageTombstonedEvent",
+      "description": "A tombstone never implies the Message never existed (REF-042 §25.4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "conversationSequence", "cursor", "eventId", "eventType", "graphRevision", "messageId", "occurredAt", "schemaVersion", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.message.tombstoned" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "messageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "conversationSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "GenerationEvent": {
+      "title": "GenerationEvent",
+      "description": "Covers `chat.generation.queued`, `chat.generation.started`, `chat.generation.succeeded`, `chat.generation.failed` and `chat.generation.cancelled` (REF-042 §23 `chat.generation.*`). Job-scoped: carries `generationEventSequence` rather than graph revision (REF-042 §23).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "cursor", "eventId", "eventType", "generationEventSequence", "generationJobId", "occurredAt", "schemaVersion", "triggerMessageId", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": {
+          "enum": [
+            "chat.generation.queued",
+            "chat.generation.started",
+            "chat.generation.succeeded",
+            "chat.generation.failed",
+            "chat.generation.cancelled"
+          ]
+        },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "generationAttemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "triggerMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "resultMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Present only on `chat.generation.succeeded` (REF-042 §17.3)."
+        },
+        "generationEventSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationEventSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "ShareCreatedEvent": {
+      "title": "ShareCreatedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "cursor", "eventId", "eventType", "graphRevision", "headMessageId", "occurredAt", "schemaVersion", "shareId", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.share.created" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "shareId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ShareId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "ExportCreatedEvent": {
+      "title": "ExportCreatedEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "cursor", "eventId", "eventType", "exportId", "graphRevision", "occurredAt", "schemaVersion", "scope", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.export.created" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "exportId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ExportId" },
+        "scope": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ExportScope" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "ChatEvent": {
+      "title": "ChatEvent",
+      "description": "The discriminated union of every durable Chat transport event $def, keyed by `eventType` (REF-042 §23, CGAP-042-008). `GenerationEvent` alone represents all five `chat.generation.*` discriminators. Referenced by `bridge.schema.json#/$defs/EventBatchMessage` so F2b forwards only already-defined Chat events and adds no domain meaning of its own (freeze §12).",
+      "oneOf": [
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ConversationCreatedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageCommittedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageDerivationRecordedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/BranchCreatedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/BranchHeadAdvancedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/BranchSelectedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/BranchArchivedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageTombstonedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ShareCreatedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ExportCreatedEvent" }
+      ]
+    },
+    "ResnapshotResponse": {
+      "title": "ResnapshotResponse",
+      "description": "The stable response returned in place of continued delivery when a cursor is unknown, expired, unauthorized or gapped, or when an event carries an unrecognised additive `eventType` a strict consumer cannot safely interpret as a continuation (freeze §9). Never a guessed continuation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "graphRevision", "reason", "resnapshotCursor", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "reason": {
+          "enum": ["cursor_unknown_or_expired", "unauthorized_cursor", "gap_detected", "unrecognised_event_type"]
+        },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "resnapshotCursor": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor",
+          "description": "The cursor a client resumes from after re-fetching a fresh snapshot."
+        }
+      }
+    }
+  }
+}

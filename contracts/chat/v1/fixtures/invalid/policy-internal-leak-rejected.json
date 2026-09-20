@@ -1,0 +1,12 @@
+{
+  "invocationId": "invocation-0002",
+  "attemptId": "attempt-0002",
+  "ordinal": 5,
+  "eventType": "error",
+  "errorCode": "invalid-request",
+  "safeMessage": "The request could not be processed.",
+  "policyInternalTrace": "rule_engine.internal.rejected_by=RULE-88213",
+  "schemaVersion": 1,
+  "occurredAt": "2026-08-20T10:00:10Z",
+  "receivedAt": "2026-08-20T10:00:10Z"
+}

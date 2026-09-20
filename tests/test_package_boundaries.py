@@ -416,9 +416,10 @@ def test_core_declares_no_runtime_dependencies_at_all() -> None:
 
 def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() -> None:
     """The wheel's packaged resource set is exact because the force-include maps exactly
-    the four canonical directories onto their importable resource paths: the two
-    Application Contract v1 directories (ADR-038) and the two Host Contract v1
-    directories (DOC-004 section AA).
+    the six canonical directories onto their importable resource paths: the two
+    Application Contract v1 directories (ADR-038), the two Host Contract v1
+    directories (DOC-004 section AA), and the two Chat Runtime Contract v1
+    directories (approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001).
     """
     manifest = boundaries.load_manifest(boundaries.CORE.manifest_path)
     force_include = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
@@ -427,13 +428,16 @@ def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() ->
         "contracts/application/v1/fixtures": "omnivia_core/contracts/v1/resources/fixtures",
         "contracts/host/v1/schemas": "omnivia_core/host_contract/v1/resources/schemas",
         "contracts/host/v1/fixtures": "omnivia_core/host_contract/v1/resources/fixtures",
+        "contracts/chat/v1/schemas": "omnivia_core/chat_contract/v1/resources/schemas",
+        "contracts/chat/v1/fixtures": "omnivia_core/chat_contract/v1/resources/fixtures",
     }
     for source in force_include:
         directory = REPO_ROOT / source
         assert directory.is_dir(), source
-        # Host Contract fixtures keep the governed category directories, so this
-        # walks the tree rather than one level: anything that is not a JSON file
-        # anywhere under a force-included root would still be packaged.
+        # Host Contract and Chat Runtime Contract fixtures keep the governed
+        # category directories, so this walks the tree rather than one level:
+        # anything that is not a JSON file anywhere under a force-included root
+        # would still be packaged.
         non_json = sorted(
             path.relative_to(directory).as_posix()
             for path in directory.rglob("*")
@@ -450,6 +454,15 @@ def test_core_wheel_packages_the_approved_host_contract_resource_count() -> None
         "host-contract-v1.schema.json"
     ]
     assert len(list(fixtures.rglob("*.json"))) == 20
+
+
+def test_core_wheel_packages_the_approved_chat_contract_resource_count() -> None:
+    """Thirteen canonical schemas and 159 fixture-tree files (manifest plus 158
+    governed fixtures), no more and no fewer (GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001)."""
+    schemas = REPO_ROOT / "contracts" / "chat" / "v1" / "schemas"
+    fixtures = REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures"
+    assert len(list(schemas.rglob("*.schema.json"))) == 13
+    assert len(list(fixtures.rglob("*.json"))) == 159
 
 
 # --------------------------------------------------------------------------

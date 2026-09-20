@@ -1,0 +1,67 @@
+{
+  "attemptMeta": {
+    "invocation-tmismatch": {
+      "configuredRoute": "conn-primary-anthropic",
+      "resolvedRoute": "conn-primary-anthropic"
+    }
+  },
+  "events": [
+    {
+      "invocationId": "invocation-tmismatch",
+      "attemptId": "attempt-tmismatch",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-tmismatch",
+      "attemptId": "attempt-tmismatch",
+      "ordinal": 1,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "finishReason": "stop",
+      "usage": {
+        "reported": {
+          "inputTokens": 10,
+          "outputTokens": 5,
+          "totalTokens": 15
+        }
+      },
+      "responseMetadata": {
+        "providerResponseId": "resp-tmismatch-001",
+        "respondedAt": "2026-08-20T10:10:01Z"
+      },
+      "cancellationState": "not_cancelled",
+      "routeEvidence": {
+        "configuredPreference": {
+          "connectionId": "conn-primary-anthropic",
+          "modelId": "claude-sonnet-5"
+        },
+        "admittedRoute": {
+          "connectionId": "conn-fallback-openai",
+          "modelId": "gpt-4.1",
+          "adapterName": "openai-adapter",
+          "adapterVersion": "3.2.0"
+        },
+        "routeDecision": "configured",
+        "sameRouteRetryCount": 0,
+        "fallbackAuthorised": false,
+        "attemptStartedAt": "2026-08-20T10:10:00Z",
+        "attemptEndedAt": "2026-08-20T10:10:01Z",
+        "terminalReason": "stop",
+        "usage": {
+          "reported": {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "totalTokens": 15
+          }
+        },
+        "reconciliationState": "reconciled"
+      }
+    }
+  ]
+}

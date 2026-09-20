@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
   "title": "OmniVia Core Application Contract v1 - canonical Agent Runtime records",
-  "description": "The canonical, workspace-scoped Runtime records: `Run`, `RunStep`, `Attempt`, `Wait`, `Approval`, `CapabilityGrant`, `PolicySnapshot`, `BudgetSnapshot`, `EffectIntent`, `EffectReceipt`, `EffectSettlement`, `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, `ContextCursor`, `WorktreeLease` and `MutationEvidence`, plus the value types that make them unambiguous and the `ResolveWait` command. Published as its own document rather than as an edit to `jobs.schema.json`: the job family is frozen and load-bearing, and a Runtime record is a statement about an Agent Component or Workflow execution rather than about a scheduler row. Nothing here is a job control, a public operation, a scheduler, a store, or a transport -- `job.retry` remains the single recovery operation on the application wire, there is no `job.resume`, and `ResolveWait` is a Runtime-domain command that resolves one durable `Wait` and never requeues a job. Every string value reuses a canonical scalar declared elsewhere in this contract, so the Runtime domain adds no new wire language of its own. This document declares no root type; it is a definition container only.",
+  "description": "The canonical, workspace-scoped Runtime records: `Run`, `RunStep`, `Attempt`, `Wait`, `Approval`, `CapabilityGrant`, `PolicySnapshot`, `BudgetSnapshot`, `EffectIntent`, `EffectReceipt`, `EffectSettlement`, `RuntimeEvent`, `Artifact`, `EvidenceItem` and `CleanupReceipt`, plus the value types that make them unambiguous and the `ResolveWait` command. Published as its own document rather than as an edit to `jobs.schema.json`: the job family is frozen and load-bearing, and a Runtime record is a statement about an Agent Component or Workflow execution rather than about a scheduler row. Nothing here is a job control, a public operation, a scheduler, a store, or a transport -- `job.retry` remains the single recovery operation on the application wire, there is no `job.resume`, and `ResolveWait` is a Runtime-domain command that resolves one durable `Wait` and never requeues a job. Every string value reuses a canonical scalar declared elsewhere in this contract, so the Runtime domain adds no new wire language of its own. This document declares no root type; it is a definition container only.",
   "$defs": {
     "RuntimeSourceKind": {
       "title": "RuntimeSourceKind",
@@ -93,12 +93,6 @@
       "type": "string",
       "enum": ["agent_component", "workflow"]
     },
-    "WorktreeLeaseLifecycle": {
-      "title": "WorktreeLeaseLifecycle",
-      "description": "Where one `WorktreeLease` stands in its own life: `acquiring` is taking the worktree and may not yet mutate it, `held` is the only lifecycle a mutation may commit under, `draining` is finishing in-flight work and admits no new mutation, and `released` handed the worktree back. Deliberately the same four words the durable workspace service lease already records, because two vocabularies for one lifecycle are two things that have to be kept in agreement. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus` -- an unrecognized lifecycle is not `held`, so it permits nothing.",
-      "type": "string",
-      "enum": ["acquiring", "held", "draining", "released"]
-    },
     "ExternalReference": {
       "title": "ExternalReference",
       "description": "A workspace-scoped, source-qualified pointer at a fact recorded somewhere other than this record. Every correlation states which domain its identifier belongs to, because the same spelling means different things in different domains: an agent-lane ledger `run_id` and a canonical `Run.run_id` are different identifiers that must never be joined. Only a `runtime` reference is authoritative; every other kind is correlation or evidence, never a source of truth, so discovering a fact through one never makes it a fact this run may act on.",
@@ -118,44 +112,6 @@
         }
       },
       "required": ["source_kind", "source_id", "workspace_id"],
-      "unevaluatedProperties": false
-    },
-    "WorktreeRef": {
-      "title": "WorktreeRef",
-      "description": "The source-qualified identity of one worktree: which workspace, which source root within it, and which worktree of that root. All three, always. None of them is unique on its own -- the same worktree identifier can be issued under two source roots, and the same source root identifier can exist in two workspaces -- so an identity missing either qualifier can be resolved against a tree it was never issued for, which is the one confusion a mutation must never make. Two references name the same worktree exactly when all three members are equal; a shared spelling of any one member implies nothing about the other two. Carries no filesystem path, mount point, device, remote or repository URL: where a worktree lives is a host decision and never a wire fact, which is the rule `Artifact` already obeys.",
-      "type": "object",
-      "properties": {
-        "workspace_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
-          "description": "Workspace this worktree belongs to."
-        },
-        "source_root_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The source root within that workspace this worktree was created under. Unique within its workspace, and never assumed to mean the same root in another one."
-        },
-        "worktree_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "This worktree, unique within its source root. Never unique on its own: it is read only together with the two qualifiers above."
-        }
-      },
-      "required": ["workspace_id", "source_root_id", "worktree_id"],
-      "unevaluatedProperties": false
-    },
-    "MutationTarget": {
-      "title": "MutationTarget",
-      "description": "Exactly what one mutation acted on: a source-qualified worktree, and a digest of the target's worktree-relative path within it. The path itself is deliberately absent. A digest is comparable -- two mutations of one path in one worktree agree, two paths do not -- without disclosing a filesystem layout, so a target can be recorded, exported and retained with no redaction pass over it and nothing to redact. Both members are bounded canonical scalars this contract already publishes, so a target can never carry free text, a caller-shaped blob or an unbounded field.",
-      "type": "object",
-      "properties": {
-        "worktree": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeRef",
-          "description": "The worktree this mutation acted inside, qualified by workspace and source root."
-        },
-        "path_digest": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
-          "description": "Digest of the target's worktree-relative path. Identity, not location: it proves two mutations touched the same target without saying where that target is."
-        }
-      },
-      "required": ["worktree", "path_digest"],
       "unevaluatedProperties": false
     },
     "RunDefinitionRef": {
@@ -421,7 +377,7 @@
     },
     "RunStep": {
       "title": "RunStep",
-      "description": "One step of a run, with the complete attempt history that executed it. Steps are ordered `1..N` contiguously within a run and never renumbered; the history is append-only, so a correction is a further attempt rather than an edit to a recorded one. A step that is `waiting` names the `Wait` holding it, because a suspended step that cannot say what it is suspended on cannot be resolved. A step that was spawned by another names it in `parent_run_step_id`: parentage is stated by the child and never by a list on the parent, so a child and the parent it claims cannot disagree. Parentage is a link inside one run -- both steps restate the same `run_id` and `workspace_id` -- and it never crosses into another run or workspace, however similarly spelled the identifier.",
+      "description": "One step of a run, with the complete attempt history that executed it. Steps are ordered `1..N` contiguously within a run and never renumbered; the history is append-only, so a correction is a further attempt rather than an edit to a recorded one. A step that is `waiting` names the `Wait` holding it, because a suspended step that cannot say what it is suspended on cannot be resolved.",
       "type": "object",
       "properties": {
         "workspace_id": {
@@ -435,10 +391,6 @@
         "run_id": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
           "description": "The run this step belongs to."
-        },
-        "parent_run_step_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The step that spawned this one, when one did. Absent on a root step. The parent is a step of this same run, and it is an earlier one: a step's ordinal is greater than its parent's, so a parent chain is finite and acyclic by construction rather than by a cycle check nobody can see."
         },
         "ordinal": {
           "type": "integer",
@@ -484,55 +436,6 @@
         "created_at",
         "updated_at",
         "attempts"
-      ],
-      "unevaluatedProperties": false
-    },
-    "ContextCursor": {
-      "title": "ContextCursor",
-      "description": "The immutable watermark that makes context delivery to one attempt bounded and replayable. It states the lineage it was issued to -- workspace, run, step and attempt, all four, because an attempt is the thing that actually reads context and an identifier without its lineage could be resolved against the wrong one -- the sequence of the first `RuntimeEvent` the attempt has *not* seen, and the ceiling on how many entries one delivery may carry. Deliberately not an opaque server token: every field is a value both sides can recompute and compare, so a caller can prove a delivery is the next one rather than being told so. Deliberately not a second event stream either -- it is a position in the run's own `RuntimeEvent` sequence, which is already contiguous from zero, so a cursor is replayable exactly because the stream it indexes never renumbers. Presenting the same cursor twice yields the same delivery; presenting the cursor a delivery returned yields only what came after it.",
-      "type": "object",
-      "properties": {
-        "workspace_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
-          "description": "Workspace this cursor was issued in. A cursor is never workspace-free: it is refused against any other workspace rather than resolved there."
-        },
-        "run_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The run whose event stream this cursor indexes."
-        },
-        "run_step_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The step this cursor was issued to. Must be a step of `run_id`."
-        },
-        "attempt_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The attempt this cursor was issued to. Must be an attempt of `run_step_id`, not merely one existing somewhere in the run."
-        },
-        "next_sequence": {
-          "type": "integer",
-          "description": "Sequence of the first `RuntimeEvent` this attempt has not been delivered. Zero on a fresh cursor; equal to the stream length when the attempt is caught up. A cursor pointing past the end of a contiguous stream claims to have seen events that do not exist and is refused.",
-          "minimum": 0,
-          "maximum": 1000
-        },
-        "max_items": {
-          "type": "integer",
-          "description": "Ceiling on how many entries one delivery against this cursor may carry. Required and bounded on both ends: an absent, zero or unbounded ceiling is an unbounded delivery, which is the thing this record exists to prevent.",
-          "minimum": 1,
-          "maximum": 256
-        },
-        "issued_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When this cursor was issued."
-        }
-      },
-      "required": [
-        "workspace_id",
-        "run_id",
-        "run_step_id",
-        "attempt_id",
-        "next_sequence",
-        "max_items",
-        "issued_at"
       ],
       "unevaluatedProperties": false
     },
@@ -1061,162 +964,6 @@
         "outcome",
         "reason",
         "performed_at",
-        "audit_reference"
-      ],
-      "unevaluatedProperties": false
-    },
-    "WorktreeLease": {
-      "title": "WorktreeLease",
-      "description": "One run's exclusive claim on one worktree, held under the workspace service lease rather than beside it. This is a sublease, not a second authority: `service_instance_id` and `fencing_generation` restate the exact holder and generation the durable workspace lease already recorded, so a worktree claim can never be current while the workspace lease that issued it is not. `lease_generation` is this worktree's own monotonic counter, incremented by every acquisition and every takeover, and it is what a writer carries into a mutation so a resumed predecessor's write is refused rather than accepted under a generation that has moved on. Ownership fails closed on every axis: a lease whose fencing generation is not the current one is superseded whatever its own record says, a released lease is not a free one, `expires_at` is a ceiling and never a renewal, and a lifecycle other than `held` -- including an unrecognized one -- permits no mutation at all. Expiry alone is never proof the previous holder is gone; it is what makes a takeover permissible to investigate, and the successor's generation is what makes the predecessor's writes refusable.",
-      "type": "object",
-      "properties": {
-        "workspace_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
-          "description": "Workspace this lease was issued in. Always the workspace its `worktree` names."
-        },
-        "worktree_lease_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Identifier of this lease, unique within its workspace."
-        },
-        "worktree": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeRef",
-          "description": "The worktree this lease claims, qualified by workspace and source root so one lease can never be read against another root's tree of the same name."
-        },
-        "run_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The run holding this lease. A worktree is claimed by one run at a time."
-        },
-        "service_instance_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The workspace service instance this lease was issued under -- the same holder identity the durable workspace lease records, restated rather than reinvented."
-        },
-        "fencing_generation": {
-          "type": "integer",
-          "description": "The workspace lease's fencing generation this sublease was issued under. Not this lease's own counter: it is the generation the workspace lease had, so a sublease surviving a takeover is detectably stale.",
-          "minimum": 1
-        },
-        "lease_generation": {
-          "type": "integer",
-          "description": "This worktree's own monotonic claim counter, incremented by every acquisition and takeover. Strictly increasing per worktree; a number that repeats or goes backwards makes two holders indistinguishable.",
-          "minimum": 1
-        },
-        "lifecycle": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeLeaseLifecycle",
-          "description": "Where this lease stands. Only `held` permits a mutation."
-        },
-        "acquired_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When this lease was taken."
-        },
-        "expires_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When this lease stops being current, always after `acquired_at`. A ceiling on how long the holder may act without renewing, never a promise that the holder is gone once it passes."
-        },
-        "released_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When the worktree was handed back. Present exactly when `lifecycle` is `released`."
-        },
-        "audit_reference": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
-          "description": "Immutable reference to the audit record for this claim."
-        }
-      },
-      "required": [
-        "workspace_id",
-        "worktree_lease_id",
-        "worktree",
-        "run_id",
-        "service_instance_id",
-        "fencing_generation",
-        "lease_generation",
-        "lifecycle",
-        "acquired_at",
-        "expires_at",
-        "audit_reference"
-      ],
-      "unevaluatedProperties": false
-    },
-    "MutationEvidence": {
-      "title": "MutationEvidence",
-      "description": "The record that one run changed one thing in one worktree, and everything a reader needs to decide whether it was allowed to. It never stands alone: it names the `EffectIntent` that authorized it, exactly as an `EffectReceipt` does, so a change nobody declared is a change nobody can reconcile. It names the `WorktreeLease` it committed under and restates that lease's `lease_generation` and `fencing_generation`, so a write made under authority that had already moved on is refusable after the fact and not merely at the time. It names the `PolicySnapshot` revision in force, so what was permitted is read from the policy the run was actually pinned to rather than from whatever policy is current when the record is read. `before_digest` and `after_digest` state what changed: an absent `before_digest` is a target that did not exist, an absent `after_digest` is one that no longer does, and a record with neither -- or with two equal digests -- describes no mutation at all and is refused rather than recorded. `cleanup_receipt_id` links the change to the cleanup that undid or released it, so a mutation and its reversal are one story instead of two. Redaction-safe by construction: every field is an identifier, a digest, a bounded code or an instant, there is no path, no content, no diff and no message, so this record is publishable and retainable as written.",
-      "type": "object",
-      "properties": {
-        "workspace_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
-          "description": "Workspace this mutation was made in. Always the workspace its target's worktree names."
-        },
-        "mutation_evidence_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Identifier of this record, unique within its workspace."
-        },
-        "run_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The run that made this mutation."
-        },
-        "effect_intent_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The intent that authorized this mutation. Required: nothing is changed that was not first declared."
-        },
-        "target": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/MutationTarget",
-          "description": "The source-qualified target this mutation acted on."
-        },
-        "worktree_lease_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The worktree lease this mutation committed under."
-        },
-        "lease_generation": {
-          "type": "integer",
-          "description": "The worktree lease's own generation when this mutation committed. Together with `fencing_generation` this is the fencing token the write actually carried, so a resumed predecessor's mutation is identifiable as such rather than merely undated.",
-          "minimum": 1
-        },
-        "fencing_generation": {
-          "type": "integer",
-          "description": "The workspace fencing generation in force when this mutation committed. Restated here rather than looked up, so a write made under a superseded generation stays visible once the lease record is gone.",
-          "minimum": 1
-        },
-        "policy_snapshot_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The policy snapshot in force when this mutation was authorized."
-        },
-        "policy_revision": {
-          "type": "integer",
-          "description": "The revision of that snapshot. A run's policy may be re-pinned, so the revision is what makes 'what was permitted' answerable at all.",
-          "minimum": 1
-        },
-        "before_digest": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
-          "description": "Digest of the target's content before this mutation. Absent exactly when the target did not exist."
-        },
-        "after_digest": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
-          "description": "Digest of the target's content after this mutation. Absent exactly when the target no longer exists."
-        },
-        "recorded_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When this mutation committed. The instant the lease is judged current at."
-        },
-        "cleanup_receipt_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "The cleanup that released or reversed this mutation, when one has. Absent while nothing has cleaned it up."
-        },
-        "audit_reference": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
-          "description": "Immutable reference to the audit record for this mutation."
-        }
-      },
-      "required": [
-        "workspace_id",
-        "mutation_evidence_id",
-        "run_id",
-        "effect_intent_id",
-        "target",
-        "worktree_lease_id",
-        "lease_generation",
-        "fencing_generation",
-        "policy_snapshot_id",
-        "policy_revision",
-        "recorded_at",
         "audit_reference"
       ],
       "unevaluatedProperties": false

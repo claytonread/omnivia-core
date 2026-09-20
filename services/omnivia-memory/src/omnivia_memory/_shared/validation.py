@@ -11,7 +11,7 @@ Deprecated: import these from ``omnivia_core._shared.validation`` instead.
 # bindings (`Any`, `annotations`, `dataclass`, `datetime`, `field`) -- names the
 # canonical module's own imports left at its module scope and that this leaf's
 # historical namespace still has to resolve. No other error code is suppressed.
-from omnivia_core._shared.validation import (  # type: ignore[attr-defined]
+from omnivia_core._shared.validation import (  # type: ignore[attr-defined,unused-ignore]
     SENSITIVE_KEYS,
     Any,
     ValidationResult,

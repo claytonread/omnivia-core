@@ -1,0 +1,12 @@
+{
+  "messageType": "bridge.command",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "commandId": "cmd-hosted-0008",
+  "commandKind": "CreateConversationShare",
+  "payload": {
+    "protocolVersion": "1.0"
+  },
+  "sentAt": "2026-08-20T10:01:00Z"
+}
