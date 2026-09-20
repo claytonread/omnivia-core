@@ -145,6 +145,8 @@ _VOCABULARY_CONSTANTS = {
     "WorkflowControlDisposition": "WORKFLOW_CONTROL_DISPOSITIONS",
     "WorkflowCompletionOutcome": "WORKFLOW_COMPLETION_OUTCOMES",
     "WorkflowResumeDiagnostic": "WORKFLOW_RESUME_DIAGNOSTICS",
+    "RuntimeStopPhase": "RUNTIME_STOP_PHASES",
+    "RuntimeStopCleanupState": "RUNTIME_STOP_CLEANUP_STATES",
 }
 
 

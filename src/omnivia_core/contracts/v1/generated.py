@@ -358,6 +358,9 @@ __all__ = [
     "RunStepStatus",
     "RuntimeEvent",
     "RuntimeSourceKind",
+    "RuntimeStopCleanupState",
+    "RuntimeStopPhase",
+    "RuntimeStopProjection",
     "SchemaReference",
     "Scope",
     "ServiceComponentStatus",
@@ -2494,8 +2497,35 @@ WorkflowControlDisposition: TypeAlias = str
 """What one `workflow.control` call did. `cancellation_accepted` appended the cancellation the
 outcome names; `cancellation_ignored_already_terminal` found a finished Run and left its event
 stream untouched, which is a successful idempotent control result rather than a `conflict`;
-`wait_resolved` closed one durable `Wait`. Closed at the schema and open on the wire, with the
-same fail-safe reading as `RunStatus`.
+`cancellation_pending_reconciliation` recorded the stop but found unresolved owner obligations --
+pending effects, cleanup, or both -- that prevent terminal cancellation, and is not
+`cancellation_accepted`: the Run has not closed; `wait_resolved` closed one durable `Wait`.
+Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+RuntimeStopPhase: TypeAlias = str
+"""Where a recorded stop request stands on its way to a terminal cancellation. `requested` has been
+recorded and nothing further about it is yet known; `pending_reconciliation` has unresolved owner
+obligations -- pending effects, cleanup, or both -- that prevent terminal cancellation; `settled`
+has resolved, meaning every owner obligation this stop identified has been accounted for:
+pending_effect_count is 0 and cleanup_state is not_required or completed. This is progress toward
+a disposition, never a disposition itself, and it does not replace any historical
+`CleanupOutcome` value. Closed at the schema and open on the wire, with the same fail-safe
+reading as `RunStatus`.
+"""
+
+RuntimeStopCleanupState: TypeAlias = str
+"""Progress of cleanup tied to one recorded stop request. `not_required` found nothing to free,
+`requested` has been asked for but not yet observed to finish, `completed` freed everything this
+stop identified, `failed` could not free it, `partial` freed some of it but not all, and
+`uncertain` is the honest third answer -- whether cleanup finished could not be established.
+Progress, not the historical `CleanupOutcome` a `CleanupReceipt` records for one resource: while
+a stop's phase has not yet reached `settled`, its projection may report `uncertain` (or
+`requested`, `failed`, `partial`) cleanup even where `pending_effect_count` is zero, because an
+empty pending-effect count is not by itself proof that cleanup finished. A `settled` stop is the
+exception: it must report `not_required` or `completed`, because `settled` itself claims every
+owner obligation this stop identified -- cleanup included -- has been accounted for. Closed at
+the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
 """
 
 WorkflowCompletionOutcome: TypeAlias = str
@@ -6688,6 +6718,106 @@ class ResolveWait:
             resume_digest=field_resume_digest,
             requested_at=field_requested_at,
             reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeStopProjection:
+    """Truthful progress of one durably recorded stop request toward a terminal cancellation,
+    carried on a `WorkflowControlResult` or `WorkflowReviewResult`. It reports what this
+    build actually knows about unresolved owner obligations as of the read that produced it;
+    it is typed owner progress, not authorization -- it conveys no independent execution or
+    retry authority of its own, and it never claims an effect it did not already know about.
+    `pending_effect_ids` is bounded and may be a prefix of the true total:
+    `pending_effects_truncated` says whether it is, and `pending_effect_count` is the true
+    total regardless of how many ids are listed.
+    """
+
+    stop_request_id: Identifier
+    phase: RuntimeStopPhase
+    requested_at: Timestamp
+    request_audit_ref: Identifier
+    pending_effect_count: int
+    pending_effect_ids: tuple[Identifier, ...]
+    pending_effects_truncated: bool
+    retry_eligible: bool
+    cleanup_state: RuntimeStopCleanupState
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["stop_request_id"] = self.stop_request_id
+        wire["phase"] = self.phase
+        wire["requested_at"] = self.requested_at
+        wire["request_audit_ref"] = self.request_audit_ref
+        wire["pending_effect_count"] = self.pending_effect_count
+        wire["pending_effect_ids"] = list(self.pending_effect_ids)
+        wire["pending_effects_truncated"] = self.pending_effects_truncated
+        wire["retry_eligible"] = self.retry_eligible
+        wire["cleanup_state"] = self.cleanup_state
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "RuntimeStopProjection"
+    ) -> RuntimeStopProjection:
+        """Decode a wire payload into a RuntimeStopProjection.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_stop_request_id = _decode_str(
+            _require_field(mapping, "stop_request_id", path),
+            f"{path}.stop_request_id",
+        )
+        field_phase = _decode_str(_require_field(mapping, "phase", path), f"{path}.phase")
+        field_requested_at = _decode_str(
+            _require_field(mapping, "requested_at", path),
+            f"{path}.requested_at",
+        )
+        field_request_audit_ref = _decode_str(
+            _require_field(mapping, "request_audit_ref", path),
+            f"{path}.request_audit_ref",
+        )
+        field_pending_effect_count = _decode_int(
+            _require_field(mapping, "pending_effect_count", path),
+            f"{path}.pending_effect_count",
+        )
+        field_pending_effect_ids_items = _decode_sequence(
+            _require_field(mapping, "pending_effect_ids", path),
+            f"{path}.pending_effect_ids",
+        )
+        field_pending_effect_ids = tuple(
+            _decode_str(item, f"{path}.pending_effect_ids[{index}]")
+            for index, item in enumerate(field_pending_effect_ids_items)
+        )
+        field_pending_effects_truncated = _decode_bool(
+            _require_field(mapping, "pending_effects_truncated", path),
+            f"{path}.pending_effects_truncated",
+        )
+        field_retry_eligible = _decode_bool(
+            _require_field(mapping, "retry_eligible", path),
+            f"{path}.retry_eligible",
+        )
+        field_cleanup_state = _decode_str(
+            _require_field(mapping, "cleanup_state", path),
+            f"{path}.cleanup_state",
+        )
+        return cls(
+            stop_request_id=field_stop_request_id,
+            phase=field_phase,
+            requested_at=field_requested_at,
+            request_audit_ref=field_request_audit_ref,
+            pending_effect_count=field_pending_effect_count,
+            pending_effect_ids=field_pending_effect_ids,
+            pending_effects_truncated=field_pending_effects_truncated,
+            retry_eligible=field_retry_eligible,
+            cleanup_state=field_cleanup_state,
         )
 
 
@@ -11442,10 +11572,15 @@ class WorkflowControlResult:
     Run already finished settles as `cancellation_ignored_already_terminal` with its stream
     untouched, and is never reported as `conflict` merely for being terminal. An unsupported
     action is refused as `invalid_request` rather than answered with a fabricated success.
+    `stop` is present exactly where this build has progress on a recorded stop to report; its
+    absence on an old-shaped result is not a claim that no stop exists, only that this call
+    reports none. When `cancellation_accepted` carries a `stop`, that stop must be `settled`
+    over a Run whose `run_status` and Workflow `state` are both `cancelled`.
     """
 
     run: WorkflowRunProjection
     disposition: WorkflowControlDisposition
+    stop: RuntimeStopProjection | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -11456,6 +11591,8 @@ class WorkflowControlResult:
         wire: dict[str, Any] = {}
         wire["run"] = self.run.to_wire()
         wire["disposition"] = self.disposition
+        if self.stop is not None:
+            wire["stop"] = self.stop.to_wire()
         return wire
 
     @classmethod
@@ -11476,9 +11613,18 @@ class WorkflowControlResult:
             _require_field(mapping, "disposition", path),
             f"{path}.disposition",
         )
+        field_stop: RuntimeStopProjection | None = None
+        if "stop" in mapping:
+            raw_stop = mapping["stop"]
+            if raw_stop is None:
+                raise ContractDecodeError(
+                    f"{path}.stop: null is not a valid value"
+                )
+            field_stop = RuntimeStopProjection.from_wire(raw_stop, f"{path}.stop")
         return cls(
             run=field_run,
             disposition=field_disposition,
+            stop=field_stop,
         )
 
 
@@ -11496,6 +11642,7 @@ class WorkflowReviewResult:
     resumable: bool
     resume_diagnostic: WorkflowResumeDiagnostic | None = None
     completion: WorkflowCompletion | None = None
+    stop: RuntimeStopProjection | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -11511,6 +11658,8 @@ class WorkflowReviewResult:
             wire["resume_diagnostic"] = self.resume_diagnostic
         if self.completion is not None:
             wire["completion"] = self.completion.to_wire()
+        if self.stop is not None:
+            wire["stop"] = self.stop.to_wire()
         return wire
 
     @classmethod
@@ -11556,12 +11705,21 @@ class WorkflowReviewResult:
                     f"{path}.completion: null is not a valid value"
                 )
             field_completion = WorkflowCompletion.from_wire(raw_completion, f"{path}.completion")
+        field_stop: RuntimeStopProjection | None = None
+        if "stop" in mapping:
+            raw_stop = mapping["stop"]
+            if raw_stop is None:
+                raise ContractDecodeError(
+                    f"{path}.stop: null is not a valid value"
+                )
+            field_stop = RuntimeStopProjection.from_wire(raw_stop, f"{path}.stop")
         return cls(
             run=field_run,
             journal=field_journal,
             resumable=field_resumable,
             resume_diagnostic=field_resume_diagnostic,
             completion=field_completion,
+            stop=field_stop,
         )
 
 

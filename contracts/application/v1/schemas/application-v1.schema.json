@@ -759,6 +759,15 @@
     "WorkflowControlDisposition": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlDisposition"
     },
+    "RuntimeStopPhase": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeStopPhase"
+    },
+    "RuntimeStopCleanupState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeStopCleanupState"
+    },
+    "RuntimeStopProjection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeStopProjection"
+    },
     "WorkflowCompletionOutcome": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowCompletionOutcome"
     },

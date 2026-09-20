@@ -118,7 +118,10 @@ from omnivia_core.contracts.v1.generated import (
     RunDefinitionRef,
     RunStep,
     RuntimeEvent,
+    RuntimeStopProjection,
     Wait,
+    WorkflowControlResult,
+    WorkflowReviewResult,
 )
 from omnivia_core.contracts.v1.semantics_jobs import (
     IDEMPOTENCY_CONFLICT,
@@ -145,6 +148,14 @@ __all__ = [
     "EFFECT_OUTCOME_UNKNOWN",
     "RUNTIME_AUTHORITATIVE_SOURCE_KIND",
     "RUNTIME_SOURCE_KINDS",
+    "RUNTIME_STOP_CLEANUP_STATES",
+    "RUNTIME_STOP_CLEANUP_STATE_COMPLETED",
+    "RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED",
+    "RUNTIME_STOP_PHASES",
+    "RUNTIME_STOP_PHASE_PENDING_RECONCILIATION",
+    "RUNTIME_STOP_PHASE_REQUESTED",
+    "RUNTIME_STOP_PHASE_SETTLED",
+    "RUNTIME_STOP_SETTLED_CLEANUP_STATES",
     "RUN_DEFINITION_KINDS",
     "RUN_STATUSES",
     "RUN_STATUS_ADMITTED",
@@ -168,8 +179,11 @@ __all__ = [
     "WORKFLOW_COMPLETION_OUTCOMES",
     "WORKFLOW_CONTROL_ACTIONS",
     "WORKFLOW_CONTROL_DISPOSITIONS",
+    "WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_ACCEPTED",
+    "WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_PENDING_RECONCILIATION",
     "WORKFLOW_RESUME_DIAGNOSTICS",
     "WORKFLOW_RUN_STATES",
+    "WORKFLOW_RUN_STATE_CANCELLED",
     "WORKFLOW_RUN_STATE_CREATED",
     "WORKFLOW_RUN_STATE_INDETERMINATE",
     "WORKFLOW_RUN_STATE_QUEUED",
@@ -205,8 +219,11 @@ __all__ = [
     "validate_run_status_transition",
     "validate_run_step",
     "validate_runtime_event_stream",
+    "validate_runtime_stop_projection",
     "validate_terminal_run",
     "validate_wait",
+    "validate_workflow_control_result",
+    "validate_workflow_review_result",
 ]
 
 # --- bounds restated from the schema ------------------------------------------
@@ -237,6 +254,8 @@ _MAX_ARTIFACTS: Final = 256
 _MAX_EVIDENCE: Final = 256
 _MAX_CLEANUP_RECEIPTS: Final = 64
 _MAX_CORRELATIONS: Final = 16
+_MAX_STOP_PENDING_EFFECT_IDS: Final = 128
+_MAX_STOP_PENDING_EFFECT_COUNT: Final = 256
 
 _AUDIT_REFERENCE_RE: Final = re.compile(AUDIT_REFERENCE_PATTERN)
 _CAPABILITY_ID_RE: Final = re.compile(CAPABILITY_ID_PATTERN)
@@ -436,6 +455,7 @@ RUN_DEFINITION_KINDS: Final[tuple[str, ...]] = ("agent_component", "workflow")
 
 WORKFLOW_RUN_STATE_CREATED: Final = "created"
 WORKFLOW_RUN_STATE_QUEUED: Final = "queued"
+WORKFLOW_RUN_STATE_CANCELLED: Final = "cancelled"
 WORKFLOW_RUN_STATE_INDETERMINATE: Final = "indeterminate"
 
 WORKFLOW_RUN_STATES: Final[tuple[str, ...]] = (
@@ -445,7 +465,7 @@ WORKFLOW_RUN_STATES: Final[tuple[str, ...]] = (
     "waiting",
     "completed",
     "failed",
-    "cancelled",
+    WORKFLOW_RUN_STATE_CANCELLED,
     WORKFLOW_RUN_STATE_INDETERMINATE,
 )
 
@@ -472,11 +492,61 @@ WORKFLOW_STEP_ROUTES: Final[tuple[str, ...]] = (
 
 WORKFLOW_CONTROL_ACTIONS: Final[tuple[str, ...]] = ("cancel", "resolve_wait")
 
+WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_ACCEPTED: Final = "cancellation_accepted"
+WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_PENDING_RECONCILIATION: Final = (
+    "cancellation_pending_reconciliation"
+)
 WORKFLOW_CONTROL_DISPOSITIONS: Final[tuple[str, ...]] = (
-    "cancellation_accepted",
+    WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_ACCEPTED,
     "cancellation_ignored_already_terminal",
+    WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_PENDING_RECONCILIATION,
     "wait_resolved",
 )
+
+RUNTIME_STOP_PHASE_REQUESTED: Final = "requested"
+RUNTIME_STOP_PHASE_PENDING_RECONCILIATION: Final = "pending_reconciliation"
+RUNTIME_STOP_PHASE_SETTLED: Final = "settled"
+RUNTIME_STOP_PHASES: Final[tuple[str, ...]] = (
+    RUNTIME_STOP_PHASE_REQUESTED,
+    RUNTIME_STOP_PHASE_PENDING_RECONCILIATION,
+    RUNTIME_STOP_PHASE_SETTLED,
+)
+"""Where a recorded stop request stands on its way to a terminal cancellation.
+
+Progress, not a disposition: reaching `settled` says every owner obligation this stop
+identified has been accounted for, not that the Run has closed. `requested` and
+`pending_reconciliation` are the two phases a stop may sit in before that, and neither may
+be reported as retry-eligible -- see :func:`validate_runtime_stop_projection`."""
+
+RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED: Final = "not_required"
+RUNTIME_STOP_CLEANUP_STATE_COMPLETED: Final = "completed"
+RUNTIME_STOP_CLEANUP_STATES: Final[tuple[str, ...]] = (
+    RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED,
+    "requested",
+    RUNTIME_STOP_CLEANUP_STATE_COMPLETED,
+    "failed",
+    "partial",
+    "uncertain",
+)
+"""Progress of cleanup tied to one recorded stop request.
+
+Distinct from :data:`CLEANUP_OUTCOMES`, which is the historical, per-resource outcome a
+`CleanupReceipt` records: this is a single rolled-up read of where cleanup for one stop
+stands, and `uncertain` is available precisely because zero pending effects is not by itself
+proof that cleanup finished -- while the stop's own phase has not yet reached `settled`.
+A `settled` stop is the exception: :func:`validate_runtime_stop_projection` requires
+`RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED` or `RUNTIME_STOP_CLEANUP_STATE_COMPLETED` there,
+because `settled` itself claims every owner obligation this stop identified -- cleanup
+included -- has been accounted for."""
+
+RUNTIME_STOP_SETTLED_CLEANUP_STATES: Final[frozenset[str]] = frozenset(
+    {RUNTIME_STOP_CLEANUP_STATE_NOT_REQUIRED, RUNTIME_STOP_CLEANUP_STATE_COMPLETED}
+)
+"""The only `cleanup_state` values a `settled` stop may report.
+
+See :func:`validate_runtime_stop_projection`: `settled` claims every owner obligation this
+stop identified has been accounted for, and `requested`, `failed`, `partial` or `uncertain`
+cleanup is an obligation still open."""
 
 WORKFLOW_COMPLETION_OUTCOMES: Final[tuple[str, ...]] = ("SUCCEEDED", "FAILED")
 
@@ -1617,6 +1687,189 @@ def validate_cleanup_receipt(
     _validate_open_code(receipt.reason, f"{label}.reason")
     _parse_timestamp(receipt.performed_at, f"{label}.performed_at")
     _validate_audit_reference(receipt.audit_reference, f"{label}.audit_reference")
+
+
+# --- runtime stop progress ------------------------------------------------------
+
+
+def validate_runtime_stop_projection(projection: object, *, label: str = "stop") -> None:
+    """Raise unless `projection` is an internally coherent stop-progress projection.
+
+    Rules beyond shape. A non-truncated `pending_effect_ids` states the true total, so
+    `pending_effect_count` must equal its length exactly; a truncated one states a partial
+    total, so `pending_effect_count` must exceed the length of the list actually carried --
+    a truncated list that happens to equal the count it is truncating claims nothing was
+    omitted, which is a contradiction rather than a degenerate truncation. Zero pending
+    effects is not proof cleanup finished, so `cleanup_state` is read as its own signal
+    rather than inferred from `pending_effect_count`: a stop reporting zero pending effects
+    and `uncertain` cleanup is valid before it settles, and is exactly the case an effect
+    count alone must not be read as implying cleanup is complete.
+
+    `settled` is where that stops being open: reaching it claims every owner obligation this
+    stop identified has been accounted for, so a `settled` stop must report zero pending
+    effects and a resolved `cleanup_state` (`not_required` or `completed`) -- an
+    otherwise-shaped `settled` projection that still shows a pending effect or an
+    unresolved cleanup is refused as a contradiction, not coerced.
+
+    And a stop whose own phase has not reached `settled` reports no retry eligibility --
+    work still in flight grants no retry. `retry_eligible` is, beyond that, a report of an
+    owner-authorized recovery decision and never a grant this function infers on the
+    owner's behalf: the `settled`-with-zero-effects-and-resolved-cleanup state it requires
+    is a precondition for that decision to be true, not proof that it is.
+    """
+    _require_type(projection, RuntimeStopProjection, label)
+    assert isinstance(projection, RuntimeStopProjection)
+    _validate_identifier(projection.stop_request_id, f"{label}.stop_request_id")
+    phase = _require_member(
+        projection.phase, RUNTIME_STOP_PHASES, f"{label}.phase", "RuntimeStopPhase"
+    )
+    _parse_timestamp(projection.requested_at, f"{label}.requested_at")
+    _validate_identifier(projection.request_audit_ref, f"{label}.request_audit_ref")
+    count = _require_at_least(projection.pending_effect_count, 0, f"{label}.pending_effect_count")
+    if count > _MAX_STOP_PENDING_EFFECT_COUNT:
+        raise ContractSemanticError(
+            f"{label}.pending_effect_count: {count} carries more than "
+            f"{_MAX_STOP_PENDING_EFFECT_COUNT}"
+        )
+    raw_ids = _require_sequence(
+        projection.pending_effect_ids, f"{label}.pending_effect_ids", _MAX_STOP_PENDING_EFFECT_IDS
+    )
+    ids = [
+        _validate_identifier(entry, f"{label}.pending_effect_ids[{index}]")
+        for index, entry in enumerate(raw_ids)
+    ]
+    _require_unique(ids, f"{label}.pending_effect_ids", "pending effect id")
+    truncated = _require_bool(
+        projection.pending_effects_truncated, f"{label}.pending_effects_truncated"
+    )
+    if truncated:
+        if count <= len(ids):
+            raise ContractSemanticError(
+                f"{label}: pending_effects_truncated is true but pending_effect_count "
+                f"{count} does not exceed the {len(ids)} listed id(s); a truncated list "
+                "omits at least one effect"
+            )
+    elif count != len(ids):
+        raise ContractSemanticError(
+            f"{label}: pending_effect_count {count} does not equal the {len(ids)} listed "
+            "id(s), and pending_effects_truncated is false"
+        )
+    retry_eligible = _require_bool(projection.retry_eligible, f"{label}.retry_eligible")
+    if retry_eligible and phase != RUNTIME_STOP_PHASE_SETTLED:
+        raise ContractSemanticError(
+            f"{label}: phase {phase!r} may not be retry_eligible; a stop still in flight "
+            "grants no retry"
+        )
+    cleanup_state = _require_member(
+        projection.cleanup_state,
+        RUNTIME_STOP_CLEANUP_STATES,
+        f"{label}.cleanup_state",
+        "RuntimeStopCleanupState",
+    )
+    if phase == RUNTIME_STOP_PHASE_SETTLED:
+        if count != 0:
+            raise ContractSemanticError(
+                f"{label}: phase {RUNTIME_STOP_PHASE_SETTLED!r} requires pending_effect_count "
+                f"0, got {count}; settled claims every stop obligation resolved"
+            )
+        if cleanup_state not in RUNTIME_STOP_SETTLED_CLEANUP_STATES:
+            raise ContractSemanticError(
+                f"{label}: phase {RUNTIME_STOP_PHASE_SETTLED!r} requires cleanup_state "
+                f"{sorted(RUNTIME_STOP_SETTLED_CLEANUP_STATES)!r}, got {cleanup_state!r}; "
+                "settled claims every stop obligation resolved"
+            )
+
+
+def validate_workflow_control_result(result: object, *, label: str = "result") -> None:
+    """Raise unless `result` is a well-formed, internally coherent `workflow.control` result.
+
+    `stop` is optional: an old-shaped result carrying none is judged by nothing more than its
+    disposition and its Run, so every previously valid result remains valid. When `stop` is
+    present it must itself be coherent (:func:`validate_runtime_stop_projection`), and two
+    dispositions pin it further, refused rather than coerced when they disagree.
+    `cancellation_pending_reconciliation` must carry a `stop` in `pending_reconciliation`
+    phase, over a Run this build cannot yet call closed -- `run_status` `uncertain` and
+    Workflow `state` `indeterminate` -- because reporting anything else would invent an
+    authority the projection alone does not have. `cancellation_accepted` that happens to
+    carry a `stop` at all must find it `settled` over a Run whose `run_status` and Workflow
+    `state` are both `cancelled`: an accepted cancellation resting on a stop still in flight,
+    or over a Run this build cannot yet call cancelled on both readings, is a contradiction
+    rather than a result this validates. No other disposition constrains `stop`, and none of
+    this reaches into the Run's own effect ledger -- the existing aggregate invariant that
+    unreconciled effects block terminal closure (:func:`validate_run`) is untouched and
+    unrepeated here.
+    """
+    _require_type(result, WorkflowControlResult, label)
+    assert isinstance(result, WorkflowControlResult)
+    disposition = _require_member(
+        result.disposition,
+        WORKFLOW_CONTROL_DISPOSITIONS,
+        f"{label}.disposition",
+        "WorkflowControlDisposition",
+    )
+    run_status = _require_str(result.run.run_status, f"{label}.run.run_status")
+    workflow_state = _require_str(result.run.state, f"{label}.run.state")
+
+    if (
+        disposition == WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_PENDING_RECONCILIATION
+        and result.stop is None
+    ):
+        raise ContractSemanticError(
+            f"{label}: disposition {disposition!r} must carry the stop it reports pending "
+            "reconciliation for"
+        )
+
+    if result.stop is not None:
+        validate_runtime_stop_projection(result.stop, label=f"{label}.stop")
+        stop_phase = _require_str(result.stop.phase, f"{label}.stop.phase")
+
+        if disposition == WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_PENDING_RECONCILIATION:
+            if stop_phase != RUNTIME_STOP_PHASE_PENDING_RECONCILIATION:
+                raise ContractSemanticError(
+                    f"{label}: disposition {disposition!r} requires stop.phase "
+                    f"{RUNTIME_STOP_PHASE_PENDING_RECONCILIATION!r}, got {stop_phase!r}"
+                )
+            if run_status != RUN_STATUS_UNCERTAIN:
+                raise ContractSemanticError(
+                    f"{label}: disposition {disposition!r} requires run_status "
+                    f"{RUN_STATUS_UNCERTAIN!r}, got {run_status!r}"
+                )
+            if workflow_state != WORKFLOW_RUN_STATE_INDETERMINATE:
+                raise ContractSemanticError(
+                    f"{label}: disposition {disposition!r} requires Workflow state "
+                    f"{WORKFLOW_RUN_STATE_INDETERMINATE!r}, got {workflow_state!r}"
+                )
+
+        if disposition == WORKFLOW_CONTROL_DISPOSITION_CANCELLATION_ACCEPTED:
+            if stop_phase != RUNTIME_STOP_PHASE_SETTLED:
+                raise ContractSemanticError(
+                    f"{label}: disposition {disposition!r} names a stop that has not "
+                    f"reached phase {RUNTIME_STOP_PHASE_SETTLED!r}, got {stop_phase!r}"
+                )
+            if run_status != RUN_STATUS_CANCELLED:
+                raise ContractSemanticError(
+                    f"{label}: disposition {disposition!r} with a settled stop requires "
+                    f"run_status {RUN_STATUS_CANCELLED!r}, got {run_status!r}"
+                )
+            if workflow_state != WORKFLOW_RUN_STATE_CANCELLED:
+                raise ContractSemanticError(
+                    f"{label}: disposition {disposition!r} with a settled stop requires "
+                    f"Workflow state {WORKFLOW_RUN_STATE_CANCELLED!r}, got {workflow_state!r}"
+                )
+
+
+def validate_workflow_review_result(result: object, *, label: str = "result") -> None:
+    """Raise unless `result` is a well-formed `workflow.review` result.
+
+    `stop` is optional, exactly as on `WorkflowControlResult`, and an old-shaped result
+    carrying none remains valid. When present it is validated for its own internal coherence
+    (:func:`validate_runtime_stop_projection`); a review result carries no disposition to pin
+    it further against, and nothing here reaches into the Run's own effect ledger.
+    """
+    _require_type(result, WorkflowReviewResult, label)
+    assert isinstance(result, WorkflowReviewResult)
+    if result.stop is not None:
+        validate_runtime_stop_projection(result.stop, label=f"{label}.stop")
 
 
 # --- the whole run -------------------------------------------------------------
