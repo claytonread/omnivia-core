@@ -70,8 +70,8 @@
       "repository": "omnivia-core",
       "state": "candidate",
       "predecessor": 22,
-      "sha256": "b74670225e165c054687dcafe7c8934fbf393eb4e143839b22dc7de63120dd6e",
-      "introduced_commit": "44e3ed256c38dadc54203994e209380d6e6f439f",
+      "sha256": "c5febbd848d424552d23d82e15deaa9ea8355d955f965957b2658fdb084a4c54",
+      "introduced_commit": "f317fcd0eb43b52552d7f4e37342d5b45e1c2b44",
       "accepted_commit": null
     },
     {
@@ -81,8 +81,8 @@
       "repository": "omnivia-core",
       "state": "candidate",
       "predecessor": 23,
-      "sha256": "bda410753b280cb5b986251a93e60eeac5673f947dad1fc9a962a949b74f2da0",
-      "introduced_commit": "e9827ae9f83188f9e9c4fc848597edf04aa67416",
+      "sha256": "6eb062c4c57b0dc5e88995309da444d6b015c401bbaccbcc8b9eb8b9acaa946c",
+      "introduced_commit": "f317fcd0eb43b52552d7f4e37342d5b45e1c2b44",
       "accepted_commit": null
     },
     {
