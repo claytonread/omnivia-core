@@ -207,6 +207,286 @@ def test_windows_pin_refresh_stabilises_an_entry_that_appears_during_scan(
     assert Path(os.path.abspath(manifest)) in api.opened
 
 
+class _RecordingApi:
+    """A `CreateFileW` that keeps the access and share masks it was asked for."""
+
+    def __init__(self) -> None:
+        self.opened: list[tuple[str, int, int, int]] = []
+
+    def CreateFileW(
+        self,
+        path: str,
+        access: int,
+        share: int,
+        _security: object,
+        _disposition: int,
+        flags: int,
+        _template: object,
+    ) -> int:
+        self.opened.append((path, access, share, flags))
+        return len(self.opened) + 100
+
+    def CloseHandle(self, _handle: object) -> int:
+        return 1
+
+
+def test_a_windows_pin_asks_for_the_access_that_makes_windows_arbitrate_sharing(
+    tmp_path: Path,
+) -> None:
+    """A zero-access pin is invisible to Windows, so the masks are pinned by value.
+
+    `IoCheckShareAccess` runs no check at all for a handle that requested none of
+    read-data, write-data, append-data, execute or delete, and `IoUpdateShareAccess`
+    records no share mode for one either. Pins opened that way let every rename
+    through while reading exactly like pins that work, which is what the hosted row
+    `test_windows_guard_adds_new_directories_files_and_manifests` caught. No POSIX
+    host can observe the kernel behaviour, so the masks themselves are the control.
+    """
+    workspace = tmp_path / "workspace"
+    installation = tmp_path / "installation-state"
+    workspace.mkdir()
+    installation.mkdir()
+    api = _RecordingApi()
+
+    pins = workspace_init_module._WindowsInitialisationPins(
+        api, workspace, installation
+    )
+    try:
+        pins.refresh()
+    finally:
+        pins.close()
+
+    assert api.opened
+    assert workspace_init_module._FILE_READ_DATA != 0
+    for path, access, share, _flags in api.opened:
+        assert access == workspace_init_module._FILE_READ_DATA, path
+        assert share == workspace_init_module._PIN_SHARE, path
+    # Read and write sharing keep the pinned database, manifest and lock usable;
+    # withholding FILE_SHARE_DELETE is the whole of the rename/replace refusal.
+    assert workspace_init_module._PIN_SHARE == (
+        workspace_init_module._FILE_SHARE_READ | workspace_init_module._FILE_SHARE_WRITE
+    )
+
+
+def test_a_quiescing_open_admits_a_reader_and_no_writer_deleter_or_renamer(
+    tmp_path: Path,
+) -> None:
+    """The share mask is the whole of "a retained handle fails this init closed"."""
+    api = _RecordingApi()
+    database = tmp_path / "workspace.sqlite"
+
+    assert (
+        workspace_init_module._open_windows_entry(
+            api, tmp_path, share=workspace_init_module._QUIESCE_SHARE, directory=True
+        )
+        is not None
+    )
+    assert (
+        workspace_init_module._open_windows_entry(
+            api, database, share=workspace_init_module._QUIESCE_SHARE, directory=False
+        )
+        is not None
+    )
+
+    reparse = workspace_init_module._FILE_FLAG_OPEN_REPARSE_POINT
+    assert api.opened == [
+        (
+            str(tmp_path),
+            workspace_init_module._FILE_READ_DATA,
+            workspace_init_module._QUIESCE_SHARE,
+            reparse | workspace_init_module._FILE_FLAG_BACKUP_SEMANTICS,
+        ),
+        (
+            str(database),
+            workspace_init_module._FILE_READ_DATA,
+            workspace_init_module._QUIESCE_SHARE,
+            reparse,
+        ),
+    ]
+    # Read sharing is granted because this guard's own pin holds FILE_READ_DATA on
+    # the same object. Write sharing is not, and that is what turns a pre-existing
+    # writer, deleter or renamer into the sharing violation this refuses on.
+    assert (
+        workspace_init_module._QUIESCE_SHARE == workspace_init_module._FILE_SHARE_READ
+    )
+    assert not (
+        workspace_init_module._QUIESCE_SHARE & workspace_init_module._FILE_SHARE_WRITE
+    )
+
+
+@pytest.mark.parametrize("refused", [0, workspace_init_module._INVALID_HANDLE_VALUE])
+def test_a_refused_windows_open_is_reported_as_no_handle(
+    tmp_path: Path, refused: int
+) -> None:
+    """A sharing violation has to read as a refusal, not as a usable handle."""
+
+    class _Refusing:
+        def CreateFileW(self, *_arguments: Any) -> int:
+            return refused
+
+    assert (
+        workspace_init_module._open_windows_entry(
+            _Refusing(),
+            tmp_path,
+            share=workspace_init_module._QUIESCE_SHARE,
+            directory=True,
+        )
+        is None
+    )
+
+
+#: The access and share bits Windows arbitrates on, named here rather than in the
+#: module under test because production asks for exactly one of them.
+_FILE_WRITE_DATA = 0x00000002
+_DELETE = 0x00010000
+_FILE_SHARE_DELETE = 0x00000004
+
+
+class _ShareArbitration:
+    """`IoCheckShareAccess` and `IoUpdateShareAccess`, in about as few lines.
+
+    The kernel arbitrates sharing only for a handle that asked for read-data,
+    write-data, append-data, execute or delete. Every other open -- `dwDesiredAccess`
+    of zero above all -- skips the check *and* contributes no share mode, so it
+    neither notices a conflicting opener nor denies anything to a later one. That one
+    rule is the whole of this repair and nothing on a POSIX host can observe it, so
+    it is modelled here and the production masks are run against the model.
+    """
+
+    def __init__(self) -> None:
+        self.open_count = self.readers = self.writers = self.deleters = 0
+        self.shared_read = self.shared_write = self.shared_delete = 0
+
+    def open(self, access: int, share: int) -> bool:
+        read = bool(access & workspace_init_module._FILE_READ_DATA)
+        write = bool(access & _FILE_WRITE_DATA)
+        delete = bool(access & _DELETE)
+        if not (read or write or delete):
+            return True
+        if (
+            (read and self.shared_read < self.open_count)
+            or (write and self.shared_write < self.open_count)
+            or (delete and self.shared_delete < self.open_count)
+            or (self.readers and not share & workspace_init_module._FILE_SHARE_READ)
+            or (self.writers and not share & workspace_init_module._FILE_SHARE_WRITE)
+            or (self.deleters and not share & _FILE_SHARE_DELETE)
+        ):
+            return False
+        self.open_count += 1
+        self.readers += read
+        self.writers += write
+        self.deleters += delete
+        self.shared_read += bool(share & workspace_init_module._FILE_SHARE_READ)
+        self.shared_write += bool(share & workspace_init_module._FILE_SHARE_WRITE)
+        self.shared_delete += bool(share & _FILE_SHARE_DELETE)
+        return True
+
+
+#: What a rename or delete of the entry asks Windows for.
+_RENAME = (_DELETE, workspace_init_module._FILE_SHARE_READ | _FILE_SHARE_DELETE)
+
+#: What SQLite, Python's `open(..., "r+b")` and `os.open` all ask for: read and
+#: write, shared with other readers and writers but not with a deleter.
+_READ_WRITE = (
+    workspace_init_module._FILE_READ_DATA | _FILE_WRITE_DATA,
+    workspace_init_module._FILE_SHARE_READ | workspace_init_module._FILE_SHARE_WRITE,
+)
+
+_PIN = (workspace_init_module._FILE_READ_DATA, workspace_init_module._PIN_SHARE)
+_QUIESCE = (workspace_init_module._FILE_READ_DATA, workspace_init_module._QUIESCE_SHARE)
+
+
+def test_a_zero_access_handle_neither_detects_nor_blocks_anything() -> None:
+    """The defect, stated as the kernel sees it rather than as an outcome."""
+    object_with_a_writer = _ShareArbitration()
+    assert object_with_a_writer.open(*_READ_WRITE)
+
+    # The old quiescing open: it "proved" the object closed against a live writer.
+    assert object_with_a_writer.open(0, 0)
+
+    # The old pin: taken on a free object, it let the rename straight through.
+    free = _ShareArbitration()
+    assert free.open(0, workspace_init_module._PIN_SHARE)
+    assert free.open(*_RENAME)
+
+
+def test_the_windows_pin_blocks_rename_while_sqlite_and_the_lock_keep_working() -> None:
+    """One pin, three outcomes: rename refused, database and lock file still open."""
+    pinned = _ShareArbitration()
+    assert pinned.open(*_PIN)
+
+    assert not pinned.open(*_RENAME)
+    assert pinned.open(*_READ_WRITE)  # SQLite opening the pinned database
+    assert pinned.open(*_READ_WRITE)  # the storage lock writing its holder record
+
+
+def test_the_windows_quiesce_coexists_with_our_own_pin_on_the_same_object() -> None:
+    """Why read sharing is granted: both handles are ours, on one object, at once."""
+    pinned = _ShareArbitration()
+    assert pinned.open(*_PIN)
+
+    assert pinned.open(*_QUIESCE), "the guard must not collide with its own pin"
+
+
+def test_a_retained_handle_fails_the_windows_guard_closed() -> None:
+    """Each hosted row's retained handle, met by whichever of our opens reaches it.
+
+    A retained writer -- the `r+b` blob, the outsider SQLite connection, the
+    `FILE_WRITE_DATA` workspace-directory handle -- has to be tolerated by the pin,
+    because the pin has to tolerate SQLite too; the quiescing open is what refuses
+    it. A retained *deleter* never gets that far: the pin withholds delete sharing,
+    so the pin itself is the refusal.
+    """
+    for held in (_READ_WRITE, (_FILE_WRITE_DATA, 0x7)):
+        occupied = _ShareArbitration()
+        assert occupied.open(*held)
+        assert occupied.open(*_PIN)
+        assert not occupied.open(*_QUIESCE)
+
+    deleting = _ShareArbitration()
+    assert deleting.open(*_RENAME)
+    assert not deleting.open(*_PIN)
+
+
+def test_no_windows_handle_is_opened_without_a_share_arbitrated_access_right() -> None:
+    """One native open, one access mask, and a named share mode at every call site.
+
+    The defect this guards is not a wrong constant but a *plausible* one: `0` is the
+    documented way to ask Windows for metadata without touching the object, it
+    succeeds against a file another process holds exclusively, and it silently opts
+    the handle out of share arbitration in both directions.
+    """
+    import ast
+
+    source = Path(inspect.getfile(workspace_init_module)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    native = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "CreateFileW"
+    ]
+    assert len(native) == 1, "every Windows open belongs to _open_windows_entry"
+    access = native[0].args[1]
+    assert isinstance(access, ast.Name) and access.id == "_FILE_READ_DATA"
+
+    shares = [
+        keyword.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_open_windows_entry"
+        for keyword in node.keywords
+        if keyword.arg == "share"
+    ]
+    assert all(isinstance(value, ast.Name) for value in shares), (
+        "a share mode was inlined rather than named"
+    )
+    assert {value.id for value in shares} == {"_PIN_SHARE", "_QUIESCE_SHARE"}
+
+
 def test_windows_init_refuses_a_reparse_point_in_the_managed_home_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

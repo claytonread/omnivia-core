@@ -227,14 +227,40 @@ _WINDOWS_OWNER_CONTROL: Final = os.name == "nt"
 #: accepting one as a pre-existing component in the workspace chain.
 _FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x400
 
-# Windows handles opened with these flags name the entry itself and deliberately
-# omit FILE_SHARE_DELETE, pinning it against rename/replacement until close.
+# Windows handles opened with these flags name the entry itself rather than a
+# reparse point's target.
+#
+# **`dwDesiredAccess` is never zero, and asking for zero is the defect this block
+# exists to prevent.** A zero-access open is the documented way to read an
+# object's metadata *without accessing it*, and the kernel means that literally:
+# `IoCheckShareAccess` runs no check at all unless the requested access includes
+# read-data, write-data, append-data, execute or delete, and `IoUpdateShareAccess`
+# records nothing for such a handle either. A zero-access handle is therefore
+# invisible to Windows' share arbitration in both directions -- it never notices a
+# conflicting opener, and it never denies anything to a later one. Every open below
+# asks for `FILE_READ_DATA`, the least right that enters that arbitration; the same
+# bit is `FILE_LIST_DIRECTORY` on a directory.
+_FILE_READ_DATA: Final = 0x00000001
 _FILE_SHARE_READ: Final = 0x00000001
 _FILE_SHARE_WRITE: Final = 0x00000002
 _OPEN_EXISTING: Final = 3
 _FILE_FLAG_OPEN_REPARSE_POINT: Final = 0x00200000
 _FILE_FLAG_BACKUP_SEMANTICS: Final = 0x02000000
 _INVALID_HANDLE_VALUE: Final = ctypes.c_void_p(-1).value
+
+#: Pinning. Read and write sharing are granted because the pinned entries stay in
+#: use -- SQLite opens the pinned database, the lock file is written through -- while
+#: FILE_SHARE_DELETE is withheld, which is what makes Windows refuse a delete,
+#: rename or replace of that exact object until the handle closes.
+_PIN_SHARE: Final = _FILE_SHARE_READ | _FILE_SHARE_WRITE
+
+#: Quiescing. Write and delete sharing are both withheld, so the open fails if a
+#: writer, deleter or renamer already holds the object and none can be acquired
+#: while it is held. Read sharing has to be granted: this call's own pin on the same
+#: object holds `FILE_READ_DATA`, so a zero share mode would collide with the guard
+#: itself rather than with an outsider. The bound that leaves is stated at
+#: `_quiesce_windows_directory`.
+_QUIESCE_SHARE: Final = _FILE_SHARE_READ
 
 #: The only top-level entries an installation-state root may hold. Anything else
 #: means this directory is not one of ours, and `InstallationLayout` is the single
@@ -989,15 +1015,44 @@ def _handle_value(handle: object) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _open_windows_entry(
+    api: Any, path: Path, *, share: int, directory: bool
+) -> object | None:
+    """Open ``path`` itself under Windows share arbitration, or ``None`` if refused.
+
+    The one ``CreateFileW`` call this module makes, so the access and share masks
+    cannot drift apart between the three things that need them. ``None`` is the
+    sharing violation: with `_QUIESCE_SHARE` it says somebody else already holds the
+    object, and with `_PIN_SHARE` it says the object could not be pinned. A directory
+    needs backup semantics to be openable at all; a reparse point is opened as
+    itself either way.
+    """
+    flags = _FILE_FLAG_OPEN_REPARSE_POINT
+    if directory:
+        flags |= _FILE_FLAG_BACKUP_SEMANTICS
+    handle = api.CreateFileW(
+        str(path), _FILE_READ_DATA, share, None, _OPEN_EXISTING, flags, None
+    )
+    value = _handle_value(handle)
+    return None if value in (None, 0, _INVALID_HANDLE_VALUE) else handle
+
+
 @contextmanager
 def _quiesce_windows_directory(path: Path) -> Iterator[None]:
-    """Hold one directory with zero sharing while its DACL becomes authoritative.
+    """Hold one directory against writers and deleters while its DACL is repaired.
 
     A DACL change stops new opens but cannot revoke a handle another principal
-    already owns.  Opening the directory with share mode zero first therefore
-    rejects any live reader, writer or deleter and prevents another such handle
-    from being acquired until the repair and child validation finish.  The normal
-    initialization pin (desired access zero) can coexist with this handle.
+    already owns.  Opening the directory with `_QUIESCE_SHARE` therefore fails
+    outright if a live writer, deleter or renamer already holds it, and denies both
+    to anyone else until the repair and child validation finish.
+
+    **The bound, which the withheld share mode fixes exactly.** Read sharing is
+    granted, because this call's own pin on the same directory holds
+    `FILE_READ_DATA` and a zero share mode would collide with the guard rather than
+    with an outsider.  A pre-existing *read-only* handle is admitted for that
+    reason.  It cannot create, replace, redirect or remove anything, the repaired
+    DACL still excludes a new one, and whatever it reads it could already read
+    before this ran -- so it is stated here rather than claimed away.
     """
     if os.name != "nt":
         yield
@@ -1007,17 +1062,8 @@ def _quiesce_windows_directory(path: Path) -> Iterator[None]:
     before = os.lstat(path)
     if not _is_real_directory_no_follow(path):
         raise OSError("SQLite parent is not a real directory")
-    handle = api.CreateFileW(
-        str(path),
-        0,
-        0,
-        None,
-        _OPEN_EXISTING,
-        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
-        None,
-    )
-    value = _handle_value(handle)
-    if value in (None, 0, _INVALID_HANDLE_VALUE):
+    handle = _open_windows_entry(api, path, share=_QUIESCE_SHARE, directory=True)
+    if handle is None:
         raise OSError("SQLite parent has a live external directory handle")
     try:
         after = os.lstat(path)
@@ -1102,17 +1148,10 @@ class _WindowsInitialisationPins:
         if absolute in self._sqlite_sidecars:
             return
 
-        handle = self._api.CreateFileW(
-            str(absolute),
-            0,
-            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-            None,
-            _OPEN_EXISTING,
-            _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
-            None,
+        handle = _open_windows_entry(
+            self._api, absolute, share=_PIN_SHARE, directory=directory
         )
-        value = _handle_value(handle)
-        if value in (None, 0, _INVALID_HANDLE_VALUE):
+        if handle is None:
             raise OSError("Windows path component could not be pinned")
         try:
             after = os.lstat(absolute)
@@ -1194,9 +1233,12 @@ def _windows_initialisation_guard(
 ) -> Iterator[None]:
     """Pin Windows components against replacement for this entire call.
 
-    ``CreateFileW`` opens the entry itself (including a reparse point) and omits
-    ``FILE_SHARE_DELETE``. Windows consequently refuses delete, rename, or replace
-    while the handle is held. Existing components are pinned before the call; every
+    ``CreateFileW`` opens the entry itself (including a reparse point), asks for
+    ``FILE_READ_DATA`` and omits ``FILE_SHARE_DELETE``. Windows consequently refuses
+    delete, rename, or replace while the handle is held -- and the requested access
+    is what makes that true at all, because the kernel arbitrates sharing only for a
+    handle that asked for one of read, write, execute or delete. Existing
+    components are pinned before the call; every
     creation boundary refreshes the same guard so newly published directories,
     databases, manifests and locks join it. Absence is never inferred from a scan:
     creation remains exclusive, and the workspace root is quiesced and owner-only
@@ -1404,10 +1446,11 @@ def _secure_existing_windows_file(path: Path, *, subject: str) -> None:
     """Quiesce and secure one existing file without following links.
 
     Securing only the parent does not revoke an already-open outsider handle or an
-    explicit file ACL. On Windows a zero-access, zero-share handle proves no reader,
-    writer or deleter is already present; while that exact object is pinned, its ACL
-    is reduced to the owning OS user. The secured parent then prevents a new
-    competing pathname open after this short-lived handle closes.
+    explicit file ACL. On Windows a `_QUIESCE_SHARE` open proves no writer, deleter
+    or renamer is already present; while that exact object is held, its ACL is
+    reduced to the owning OS user. The secured parent then prevents a new competing
+    pathname open after this short-lived handle closes. A pre-existing read-only
+    handle is admitted, for the reason `_quiesce_windows_directory` states.
     """
     if not _WINDOWS_OWNER_CONTROL:
         return
@@ -1422,17 +1465,8 @@ def _secure_existing_windows_file(path: Path, *, subject: str) -> None:
     handle: object | None = None
     if os.name == "nt":  # pragma: no cover - exercised on the hosted Windows row
         api = _windows_path_api()
-        handle = api.CreateFileW(
-            str(path),
-            0,
-            0,
-            None,
-            _OPEN_EXISTING,
-            _FILE_FLAG_OPEN_REPARSE_POINT,
-            None,
-        )
-        value = _handle_value(handle)
-        if value in (None, 0, _INVALID_HANDLE_VALUE):
+        handle = _open_windows_entry(api, path, share=_QUIESCE_SHARE, directory=False)
+        if handle is None:
             raise OSError(f"{subject} is already open")
     try:
         opened = os.lstat(path)
@@ -1485,9 +1519,9 @@ def _prepare_windows_sqlite_database(path: Path) -> None:
     """Make an existing-or-fresh SQLite namespace safe before its first open."""
     if not _WINDOWS_OWNER_CONTROL:
         return
-    # The zero-share directory handle rejects pre-existing access-capable handles
-    # before the DACL repair and remains held until every existing child is proved
-    # closed and owner-only.  Once released, the repaired DACL prevents an
+    # The quiescing directory handle rejects a pre-existing writer, deleter or
+    # renamer before the DACL repair and remains held until every existing child is
+    # proved closed and owner-only.  Once released, the repaired DACL prevents an
     # untrusted principal from acquiring a new handle or publishing a sidecar.
     with _quiesce_windows_directory(path.parent):
         _restrict_windows_sqlite_parent(path.parent)
