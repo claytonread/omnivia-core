@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from omnivia_core_runtime.ownership import locks as locks_module
 from omnivia_core_runtime.ownership.identity import (
     _ERROR_ACCESS_DENIED,
     _PROCESS_QUERY_LIMITED_INFORMATION,
@@ -59,7 +60,9 @@ def test_fl01_posix_two_process_exclusion(tmp_path: Path) -> None:
         assert barrier.wait(timeout=15, count=1), "holder never reported arrival"
         # Only now, with the lock provably held, release the contender.
         barrier.release()
-        contender = run_child("contend_lock.py", str(lock_path), str(barrier_dir), "contender")
+        contender = run_child(
+            "contend_lock.py", str(lock_path), str(barrier_dir), "contender"
+        )
         assert contender.ok, contender.stderr
         assert contender.report.get("acquired") is False, contender.report
     finally:
@@ -80,7 +83,9 @@ def test_fl02_windows_two_process_exclusion(tmp_path: Path) -> None:  # pragma: 
     try:
         assert barrier.wait(timeout=15, count=1)
         barrier.release()
-        contender = run_child("contend_lock.py", str(lock_path), str(barrier_dir), "contender")
+        contender = run_child(
+            "contend_lock.py", str(lock_path), str(barrier_dir), "contender"
+        )
         assert contender.report.get("acquired") is False, contender.report
     finally:
         (barrier_dir / "release").write_text("1", encoding="utf-8")
@@ -107,7 +112,9 @@ def test_simultaneous_acquisition_has_exactly_one_winner(tmp_path: Path) -> None
         for result in (one, two)
         if result.report.get("acquired") is True
     ]
-    assert len(winners) == 1, f"expected one winner, got {winners}: {one.report} {two.report}"
+    assert len(winners) == 1, (
+        f"expected one winner, got {winners}: {one.report} {two.report}"
+    )
 
 
 # FL-03
@@ -115,7 +122,9 @@ def test_fl03_lock_interface_is_identical_across_platforms() -> None:
     """One frozen interface, two implementations."""
     for implementation in (PosixFileLock, WindowsFileLock):
         for member in ("acquire", "release", "path", "role", "held", "read_payload"):
-            assert hasattr(implementation, member), f"{implementation.__name__}.{member}"
+            assert hasattr(implementation, member), (
+                f"{implementation.__name__}.{member}"
+            )
     # The factory returns the platform implementation behind that interface.
     assert create_lock(Path("/tmp/x.lock"), LockRole.BOOTSTRAP_MUTEX).role is (
         LockRole.BOOTSTRAP_MUTEX
@@ -132,7 +141,9 @@ def test_fl04_fl05_fl06_remote_filesystems_refuse_writable_operation(
     The verdict is injected rather than requiring a real mount, because a CI runner
     has none. The real-mount cases are the conditionally-skipped ones below.
     """
-    qualification = qualify_filesystem(tmp_path, filesystem=filesystem, probe_locking=False)
+    qualification = qualify_filesystem(
+        tmp_path, filesystem=filesystem, probe_locking=False
+    )
     assert not qualification.writable
     assert qualification.verdict is FilesystemVerdict.REFUSED_REMOTE
     assert filesystem in qualification.reason
@@ -142,7 +153,9 @@ def test_fl04_fl05_fl06_remote_filesystems_refuse_writable_operation(
 def test_fl07_unknown_lock_semantics_refuse_writable_operation(tmp_path: Path) -> None:
     """Default-deny: "we did not recognise it" is not evidence that locking works."""
     for name in ("unknown", "somefs", "", "exfat"):
-        qualification = qualify_filesystem(tmp_path, filesystem=name, probe_locking=False)
+        qualification = qualify_filesystem(
+            tmp_path, filesystem=name, probe_locking=False
+        )
         assert not qualification.writable, name
         assert qualification.verdict is FilesystemVerdict.REFUSED_UNKNOWN
 
@@ -165,12 +178,16 @@ def test_the_linux_ext_statfs_label_is_qualified(tmp_path: Path) -> None:
     `ext4` individually never matched.
     """
     assert "ext2/ext3" in QUALIFIED_FILESYSTEMS
-    qualification = qualify_filesystem(tmp_path, filesystem="ext2/ext3", probe_locking=False)
+    qualification = qualify_filesystem(
+        tmp_path, filesystem="ext2/ext3", probe_locking=False
+    )
     assert qualification.writable, qualification
     assert qualification.verdict is FilesystemVerdict.QUALIFIED
 
 
-def test_the_ext_label_is_matched_exactly_rather_than_by_substring(tmp_path: Path) -> None:
+def test_the_ext_label_is_matched_exactly_rather_than_by_substring(
+    tmp_path: Path,
+) -> None:
     """Recognising one compound label must not become a prefix or substring rule.
 
     A containment test would have been the shorter fix and would admit anything
@@ -178,7 +195,9 @@ def test_the_ext_label_is_matched_exactly_rather_than_by_substring(tmp_path: Pat
     default-deny exists to refuse.
     """
     for name in ("ext2/ext3/ext4", "ext", "ext5", "myext4", "ext4fs", "ext2/ext3fs"):
-        qualification = qualify_filesystem(tmp_path, filesystem=name, probe_locking=False)
+        qualification = qualify_filesystem(
+            tmp_path, filesystem=name, probe_locking=False
+        )
         assert not qualification.writable, name
         assert qualification.verdict is FilesystemVerdict.REFUSED_UNKNOWN, name
 
@@ -273,11 +292,15 @@ def test_windows_detection_is_not_ntfs_by_assumption(
     """
     _patch_kernel32(monkeypatch, _FakeKernel32(filesystem="ReFS"))
     assert _windows_filesystem(tmp_path) == "refs"
-    assert not qualify_filesystem(tmp_path, filesystem="refs", probe_locking=False).writable
+    assert not qualify_filesystem(
+        tmp_path, filesystem="refs", probe_locking=False
+    ).writable
 
     _patch_kernel32(monkeypatch, _FakeKernel32(filesystem="exFAT"))
     assert _windows_filesystem(tmp_path) == "exfat"
-    assert not qualify_filesystem(tmp_path, filesystem="exfat", probe_locking=False).writable
+    assert not qualify_filesystem(
+        tmp_path, filesystem="exfat", probe_locking=False
+    ).writable
 
 
 @pytest.mark.parametrize(
@@ -296,7 +319,9 @@ def test_windows_detection_fails_closed(
 ) -> None:
     _patch_kernel32(monkeypatch, fake)
     assert _windows_filesystem(tmp_path) == "unknown", case
-    qualification = qualify_filesystem(tmp_path, filesystem="unknown", probe_locking=False)
+    qualification = qualify_filesystem(
+        tmp_path, filesystem="unknown", probe_locking=False
+    )
     assert not qualification.writable, case
     assert qualification.verdict is FilesystemVerdict.REFUSED_UNKNOWN, case
 
@@ -347,6 +372,59 @@ def test_lock_probe_is_part_of_qualification(tmp_path: Path) -> None:
     )
     # The probe leaves nothing behind.
     assert not (tmp_path / ".omnivia-lock-probe").exists()
+    assert list(tmp_path.glob(".omnivia-lock-probe-*")) == []
+
+
+def test_lock_probe_never_opens_the_old_predictable_name(
+    tmp_path: Path,
+) -> None:
+    """A planted link at the historical probe name cannot redirect a write."""
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"must stay unchanged")
+    planted = tmp_path / ".omnivia-lock-probe"
+    planted.symlink_to(outside)
+
+    qualification = qualify_filesystem(tmp_path, filesystem="apfs", probe_locking=True)
+
+    assert qualification.verdict is FilesystemVerdict.QUALIFIED
+    assert outside.read_bytes() == b"must stay unchanged"
+    assert planted.is_symlink()
+    assert list(tmp_path.glob(".omnivia-lock-probe-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses POSIX unlink-on-open semantics")
+def test_lock_probe_never_unlinks_a_replacement_after_its_handle_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replacement = tmp_path / ".omnivia-lock-probe-controlled"
+
+    def replaced_probe(_directory: Path) -> tuple[Path, Any]:
+        descriptor = os.open(replacement, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        replacement.unlink()
+        replacement.write_bytes(b"attacker replacement")
+        return replacement, handle
+
+    monkeypatch.setattr(locks_module, "_exclusive_lock_probe", replaced_probe)
+
+    qualification = qualify_filesystem(tmp_path, filesystem="apfs", probe_locking=True)
+
+    assert qualification.verdict is FilesystemVerdict.QUALIFIED
+    assert replacement.read_bytes() == b"attacker replacement"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="uses Windows delete-on-close semantics")
+def test_windows_lock_probe_cleanup_is_owned_by_its_native_handle(
+    tmp_path: Path,
+) -> None:
+    probe, handle = locks_module._exclusive_lock_probe(tmp_path)
+    assert probe.is_file()
+
+    handle.close()
+    assert not probe.exists()
+
+    probe.write_bytes(b"later replacement")
+    assert probe.read_bytes() == b"later replacement"
 
 
 def test_qualification_resolves_up_to_the_nearest_existing_ancestor(
@@ -372,6 +450,7 @@ def test_qualification_resolves_up_to_the_nearest_existing_ancestor(
     assert not missing.exists(), "qualification must not create its own target"
     assert not (tmp_path / "not").exists()
     assert not (tmp_path / ".omnivia-lock-probe").exists()
+    assert list(tmp_path.glob(".omnivia-lock-probe-*")) == []
 
 
 def test_a_refused_filesystem_never_reaches_the_lock_probe(tmp_path: Path) -> None:
@@ -383,11 +462,14 @@ def test_a_refused_filesystem_never_reaches_the_lock_probe(tmp_path: Path) -> No
     qualification = qualify_filesystem(tmp_path, filesystem="nfs", probe_locking=True)
     assert qualification.verdict is FilesystemVerdict.REFUSED_REMOTE
     assert not (tmp_path / ".omnivia-lock-probe").exists()
+    assert list(tmp_path.glob(".omnivia-lock-probe-*")) == []
     assert sorted(entry.name for entry in tmp_path.iterdir()) == []
 
 
 # FL-08
-def test_fl08_lifetime_lock_is_held_for_the_whole_ownership_lifetime(tmp_path: Path) -> None:
+def test_fl08_lifetime_lock_is_held_for_the_whole_ownership_lifetime(
+    tmp_path: Path,
+) -> None:
     lock = create_lock(tmp_path / "storage.lock", LockRole.LIFETIME_STORAGE)
     assert not lock.held
     assert lock.acquire()
@@ -464,9 +546,15 @@ def test_service_instance_identity_is_unique_per_start(tmp_path: Path) -> None:
 
 def test_pid_reuse_is_not_proof_of_liveness() -> None:
     """LE-10: same PID, different start time, is a different process."""
-    original = ProcessEvidence(pid=4242, start_time="100", boot_id="boot-a", os_principal="me")
-    reused = ProcessEvidence(pid=4242, start_time="999", boot_id="boot-a", os_principal="me")
-    rebooted = ProcessEvidence(pid=4242, start_time="100", boot_id="boot-b", os_principal="me")
+    original = ProcessEvidence(
+        pid=4242, start_time="100", boot_id="boot-a", os_principal="me"
+    )
+    reused = ProcessEvidence(
+        pid=4242, start_time="999", boot_id="boot-a", os_principal="me"
+    )
+    rebooted = ProcessEvidence(
+        pid=4242, start_time="100", boot_id="boot-b", os_principal="me"
+    )
 
     assert original.is_same_process(original)
     assert not original.is_same_process(reused), "start time must disambiguate"
@@ -597,7 +685,9 @@ class _FakeKernel32Process:
         return 1
 
 
-def _patch_windows_probes(monkeypatch: pytest.MonkeyPatch, fake: _FakeKernel32Process) -> None:
+def _patch_windows_probes(
+    monkeypatch: pytest.MonkeyPatch, fake: _FakeKernel32Process
+) -> None:
     """Drive the Windows branch from any host, with both POSIX escapes blocked.
 
     `os.kill` and `subprocess.run` are made to fail loudly rather than left alone.
@@ -608,7 +698,9 @@ def _patch_windows_probes(monkeypatch: pytest.MonkeyPatch, fake: _FakeKernel32Pr
     """
 
     def signalled(*arguments: Any, **keywords: Any) -> object:
-        raise AssertionError("signal 0 is CTRL_C_EVENT on Windows; os.kill must not run")
+        raise AssertionError(
+            "signal 0 is CTRL_C_EVENT on Windows; os.kill must not run"
+        )
 
     def launched(*arguments: Any, **keywords: Any) -> object:
         raise AssertionError("the Windows probes must not launch a subprocess")
@@ -695,7 +787,9 @@ def test_windows_start_time_uses_both_halves_of_the_filetime(
 
     expected = str(((_CREATION_HIGH + 1) << 32) | _CREATION_LOW)
     assert _process_start_time(4242) == expected
-    assert expected != _CREATION_100NS, "the same low half must not produce the same evidence"
+    assert expected != _CREATION_100NS, (
+        "the same low half must not produce the same evidence"
+    )
 
 
 def test_windows_start_time_is_none_when_getprocesstimes_fails(
@@ -757,7 +851,9 @@ def test_fake_clock_moves_monotonic_and_wall_independently() -> None:
 
     clock.advance_monotonic(30.0)
     assert clock.monotonic() == monotonic_before + 30.0
-    assert clock.wall_time() == wall_before, "monotonic movement must not move wall time"
+    assert clock.wall_time() == wall_before, (
+        "monotonic movement must not move wall time"
+    )
 
     clock.advance_wall(-3600)
     assert clock.wall_time() < wall_before, "wall time can go backwards"
@@ -811,7 +907,9 @@ def test_harness_reports_a_timeout_rather_than_hanging(tmp_path: Path) -> None:
     """A hung child must not wedge CI."""
     barrier_dir = tmp_path / "never"
     barrier_dir.mkdir()
-    process = spawn("contend_lock.py", str(tmp_path / "x.lock"), str(barrier_dir), "waiter")
+    process = spawn(
+        "contend_lock.py", str(tmp_path / "x.lock"), str(barrier_dir), "waiter"
+    )
     result = wait(process, "waiter", timeout=1.0)
     assert result.returncode == -9
     assert result.stderr == "timeout"

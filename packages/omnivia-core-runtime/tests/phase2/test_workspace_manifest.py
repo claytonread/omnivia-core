@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from omnivia_core_runtime.workspace import manifest_store as manifest_store_module
 from omnivia_core_runtime.workspace.filesystem import (
     WorkspacePathError,
     contains_traversal,
@@ -30,7 +31,10 @@ from omnivia_core_runtime.workspace.manifest_store import (
     ManifestStoreError,
     create_workspace,
     inspect_workspace,
+    manifest_authorization,
+    manifest_digest,
     read_manifest,
+    read_manifest_snapshot,
     write_manifest,
 )
 
@@ -189,6 +193,80 @@ def test_wm06b_write_leaves_no_temporary_file_behind(tmp_path: Path) -> None:
     write_manifest(layout, manifest(name="again"))
     leftovers = [p.name for p in layout.root.iterdir() if p.name.startswith(".")]
     assert leftovers == []
+
+
+def test_wm06c_manifest_is_restricted_before_its_name_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = WorkspaceLayout(root=tmp_path / "ws")
+    layout.root.mkdir()
+    events: list[tuple[str, Path]] = []
+    replace = os.replace
+
+    def restrict(path: Path, *, directory: bool) -> None:
+        assert directory is False
+        events.append(("restrict", path))
+
+    def publish(source: Path, target: Path) -> None:
+        events.append(("replace", source))
+        replace(source, target)
+
+    monkeypatch.setattr(manifest_store_module, "restrict_to_owner", restrict)
+    monkeypatch.setattr(manifest_store_module.os, "replace", publish)
+
+    write_manifest(layout, manifest())
+
+    temporary = layout.manifest_path.with_name(f".{MANIFEST_NAME}.tmp")
+    assert events == [("restrict", temporary), ("replace", temporary)]
+
+
+def test_a_manifest_read_can_be_bound_to_the_exact_authorized_bytes(
+    tmp_path: Path,
+) -> None:
+    layout, path = create_workspace(tmp_path / "ws", manifest(name="authorized"))
+    expected = manifest_digest(path.read_bytes())
+
+    assert read_manifest(layout, expected_digest=expected).name == "authorized"
+
+    preferred = tmp_path / "preferred" / "workspace.json"
+    assert (
+        read_manifest(
+            layout,
+            expected_digest=expected,
+            required_absent_path=preferred,
+        ).name
+        == "authorized"
+    )
+    preferred.parent.mkdir()
+    preferred.write_bytes(path.read_bytes())
+    with pytest.raises(ManifestStoreError, match="managed-start authorization"):
+        read_manifest(
+            layout,
+            expected_digest=expected,
+            required_absent_path=preferred,
+        )
+
+    write_manifest(layout, manifest(name="replacement"))
+    with pytest.raises(ManifestStoreError, match="managed-start authorization"):
+        read_manifest(layout, expected_digest=expected)
+
+
+def test_a_snapshot_authorization_binds_both_exact_bytes_and_workspace_path(
+    tmp_path: Path,
+) -> None:
+    first, first_path = create_workspace(tmp_path / "first", manifest())
+    second, second_path = create_workspace(tmp_path / "second", manifest())
+
+    first_snapshot = read_manifest_snapshot(first)
+    second_snapshot = read_manifest_snapshot(second)
+
+    assert first_snapshot.manifest == read_manifest(first)
+    assert first_snapshot.digest == manifest_digest(first_path.read_bytes())
+    assert second_snapshot.digest == manifest_digest(second_path.read_bytes())
+    assert first_snapshot.digest == second_snapshot.digest
+    assert manifest_authorization(first.root, first_snapshot.digest) != (
+        manifest_authorization(second.root, second_snapshot.digest)
+    )
 
 
 # WM-07

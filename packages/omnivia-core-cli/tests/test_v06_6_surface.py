@@ -41,6 +41,7 @@ EXPECTED_COMMANDS = (
     (("job", "cancel"), "job.cancel", "job_control"),
     (("job", "retry"), "job.retry", "job_control"),
     (("job", "events"), "job.events", "job_observation"),
+    (("evidence", "capture"), "evidence.capture", "content_ingestion"),
     (("evidence", "search"), "evidence.search", "knowledge_retrieval"),
     (("knowledge", "search"), "knowledge.search", "knowledge_retrieval"),
     (("governance", "propose"), "knowledge.propose", "knowledge_governance"),
@@ -100,14 +101,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_twenty_seven_application_commands_are_declared_in_order() -> None:
+def test_the_twenty_eight_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 27
+    assert len(APPLICATION_COMMANDS) == 28
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:
@@ -194,6 +195,11 @@ def test_the_production_package_contains_only_the_declared_cli_modules() -> None
         "__init__.py",
         "dispatch.py",
         "main.py",
+        # R004 section 9.2's installed MCP administration family. A separate
+        # module rather than more of `main.py`, because it is a separate command
+        # class: it administers this installation's dedicated MCP principals
+        # rather than calling one workspace's service.
+        "mcp_admin.py",
         "py.typed",
         "safe_status.py",
         "surface.py",

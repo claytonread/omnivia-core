@@ -227,6 +227,8 @@ __all__ = [
     "ErrorCode",
     "ErrorResponseEnvelope",
     "EvidenceArtifact",
+    "EvidenceCaptureInput",
+    "EvidenceCaptureResult",
     "EvidenceChecksum",
     "EvidenceDisposition",
     "EvidenceId",
@@ -356,6 +358,9 @@ __all__ = [
     "RunStepStatus",
     "RuntimeEvent",
     "RuntimeSourceKind",
+    "RuntimeStopCleanupState",
+    "RuntimeStopPhase",
+    "RuntimeStopProjection",
     "SchemaReference",
     "Scope",
     "ServiceComponentStatus",
@@ -2492,8 +2497,35 @@ WorkflowControlDisposition: TypeAlias = str
 """What one `workflow.control` call did. `cancellation_accepted` appended the cancellation the
 outcome names; `cancellation_ignored_already_terminal` found a finished Run and left its event
 stream untouched, which is a successful idempotent control result rather than a `conflict`;
-`wait_resolved` closed one durable `Wait`. Closed at the schema and open on the wire, with the
-same fail-safe reading as `RunStatus`.
+`cancellation_pending_reconciliation` recorded the stop but found unresolved owner obligations --
+pending effects, cleanup, or both -- that prevent terminal cancellation, and is not
+`cancellation_accepted`: the Run has not closed; `wait_resolved` closed one durable `Wait`.
+Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+RuntimeStopPhase: TypeAlias = str
+"""Where a recorded stop request stands on its way to a terminal cancellation. `requested` has been
+recorded and nothing further about it is yet known; `pending_reconciliation` has unresolved owner
+obligations -- pending effects, cleanup, or both -- that prevent terminal cancellation; `settled`
+has resolved, meaning every owner obligation this stop identified has been accounted for:
+pending_effect_count is 0 and cleanup_state is not_required or completed. This is progress toward
+a disposition, never a disposition itself, and it does not replace any historical
+`CleanupOutcome` value. Closed at the schema and open on the wire, with the same fail-safe
+reading as `RunStatus`.
+"""
+
+RuntimeStopCleanupState: TypeAlias = str
+"""Progress of cleanup tied to one recorded stop request. `not_required` found nothing to free,
+`requested` has been asked for but not yet observed to finish, `completed` freed everything this
+stop identified, `failed` could not free it, `partial` freed some of it but not all, and
+`uncertain` is the honest third answer -- whether cleanup finished could not be established.
+Progress, not the historical `CleanupOutcome` a `CleanupReceipt` records for one resource: while
+a stop's phase has not yet reached `settled`, its projection may report `uncertain` (or
+`requested`, `failed`, `partial`) cleanup even where `pending_effect_count` is zero, because an
+empty pending-effect count is not by itself proof that cleanup finished. A `settled` stop is the
+exception: it must report `not_required` or `completed`, because `settled` itself claims every
+owner obligation this stop identified -- cleanup included -- has been accounted for. Closed at
+the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
 """
 
 WorkflowCompletionOutcome: TypeAlias = str
@@ -4195,6 +4227,114 @@ class ApiError:
             retry_class=field_retry_class,
             retry_after_ms=field_retry_after_ms,
             details=field_details,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCaptureInput:
+    """Input for `evidence.capture`: one caller-supplied UTF-8 text or Markdown artifact to
+    record synchronously as immutable L0 evidence in the selected workspace, for small direct
+    submissions such as notes, excerpts, and model-visible source material. Workspace-scoped:
+    the workspace is the request envelope's selected workspace; this payload never carries a
+    second, independent workspace identifier, nor any path, URL, credential, principal,
+    grant, parser, layer, governance, or storage option. Carries exactly one of
+    `text`/`content_base64`; enforcing that exclusivity, the strict base64/UTF-8 decode, and
+    the decoded-byte bound is a semantic-validation concern, not a wire-shape one.
+    """
+
+    source_native_id: Identifier
+    media_type: MediaType
+    text: str | None = None
+    content_base64: str | None = None
+    source_version: Identifier | None = None
+    event_at: Timestamp | None = None
+    observed_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["source_native_id"] = self.source_native_id
+        wire["media_type"] = self.media_type
+        if self.text is not None:
+            wire["text"] = self.text
+        if self.content_base64 is not None:
+            wire["content_base64"] = self.content_base64
+        if self.source_version is not None:
+            wire["source_version"] = self.source_version
+        if self.event_at is not None:
+            wire["event_at"] = self.event_at
+        if self.observed_at is not None:
+            wire["observed_at"] = self.observed_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceCaptureInput") -> EvidenceCaptureInput:
+        """Decode a wire payload into a EvidenceCaptureInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_source_native_id = _decode_str(
+            _require_field(mapping, "source_native_id", path),
+            f"{path}.source_native_id",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_text: str | None = None
+        if "text" in mapping:
+            raw_text = mapping["text"]
+            if raw_text is None:
+                raise ContractDecodeError(
+                    f"{path}.text: null is not a valid value"
+                )
+            field_text = _decode_str(raw_text, f"{path}.text")
+        field_content_base64: str | None = None
+        if "content_base64" in mapping:
+            raw_content_base64 = mapping["content_base64"]
+            if raw_content_base64 is None:
+                raise ContractDecodeError(
+                    f"{path}.content_base64: null is not a valid value"
+                )
+            field_content_base64 = _decode_str(raw_content_base64, f"{path}.content_base64")
+        field_source_version: Identifier | None = None
+        if "source_version" in mapping:
+            raw_source_version = mapping["source_version"]
+            if raw_source_version is None:
+                raise ContractDecodeError(
+                    f"{path}.source_version: null is not a valid value"
+                )
+            field_source_version = _decode_str(raw_source_version, f"{path}.source_version")
+        field_event_at: Timestamp | None = None
+        if "event_at" in mapping:
+            raw_event_at = mapping["event_at"]
+            if raw_event_at is None:
+                raise ContractDecodeError(
+                    f"{path}.event_at: null is not a valid value"
+                )
+            field_event_at = _decode_str(raw_event_at, f"{path}.event_at")
+        field_observed_at: Timestamp | None = None
+        if "observed_at" in mapping:
+            raw_observed_at = mapping["observed_at"]
+            if raw_observed_at is None:
+                raise ContractDecodeError(
+                    f"{path}.observed_at: null is not a valid value"
+                )
+            field_observed_at = _decode_str(raw_observed_at, f"{path}.observed_at")
+        return cls(
+            source_native_id=field_source_native_id,
+            media_type=field_media_type,
+            text=field_text,
+            content_base64=field_content_base64,
+            source_version=field_source_version,
+            event_at=field_event_at,
+            observed_at=field_observed_at,
         )
 
 
@@ -6582,6 +6722,106 @@ class ResolveWait:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeStopProjection:
+    """Truthful progress of one durably recorded stop request toward a terminal cancellation,
+    carried on a `WorkflowControlResult` or `WorkflowReviewResult`. It reports what this
+    build actually knows about unresolved owner obligations as of the read that produced it;
+    it is typed owner progress, not authorization -- it conveys no independent execution or
+    retry authority of its own, and it never claims an effect it did not already know about.
+    `pending_effect_ids` is bounded and may be a prefix of the true total:
+    `pending_effects_truncated` says whether it is, and `pending_effect_count` is the true
+    total regardless of how many ids are listed.
+    """
+
+    stop_request_id: Identifier
+    phase: RuntimeStopPhase
+    requested_at: Timestamp
+    request_audit_ref: Identifier
+    pending_effect_count: int
+    pending_effect_ids: tuple[Identifier, ...]
+    pending_effects_truncated: bool
+    retry_eligible: bool
+    cleanup_state: RuntimeStopCleanupState
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["stop_request_id"] = self.stop_request_id
+        wire["phase"] = self.phase
+        wire["requested_at"] = self.requested_at
+        wire["request_audit_ref"] = self.request_audit_ref
+        wire["pending_effect_count"] = self.pending_effect_count
+        wire["pending_effect_ids"] = list(self.pending_effect_ids)
+        wire["pending_effects_truncated"] = self.pending_effects_truncated
+        wire["retry_eligible"] = self.retry_eligible
+        wire["cleanup_state"] = self.cleanup_state
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "RuntimeStopProjection"
+    ) -> RuntimeStopProjection:
+        """Decode a wire payload into a RuntimeStopProjection.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_stop_request_id = _decode_str(
+            _require_field(mapping, "stop_request_id", path),
+            f"{path}.stop_request_id",
+        )
+        field_phase = _decode_str(_require_field(mapping, "phase", path), f"{path}.phase")
+        field_requested_at = _decode_str(
+            _require_field(mapping, "requested_at", path),
+            f"{path}.requested_at",
+        )
+        field_request_audit_ref = _decode_str(
+            _require_field(mapping, "request_audit_ref", path),
+            f"{path}.request_audit_ref",
+        )
+        field_pending_effect_count = _decode_int(
+            _require_field(mapping, "pending_effect_count", path),
+            f"{path}.pending_effect_count",
+        )
+        field_pending_effect_ids_items = _decode_sequence(
+            _require_field(mapping, "pending_effect_ids", path),
+            f"{path}.pending_effect_ids",
+        )
+        field_pending_effect_ids = tuple(
+            _decode_str(item, f"{path}.pending_effect_ids[{index}]")
+            for index, item in enumerate(field_pending_effect_ids_items)
+        )
+        field_pending_effects_truncated = _decode_bool(
+            _require_field(mapping, "pending_effects_truncated", path),
+            f"{path}.pending_effects_truncated",
+        )
+        field_retry_eligible = _decode_bool(
+            _require_field(mapping, "retry_eligible", path),
+            f"{path}.retry_eligible",
+        )
+        field_cleanup_state = _decode_str(
+            _require_field(mapping, "cleanup_state", path),
+            f"{path}.cleanup_state",
+        )
+        return cls(
+            stop_request_id=field_stop_request_id,
+            phase=field_phase,
+            requested_at=field_requested_at,
+            request_audit_ref=field_request_audit_ref,
+            pending_effect_count=field_pending_effect_count,
+            pending_effect_ids=field_pending_effect_ids,
+            pending_effects_truncated=field_pending_effects_truncated,
+            retry_eligible=field_retry_eligible,
+            cleanup_state=field_cleanup_state,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowPlanStep:
     """One step of a sealed Workflow plan, exactly as it was materialised. `sequence_index` is
     the materialised order, which is derived from the declared dependencies rather than from
@@ -8300,6 +8540,81 @@ class EvidenceSearchInput:
             include_tombstoned=field_include_tombstoned,
             limit=field_limit,
             page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCaptureResult:
+    """Result of `evidence.capture`: the stored evidence artifact's identity and stable source.
+    `capture_disposition` is `created` for the first committed capture and `already_captured`
+    for a same-source, identical-claims capture resolved under the existing collision rules;
+    a replay of the original idempotency key returns this stored canonical result and never
+    rewrites it.
+    """
+
+    evidence_id: EvidenceId
+    source: SourceReference
+    media_type: MediaType
+    content_checksum: EvidenceChecksum
+    content_length_bytes: int
+    capture_disposition: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["source"] = self.source.to_wire()
+        wire["media_type"] = self.media_type
+        wire["content_checksum"] = self.content_checksum
+        wire["content_length_bytes"] = self.content_length_bytes
+        wire["capture_disposition"] = self.capture_disposition
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EvidenceCaptureResult"
+    ) -> EvidenceCaptureResult:
+        """Decode a wire payload into a EvidenceCaptureResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_source = SourceReference.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        field_content_length_bytes = _decode_int(
+            _require_field(mapping, "content_length_bytes", path),
+            f"{path}.content_length_bytes",
+        )
+        field_capture_disposition = _decode_str(
+            _require_field(mapping, "capture_disposition", path),
+            f"{path}.capture_disposition",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+            source=field_source,
+            media_type=field_media_type,
+            content_checksum=field_content_checksum,
+            content_length_bytes=field_content_length_bytes,
+            capture_disposition=field_capture_disposition,
         )
 
 
@@ -11257,10 +11572,15 @@ class WorkflowControlResult:
     Run already finished settles as `cancellation_ignored_already_terminal` with its stream
     untouched, and is never reported as `conflict` merely for being terminal. An unsupported
     action is refused as `invalid_request` rather than answered with a fabricated success.
+    `stop` is present exactly where this build has progress on a recorded stop to report; its
+    absence on an old-shaped result is not a claim that no stop exists, only that this call
+    reports none. When `cancellation_accepted` carries a `stop`, that stop must be `settled`
+    over a Run whose `run_status` and Workflow `state` are both `cancelled`.
     """
 
     run: WorkflowRunProjection
     disposition: WorkflowControlDisposition
+    stop: RuntimeStopProjection | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -11271,6 +11591,8 @@ class WorkflowControlResult:
         wire: dict[str, Any] = {}
         wire["run"] = self.run.to_wire()
         wire["disposition"] = self.disposition
+        if self.stop is not None:
+            wire["stop"] = self.stop.to_wire()
         return wire
 
     @classmethod
@@ -11291,9 +11613,18 @@ class WorkflowControlResult:
             _require_field(mapping, "disposition", path),
             f"{path}.disposition",
         )
+        field_stop: RuntimeStopProjection | None = None
+        if "stop" in mapping:
+            raw_stop = mapping["stop"]
+            if raw_stop is None:
+                raise ContractDecodeError(
+                    f"{path}.stop: null is not a valid value"
+                )
+            field_stop = RuntimeStopProjection.from_wire(raw_stop, f"{path}.stop")
         return cls(
             run=field_run,
             disposition=field_disposition,
+            stop=field_stop,
         )
 
 
@@ -11311,6 +11642,7 @@ class WorkflowReviewResult:
     resumable: bool
     resume_diagnostic: WorkflowResumeDiagnostic | None = None
     completion: WorkflowCompletion | None = None
+    stop: RuntimeStopProjection | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -11326,6 +11658,8 @@ class WorkflowReviewResult:
             wire["resume_diagnostic"] = self.resume_diagnostic
         if self.completion is not None:
             wire["completion"] = self.completion.to_wire()
+        if self.stop is not None:
+            wire["stop"] = self.stop.to_wire()
         return wire
 
     @classmethod
@@ -11371,12 +11705,21 @@ class WorkflowReviewResult:
                     f"{path}.completion: null is not a valid value"
                 )
             field_completion = WorkflowCompletion.from_wire(raw_completion, f"{path}.completion")
+        field_stop: RuntimeStopProjection | None = None
+        if "stop" in mapping:
+            raw_stop = mapping["stop"]
+            if raw_stop is None:
+                raise ContractDecodeError(
+                    f"{path}.stop: null is not a valid value"
+                )
+            field_stop = RuntimeStopProjection.from_wire(raw_stop, f"{path}.stop")
         return cls(
             run=field_run,
             journal=field_journal,
             resumable=field_resumable,
             resume_diagnostic=field_resume_diagnostic,
             completion=field_completion,
+            stop=field_stop,
         )
 
 
@@ -14285,6 +14628,63 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "stale_projection",
             "token_limit_exceeded",
             "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="evidence.capture",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceCaptureInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceCaptureResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "projection_unavailable",
+            "rate_limited",
+            "size_limit_exceeded",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

@@ -19,11 +19,14 @@ from __future__ import annotations
 import json
 import os
 import platform
+import stat
+import tempfile
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
-from typing import IO, Protocol, Self
+from typing import IO, Any, Protocol, Self
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -80,11 +83,21 @@ class _BaseFileLock:
     writer still holds anything.
     """
 
-    def __init__(self, path: Path, role: LockRole, payload: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        role: LockRole,
+        payload: dict[str, object] | None = None,
+        *,
+        opened_handle: IO[bytes] | None = None,
+    ) -> None:
         self._path = path
         self._role = role
         self._payload = payload or {}
         self._state = _LockState()
+        self._opened_handle = opened_handle
+        self._windows_path_api: Any | None = None
+        self._windows_path_pins: list[object] = []
 
     @property
     def path(self) -> Path:
@@ -99,8 +112,25 @@ class _BaseFileLock:
         return self._state.held
 
     def _open(self) -> IO[bytes]:
+        if self._opened_handle is not None:
+            handle = self._opened_handle
+            self._opened_handle = None
+            return handle
+        if IS_WINDOWS:
+            handle, api, pins = _open_windows_lock_file(self._path)
+            self._windows_path_api = api
+            self._windows_path_pins = pins
+            return handle
         self._path.parent.mkdir(parents=True, exist_ok=True)
         return open(self._path, "a+b")
+
+    def _release_windows_path_pins(self) -> None:
+        api = self._windows_path_api
+        if api is not None:
+            for pin in reversed(self._windows_path_pins):
+                api.CloseHandle(pin)
+        self._windows_path_pins.clear()
+        self._windows_path_api = None
 
     def _write_payload(self) -> None:
         handle = self._state.handle
@@ -136,7 +166,9 @@ class _BaseFileLock:
 
     def __enter__(self) -> Self:
         if not self.acquire():
-            raise LockUnavailable(f"{self._role.value} is held by another process: {self._path}")
+            raise LockUnavailable(
+                f"{self._role.value} is held by another process: {self._path}"
+            )
         return self
 
     def __exit__(
@@ -177,6 +209,7 @@ class PosixFileLock(_BaseFileLock):
             except OSError:
                 if blocking or deadline <= 0:
                     handle.close()
+                    self._release_windows_path_pins()
                     return False
                 import time as _time
 
@@ -200,6 +233,7 @@ class PosixFileLock(_BaseFileLock):
             pass
         finally:
             handle.close()
+            self._release_windows_path_pins()
             self._state.handle = None
             self._state.held = False
 
@@ -231,6 +265,7 @@ class WindowsFileLock(_BaseFileLock):  # pragma: no cover - exercised on Windows
             except OSError:
                 if blocking or deadline <= 0:
                     handle.close()
+                    self._release_windows_path_pins()
                     return False
                 import time as _time
 
@@ -255,17 +290,22 @@ class WindowsFileLock(_BaseFileLock):  # pragma: no cover - exercised on Windows
             pass
         finally:
             handle.close()
+            self._release_windows_path_pins()
             self._state.handle = None
             self._state.held = False
 
 
 def create_lock(
-    path: Path, role: LockRole, payload: dict[str, object] | None = None
+    path: Path,
+    role: LockRole,
+    payload: dict[str, object] | None = None,
+    *,
+    opened_handle: IO[bytes] | None = None,
 ) -> _BaseFileLock:
     """Platform-appropriate lock behind the one interface."""
     if IS_WINDOWS:  # pragma: no cover - selected on Windows CI
-        return WindowsFileLock(path, role, payload)
-    return PosixFileLock(path, role, payload)
+        return WindowsFileLock(path, role, payload, opened_handle=opened_handle)
+    return PosixFileLock(path, role, payload, opened_handle=opened_handle)
 
 
 # --- Filesystem qualification ------------------------------------------------
@@ -283,7 +323,18 @@ class FilesystemVerdict(str, Enum):
 #: Filesystems ADR-037 refuses for direct writable operation. Remote filesystems
 #: without reliable cross-host locking must go through one networked Core Service.
 REFUSED_FILESYSTEMS = frozenset(
-    {"nfs", "nfs4", "smbfs", "cifs", "smb", "sshfs", "fuse.sshfs", "afpfs", "webdav", "ftp"}
+    {
+        "nfs",
+        "nfs4",
+        "smbfs",
+        "cifs",
+        "smb",
+        "sshfs",
+        "fuse.sshfs",
+        "afpfs",
+        "webdav",
+        "ftp",
+    }
 )
 
 #: Local filesystems with lock semantics this project has qualified.
@@ -480,7 +531,9 @@ def qualify_filesystem(
     # replaced by auto-detection.
     name = (detect_filesystem(path) if filesystem is None else filesystem).lower()
 
-    if any(name.startswith(refused) or refused in name for refused in REFUSED_FILESYSTEMS):
+    if any(
+        name.startswith(refused) or refused in name for refused in REFUSED_FILESYSTEMS
+    ):
         return FilesystemQualification(
             verdict=FilesystemVerdict.REFUSED_REMOTE,
             filesystem=name,
@@ -519,13 +572,23 @@ def _locking_works(path: Path) -> bool:
 
     The probe is taken in the nearest existing directory rather than in `path`, so
     qualifying a workspace root that has not been created yet does not create it --
-    and does not leave a probe file inside a tree the caller may still refuse.
+    and does not leave a probe file inside a tree the caller may still refuse. Its
+    name is randomly generated and its descriptor is created exclusively, then
+    handed directly to the lock implementation: no predictable pre-existing name
+    can be opened, truncated, or unlinked through a symbolic link, and concurrent
+    qualifications never contend for one shared probe.
     """
     existing = nearest_existing(path)
     directory = existing if existing.is_dir() else existing.parent
-    probe = directory / ".omnivia-lock-probe"
-    lock = create_lock(probe, LockRole.BOOTSTRAP_MUTEX)
+    handle: IO[bytes] | None = None
     try:
+        probe, handle = _exclusive_lock_probe(directory)
+        lock = create_lock(
+            probe,
+            LockRole.BOOTSTRAP_MUTEX,
+            opened_handle=handle,
+        )
+        handle = None  # ownership transferred to the lock
         if not lock.acquire():
             return False
         lock.release()
@@ -533,10 +596,307 @@ def _locking_works(path: Path) -> bool:
     except (OSError, LockError):
         return False
     finally:
+        if handle is not None:
+            handle.close()
+
+
+def _exclusive_lock_probe(directory: Path) -> tuple[Path, IO[bytes]]:
+    """Create a probe whose still-open descriptor owns exact-object cleanup.
+
+    POSIX unlinks the random name immediately while retaining the descriptor.
+    Windows uses ``FILE_FLAG_DELETE_ON_CLOSE`` so the kernel deletes that exact
+    file object when the lock closes it. Cleanup never resolves a pathname after
+    releasing the descriptor.
+    """
+    if not IS_WINDOWS:
+        descriptor, name = tempfile.mkstemp(
+            prefix=".omnivia-lock-probe-", dir=directory
+        )
+        probe = Path(name)
         try:
-            probe.unlink(missing_ok=True)
-        except OSError:  # pragma: no cover - platform dependent
-            pass
+            probe.unlink()
+            return probe, os.fdopen(descriptor, "r+b", buffering=0)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    import ctypes  # pragma: no cover - exercised on the hosted Windows row
+    import msvcrt  # pragma: no cover
+
+    # FILE_FLAG_DELETE_ON_CLOSE requires DELETE access, and every later opener
+    # must share deletion while this handle owns the exact-object cleanup.
+    generic_read_write_delete = 0x80000000 | 0x40000000 | 0x00010000
+    share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+    create_new = 1
+    temporary_delete_on_close = 0x00000100 | 0x04000000
+    invalid = ctypes.c_void_p(-1).value
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int32
+    for _attempt in range(16):
+        probe = directory / f".omnivia-lock-probe-{uuid.uuid4().hex}"
+        native = kernel32.CreateFileW(
+            str(probe),
+            generic_read_write_delete,
+            share_read_write_delete,
+            None,
+            create_new,
+            temporary_delete_on_close,
+            None,
+        )
+        value = getattr(native, "value", native)
+        if isinstance(value, int) and value not in (0, invalid):
+            try:
+                descriptor = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+                    value, os.O_RDWR | getattr(os, "O_BINARY", 0)
+                )
+            except BaseException:
+                kernel32.CloseHandle(native)
+                raise
+            try:
+                return probe, os.fdopen(descriptor, "r+b", buffering=0)
+            except BaseException:
+                os.close(descriptor)
+                raise
+    raise OSError("could not create an exclusive filesystem lock probe")
+
+
+def _open_windows_lock_file(path: Path) -> tuple[IO[bytes], Any, list[object]]:
+    """Open/create one Windows lock and pin its whole namespace until release.
+
+    Every parent is created or opened one component at a time without following a
+    reparse point, then held without ``FILE_SHARE_DELETE``. The file is opened the
+    same way and its descriptor identity is compared with the still-stable pathname
+    before any payload is written. Later contenders therefore resolve the same
+    namespace and exact file for the full lock lifetime.
+    """
+    import ctypes  # pragma: no cover - exercised on the hosted Windows row
+    import msvcrt  # pragma: no cover
+
+    generic_read_write = 0x80000000 | 0x40000000
+    share_read_write = 0x00000001 | 0x00000002
+    create_new = 1
+    open_existing = 3
+    open_reparse_point = 0x00200000
+    backup_semantics = 0x02000000
+    invalid = ctypes.c_void_p(-1).value
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int32
+    pins: list[object] = []
+    native: object | None = None
+    descriptor = -1
+    created_parent = False
+    try:
+        absolute_path = Path(os.path.abspath(os.fspath(path)))
+        absolute_parent = absolute_path.parent
+        for component in reversed((absolute_parent, *absolute_parent.parents)):
+            try:
+                before = os.lstat(component)
+                component_created = False
+            except FileNotFoundError:
+                try:
+                    component.mkdir(mode=0o700)
+                except FileExistsError as failure:
+                    # The name was absent when this call decided to create it. A
+                    # concurrent winner is not silently adopted as our namespace.
+                    raise OSError(
+                        "Windows lock parent appeared while creating"
+                    ) from failure
+                before = os.lstat(component)
+                component_created = True
+                created_parent = True
+            if not stat.S_ISDIR(before.st_mode) or (
+                getattr(before, "st_file_attributes", 0) & 0x00000400
+            ):
+                raise OSError("Windows lock parent is not a real directory")
+            parent_pin = kernel32.CreateFileW(
+                str(component),
+                0,
+                0 if component_created else share_read_write,
+                None,
+                open_existing,
+                open_reparse_point | backup_semantics,
+                None,
+            )
+            parent_value = getattr(parent_pin, "value", parent_pin)
+            if not isinstance(parent_value, int) or parent_value in (0, invalid):
+                raise OSError("Windows lock parent could not be pinned")
+            after = os.lstat(component)
+            if (
+                before.st_dev,
+                before.st_ino,
+                stat.S_IFMT(before.st_mode),
+            ) != (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)) or (
+                getattr(after, "st_file_attributes", 0) & 0x00000400
+            ):
+                kernel32.CloseHandle(parent_pin)
+                raise OSError("Windows lock parent changed while opening")
+            if component_created:
+                # Creation modes do not establish a DACL on Windows. The
+                # zero-share handle excludes a racing access-capable opener while
+                # the exact directory is made owner-only; it remains the pin after
+                # the repair, so there is no reopen window.
+                from omnivia_core_runtime.ownership.discovery import (
+                    restrict_to_owner,
+                )
+
+                try:
+                    restrict_to_owner(component, directory=True)
+                    secured = os.lstat(component)
+                    if (
+                        before.st_dev,
+                        before.st_ino,
+                        stat.S_IFMT(before.st_mode),
+                    ) != (
+                        secured.st_dev,
+                        secured.st_ino,
+                        stat.S_IFMT(secured.st_mode),
+                    ):
+                        raise OSError("Windows lock parent changed while securing")
+                except BaseException:
+                    kernel32.CloseHandle(parent_pin)
+                    raise
+            pins.append(parent_pin)
+
+        try:
+            before_file = os.lstat(absolute_path)
+            if created_parent:
+                raise OSError(
+                    "Windows lock file appeared inside a newly created namespace"
+                )
+            created_file = False
+        except FileNotFoundError:
+            before_file = None
+            created_file = True
+        native = kernel32.CreateFileW(
+            str(absolute_path),
+            generic_read_write,
+            0 if created_file else share_read_write,
+            None,
+            create_new if created_file else open_existing,
+            open_reparse_point,
+            None,
+        )
+        value = getattr(native, "value", native)
+        if not isinstance(value, int) or value in (0, invalid):
+            raise OSError("Windows lock file could not be opened safely")
+        descriptor = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            value, os.O_RDWR | getattr(os, "O_BINARY", 0)
+        )
+        opened = os.fstat(descriptor)
+        named = os.lstat(absolute_path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or opened.st_nlink != 1
+            or named.st_nlink != 1
+            or (getattr(named, "st_file_attributes", 0) & 0x00000400)
+            or (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode))
+            != (named.st_dev, named.st_ino, stat.S_IFMT(named.st_mode))
+            or (
+                before_file is not None
+                and (before_file.st_dev, before_file.st_ino)
+                != (opened.st_dev, opened.st_ino)
+            )
+        ):
+            raise OSError("Windows lock path is not the opened regular file")
+        if created_file:
+            from omnivia_core_runtime.ownership.discovery import restrict_to_owner
+
+            restrict_to_owner(absolute_path, directory=False)
+            secured = os.lstat(absolute_path)
+            if (
+                secured.st_dev,
+                secured.st_ino,
+                stat.S_IFMT(secured.st_mode),
+                secured.st_nlink,
+            ) != (
+                opened.st_dev,
+                opened.st_ino,
+                stat.S_IFMT(opened.st_mode),
+                1,
+            ):
+                raise OSError("Windows lock file changed while securing")
+            os.close(descriptor)
+            descriptor = -1
+            native = None
+            # The owner-only DACL now excludes an untrusted reopen. Reopen with
+            # read/write sharing so a legitimate contender can reach the same
+            # kernel byte-range lock and receive the normal busy result.
+            before_file = secured
+            native = kernel32.CreateFileW(
+                str(absolute_path),
+                generic_read_write,
+                share_read_write,
+                None,
+                open_existing,
+                open_reparse_point,
+                None,
+            )
+            value = getattr(native, "value", native)
+            if not isinstance(value, int) or value in (0, invalid):
+                raise OSError("secured Windows lock file could not be reopened")
+            descriptor = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+                value, os.O_RDWR | getattr(os, "O_BINARY", 0)
+            )
+            reopened = os.fstat(descriptor)
+            renamed = os.lstat(absolute_path)
+            if (
+                reopened.st_dev,
+                reopened.st_ino,
+                stat.S_IFMT(reopened.st_mode),
+                reopened.st_nlink,
+            ) != (
+                before_file.st_dev,
+                before_file.st_ino,
+                stat.S_IFMT(before_file.st_mode),
+                1,
+            ) or (
+                renamed.st_dev,
+                renamed.st_ino,
+                stat.S_IFMT(renamed.st_mode),
+                renamed.st_nlink,
+            ) != (
+                before_file.st_dev,
+                before_file.st_ino,
+                stat.S_IFMT(before_file.st_mode),
+                1,
+            ):
+                raise OSError("secured Windows lock path changed while reopening")
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        descriptor = -1
+        return handle, kernel32, pins
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        elif native is not None:
+            value = getattr(native, "value", native)
+            if isinstance(value, int) and value not in (0, invalid):
+                kernel32.CloseHandle(native)
+        for pin in reversed(pins):
+            kernel32.CloseHandle(pin)
+        raise
 
 
 __all__ = [

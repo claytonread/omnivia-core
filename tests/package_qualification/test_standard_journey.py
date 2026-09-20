@@ -163,30 +163,17 @@ def test_windows_restriction_issues_the_established_icacls_sequence(
     icacls = _system32("icacls.exe")
     assert commands == [
         [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
-        [icacls, str(config), "/setowner", f"*{sid}", "/q"],
-        [icacls, str(config), "/reset", "/q"],
-        [icacls, str(config), "/inheritance:r", "/grant:r", f"*{sid}:F", "/q"],
-    ]
-
-
-def test_writing_the_mcp_configuration_restricts_it_on_windows(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    module = _module()
-    commands = _windows(
-        module, monkeypatch, (0, _whoami_row()), (0, ""), (0, ""), (0, "")
-    )
-    config = tmp_path / "omnivia-mcp.json"
-
-    module._write_mcp_configuration(config, tmp_path / "installation-state", "ws-1")
-
-    document = json.loads(config.read_text(encoding="utf-8"))
-    assert document["format"] == "omnivia.mcp-config.v1"
-    assert [command[0] for command in commands] == [
-        _system32("whoami.exe"),
-        _system32("icacls.exe"),
-        _system32("icacls.exe"),
-        _system32("icacls.exe"),
+        [icacls, str(config), "/setowner", f"*{sid}", "/L", "/q"],
+        [icacls, str(config), "/reset", "/L", "/q"],
+        [
+            icacls,
+            str(config),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{sid}:F",
+            "/L",
+            "/q",
+        ],
     ]
 
 
@@ -269,25 +256,6 @@ def test_windows_restriction_failure_reports_a_fixed_message(
     ):
         for surface in surfaces:
             assert secret not in surface
-
-
-def test_the_posix_configuration_is_written_owner_read_write_only(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    module = _module()
-    modes: list[int] = []
-    commands: list[list[str]] = []
-    monkeypatch.setattr(module, "_IS_WINDOWS", False)
-    monkeypatch.setattr(module, "_run", lambda arguments, **_: commands.append(list(arguments)))
-    # Recorded rather than read back from the filesystem: a Windows host cannot
-    # store `0o600`, and the mode this asks for is what the assertion is about.
-    monkeypatch.setattr(Path, "chmod", lambda self, mode: modes.append(mode))
-    config = tmp_path / "omnivia-mcp.json"
-
-    module._write_mcp_configuration(config, tmp_path / "installation-state", "ws-1")
-
-    assert modes == [0o600]
-    assert commands == []
 
 
 class _FakeKernel32:
@@ -648,6 +616,238 @@ def test_final_cleanup_routes_the_replacement_through_the_pid_only_stop() -> Non
     }
 
 
+def _configure_snippet(path: str, *, command: str = "omnivia-core-mcp") -> str:
+    return json.dumps(
+        {
+            "mcpServers": {
+                "omnivia-core": {"command": command, "args": ["--config", path]}
+            }
+        }
+    )
+
+
+def test_write_mcp_configuration_no_longer_exists() -> None:
+    """The stale journey hand-rolled a `managed_local` document with no
+    `credential_reference`; the MCP server parses that shape but refuses to
+    start a server on it (`_NO_INSTALLED_CREDENTIAL`), which is exactly the
+    `initialize`-stage `MCPError` V06-7 CI hit. The repair removes the writer
+    rather than patching its output, so it must not come back."""
+    module = _module()
+    assert not hasattr(module, "_write_mcp_configuration")
+
+
+def test_the_journey_never_forges_its_own_mcp_config_document() -> None:
+    """Guard against the stale bug returning as a hand-rolled literal.
+
+    Nowhere in this module may a dict literal carry the `omnivia.mcp-config.v1`
+    document's own key shape: the protected configuration is written only by
+    `omnivia mcp configure`, through `InstalledConfigStore`, never by this
+    journey composing the document itself.
+    """
+    suspicious = {
+        "principal_id",
+        "mutation_enabled",
+        "service_mode",
+        "allowed_purposes",
+    }
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.Dict):
+            keys = {
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            assert not suspicious <= keys
+
+
+def test_run_provisions_the_configuration_through_the_installed_cli() -> None:
+    called = {
+        node.func.id
+        for node in ast.walk(_function("run"))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_provisioned_configuration" in called
+    assert "_write_mcp_configuration" not in called
+
+
+def test_provisioned_configuration_calls_the_installed_administration_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    commands: list[list[str]] = []
+
+    def _fake_run(arguments, *, input_text=None, timeout=None):
+        commands.append(list(arguments))
+        return subprocess.CompletedProcess(
+            list(arguments),
+            0,
+            _configure_snippet(str(tmp_path / ".installed-mcp" / "claude-code.json")),
+            "",
+        )
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    cli = tmp_path / "omnivia"
+    installation = tmp_path / "installation-state"
+
+    result = module._provisioned_configuration(cli, installation, "ws-1")
+
+    assert result == Path(str(tmp_path / ".installed-mcp" / "claude-code.json"))
+    assert commands == [
+        [
+            str(cli),
+            "--installation-state",
+            str(installation),
+            "mcp",
+            "configure",
+            "--host",
+            "claude-code",
+            "--workspace",
+            "ws-1",
+            "--profile",
+            "restricted",
+        ]
+    ]
+
+
+def test_provisioned_configuration_never_writes_a_file_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """This journey forges no credential or configuration file: the only write
+    is `omnivia mcp configure`'s own, inside its protected store."""
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda arguments, **_: subprocess.CompletedProcess(
+            arguments, 0, _configure_snippet(str(tmp_path / "config.json")), ""
+        ),
+    )
+
+    module._provisioned_configuration(
+        tmp_path / "omnivia", tmp_path / "installation-state", "ws-1"
+    )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_provisioned_configuration_fails_closed_on_a_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda arguments, **_: subprocess.CompletedProcess(
+            arguments, 1, "", "the installed MCP authority refused the requested change"
+        ),
+    )
+
+    with pytest.raises(module.JourneyError):
+        module._provisioned_configuration(
+            tmp_path / "omnivia", tmp_path / "installation-state", "ws-1"
+        )
+
+
+def test_provisioned_configuration_fails_closed_on_an_unexpected_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda arguments, **_: subprocess.CompletedProcess(
+            arguments,
+            0,
+            _configure_snippet(str(tmp_path / "config.json")),
+            "unexpected",
+        ),
+    )
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._provisioned_configuration(
+            tmp_path / "omnivia", tmp_path / "installation-state", "ws-1"
+        )
+
+    assert str(excinfo.value) == (
+        "MCP administration configure wrote an unexpected diagnostic"
+    )
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not json",
+        "[]",
+        json.dumps({"mcpServers": {}}),
+        json.dumps({"mcpServers": {"omnivia-core": {}}}),
+        json.dumps({"mcpServers": {"omnivia-core": {"command": "omnivia-core-mcp"}}}),
+        json.dumps({"mcpServers": {"omnivia-core": {"args": ["--config", "/x"]}}}),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {
+                        "command": "omnivia-core-mcp",
+                        "args": ["--config", "/x"],
+                        "env": {},
+                    }
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {"command": "omnivia-core-mcp", "args": []}
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {
+                        "command": "omnivia-core-mcp",
+                        "args": ["--other", "/x"],
+                    }
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {
+                        "command": "omnivia-core-mcp",
+                        "args": ["--config", ""],
+                    }
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "omnivia-core": {
+                        "command": "omnivia-core-mcp",
+                        "args": ["--config", 7],
+                    }
+                }
+            }
+        ),
+    ],
+)
+def test_provisioned_configuration_fails_closed_on_an_unaccepted_snippet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdout: str
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda arguments, **_: subprocess.CompletedProcess(arguments, 0, stdout, ""),
+    )
+
+    with pytest.raises(module.JourneyError):
+        module._provisioned_configuration(
+            tmp_path / "omnivia", tmp_path / "installation-state", "ws-1"
+        )
+
+
 def test_exception_class_names_flattens_nested_exception_groups() -> None:
     module = _module()
     nested = BaseExceptionGroup(
@@ -657,7 +857,11 @@ def test_exception_class_names_flattens_nested_exception_groups() -> None:
     outer = BaseExceptionGroup(
         "outer", [nested, KeyError("secret-path/c"), ValueError("secret-path/d")]
     )
-    assert module._exception_class_names(outer) == ["KeyError", "TypeError", "ValueError"]
+    assert module._exception_class_names(outer) == [
+        "KeyError",
+        "TypeError",
+        "ValueError",
+    ]
 
 
 def test_exception_class_names_is_deterministic_regardless_of_nesting_order() -> None:
@@ -738,7 +942,9 @@ def test_mcp_failure_message_reports_codes_without_mcp_message_or_data() -> None
 
 def test_mcp_failure_message_is_safe_and_deterministic() -> None:
     module = _module()
-    error = RuntimeError("/Users/someone/secret-workspace api-key=sk-1234 leaked-content")
+    error = RuntimeError(
+        "/Users/someone/secret-workspace api-key=sk-1234 leaked-content"
+    )
     message = module._mcp_failure_message("knowledge_search", error, True)
     assert message == (
         "MCP standalone session did not complete: stage=knowledge_search "
@@ -841,7 +1047,9 @@ def test_mcp_journey_removes_its_temporary_diagnostic_file(
         captured_dirs.append(Path(context.name))
         return context
 
-    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", _tracking_temporary_directory)
+    monkeypatch.setattr(
+        module.tempfile, "TemporaryDirectory", _tracking_temporary_directory
+    )
 
     async def _failing_session(command, arguments, calls, diagnostic, stage):
         stage[0] = "initialize"
@@ -874,7 +1082,9 @@ def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
         "called": {
             name: {
                 "is_error": False,
-                "structured_content": {module._RESULT_KEYS[name]: _result(module, name)},
+                "structured_content": {
+                    module._RESULT_KEYS[name]: _result(module, name)
+                },
             }
             for name in names
         },
@@ -926,10 +1136,13 @@ def test_each_generated_configuration_carries_only_the_accepted_stdio_fields(
 ) -> None:
     module = _module()
     profile = module.HOST_PROFILES[index]
-    command, arguments = "/opt/omnivia/bin/omnivia-core-mcp", [
-        "--config",
-        "/opt/omnivia/omnivia-mcp.json",
-    ]
+    command, arguments = (
+        "/opt/omnivia/bin/omnivia-core-mcp",
+        [
+            "--config",
+            "/opt/omnivia/omnivia-mcp.json",
+        ],
+    )
 
     text = module._host_configuration(profile, command, arguments)
 
@@ -1023,10 +1236,10 @@ _REJECTED: dict[str, object] = {
     "second_server": lambda p: _render(
         p, {"omnivia-core": _entry(), "second": _entry()}
     ),
-    "wrong_table_key": lambda p: _render(p, {"omnivia-core": _entry()}, table="servers"),
-    "extra_top_level_key": lambda p: _render(
-        p, {"omnivia-core": _entry()}, extra=True
+    "wrong_table_key": lambda p: _render(
+        p, {"omnivia-core": _entry()}, table="servers"
     ),
+    "extra_top_level_key": lambda p: _render(p, {"omnivia-core": _entry()}, extra=True),
     "command_absent": lambda p: _render(
         p, {"omnivia-core": {"args": list(_ARGUMENTS)}}
     ),
@@ -1072,9 +1285,7 @@ def test_an_unaccepted_host_configuration_fails_closed(index: int, case: str) ->
     profile = module.HOST_PROFILES[index]
 
     with pytest.raises(module.JourneyError) as excinfo:
-        module._accepted_launch(
-            _REJECTED[case](profile), profile, _COMMAND, _ARGUMENTS
-        )
+        module._accepted_launch(_REJECTED[case](profile), profile, _COMMAND, _ARGUMENTS)
 
     assert str(excinfo.value) == (
         f"the {profile.name} configuration was not an accepted stdio launch"
@@ -1083,7 +1294,7 @@ def test_an_unaccepted_host_configuration_fails_closed(index: int, case: str) ->
 
 @pytest.mark.parametrize("index", [0, 1, 2])
 @pytest.mark.parametrize(
-    "text", ["", "not a configuration at all", "{\"mcpServers\":", "[[[["]
+    "text", ["", "not a configuration at all", '{"mcpServers":', "[[[["]
 )
 def test_a_malformed_host_configuration_fails_closed(index: int, text: str) -> None:
     module = _module()

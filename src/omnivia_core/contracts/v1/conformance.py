@@ -83,6 +83,8 @@ from omnivia_core.contracts.v1.semantics import (
 )
 from omnivia_core.contracts.v1.semantics_evidence import (
     validate_evidence_artifact,
+    validate_evidence_capture_input,
+    validate_evidence_capture_result,
     validate_evidence_search_input,
     validate_evidence_search_result,
 )
@@ -176,6 +178,7 @@ _INPUT_SEMANTICS: Final[dict[str, Callable[[Any], None]]] = {
     "candidate.approve": validate_candidate_approve_input,
     "candidate.reject": validate_candidate_reject_input,
     "context_pack.build": validate_context_pack_build_input,
+    "evidence.capture": validate_evidence_capture_input,
     "evidence.search": validate_evidence_search_input,
     "graph.traverse": validate_graph_traversal_input,
     "import.start": validate_import_start_input,
@@ -2008,6 +2011,7 @@ def _result_semantics_table() -> dict[str, Callable[[_ResultContext], None]]:
         "evidence.search": lambda c: validate_evidence_search_result(
             c.decoded_result, c.decoded_input, c.case.workspace_id
         ),
+        "evidence.capture": lambda c: validate_evidence_capture_result(c.decoded_result),
         "import.start": lambda c: validate_import_start_result(
             c.decoded_result, response_job_reference=c.job_reference
         ),

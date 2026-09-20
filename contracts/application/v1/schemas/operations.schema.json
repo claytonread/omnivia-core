@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/operations.schema.json",
   "title": "OmniVia Core Application Contract v1 - operation metadata and catalogue",
-  "description": "The declared contract characteristics of one operation: its scope, payload schemas, required capability, side effects, and job/pagination/idempotency/precondition/audit/error posture. `x-omnivia-operation-catalogue` is the canonical catalogue of the twenty-seven v1 application operations, materialized against `OperationMetadata`; the Python and TypeScript catalogues are generated from it, so it is the single source and no hand-maintained second catalogue exists. `service.health`, `service.readiness`, and `service.discover` are dedicated runtime probes (`service.schema.json`) and are deliberately not catalogue operations. Publishing the catalogue binds contract metadata only: no handler, dispatch, authorization, storage, durable-job execution, or transport behaviour is defined here. This document declares no root type; apart from the catalogue annotation it is a definition container only.",
+  "description": "The declared contract characteristics of one operation: its scope, payload schemas, required capability, side effects, and job/pagination/idempotency/precondition/audit/error posture. `x-omnivia-operation-catalogue` is the canonical catalogue of the twenty-eight v1 application operations, materialized against `OperationMetadata`; the Python and TypeScript catalogues are generated from it, so it is the single source and no hand-maintained second catalogue exists. `service.health`, `service.readiness`, and `service.discover` are dedicated runtime probes (`service.schema.json`) and are deliberately not catalogue operations. Publishing the catalogue binds contract metadata only: no handler, dispatch, authorization, storage, durable-job execution, or transport behaviour is defined here. This document declares no root type; apart from the catalogue annotation it is a definition container only.",
   "x-omnivia-operation-catalogue": [
     {
       "name": "candidate.approve",
@@ -342,6 +342,66 @@
         "stale_projection",
         "token_limit_exceeded",
         "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "evidence.capture",
+      "scope": {
+        "required_scopes": [
+          "memory:write"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureResult",
+      "required_capability": {
+        "id": "evidence.write",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "projection_unavailable",
+        "rate_limited",
+        "size_limit_exceeded",
+        "stale_projection",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
         "workspace_migration_required",
         "workspace_not_granted"
       ]

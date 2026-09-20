@@ -20,13 +20,18 @@ surface depends on the public `omnivia-core` contracts and on
 omnivia --installation-state ABSOLUTE_PATH --workspace-id ID [--timeout-ms N] <group> <leaf> [options]
 ```
 
-`--installation-state` and `--workspace-id` are **required on every command**,
-including the probes. There is no default installation, no ambient home
-directory and no environment fallback: the two values that decide which service
-is called are always stated by the caller. `--installation-state` must be
-absolute — a relative path is refused rather than resolved against the working
-directory, because a trust anchor that means different directories from
-different shells is not one.
+`--installation-state` is **required on every command**, including the probes,
+and `--workspace-id` is required on every command except the `mcp`
+administration family below — which administers this installation's dedicated
+MCP principals rather than calling one workspace's service, and names the
+workspace it binds with its own `--workspace`. Omitting `--workspace-id`
+anywhere else is a usage error, exit 2, before a socket is opened.
+
+There is no default installation, no ambient home directory and no environment
+fallback: the values that decide which service is called are always stated by
+the caller. `--installation-state` must be absolute — a relative path is refused
+rather than resolved against the working directory, because a trust anchor that
+means different directories from different shells is not one.
 
 `--timeout-ms` is the whole-call budget, covering the connection and the call,
 default `10000`. One deadline is built before connecting and reused for the
@@ -55,6 +60,60 @@ optional `safe_status` is encoded as `CoreSafeStatusV1`; it carries no endpoint,
 pid, path, service-instance identity, credential, exception, or launcher output.
 Its target is derived from the explicitly selected installation-state and
 workspace id, with opaque references that reveal neither local path nor endpoint.
+
+## Installed MCP administration
+
+R004 section 9.2's installed experience, as a separate owner/administrator
+command family. None of it is in `OPERATION_CATALOGUE`, has a schema, or can be
+named by an MCP tool: configure mints authority, and authority a model could
+mint is not authority.
+
+```text
+omnivia --installation-state ABSOLUTE_PATH mcp configure \
+    --host claude-code|codex --workspace ID --profile restricted|authoring
+omnivia --installation-state ABSOLUTE_PATH mcp status [--host HOST] [--json]
+omnivia --installation-state ABSOLUTE_PATH mcp revoke [--host HOST]
+```
+
+`--host` and `--profile` are closed vocabularies and `--workspace` is checked
+against the contract's own identifier grammar. There is no scope, capability,
+purpose, principal, path, endpoint or credential flag, and there must not be:
+the rights a profile implies are derived by the authoritative service from the
+frozen catalogue, and the protected configuration path is a function of the
+installation root and the host.
+
+`mcp configure` provisions or re-provisions one host's dedicated principal at
+the installation service, writes the bearer straight into this installation's
+owner-private credential store, publishes an owner-private
+`omnivia.mcp-config.v1` atomically, and verifies the installed MCP server's own
+handshake and exact advertised inventory before reporting success. It then
+prints a host-native snippet naming only the installed MCP command and the
+absolute path to that configuration — never a credential — and edits no host
+configuration file itself. Repeating it over a healthy setup changes nothing;
+a missing, superseded or unsafe local half, or a different profile or
+workspace, rotates. A failure after authority is minted revokes that authority
+before removing the local half, so the outcome is never a live grant nobody can
+present. If that revocation is not confirmed, nothing local is removed at all —
+every safe artifact, including the one this configure was superseding, stays
+exactly as it stands, and one fixed sentence says to run `mcp revoke` and then
+`mcp configure` again. A removal a protected store refuses after a confirmed
+revocation is reported as what it is rather than as a completed rollback.
+
+`mcp status` reports every host, or one, as stable redacted state: profile,
+workspace identity, principal id, service reachability, grant, credential and
+configuration health, and the advertised tool count. It never prints a
+credential, a raw grant, a salt, a digest, a path, an endpoint, a peer's words
+or any workspace content, and it never starts a service.
+
+`mcp revoke` defaults to every host. It invalidates authority at the service
+first and only then removes the local credential and configuration. It is
+idempotent, and it preserves workspace data, audits, committed mutations and
+service-owned jobs.
+
+The MCP distribution is **not** a dependency of this one — ADR-036 forbids the
+edge — so the handshake verification is looked up by name at the moment it is
+needed. An installation without `omnivia-core-mcp` gets one fixed sentence
+saying so, and the setup is compensated rather than left half-published.
 
 ## The 22 application commands
 

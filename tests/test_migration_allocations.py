@@ -62,6 +62,11 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # Workflow Runtime hardening candidate. 0036 is the materialized T-0693 Workflow
 # Runtime cancellation-lineage candidate. 0037-0040 are the ordered Semantic
 # Registry Phase 1/2 candidates integrated after the current mainline sequence.
+# 0041 is the materialized evidence source-identity candidate, appended after them.
+# 0042 is reserved to Workflow Runtime for the runtime stop-progress contract (C05a): an
+# allocation, not a file -- its SQL stays absent until a later change deliberately advances
+# this entry from reserved to candidate, with its content hash and introducing commit
+# recorded here.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -106,6 +111,8 @@ EXPECTED_ALLOCATION = (
         "Semantic Registry",
         "candidate",
     ),
+    (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
+    (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "reserved"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -147,6 +154,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     38: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     39: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
+    41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
