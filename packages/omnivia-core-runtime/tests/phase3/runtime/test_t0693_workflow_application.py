@@ -1217,6 +1217,7 @@ REACHABLE_REFUSERS: dict[str, tuple[str, ...]] = {
         "_view",
         "workflow_control",
         "_cancel",
+        "_pending_cancellation",
         "_resolve_wait",
         "_require_wait_policy",
     ),
