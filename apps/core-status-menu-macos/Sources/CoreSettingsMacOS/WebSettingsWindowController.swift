@@ -139,6 +139,17 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
               let bar = close.superview else { return }
 
         if !accessoryInstalled {
+            var chain: [String] = []
+            var view: NSView? = close
+            while let v = view {
+                chain.append("\(type(of: v)) \(NSStringFromRect(v.frame)) clip=\(v.clipsToBounds || v.wantsLayer == true && v.layer?.masksToBounds == true)")
+                view = v.superview
+            }
+            NSLog("titlebar chain: %@", chain.joined(separator: " -> "))
+            accessoryInstalled = true
+        }
+        // DEBUG BLOCK ABOVE TEMPORARY
+        if !accessoryInstalled {
             let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 60))
             let accessory = NSTitlebarAccessoryViewController()
             accessory.view = accessoryView
@@ -147,12 +158,18 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
             accessoryInstalled = true
         }
 
-        // The bar — and its clipping container — must span the branded header
-        // height, or the centred lights get cut at the container edge.
-        if let container = bar.superview, container.bounds.height < 60 {
-            container.setFrameSize(NSSize(width: container.frame.width, height: 60))
+        // The container spans the branded header height: 60px, anchored to the
+        // window's top edge (growing it with setFrameSize alone kept the old
+        // origin and pushed it above the window). The bar fills the container.
+        if let container = bar.superview {
+            let contentHeight = window.frame.height
+            let target = NSRect(x: 0, y: contentHeight - 60, width: window.frame.width, height: 60)
+            if abs(container.frame.minY - target.minY) > 0.5 || abs(container.frame.height - 60) > 0.5 {
+                container.setFrameSize(NSSize(width: target.width, height: 60))
+                container.setFrameOrigin(NSPoint(x: 0, y: target.minY))
+            }
         }
-        if bar.bounds.height < 60 {
+        if bar.frame.height != 60 {
             bar.setFrameSize(NSSize(width: bar.frame.width, height: 60))
         }
         // Centre of the lights: 30pt below the window's top edge (the header's
