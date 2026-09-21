@@ -23,8 +23,6 @@ enum BridgeAction: String, CaseIterable {
     case openLoginItems
     case openNotifications
     case requestNotifications
-    /// The page's .cs-traffic close control; the native window is the chrome.
-    case closeWindow
 }
 
 struct SettingsStatusProjection: Encodable {
@@ -55,8 +53,6 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
     private var navigator: SettingsNavigator?
     private weak var notificationCenter: UNUserNotificationCenter?
     private var lastActionAt: [String: Date] = [:]
-    /// Native close for the page's .cs-traffic control.
-    public var onClose: (() -> Void)?
     /// Deliver status through an injected bridge script; nil until installed.
     private weak var webView: WKWebView?
 
@@ -133,8 +129,6 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
             }
         case .requestNotifications:
             requestNotificationsExplicitly()
-        case .closeWindow:
-            onClose?()
         }
     }
 
@@ -218,10 +212,9 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
 
     /// Host mode: the export's component CSS is untouched; only its
     /// standalone-page presentation (page padding, #cs-win mockup frame,
-    /// development harness, closed-state block) is overridden so the
-    /// settings shell fills the real NSWindow. The prototype's own close
-    /// control (.cs-traffic) stays visible — it is the window's close button,
-    /// positioned by .cs-head CSS, wired to the native close via the bridge.
+    /// development harness, closed-state block, in-page close control) is
+    /// overridden so the settings shell fills the real NSWindow. The native
+    /// traffic lights are the window controls, sized to the branded header.
     static let hostModeScript = """
     (function () {
       "use strict";
@@ -229,6 +222,7 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         "html,body{height:100%;margin:0;padding:0;overflow:hidden;background:var(--ov-bg-content,#1E1E20)}",
         "body{display:block}",
         "#cs-win{width:100%;height:100%;min-height:0;margin:0;border:0;border-radius:0;box-shadow:none}",
+        ".cs-traffic{display:none!important}",
         "#cs-dev{display:none!important}",
         "#cs-closed{display:none!important}"
       ].join("\\n");
@@ -295,13 +289,6 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
       var HANDLED = { "mac-refresh": "refreshStatus", "notif-allow": "requestNotifications" };
       var DESTINATIONS = { "login-items": "openLoginItems", "notifications": "openNotifications" };
       document.addEventListener("click", function (event) {
-        var traffic = event.target && event.target.closest ? event.target.closest(".cs-traffic button") : null;
-        if (traffic) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          window.webkit.messageHandlers.native.postMessage({ action: "closeWindow" });
-          return;
-        }
         var el = event.target && event.target.closest ? event.target.closest("[data-act]") : null;
         if (!el) return;
         var act = el.getAttribute("data-act");

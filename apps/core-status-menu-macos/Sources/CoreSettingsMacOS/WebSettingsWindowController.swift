@@ -91,9 +91,6 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         self.webView = webView
 
         // The adapter is the entire native surface the page can reach.
-        bridge.onClose = { [weak self] in
-            self?.window?.performClose(nil)
-        }
         bridge.install(
             in: webView,
             coordinator: coordinator,
@@ -107,17 +104,32 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// The page's .cs-traffic close control (positioned by .cs-head CSS) is
-    /// the window's close button; the native titlebar buttons are hidden so
-    /// there is exactly one control, aligned with the brand row by CSS.
+    /// Size the native titlebar container to the branded header (60px) so
+    /// AppKit centres the traffic lights on it — level with the OmniVia mark.
+    /// Frame-nudging the buttons loses to layout passes; moving the container
+    /// is the supported shape.
     private func positionWindowControls() {
-        guard let window else { return }
-        window.standardWindowButton(.closeButton)?.isHidden = true
+        guard let window,
+              let closeButton = window.standardWindowButton(.closeButton),
+              let container = closeButton.superview?.superview else { return }
+        let contentHeight = window.contentView?.bounds.height ?? 0
+        container.frame = NSRect(x: 0, y: contentHeight - 60, width: window.frame.width, height: 60)
+        // One close control per the owned-window grammar.
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
     }
 
     public func windowDidResize(_ notification: Notification) {
+        positionWindowControls()
+    }
+
+    public func windowDidBecomeKey(_ notification: Notification) {
+        positionWindowControls()
+    }
+
+    /// Titlebar layout re-runs on many window updates; reassert the 60px
+    /// container on each one so the traffic lights never drift back up.
+    public func windowDidUpdate(_ notification: Notification) {
         positionWindowControls()
     }
 
