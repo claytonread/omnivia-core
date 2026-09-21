@@ -104,19 +104,37 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// Size the native titlebar container to the branded header (60px) so
-    /// AppKit centres the traffic lights on it — level with the OmniVia mark.
-    /// Frame-nudging the buttons loses to layout passes; moving the container
-    /// is the supported shape.
+    /// Size the native titlebar container to the branded header (60px) and
+    /// pin the close button to its vertical centre with constraints, so the
+    /// traffic lights sit level with the OmniVia mark and survive every
+    /// layout pass.
+    private var controlsPinned = false
+
     private func positionWindowControls() {
         guard let window,
               let closeButton = window.standardWindowButton(.closeButton),
-              let container = closeButton.superview?.superview else { return }
+              let titlebarView = closeButton.superview,
+              let container = titlebarView.superview else { return }
         let contentHeight = window.contentView?.bounds.height ?? 0
         container.frame = NSRect(x: 0, y: contentHeight - 60, width: window.frame.width, height: 60)
         // One close control per the owned-window grammar.
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
+
+        if controlsPinned { return }
+        titlebarView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            titlebarView.topAnchor.constraint(equalTo: container.topAnchor),
+            titlebarView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            titlebarView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            titlebarView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            closeButton.centerYAnchor.constraint(equalTo: titlebarView.centerYAnchor),
+            closeButton.leadingAnchor.constraint(equalTo: titlebarView.leadingAnchor, constant: 16),
+        ])
+        controlsPinned = true
     }
 
     public func windowDidResize(_ notification: Notification) {
