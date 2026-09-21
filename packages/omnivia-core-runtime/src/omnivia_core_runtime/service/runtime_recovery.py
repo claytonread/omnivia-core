@@ -4,7 +4,7 @@ A service instance that has just taken the workspace has no memory of what the
 previous one was doing. What it has is the persisted history: the durable job row and
 its claim, the canonical Run's event stream, its steps, their attempts and their
 waits. This module reads exactly that, classifies each runtime-bound job into one of
-six named states, and repairs only the two that are repairable -- all inside a single
+seven named states, and repairs only the two that are repairable -- all inside a single
 fenced transaction, so the workspace is never observed half-recovered.
 
 **The classification vocabulary is closed** (:data:`RUNTIME_JOB_CLASSIFICATIONS`) and
@@ -20,6 +20,13 @@ is a statement about persisted evidence, never about what happens to be in memor
   interrupted case, and it is handed to the *existing* bounded scheduler recovery
   (RT-106) narrowed to an exact job-id allowlist, so its attempt budget, requeue rule
   and exhaustion behaviour are reused rather than restated.
+* `stop_pending` -- the run is non-terminal and carries a recorded stop request that has
+  not settled. It is read before the two states above and repaired by neither, because
+  both of their repairs put the work back in flight: requeueing an orphan opens the next
+  attempt, and adopting a wait rebinds the claim that resumes one. A stop request is
+  exactly the statement that no further dispatch is authorised for this run, and a
+  restart is not an amnesty for it -- the stop and whatever it is blocked on are durable,
+  and it is `workflow.control` that settles them, not a startup pass.
 * `no_open_attempt` -- non-terminal, unclaimed, nothing open. An ordinary queued job.
 * `terminal_history` -- the run has finished. Left exactly as it is.
 * `contradictory_history` -- the two histories cannot both be true. Left untouched and
@@ -67,15 +74,17 @@ from omnivia_core_runtime.storage.agent_runtime import (
     transaction_local_writer,
 )
 from omnivia_core_runtime.storage.jobs import _adopt_stale_job_claim_locked
+from omnivia_core_runtime.storage.runtime_stop import read_unsettled_stop_request
 
 CLASSIFICATION_ACTIVE_CLAIM: Final = "active_claim"
 CLASSIFICATION_DURABLE_OPEN_WAIT: Final = "durable_open_wait"
 CLASSIFICATION_ORPHAN_ATTEMPT: Final = "orphan_attempt"
 CLASSIFICATION_NO_OPEN_ATTEMPT: Final = "no_open_attempt"
+CLASSIFICATION_STOP_PENDING: Final = "stop_pending"
 CLASSIFICATION_TERMINAL_HISTORY: Final = "terminal_history"
 CLASSIFICATION_CONTRADICTORY_HISTORY: Final = "contradictory_history"
 
-#: Every state this pass can read out of persisted evidence, and there is no seventh.
+#: Every state this pass can read out of persisted evidence, and there is no eighth.
 #: Closed on purpose: an unclassifiable job is `contradictory_history`, which is left
 #: untouched, rather than a new name invented at the moment it is met.
 RUNTIME_JOB_CLASSIFICATIONS: Final[frozenset[str]] = frozenset(
@@ -84,9 +93,18 @@ RUNTIME_JOB_CLASSIFICATIONS: Final[frozenset[str]] = frozenset(
         CLASSIFICATION_DURABLE_OPEN_WAIT,
         CLASSIFICATION_ORPHAN_ATTEMPT,
         CLASSIFICATION_NO_OPEN_ATTEMPT,
+        CLASSIFICATION_STOP_PENDING,
         CLASSIFICATION_TERMINAL_HISTORY,
         CLASSIFICATION_CONTRADICTORY_HISTORY,
     }
+)
+
+#: What a `stop_pending` entry reports, verbatim. A fixed literal rather than the stop's
+#: own reason: the reason belongs to whoever asked for the cancellation, and this is a
+#: statement about what the startup pass did -- nothing.
+_DETAIL_STOP_PENDING: Final = (
+    "a recorded stop request for this run has not settled; no further dispatch is "
+    "authorised for it and this pass neither requeues nor adopts it"
 )
 
 _EVENT_KIND_WAIT_ADOPTED: Final = "wait_adopted"
@@ -170,6 +188,10 @@ def recover_runtime_startup(scheduler: RuntimeScheduler) -> RuntimeStartupRecove
                 job_state=str(row[2]),
                 job_generation=int(row[3]),
                 fencing_generation=generation,
+                stop_pending=read_unsettled_stop_request(
+                    connection, workspace_id=workspace_id, run_id=run_id
+                )
+                is not None,
             )
             if entry.classification == CLASSIFICATION_ORPHAN_ATTEMPT:
                 orphans.append(job_id)
@@ -216,6 +238,7 @@ def _classify(
     job_state: str,
     job_generation: int,
     fencing_generation: int,
+    stop_pending: bool,
 ) -> RuntimeJobRecovery:
     """Read one job and its run out of persisted evidence alone."""
     open_attempts = [
@@ -252,6 +275,17 @@ def _classify(
         # `superseded` is already false here: a claimed job beside a terminal run is
         # the disagreement the rule above refuses, so a terminal run's job is terminal.
         return replace(entry, classification=CLASSIFICATION_TERMINAL_HISTORY)
+    if stop_pending:
+        # Read ahead of both repairable states, because both repairs put the work back
+        # in flight and an unsettled stop is the statement that nothing may. The open
+        # attempt and the unresolved wait are preserved exactly as they are: settling
+        # this stop is `workflow.control`'s job, and it is the one that decides whether
+        # either may be released.
+        return replace(
+            entry,
+            classification=CLASSIFICATION_STOP_PENDING,
+            detail=_DETAIL_STOP_PENDING,
+        )
     if open_waits:
         return replace(entry, classification=CLASSIFICATION_DURABLE_OPEN_WAIT)
     if not open_attempts:
@@ -400,6 +434,7 @@ __all__ = [
     "CLASSIFICATION_DURABLE_OPEN_WAIT",
     "CLASSIFICATION_NO_OPEN_ATTEMPT",
     "CLASSIFICATION_ORPHAN_ATTEMPT",
+    "CLASSIFICATION_STOP_PENDING",
     "CLASSIFICATION_TERMINAL_HISTORY",
     "RUNTIME_JOB_CLASSIFICATIONS",
     "RuntimeJobRecovery",

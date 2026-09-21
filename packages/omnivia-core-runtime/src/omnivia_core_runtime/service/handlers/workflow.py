@@ -54,19 +54,36 @@ reader. An unobserved step is absent rather than forecast, and the state is the
 projection of the durable event stream rather than a guess at what the plan would do
 next.
 
-*Control does the thing, or says it did not.* `cancel` releases whatever the Run is
-still holding -- its open attempt, its unresolved wait -- goes through the durable stop
-ledger, which decides the outcome itself rather than accepting one, and then settles the
-durable job that Run is carried by as `cancelled` in the same transaction, so neither
-history is ever left finished beside a live counterpart. Migration 0036 is what admits
-that terminal observation: it reads the accepted stop request, its outcome and this
-operation's own `workflow.control` audit as the cancellation lineage, rather than making
-this lane forge the `job.cancel` control it is not. A Run that was already finished
-before the request arrived settles as `ignored_already_terminal`: its terminality is read
-inside the same fence before anything is written, so no wait is released, no attempt is
-closed and the durable job is not touched -- an open wait or attempt beside an
-already-finished Run is history this operation did not write, and RT-109 reporting it is
-a better answer than this lane silently closing it under a stop that changed nothing.
+*Control does the thing, or says it did not.* `cancel` records the stop -- the
+no-further-dispatch intent -- and then reads what the Run is actually still blocked on,
+in that order and in one fenced transaction. Only then is anything released.
+
+A Run with nothing unresolved behind it is the case that closes here: whatever it still
+holds is released and receipted, the durable stop ledger decides the outcome itself
+rather than accepting one, and the durable job that Run is carried by is settled as
+`cancelled` in the same transaction, so neither history is ever left finished beside a
+live counterpart. Migration 0036 is what admits that terminal observation: it reads the
+accepted stop request, its outcome and this operation's own `workflow.control` audit as
+the cancellation lineage, rather than making this lane forge the `job.cancel` control it
+is not.
+
+A Run holding material effects whose disposition nobody can state does *not* close.
+`cancellation_pending_reconciliation` is the honest answer for it: the stop request, a
+numbered observation and an obligation naming each unresolved effect are durable, the Run
+reads `uncertain` and its Workflow state `indeterminate`, and its attempts, waits and
+durable job are left exactly as they were -- releasing work whose actual stop is unproven
+would be this lane asserting a fact it does not hold. A later `cancel` of the same Run
+reconciles *that* stop rather than opening a second one, and settles it once the effect
+ledger says the obligations have closed. Cancellation never rewrites the earlier
+response: each request keeps its own stored answer, and `workflow.review` is where the
+current progress is read.
+
+A Run that was already finished before the request arrived settles as
+`ignored_already_terminal`: its terminality is read inside the same fence before anything
+is written, so no wait is released, no attempt is closed and the durable job is not
+touched -- an open wait or attempt beside an already-finished Run is history this
+operation did not write, and RT-109 reporting it is a better answer than this lane
+silently closing it under a stop that changed nothing.
 `resolve_wait` goes through the existing runtime wait authority, which is what
 re-checks the resolution against the stored wait and the run's status, and projects this
 operation's own answer inside that authority's transaction so the answer served and the
@@ -76,8 +93,9 @@ performed.
 
 *Review projects, and derives nothing new.* The verified journal in contiguous
 sequence order, the resume eligibility the journal governance lane already computes,
-and the evidence-gated completion decision if one was recorded. Deterministic in the
-strict sense: the same durable rows produce the same projection.
+the evidence-gated completion decision if one was recorded, and the current progress of
+this Run's stop if it was ever asked to stop. Deterministic in the strict sense: the
+same durable rows produce the same projection.
 """
 
 from __future__ import annotations
@@ -121,7 +139,12 @@ from omnivia_core.contracts.v1 import (
     to_canonical_json,
 )
 from omnivia_core.contracts.v1.semantics_jobs import IdempotencyEquivalence
-from omnivia_core.contracts.v1.semantics_runtime import is_terminal_run_status
+from omnivia_core.contracts.v1.semantics_runtime import (
+    RUN_STATUS_RUNNING,
+    RUN_STATUS_UNCERTAIN,
+    is_terminal_run_status,
+    validate_workflow_control_result,
+)
 from omnivia_core_runtime.execution.workflow import MaterialisedWorkflow
 from omnivia_core_runtime.ownership.fencing import MutationGuard, read_guard
 from omnivia_core_runtime.ownership.identity import Clock
@@ -163,6 +186,12 @@ from omnivia_core_runtime.storage.runtime_stop import (
     STOP_OUTCOME_ACCEPTED,
     STOP_OUTCOME_IGNORED_ALREADY_TERMINAL,
     RunStopRequest,
+    StopCleanupReceipt,
+    StopObligation,
+    read_run_effect_obligations,
+    read_run_stop_requests,
+    read_stop_projection,
+    read_unsettled_stop_request,
     transaction_local_stop_writer,
 )
 from omnivia_core_runtime.storage.workflow_runs import (
@@ -200,7 +229,26 @@ CONTROL_ACTION_RESOLVE_WAIT: Final = "resolve_wait"
 
 DISPOSITION_CANCELLATION_ACCEPTED: Final = "cancellation_accepted"
 DISPOSITION_ALREADY_TERMINAL: Final = "cancellation_ignored_already_terminal"
+DISPOSITION_PENDING_RECONCILIATION: Final = "cancellation_pending_reconciliation"
 DISPOSITION_WAIT_RESOLVED: Final = "wait_resolved"
+
+#: The observation reasons 0042 admits from this lane. Fixed literals rather than the
+#: caller's own `reason`: 0042 bounds the column to a dotted lowercase code, and a
+#: cancellation reason is free-ish text an operator supplies.
+_PROGRESS_REASON_OBSERVED: Final = "cancellation.observed"
+_CLEANUP_REASON: Final = "cancellation.cleanup"
+
+#: The two runtime-owned resources a cancellation actually releases, as
+#: `omnivia_runtime_stop_cleanup_receipts.resource_kind` spells them. Nothing beyond the
+#: runtime's own rows appears here: a worker process and a provider session are somebody
+#: else's to release, and this lane has no receipt for either -- see `_cleanup_receipts`.
+_RESOURCE_KIND_WAIT: Final = "runtime.wait"
+_RESOURCE_KIND_ATTEMPT: Final = "runtime.attempt"
+_CLEANUP_OUTCOME_RELEASED: Final = "released"
+
+#: The event a run's move to `uncertain` is recorded under when a cancellation finds
+#: material effects it cannot account for. Lowercase and dotted, which 0018 requires.
+_EVENT_KIND_STOP_PENDING: Final = "run.stop_pending"
 
 #: Every stop-ledger outcome this operation knows how to report, and its exact reading.
 #:
@@ -243,6 +291,12 @@ _MESSAGE_WAIT_ARGUMENTS: Final = (
     "permits neither"
 )
 _MESSAGE_WAIT_NOT_FOUND: Final = "this run holds no such durable wait"
+_MESSAGE_PENDING_TRANSITION: Final = (
+    "this run is {status!r} and holds {count} unresolved material effect(s); the "
+    "durable run-status transition table admits no move from that status to "
+    "'uncertain', so this build cannot record the cancellation as pending without "
+    "misstating the run"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -626,85 +680,88 @@ class WorkflowHandlers:
                     f"workspace {context.workspace_id!r} holds no run "
                     f"{request.run_id!r}"
                 )
-            already_terminal = is_terminal_run_status(snapshot.status)
-            # Close what the run is still holding *before* the stop makes it terminal.
-            # A cancelled run whose step still has an open attempt, or whose wait is
-            # still pending, is precisely what RT-109 reads as `contradictory_history`
-            # -- it is the one classification that repairs nothing -- so a cancellation
-            # that left either behind would be a cancellation the next startup could not
-            # act on. Nothing is invented: the attempt is closed as `cancelled`, which
-            # is what it was, and the step with it.
-            #
-            # A run that was *already* terminal is not this cancellation's to close.
-            # Whatever finished it settled its own work, and an open wait or attempt
-            # beside a finished run is history this operation did not write and must not
-            # quietly rewrite: cancelling it would attribute the closure to a stop the
-            # ledger is about to record as having changed nothing. RT-109 reports that
-            # disagreement instead, which is the honest answer and the actionable one.
-            if not already_terminal:
-                _release_run_work(
-                    fenced,
-                    snapshot,
-                    workspace_id=context.workspace_id,
-                    at_us=settlement.settled_at_us,
-                    reason=reason,
-                )
-            # The stop identity is the mutation's own claim. Two different requests
-            # therefore cannot collide on one stop request id, and a replay of this
-            # request never reaches here at all -- the seam answers it from the
-            # stored outcome before `mutate` runs.
-            settled = transaction_local_stop_writer(
+            writer = transaction_local_stop_writer(
                 fenced, workspace_id=context.workspace_id
-            ).stop_run(
-                RunStopRequest(
-                    stop_request_id=settlement.claim_id,
-                    run_id=request.run_id,
-                    requested_at_us=settlement.settled_at_us,
-                    requested_by=context.principal,
-                    reason=reason,
-                    audit_ref=settlement.audit_ref,
-                ),
-                runtime_event_id=self.allocate_identifier("rtev"),
-                occurred_at_us=settlement.settled_at_us,
-                completed_at_us=settlement.settled_at_us,
             )
-            # The durable job is settled here, in this same transaction, and only for a
-            # cancellation the stop ledger actually accepted. A run terminal beside a
-            # queued or claimed job is exactly the disagreement RT-109 reads as
-            # `contradictory_history`, and leaving one behind would also leave dead
-            # queued work the scheduler still lists. Nothing is forged to get it: 0036
-            # admits this terminal observation through the accepted stop request, its
-            # outcome and this operation's own `workflow.control` audit, so the lane
-            # never has to write a `job.cancel` control it did not perform.
-            #
-            # Read before either history is published, so an outcome this build cannot
-            # state refuses the whole transaction rather than settling a job under a
-            # disposition nothing decided.
-            disposition = _CANCELLATION_DISPOSITIONS.get(settled.outcome)
-            if disposition is None:
-                raise StorageError(
-                    f"the stop ledger settled run {request.run_id!r} as "
-                    f"{settled.outcome!r}, which this build cannot report as a "
-                    "workflow cancellation disposition"
-                )
-            if settled.outcome == STOP_OUTCOME_ACCEPTED:
-                _cancel_durable_job(
-                    fenced,
-                    workspace_id=context.workspace_id,
-                    job_id=snapshot.job_id,
-                    at_us=settlement.settled_at_us,
-                    reason=reason,
-                    service_instance_id=issued_under.service_instance_id,
-                    fencing_generation=issued_under.fencing_generation,
-                )
-            view = read_workflow_run(
+            # A run already under a stop nobody could settle is not asked to stop twice.
+            # This request reconciles *that* stop -- appending its next observation and
+            # settling it if the obligations behind it have closed -- rather than minting
+            # a second identity for the same question. A run with no such stop takes the
+            # mutation's own claim as the stop identity, so two different requests cannot
+            # collide on one, and a replay of this request never reaches here at all: the
+            # seam answers it from the stored outcome before `mutate` runs.
+            pending_stop = read_unsettled_stop_request(
                 fenced, workspace_id=context.workspace_id, run_id=request.run_id
             )
-            if view is None:  # pragma: no cover - read above proved it is here
-                raise StorageError("a workflow run vanished mid-cancellation")
-            return WorkflowControlResult(
-                run=_run_projection(view), disposition=disposition
-            ).to_wire()
+            stop = pending_stop or RunStopRequest(
+                stop_request_id=settlement.claim_id,
+                run_id=request.run_id,
+                requested_at_us=settlement.settled_at_us,
+                requested_by=context.principal,
+                reason=reason,
+                audit_ref=settlement.audit_ref,
+            )
+
+            if is_terminal_run_status(snapshot.status):
+                # Not this cancellation's run to close. Whatever finished it settled its
+                # own work, and an open wait or attempt beside a finished run is history
+                # this operation did not write and must not quietly rewrite: cancelling
+                # it would attribute the closure to a stop the ledger is about to record
+                # as having changed nothing. RT-109 reports that disagreement instead,
+                # which is the honest answer and the actionable one.
+                return self._settle_cancellation(
+                    fenced,
+                    writer,
+                    context=context,
+                    snapshot=snapshot,
+                    stop=stop,
+                    settlement=settlement,
+                    reason=reason,
+                    issued_under=issued_under,
+                    release=False,
+                )
+
+            # Intent first, and then the obligations. This is the whole reordering the
+            # lifecycle needed: the no-further-dispatch fact becomes durable *before*
+            # anything reads what may be released, so a crash between the two leaves a
+            # recorded stop over untouched work rather than released work under a stop
+            # nobody recorded. Both halves are in this one fenced transaction, so neither
+            # is observable without the other.
+            writer.record_stop_intent(stop)
+            obligations = read_run_effect_obligations(
+                fenced, workspace_id=context.workspace_id, run_id=request.run_id
+            )
+            held = _held_resources(snapshot)
+            writer.record_progress(
+                stop_progress_id=self.allocate_identifier("stopprog"),
+                stop_request_id=stop.stop_request_id,
+                observed_at_us=settlement.settled_at_us,
+                cleanup_required=bool(held),
+                reason=_PROGRESS_REASON_OBSERVED,
+                audit_ref=settlement.audit_ref,
+                obligations=obligations,
+            )
+            if obligations:
+                return self._pending_cancellation(
+                    fenced,
+                    context=context,
+                    snapshot=snapshot,
+                    stop=stop,
+                    settlement=settlement,
+                    reason=reason,
+                    obligations=obligations,
+                )
+            return self._settle_cancellation(
+                fenced,
+                writer,
+                context=context,
+                snapshot=snapshot,
+                stop=stop,
+                settlement=settlement,
+                reason=reason,
+                issued_under=issued_under,
+                release=True,
+            )
 
         outcome = execute_mutation(
             connection,
@@ -718,6 +775,180 @@ class WorkflowHandlers:
             allocate_identifier=self.allocate_identifier,
         )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def _pending_cancellation(
+        self,
+        fenced: Any,
+        *,
+        context: OperationContext,
+        snapshot: RunSnapshot,
+        stop: RunStopRequest,
+        settlement: MutationSettlementContext,
+        reason: str,
+        obligations: tuple[StopObligation, ...],
+    ) -> Mapping[str, Any]:
+        """Publish a stop this build cannot yet settle, having released nothing.
+
+        Nothing above this line touched the run's waits, its attempts or its durable
+        job, and nothing below does either: every one of them is work whose actual stop
+        is unproven while an effect of this run may still be in the world. The durable
+        record of that is already written -- the stop request, the observation, and the
+        obligation naming each unresolved effect -- so this is only the run's own
+        reading of it.
+
+        That reading is `uncertain`, which is the one non-terminal status a run may sit
+        in with work unaccounted for, and it is appended through the canonical run-event
+        writer so the run summary moves with the stream rather than beside it. A run
+        already `uncertain` is left as it is: restating a status is an ordinary event and
+        appending one would say something happened that did not.
+
+        **A `waiting` run is refused rather than reported.** Migration 0018's event guard
+        and `semantics_runtime.RUN_STATUS_TRANSITIONS` both admit `running -> uncertain`
+        and neither admits `waiting -> uncertain`, and the contract requires this
+        disposition to carry an `uncertain` Run. Widening the Python table alone would
+        put it out of step with the trigger that actually enforces it on the way to disk
+        -- C05 packet 3 owns neither the migration nor a successor to it -- and no
+        resume event may be invented to route the run through `running` first. So the
+        whole transaction rolls back, leaving the run exactly as it was, which is the
+        only answer here that states nothing untrue.
+        """
+        if snapshot.status != RUN_STATUS_UNCERTAIN:
+            if snapshot.status != RUN_STATUS_RUNNING:
+                raise application_refusal(
+                    ERROR_CODE_CONFLICT,
+                    _MESSAGE_PENDING_TRANSITION.format(
+                        status=snapshot.status, count=len(obligations)
+                    ),
+                )
+            transaction_local_writer(
+                fenced, workspace_id=context.workspace_id
+            ).append_run_event(
+                run_id=snapshot.run_id,
+                runtime_event_id=self.allocate_identifier("rtev"),
+                occurred_at_us=settlement.settled_at_us,
+                event_kind=_EVENT_KIND_STOP_PENDING,
+                run_status=RUN_STATUS_UNCERTAIN,
+                message=reason,
+            )
+        return self._control_result(
+            fenced,
+            workspace_id=context.workspace_id,
+            run_id=snapshot.run_id,
+            disposition=DISPOSITION_PENDING_RECONCILIATION,
+            stop_request_id=stop.stop_request_id,
+        )
+
+    def _settle_cancellation(
+        self,
+        fenced: Any,
+        writer: Any,
+        *,
+        context: OperationContext,
+        snapshot: RunSnapshot,
+        stop: RunStopRequest,
+        settlement: MutationSettlementContext,
+        reason: str,
+        issued_under: MutationGuard,
+        release: bool,
+    ) -> Mapping[str, Any]:
+        """Close a stop whose obligations are owner-proven, exactly once.
+
+        Reached from two places and single-shot from both: the stop ledger answers a
+        request that already carries an outcome from that outcome and writes nothing, so
+        two callers racing the same reconciliation settle it once and both read the same
+        answer. 0018's own rule that a terminal run event is final is the second guard
+        behind that one.
+
+        `release` separates the run this cancellation actually stops from the run that
+        was finished before the request arrived. For the former, what the run is still
+        holding is closed *before* the stop makes it terminal -- a cancelled run whose
+        step still has an open attempt, or whose wait is still pending, is precisely what
+        RT-109 reads as `contradictory_history` -- and each release is receipted, because
+        a cleanup state this lane cannot evidence is one it must not report. For the
+        latter nothing is closed: whatever finished the run settled its own work.
+
+        The durable job is settled here, in this same transaction, and only for a
+        cancellation the stop ledger actually accepted. A run terminal beside a queued or
+        claimed job is the same disagreement RT-109 reads as `contradictory_history`, and
+        leaving one behind would also leave dead queued work the scheduler still lists.
+        Nothing is forged to get it: 0036 admits this terminal observation through the
+        accepted stop request, its outcome and this operation's own `workflow.control`
+        audit, so the lane never has to write a `job.cancel` control it did not perform.
+        """
+        if release:
+            _release_run_work(
+                fenced,
+                snapshot,
+                workspace_id=context.workspace_id,
+                at_us=settlement.settled_at_us,
+                reason=reason,
+            )
+            for kind in _held_resources(snapshot):
+                writer.record_cleanup_receipt(
+                    StopCleanupReceipt(
+                        stop_cleanup_receipt_id=self.allocate_identifier("stopclean"),
+                        stop_request_id=stop.stop_request_id,
+                        resource_kind=kind,
+                        outcome=_CLEANUP_OUTCOME_RELEASED,
+                        performed_at_us=settlement.settled_at_us,
+                        reason=_CLEANUP_REASON,
+                        audit_ref=settlement.audit_ref,
+                    )
+                )
+        settled = writer.stop_run(
+            stop,
+            runtime_event_id=self.allocate_identifier("rtev"),
+            occurred_at_us=settlement.settled_at_us,
+            completed_at_us=settlement.settled_at_us,
+        )
+        # Read before either history is published, so an outcome this build cannot state
+        # refuses the whole transaction rather than settling a job under a disposition
+        # nothing decided.
+        disposition = _CANCELLATION_DISPOSITIONS.get(settled.outcome)
+        if disposition is None:
+            raise StorageError(
+                f"the stop ledger settled run {snapshot.run_id!r} as "
+                f"{settled.outcome!r}, which this build cannot report as a "
+                "workflow cancellation disposition"
+            )
+        if settled.outcome == STOP_OUTCOME_ACCEPTED:
+            _cancel_durable_job(
+                fenced,
+                workspace_id=context.workspace_id,
+                job_id=snapshot.job_id,
+                at_us=settlement.settled_at_us,
+                reason=reason,
+                service_instance_id=issued_under.service_instance_id,
+                fencing_generation=issued_under.fencing_generation,
+            )
+        return self._control_result(
+            fenced,
+            workspace_id=context.workspace_id,
+            run_id=snapshot.run_id,
+            disposition=disposition,
+            stop_request_id=stop.stop_request_id,
+        )
+
+    def _control_result(
+        self,
+        fenced: Any,
+        *,
+        workspace_id: str,
+        run_id: str,
+        disposition: str,
+        stop_request_id: str,
+    ) -> Mapping[str, Any]:
+        """This operation's answer, read back from the rows it just wrote."""
+        view = read_workflow_run(fenced, workspace_id=workspace_id, run_id=run_id)
+        if view is None:  # pragma: no cover - read above proved it is here
+            raise StorageError("a workflow run vanished mid-cancellation")
+        return WorkflowControlResult(
+            run=_run_projection(view),
+            disposition=disposition,
+            stop=read_stop_projection(
+                fenced, workspace_id=workspace_id, stop_request_id=stop_request_id
+            ),
+        ).to_wire()
 
     def _resolve_wait(
         self,
@@ -848,6 +1079,13 @@ class WorkflowHandlers:
             eligibility = evaluate_journal_resume(
                 connection, workspace_id=context.workspace_id, run_id=request.run_id
             )
+            # The same rows `workflow.control` published its pending projection from, read
+            # here so a caller that reconnected after the cancellation -- or that never
+            # held the control response at all -- can still discover what the stop is
+            # waiting on. Nothing is recomputed: this is the repository's own read.
+            stop = _latest_stop(
+                connection, workspace_id=context.workspace_id, run_id=request.run_id
+            )
         except StorageError as error:
             # A journal that cannot be recomputed whole is refused rather than
             # returned with its gap silently closed.
@@ -868,15 +1106,72 @@ class WorkflowHandlers:
             resumable=eligibility.resumable,
             resume_diagnostic=eligibility.diagnostic,
             completion=_completion(view),
+            stop=stop,
         ).to_wire()
 
 
 def _valid_control_result(wire: Mapping[str, Any]) -> bool:
+    """Whether these bytes are a `workflow.control` result this server will serve.
+
+    Decoded *and* semantically validated, which is what binds the disposition to the Run
+    it is published beside: `cancellation_pending_reconciliation` must carry a stop in
+    `pending_reconciliation` over an `uncertain`/`indeterminate` Run, and
+    `cancellation_accepted` carrying a stop must find it `settled` over a cancelled one.
+    Checking only the shape would let this lane publish a pending cancellation over a run
+    it had already terminalized, which is the exact claim the lifecycle exists to prevent
+    -- and the mutation seam runs this against the stored bytes on replay too, so a
+    stored answer that stopped being coherent is refused rather than re-served.
+    """
     try:
-        WorkflowControlResult.from_wire(wire)
+        validate_workflow_control_result(WorkflowControlResult.from_wire(wire))
     except (ContractDecodeError, ContractSemanticError):
         return False
     return True
+
+
+def _held_resources(snapshot: RunSnapshot) -> tuple[str, ...]:
+    """The runtime-owned resources this run is still holding, as 0042 names them.
+
+    Exactly the two things `_release_run_work` releases and can therefore receipt. A
+    worker process and a provider session are deliberately absent: this lane never sees
+    either stop, and a missing PID or an unanswered provider is not evidence that one
+    did. Reporting `released` for something nobody released is the failure the receipt
+    table exists to make impossible, so what this lane cannot establish it does not
+    write -- and `read_stop_projection` reads the resulting silence as cleanup that is
+    still `requested` rather than as cleanup that finished.
+    """
+    kinds: list[str] = []
+    if any(wait.status == WAIT_STATUS_PENDING for wait in snapshot.waits):
+        kinds.append(_RESOURCE_KIND_WAIT)
+    if any(
+        attempt.status == ATTEMPT_STATUS_RUNNING
+        for step in snapshot.steps
+        for attempt in step.attempts
+    ):
+        kinds.append(_RESOURCE_KIND_ATTEMPT)
+    return tuple(kinds)
+
+
+def _latest_stop(connection: Any, *, workspace_id: str, run_id: str) -> Any:
+    """This run's current stop, as the contract projects it, or nothing at all.
+
+    The unsettled stop where there is one -- that is the stop a reconnecting caller is
+    looking for -- and otherwise the most recently requested, so a settled cancellation
+    stays discoverable after the fact. `None` means this run was never asked to stop,
+    which is a different statement from a stop with nothing to report.
+    """
+    requests = read_run_stop_requests(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
+    if not requests:
+        return None
+    pending = read_unsettled_stop_request(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
+    chosen = pending.stop_request_id if pending else requests[-1].stop_request_id
+    return read_stop_projection(
+        connection, workspace_id=workspace_id, stop_request_id=chosen
+    )
 
 
 def _completion(view: WorkflowRunView) -> WorkflowCompletion | None:
@@ -1281,6 +1576,7 @@ __all__ = [
     "CONTROL_ACTION_RESOLVE_WAIT",
     "DISPOSITION_ALREADY_TERMINAL",
     "DISPOSITION_CANCELLATION_ACCEPTED",
+    "DISPOSITION_PENDING_RECONCILIATION",
     "DISPOSITION_WAIT_RESOLVED",
     "WORKFLOW_CONTROL_OPERATION",
     "WORKFLOW_FAMILY_OPERATIONS",

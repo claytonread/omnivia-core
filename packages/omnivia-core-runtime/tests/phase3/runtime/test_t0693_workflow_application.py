@@ -838,13 +838,21 @@ def test_a_stop_outcome_this_build_cannot_report_refuses_the_whole_transaction(
         writer = honest(connection, workspace_id=workspace_id)
 
         class _Rejecting:
-            """The real ledger's writes, reported under an outcome this build cannot state."""
+            """The real ledger's writes, reported under an outcome this build cannot state.
+
+            Every other write -- the stop intent, the progress observation, the cleanup
+            receipts -- is the honest writer's, so what this changes is exactly the one
+            answer under test and nothing else about the transaction.
+            """
 
             def stop_run(self, request: Any, **settlement: Any) -> Any:
                 return replace(
                     writer.stop_run(request, **settlement),
                     outcome=STOP_OUTCOME_REJECTED,
                 )
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(writer, name)
 
         return _Rejecting()
 
@@ -1209,6 +1217,7 @@ REACHABLE_REFUSERS: dict[str, tuple[str, ...]] = {
         "_view",
         "workflow_control",
         "_cancel",
+        "_pending_cancellation",
         "_resolve_wait",
         "_require_wait_policy",
     ),
