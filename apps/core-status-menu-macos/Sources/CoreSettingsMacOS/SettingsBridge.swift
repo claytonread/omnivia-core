@@ -222,6 +222,8 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         "html,body{height:100%;margin:0;padding:0;overflow:hidden;background:var(--ov-bg-content,#1E1E20)}",
         "body{display:block}",
         "#cs-win{width:100%;height:100%;min-height:0;margin:0;border:0;border-radius:0;box-shadow:none}",
+        /* Three native lights end ~x74; give the brand row real clearance. */
+        ".cs-head{padding-left:90px}",
         ".cs-traffic{display:none!important}",
         "#cs-dev{display:none!important}",
         "#cs-closed{display:none!important}"
