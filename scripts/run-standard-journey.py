@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
-import io
 import json
 import os
 import re
@@ -827,14 +826,17 @@ def _knowledge_search_visible(command: str, arguments: Sequence[str]) -> bool:
     own bounded deadline rather than raised here.
     """
     try:
-        observed = anyio.run(
-            _mcp_session,
-            command,
-            arguments,
-            {"knowledge_search": {"query": QUERY_TOKEN}},
-            io.StringIO(),
-            ["transport_entry"],
-        )
+        # `errlog` becomes the server's stderr handle, so it must have a real
+        # `fileno()`: an in-memory buffer fails every spawn before the call.
+        with open(os.devnull, "w", encoding="utf-8") as errlog:
+            observed = anyio.run(
+                _mcp_session,
+                command,
+                arguments,
+                {"knowledge_search": {"query": QUERY_TOKEN}},
+                errlog,
+                ["transport_entry"],
+            )
     except Exception:
         return False
     called = observed.get("called")
