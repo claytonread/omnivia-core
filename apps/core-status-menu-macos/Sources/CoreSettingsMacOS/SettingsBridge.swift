@@ -62,6 +62,12 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         self.coordinator = coordinator
         self.navigator = navigator
         self.notificationCenter = notificationCenter
+        // Host mode: the real NSWindow is the chrome, so the page renders only
+        // the settings shell — no page padding, no #cs-win mockup frame, no
+        // development harness, no in-page traffic lights. Applied at document
+        // start so there is no flash of the standalone-page presentation.
+        let hostMode = WKUserScript(source: Self.hostModeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        webView.configuration.userContentController.addUserScript(hostMode)
         let script = WKUserScript(source: Self.bridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         webView.configuration.userContentController.addUserScript(script)
         webView.configuration.userContentController.add(self, name: "native")
@@ -201,6 +207,37 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         case .checking: return "checking"
         }
     }
+
+    // MARK: - Host-mode presentation (the real window is the chrome)
+
+    /// Host mode: the export's component CSS is untouched; only its
+    /// standalone-page presentation (page padding, #cs-win mockup frame,
+    /// development harness, in-page traffic lights) is overridden so the
+    /// settings shell fills the real NSWindow.
+    static let hostModeScript = """
+    (function () {
+      "use strict";
+      var css = [
+        "html,body{height:100%;margin:0;padding:0;overflow:hidden;background:var(--ov-bg-content,#1E1E20)}",
+        "body{display:block}",
+        "#cs-win{width:100%;height:100%;min-height:0;margin:0;border:0;border-radius:0;box-shadow:none}",
+        ".cs-traffic{display:none!important}",
+        "#cs-dev{display:none!important}",
+        "#cs-closed{display:none!important}"
+      ].join("\\n");
+      function apply() {
+        var style = document.createElement("style");
+        style.id = "ov-host-mode";
+        style.textContent = css;
+        document.head.appendChild(style);
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", apply);
+      } else {
+        apply();
+      }
+    })();
+    """
 
     // MARK: - Injected page-side half
 
