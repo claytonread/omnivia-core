@@ -98,7 +98,30 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
             notificationCenter: notificationCenter
         )
 
-        window.contentView = webView
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView = container
+        container.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+
+        // The header band is the drag region: the web view consumes mouse
+        // events, so a transparent overlay above it moves the window (the
+        // prototype's `-webkit-app-region: drag` is Electron-only).
+        let drag = HeaderDragView()
+        drag.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(drag)
+        NSLayoutConstraint.activate([
+            drag.topAnchor.constraint(equalTo: container.topAnchor),
+            drag.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            drag.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            drag.heightAnchor.constraint(equalToConstant: 60),
+        ])
+
         loadBundle(into: webView)
         positionWindowControls()
         return window
@@ -193,5 +216,23 @@ extension WebSettingsWindowController: WKNavigationDelegate {
         ) { result, _ in
             NSLog("projected state: %@", result as? String ?? "(none)")
         }
+    }
+}
+
+// MARK: - Header drag region
+
+/// A transparent overlay across the header band. The web view consumes mouse
+/// events, so without this the window cannot be moved by dragging the title
+/// bar. Native traffic lights sit above it (titlebar container layer), so
+/// they keep working.
+final class HeaderDragView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        window?.performDrag(with: event)
     }
 }
