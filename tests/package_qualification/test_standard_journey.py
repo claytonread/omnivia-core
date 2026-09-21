@@ -1791,3 +1791,177 @@ def test_the_journey_calls_every_tool_the_manifest_advertises() -> None:
         if isinstance(key, ast.Constant) and isinstance(key.value, str)
     }
     assert set(module._RESULT_KEYS) <= keys
+
+
+def test_run_awaits_knowledge_search_visibility_before_host_interoperability() -> None:
+    """The bounded wait sits between the CLI approval and the MCP host sweep --
+    the exact race CI hit twice (PR #111 ubuntu, PR #115 macOS)."""
+
+    def _call_line(name: str) -> int:
+        for node in ast.walk(_function("run")):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == name
+            ):
+                return node.lineno
+        raise AssertionError(f"{name} is not called in run")
+
+    approved = _call_line("_provisioned_configuration")
+    visible = _call_line("_await_knowledge_search_visibility")
+    interop = _call_line("_host_interoperability")
+    assert approved < visible < interop
+
+
+def test_knowledge_search_visible_true_once_the_token_search_finds_a_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_mcp_session",
+        _session(
+            {
+                "server": "omnivia-core-mcp",
+                "tools": [{"name": "knowledge_search"}],
+                "called": {
+                    "knowledge_search": {
+                        "is_error": False,
+                        "structured_content": {"records": ["one"]},
+                    }
+                },
+            }
+        ),
+    )
+
+    assert module._knowledge_search_visible("unused", []) is True
+
+
+def test_knowledge_search_visible_false_while_the_search_is_still_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_mcp_session",
+        _session(
+            {
+                "server": "omnivia-core-mcp",
+                "tools": [{"name": "knowledge_search"}],
+                "called": {
+                    "knowledge_search": {
+                        "is_error": False,
+                        "structured_content": {"records": []},
+                    }
+                },
+            }
+        ),
+    )
+
+    assert module._knowledge_search_visible("unused", []) is False
+
+
+def test_knowledge_search_visible_false_when_the_tool_reports_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_mcp_session",
+        _session(
+            {
+                "server": "omnivia-core-mcp",
+                "tools": [{"name": "knowledge_search"}],
+                "called": {"knowledge_search": {"is_error": True}},
+            }
+        ),
+    )
+
+    assert module._knowledge_search_visible("unused", []) is False
+
+
+def test_knowledge_search_visible_false_on_a_session_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session that cannot complete at all -- server not yet answering, a
+    transient transport hiccup -- reads as "not visible yet", not a hard
+    failure: the caller's own bounded deadline is what eventually raises."""
+    module = _module()
+
+    async def _failing(command, arguments, calls, diagnostic, stage):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "_mcp_session", _failing)
+
+    assert module._knowledge_search_visible("unused", []) is False
+
+
+def test_visibility_wait_returns_immediately_once_already_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    calls: list[tuple[str, list[str]]] = []
+
+    def _visible(command: str, arguments: list[str]) -> bool:
+        calls.append((command, list(arguments)))
+        return True
+
+    monkeypatch.setattr(module, "_knowledge_search_visible", _visible)
+    monkeypatch.setattr(
+        module.time, "sleep", lambda _seconds: pytest.fail("should not have slept")
+    )
+
+    module._await_knowledge_search_visibility(
+        "/opt/omnivia/bin/omnivia-core-mcp", ["--config", "/opt/omnivia/mcp.json"]
+    )
+
+    assert calls == [
+        ("/opt/omnivia/bin/omnivia-core-mcp", ["--config", "/opt/omnivia/mcp.json"])
+    ]
+
+
+def test_visibility_wait_polls_at_the_fixed_interval_until_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    outcomes = iter([False, False, True])
+    monkeypatch.setattr(
+        module, "_knowledge_search_visible", lambda *_: next(outcomes)
+    )
+    slept: list[float] = []
+    monkeypatch.setattr(module.time, "sleep", slept.append)
+
+    module._await_knowledge_search_visibility("omnivia-core-mcp", [])
+
+    assert slept == [module._VISIBILITY_POLL_INTERVAL_SECONDS] * 2
+
+
+def test_visibility_wait_raises_with_the_elapsed_budget_after_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    attempts: list[int] = []
+
+    def _never_visible(command: str, arguments: list[str]) -> bool:
+        attempts.append(1)
+        return False
+
+    monkeypatch.setattr(module, "_knowledge_search_visible", _never_visible)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    clock = {"value": 0.0}
+
+    def _monotonic() -> float:
+        clock["value"] += 16.0
+        return clock["value"]
+
+    monkeypatch.setattr(module.time, "monotonic", _monotonic)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._await_knowledge_search_visibility("omnivia-core-mcp", [])
+
+    assert str(excinfo.value) == (
+        "MCP knowledge_search did not return a success for official_python_sdk "
+        "after waiting 32.0s (budget 30s)"
+    )
+    assert len(attempts) == 2
