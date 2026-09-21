@@ -78,6 +78,17 @@
       m.observedAt && !m.checking ? U.note("Last checked " + esc(m.observedAt) + ". Refreshing re-reads status only; it never asks macOS for access or starts anything.", "info") : "");
   }
 
+  /* Unimplemented features render honest stubs, never simulated controls
+     (SPEC-CORE-MAC-READINESS-001 MT-007): the native projection declares
+     which features exist in this build. */
+  function featureInstalled(s, name) {
+    return !!(s.features && s.features[name]);
+  }
+  function featureStub(head, what) {
+    return U.head(head, "") + '<div class="sw-stub">' + ico("circle-dashed") +
+      "<h2>Not installed</h2><p>" + esc(what) + "</p></div>";
+  }
+
   /* ---- Data ----------------------------------------------------------------- */
   function wsContext(s, ws) {
     var pick = s.workspaces.length > 1
@@ -87,6 +98,7 @@
   }
 
   function data(s) {
+    if (!featureInstalled(s, "backup")) return featureStub("Data", "No backup feature is installed in this build. When it exists, its storage and backup controls appear here.");
     var ws = F.ws();
     var h = U.head("Data", "See where your workspace is stored and keep it backed up.");
     if (!ws) return h + noWorkspace(s, "Storage and backups belong to a workspace.");
@@ -150,6 +162,7 @@
     return ["Up to date", "All approved sources are processed."];
   }
   function processing(s) {
+    if (!featureInstalled(s, "sources")) return featureStub("Processing", "No source feature is installed in this build. When it exists, source and processing controls appear here.");
     var ws = F.ws(), p = s.processing, isLive = live();
     var h = U.head("Processing", "Control how Core processes the information you have added.");
     if (!ws) return h + noWorkspace(s, "Processing applies to the sources of a workspace.");
@@ -192,6 +205,7 @@
   var LEVELS = [["read", "Read only"], ["contribute", "Read and contribute"]];
   function levelName(l) { return l === "contribute" ? "Read and contribute" : "Read only"; }
   function access(s) {
+    if (!featureInstalled(s, "connections")) return featureStub("Access", "No connection feature is installed in this build. When it exists, connection recovery appears here.");
     var ws = F.ws(), A = s.access, isLive = live(), can = A.canManage && isLive;
     var h = U.head("Access", "Choose which applications can use this workspace.", U.btn("Add application\u2026", "ov-btn--bordered", { act: "acc-add", disabled: !can || !ws, icon: "plus" }));
     if (!ws) return h + noWorkspace(s, "Access is granted per workspace.");
@@ -256,7 +270,10 @@
     else if (rb && rb.state === "failed") { rbCtl = U.btn("Try again", "ov-btn--primary", { act: "maint-rebuild-go" }); rbD = "The rebuild stopped at " + rb.pct + "%. The previous indexes are still in use; search keeps working."; }
     else { rbCtl = U.btn("Rebuild search indexes\u2026", "ov-btn--bordered", { act: "maint-rebuild", disabled: !live() }); if (m.lastRebuild) rbD += " Last rebuilt " + esc(m.lastRebuild) + "."; }
     var opts = group(null, "", U.disc("maint-options", "Maintenance options", rows(row({ t: "Search indexes", d: rbD, c: rbCtl }))));
-    return U.head("Maintenance", "Check Core health and resolve problems.") + core + diag + opts + unavailable(s);
+    var notInstalled = group("Service & diagnostics", rows(
+      row({ t: "Not available in this build", d: "Service controls, versions, diagnostics export and index rebuild arrive with the qualified Core service integration. Service status lives in the menu bar." })
+    ));
+    return U.head("Maintenance", "Check Core health and resolve problems.") + notInstalled + diag + U.disc("mac-checks", "macOS check details", macChecks(s));
   }
 
   function macChecks(s) {
@@ -266,8 +283,10 @@
       ["Core background startup", "Core installer", "Login item status", { off: "Not chosen", "needs-approval": "Requires approval", "not-set-up": "Component not installed", enabled: "Enabled", unsupported: "Not applicable (remote Core)" }[m.coreStartup] || m.coreStartup],
       ["Notifications", "Companion", "Notification authorisation", { allowed: "Authorised", denied: "Denied", limited: "Provisional: badges only", "not-requested": "Not determined", unknown: "Not read", checking: "Reading\u2026", asking: "Prompt in progress" }[m.notifications] || m.notifications]
     ];
-    if (F.ws()) {
+    if (F.ws() && featureInstalled(s, "sources")) {
       s.processing.sources.forEach(function (x) { var r = m.sources[x[0]] || { state: "not-checked" }; L.push(["Source: " + x[0], "Core reader", "Last read of bookmarked folder", { ok: "Readable at " + r.at, attention: "Read failed at " + r.at, "companion-only": "Companion readable; Core unverified", "not-checked": "Not checked", checking: "Checking\u2026" }[r.state]]); });
+    }
+    if (F.ws() && featureInstalled(s, "backup")) {
       L.push(["Backup destination", "Core backup", "Read and write test", { ok: "Read/write at " + m.backupDest.at, absent: "Unreachable since " + m.backupDest.at, "read-only": "Read only", "not-checked": "Not checked", checking: "Testing\u2026" }[m.backupDest.state]]);
     }
     if (m.shareExt.installed) L.push(["Share to Core", "Share extension", "Installed; appearance in Share menu", m.shareExt.verified ? "Verified" : "Installed, not verified"]);

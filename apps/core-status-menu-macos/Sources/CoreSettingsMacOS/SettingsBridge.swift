@@ -25,6 +25,7 @@ enum BridgeAction: String, CaseIterable {
     case requestNotifications
     case toggleStartAtLogin
     case toggleAttentionNotifications
+    case setAppearance
 }
 
 struct SettingsStatusProjection: Encodable {
@@ -46,6 +47,13 @@ struct SettingsStatusProjection: Encodable {
         let attentionNotifications: Bool
     }
 
+    struct Features: Encodable {
+        var backup = false
+        var sources = false
+        var connections = false
+        var share = false
+    }
+
     let type = "statusProjection"
     let schemaVersion = 1
     let generation: Int
@@ -53,6 +61,7 @@ struct SettingsStatusProjection: Encodable {
     let summary: Summary
     let checks: [Check]
     let preferences: Preferences
+    let features: Features
 }
 
 @MainActor
@@ -62,7 +71,7 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
     private weak var notificationCenter: UNUserNotificationCenter?
     private var lastActionAt: [String: Date] = [:]
     /// Preference toggles and other actions the owning controller resolves.
-    public var actionHandler: ((BridgeAction) -> Void)?
+    public var actionHandler: ((BridgeAction, String?) -> Void)?
     /// Deliver status through an injected bridge script; nil until installed.
     private weak var webView: WKWebView?
 
@@ -102,7 +111,8 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
             preferences: .init(
                 startAtLogin: preferences.startCoreAtLoginSelected,
                 attentionNotifications: preferences.attentionNotificationsSelected
-            )
+            ),
+            features: SettingsStatusProjection.Features()
         )
         guard let data = try? JSONEncoder().encode(projection),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -155,7 +165,12 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         case .requestNotifications:
             requestNotificationsExplicitly()
         case .toggleStartAtLogin, .toggleAttentionNotifications:
-            actionHandler?(action)
+            actionHandler?(action, nil)
+        case .setAppearance:
+            let value = body["arg"] as? String
+            // Validated against the three known themes; anything else is dropped.
+            guard ["system", "light", "dark"].contains(value) else { return }
+            actionHandler?(action, value)
         }
     }
 
@@ -311,6 +326,12 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
           s.companion.startCoreAtLogin = !!projection.preferences.startAtLogin;
           s.companion.notifyAttention = !!projection.preferences.attentionNotifications;
         }
+        s.features = projection.features || {};
+        if (!s.features.share) s.mac.shareExt.installed = false;
+        /* Startup registration is unimplemented in this build: honest neutral
+           states instead of simulated registration. */
+        s.companion.openAtLogin = false;
+        s.companion.startCoreSupported = false;
         s.mac.checking = !!projection.summary && projection.summary.kind === "checking";
         s.mac.observedAt = projection.observedAt ? "just now" : null;
         s.mac.pendingForever = false;
@@ -321,7 +342,14 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
          page's simulated dispatcher sees them; everything else is untouched. */
       var HANDLED = { "mac-refresh": "refreshStatus", "notif-allow": "requestNotifications",
                       "gen-start": "toggleStartAtLogin", "gen-start-off": "toggleStartAtLogin",
+                      "gen-menu": "toggleStartAtLogin",
                       "gen-notify": "toggleAttentionNotifications" };
+      /* Appearance changes flow through for persistence; the page applies its
+         own theme and stays in charge of rendering it. */
+      document.addEventListener("click", function (event) {
+        var opt = event.target && event.target.closest ? event.target.closest("[data-act=gen-appearance]") : null;
+        if (opt) window.webkit.messageHandlers.native.postMessage({ action: "setAppearance", arg: opt.getAttribute("data-arg") });
+      }, true);
       var DESTINATIONS = { "login-items": "openLoginItems", "notifications": "openNotifications" };
       document.addEventListener("click", function (event) {
         var el = event.target && event.target.closest ? event.target.closest("[data-act]") : null;

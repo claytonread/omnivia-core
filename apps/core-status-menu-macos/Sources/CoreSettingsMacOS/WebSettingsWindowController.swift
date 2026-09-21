@@ -50,7 +50,7 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         )
         coordinator.$snapshot.sink { [weak self] _ in self?.pushStatus() }.store(in: &cancellables)
         coordinator.$refreshInFlight.sink { [weak self] _ in self?.pushStatus() }.store(in: &cancellables)
-        bridge.actionHandler = { [weak self] action in
+        bridge.actionHandler = { [weak self] action, _ in
             switch action {
             case .toggleAttentionNotifications:
                 guard let self else { return }
