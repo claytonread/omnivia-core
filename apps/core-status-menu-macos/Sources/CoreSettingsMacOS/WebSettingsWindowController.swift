@@ -98,10 +98,10 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
             notificationCenter: notificationCenter
         )
 
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 640))
         window.contentView = container
         container.addSubview(webView)
+        webView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: container.topAnchor),
             webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -127,43 +127,19 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// Size the native titlebar container to the branded header (60px) and
-    /// pin the traffic lights to its vertical centre with constraints, so
-    /// they sit level with the OmniVia mark and survive every layout pass.
-    private var controlsPinned = false
+    /// Make the titlebar 60px tall with a titlebar accessory (the public,
+    /// supported mechanism): AppKit then centres the traffic lights in the
+    /// tall titlebar — level with the OmniVia mark. No private-view frames.
+    private var accessoryInstalled = false
 
     private func positionWindowControls() {
-        guard let window,
-              let closeButton = window.standardWindowButton(.closeButton),
-              let titlebarView = closeButton.superview,
-              let container = titlebarView.superview else { return }
-        let contentHeight = window.contentView?.bounds.height ?? 0
-        container.frame = NSRect(x: 0, y: contentHeight - 60, width: window.frame.width, height: 60)
-
-        if controlsPinned { return }
-        titlebarView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            titlebarView.topAnchor.constraint(equalTo: container.topAnchor),
-            titlebarView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            titlebarView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            titlebarView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
-        let miniaturize = window.standardWindowButton(.miniaturizeButton)
-        let zoom = window.standardWindowButton(.zoomButton)
-        for button in [closeButton, miniaturize, zoom].compactMap({ $0 }) {
-            button.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                button.centerYAnchor.constraint(equalTo: titlebarView.centerYAnchor),
-            ])
-        }
-        // Standard 8px spacing between the lights, leading at the header's
-        // traffic zone (x16).
-        NSLayoutConstraint.activate([
-            closeButton.leadingAnchor.constraint(equalTo: titlebarView.leadingAnchor, constant: 16),
-            miniaturize!.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 8),
-            zoom!.leadingAnchor.constraint(equalTo: miniaturize!.trailingAnchor, constant: 8),
-        ])
-        controlsPinned = true
+        guard let window, !accessoryInstalled else { return }
+        accessoryInstalled = true
+        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 60))
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = accessoryView
+        accessory.layoutAttribute = .right
+        window.addTitlebarAccessoryViewController(accessory)
     }
 
     public func windowDidResize(_ notification: Notification) {
@@ -209,13 +185,6 @@ extension WebSettingsWindowController: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // The page is up; deliver the first projection.
         pushStatus()
-        // Developer-harness verification: confirm the projection landed in the
-        // page's state model.
-        webView.evaluateJavaScript(
-            "window.CoreFx ? JSON.stringify({startup: window.CoreFx.get().mac.coreStartup, notifications: window.CoreFx.get().mac.notifications}) : 'no CoreFx'"
-        ) { result, _ in
-            NSLog("projected state: %@", result as? String ?? "(none)")
-        }
     }
 }
 
