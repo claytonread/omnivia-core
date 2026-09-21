@@ -147,7 +147,11 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
             accessoryInstalled = true
         }
 
-        // The bar must span the branded header height; then centre the lights.
+        // The bar — and its clipping container — must span the branded header
+        // height, or the centred lights get cut at the container edge.
+        if let container = bar.superview, container.bounds.height < 60 {
+            container.setFrameSize(NSSize(width: container.frame.width, height: 60))
+        }
         if bar.bounds.height < 60 {
             bar.setFrameSize(NSSize(width: bar.frame.width, height: 60))
         }
