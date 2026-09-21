@@ -103,7 +103,7 @@ enum OvFont {
         label(text.uppercased(), size: 11, cssWeight: 700, color: Ov.textTertiary, tracking: 0.05)
     }
     static func wordmark(_ text: String) -> NSTextField {
-        label(text, size: 13, cssWeight: 590, color: Ov.textPrimary, tracking: -0.006)
+        label(text, size: 13, cssWeight: 590, color: Ov.textPrimary, tracking: -0.01)
     }
 }
 
@@ -223,7 +223,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 0
-        content.edgeInsets = NSEdgeInsets(top: 30, left: 40, bottom: 90, right: 40)
+        content.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 56, right: 24)
         let contentHost = NSView()
         contentHost.wantsLayer = true
         contentHost.layer?.backgroundColor = Ov.bgContent.cgColor
@@ -330,7 +330,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 1
-        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 12, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 12, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -372,7 +372,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let title = OvFont.paneTitle(selectedPane.rawValue)
         content.addArrangedSubview(title)
-        content.addArrangedSubview(ovSpacer(22))
+        content.addArrangedSubview(ovSpacer(18))
 
         switch selectedPane {
         case .general: renderGeneral(content)
@@ -428,7 +428,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             icon.contentTintColor = tone == .ok ? Ov.success : (tone == .warn ? Ov.warning : Ov.textTertiary)
         }
         icon.setContentHuggingPriority(.required, for: .horizontal)
-        let label = OvFont.label(text, size: 11.5, color: Ov.textSecondary)
+        let label = OvFont.label(text, size: 11.5, color: tone == .warn ? Ov.textPrimary : Ov.textSecondary)
         row.addArrangedSubview(icon)
         row.addArrangedSubview(label)
         return row
@@ -500,19 +500,21 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         block.layer?.borderWidth = 1
         block.layer?.borderColor = warn ? Ov.warning.withAlphaComponent(0.35).cgColor : Ov.borderSubtle.cgColor
 
+        // .cs-fix-t 12.5/600; .cs-fix-d 11.5 secondary mt 3; .cs-fix-a mt 9.
         let t = NSTextField(wrappingLabelWithString: title)
-        t.font = OvFont.sans(12.5, 500)
+        t.font = OvFont.sans(12.5, 600)
         t.textColor = Ov.textPrimary
         t.preferredMaxLayoutWidth = 520
         block.addArrangedSubview(t)
         if let detail {
             let d = NSTextField(wrappingLabelWithString: detail)
             d.font = OvFont.sans(11.5)
-            d.textColor = Ov.textTertiary
+            d.textColor = Ov.textSecondary
             d.preferredMaxLayoutWidth = 520
             block.addArrangedSubview(d)
         }
         if !actions.isEmpty {
+            block.addArrangedSubview(ovSpacer(6)) // .cs-fix-a margin-top 9 = 3 row gap + 6
             let acts = NSStackView()
             acts.orientation = .horizontal
             acts.spacing = 8
@@ -536,6 +538,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         button.action = action
         if let subject { button.setAccessibilityLabel("\(title) — \(subject)") }
         return button
+    }
+
+    private func rowButton(_ title: String, style: OvButtonStyle, action: Selector, subject: String? = nil) -> NSButton {
+        let b = button(title, style: style, action: action, subject: subject)
+        return b
     }
 
     // MARK: General
@@ -621,6 +628,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // Binding disposition (§19): no qualified registration mechanism exists,
         // so the row shows the honest state and the OS route — never a
         // registration this build cannot own.
+        startupBody.addArrangedSubview(ovSpacer(5))
         startupBody.addArrangedSubview(
             recoveryBlock(
                 title: "No startup mechanism is installed in this build.",
@@ -656,6 +664,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             notifyActions.append(button("Open Notifications", style: .bordered, action: #selector(openNotifications), subject: "notifications"))
         }
         if !notifyActions.isEmpty {
+            notifyBody.addArrangedSubview(ovSpacer(5))
             notifyBody.addArrangedSubview(recoveryBlock(title: recoveryTitle(for: notifyCheck), actions: notifyActions, warn: notifyCheck?.observedState == .denied))
         }
     }
@@ -930,21 +939,28 @@ enum OvButtonStyle { case bordered, primary }
 final class OvButton: NSButton {
     private let style: OvButtonStyle
 
-    init(title: String, style: OvButtonStyle) {
+    init(title: String, style: OvButtonStyle, size: OvButtonSize = .row) {
         self.style = style
+        self.size = size
         super.init(frame: .zero)
         self.title = title
         isBordered = false
         setButtonType(.momentaryPushIn)
         wantsLayer = true
         layer?.cornerRadius = 6
-        font = OvFont.sans(13, 500)
+        // .cs-fix-a/.sw-row-c .ov-btn: height 26, 12.5px, 0 11 padding.
+        font = OvFont.sans(size == .row ? 12.5 : 13, 500)
         contentTintColor = style == .primary ? Ov.onAccent : Ov.textPrimary
         applyStyle()
 
-        heightAnchor.constraint(equalToConstant: 28).isActive = true
-        widthAnchor.constraint(greaterThanOrEqualToConstant: textWidth + 24).isActive = true
+        let height: CGFloat = size == .row ? 26 : 28
+        let padding: CGFloat = size == .row ? 11 : 12
+        heightAnchor.constraint(equalToConstant: height).isActive = true
+        widthAnchor.constraint(greaterThanOrEqualToConstant: textWidth + padding * 2).isActive = true
     }
+
+    enum OvButtonSize { case row, md }
+    private let size: OvButtonSize
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
