@@ -42,6 +42,71 @@ enum Ov {
     static let onAccent = NSColor.white
 }
 
+// MARK: - OmniVia typography (styles/tokens.css §1)
+
+enum OvFont {
+    /// CSS weight → NSFont.Weight (CoreText scale). The prototype's canonical
+    /// weights are 400 / 500 / 590 / 700; 590 sits between medium (0.23) and
+    /// semibold (0.30).
+    private static func weight(_ css: CGFloat) -> NSFont.Weight {
+        switch css {
+        case ..<450: return .regular        // 400
+        case ..<580: return .medium         // 500
+        case ..<650: return NSFont.Weight(rawValue: 0.28) // 590
+        case ..<750: return .semibold       // 600
+        default: return .bold               // 700
+        }
+    }
+
+    /// SF Pro (--ov-font-sans). NSFont.systemFont resolves the optical
+    /// Text/Display cut automatically at the ~20px breakpoint.
+    static func sans(_ size: CGFloat, _ cssWeight: CGFloat = 400) -> NSFont {
+        .systemFont(ofSize: size, weight: weight(cssWeight))
+    }
+
+    /// SF Mono (--ov-font-mono) with tabular-nums, for paths, IDs, versions,
+    /// counts, logs and code.
+    static func mono(_ size: CGFloat, _ cssWeight: CGFloat = 400) -> NSFont {
+        let base = NSFont.monospacedSystemFont(ofSize: size, weight: weight(cssWeight))
+        let settings: [[NSFontDescriptor.FeatureKey: Any]] = [[
+            .typeIdentifier: kNumberSpacingType,
+            .selectorIdentifier: kMonospacedNumbersSelector,
+        ]]
+        let descriptor = base.fontDescriptor.addingAttributes([.featureSettings: settings])
+        return NSFont(descriptor: descriptor, size: size) ?? base
+    }
+
+    /// A non-wrapping label with the token font, colour and letter-spacing
+    /// (CSS `letter-spacing` em values → AppKit kern in points).
+    static func label(
+        _ text: String,
+        size: CGFloat,
+        cssWeight: CGFloat = 400,
+        color: NSColor,
+        tracking: CGFloat = 0,
+        mono: Bool = false
+    ) -> NSTextField {
+        let font = mono ? self.mono(size, cssWeight) : sans(size, cssWeight)
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: color,
+            .kern: tracking * size,
+        ])
+        return NSTextField(labelWithAttributedString: attributed)
+    }
+
+    // Prototype roles.
+    static func paneTitle(_ text: String) -> NSTextField {
+        label(text, size: 20, cssWeight: 700, color: Ov.textPrimary, tracking: -0.014)
+    }
+    static func groupHeader(_ text: String) -> NSTextField {
+        label(text.uppercased(), size: 11, cssWeight: 700, color: Ov.textTertiary, tracking: 0.05)
+    }
+    static func wordmark(_ text: String) -> NSTextField {
+        label(text, size: 13, cssWeight: 590, color: Ov.textPrimary, tracking: -0.006)
+    }
+}
+
 @MainActor
 public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// One window per companion (MR-001). Reopening focuses the existing one.
@@ -233,12 +298,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         titleColumn.orientation = .vertical
         titleColumn.alignment = .leading
         titleColumn.spacing = 1
-        let wordmark = NSTextField(labelWithString: "OmniVia")
-        wordmark.font = .systemFont(ofSize: 13, weight: .semibold)
-        wordmark.textColor = Ov.textPrimary
-        let sub = NSTextField(labelWithString: "Core Settings")
-        sub.font = .systemFont(ofSize: 11)
-        sub.textColor = Ov.textSecondary
+        let wordmark = OvFont.wordmark("OmniVia")
+        let sub = OvFont.label("Core Settings", size: 11, color: Ov.textSecondary)
         titleColumn.addArrangedSubview(wordmark)
         titleColumn.addArrangedSubview(sub)
         row.addArrangedSubview(titleColumn)
@@ -298,7 +359,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         // Footer (prototype .cs-foot): service-status line, one place only.
         let foot = NSTextField(wrappingLabelWithString: "Core service status lives in the menu. Closing this window never stops Core.")
-        foot.font = .systemFont(ofSize: 11.5)
+        foot.font = OvFont.sans(11.5)
         foot.textColor = Ov.textSecondary
         foot.preferredMaxLayoutWidth = 170
         stack.addArrangedSubview(foot)
@@ -310,9 +371,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let content = contentStack else { return }
         content.views.forEach { content.removeView($0) }
 
-        let title = NSTextField(labelWithString: selectedPane.rawValue)
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
-        title.textColor = Ov.textPrimary
+        let title = OvFont.paneTitle(selectedPane.rawValue)
         content.addArrangedSubview(title)
         content.addArrangedSubview(ovSpacer(16))
 
@@ -330,9 +389,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func card(_ stack: NSStackView, header: String?) -> NSStackView {
         if let header {
-            let label = NSTextField(labelWithString: header.uppercased())
-            label.font = .systemFont(ofSize: 11, weight: .semibold)
-            label.textColor = Ov.textTertiary
+            let label = OvFont.groupHeader(header)
             stack.addArrangedSubview(label)
             stack.addArrangedSubview(ovSpacer(6))
         }
@@ -371,9 +428,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             icon.contentTintColor = tone == .ok ? Ov.success : (tone == .warn ? Ov.warning : Ov.textTertiary)
         }
         icon.setContentHuggingPriority(.required, for: .horizontal)
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11.5)
-        label.textColor = Ov.textSecondary
+        let label = OvFont.label(text, size: 11.5, color: Ov.textSecondary)
         row.addArrangedSubview(icon)
         row.addArrangedSubview(label)
         return row
@@ -392,9 +447,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 8
-        let t = NSTextField(labelWithString: title)
-        t.font = .systemFont(ofSize: 13)
-        t.textColor = Ov.textPrimary
+        let t = OvFont.label(title, size: 13, cssWeight: 600, color: Ov.textPrimary)
         line.addArrangedSubview(t)
         if let trailing {
             let spring = NSView()
@@ -410,7 +463,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         body.addArrangedSubview(line)
         if let detail {
             let d = NSTextField(wrappingLabelWithString: detail)
-            d.font = .systemFont(ofSize: 11.5)
+            d.font = OvFont.sans(11.5)
             d.textColor = Ov.textTertiary
             d.preferredMaxLayoutWidth = 560
             body.addArrangedSubview(d)
@@ -448,13 +501,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         block.layer?.borderColor = warn ? Ov.warning.withAlphaComponent(0.35).cgColor : Ov.borderSubtle.cgColor
 
         let t = NSTextField(wrappingLabelWithString: title)
-        t.font = .systemFont(ofSize: 12.5, weight: .medium)
+        t.font = OvFont.sans(12.5, 500)
         t.textColor = Ov.textPrimary
         t.preferredMaxLayoutWidth = 520
         block.addArrangedSubview(t)
         if let detail {
             let d = NSTextField(wrappingLabelWithString: detail)
-            d.font = .systemFont(ofSize: 11.5)
+            d.font = OvFont.sans(11.5)
             d.textColor = Ov.textTertiary
             d.preferredMaxLayoutWidth = 520
             block.addArrangedSubview(d)
@@ -503,7 +556,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         headlineRow.alignment = .centerY
         headlineRow.spacing = 8
         let headline = NSTextField(wrappingLabelWithString: summary.headline)
-        headline.font = .systemFont(ofSize: 13, weight: .medium)
+        headline.font = OvFont.sans(13, 590)
         headline.textColor = Ov.textPrimary
         headline.preferredMaxLayoutWidth = 480
         headlineRow.addArrangedSubview(headline)
@@ -521,7 +574,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         summaryBody.addArrangedSubview(headlineRow)
         if let detail = summary.detail {
             let d = NSTextField(wrappingLabelWithString: detail)
-            d.font = .systemFont(ofSize: 11.5)
+            d.font = OvFont.sans(11.5)
             d.textColor = Ov.textTertiary
             d.preferredMaxLayoutWidth = 560
             summaryBody.addArrangedSubview(d)
@@ -662,7 +715,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         Observed: \(observed)
         """
         let text = NSTextField(wrappingLabelWithString: details)
-        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        text.font = OvFont.mono(11)
         text.textColor = Ov.textSecondary
         text.preferredMaxLayoutWidth = 560
         let logBox = NSStackView()
@@ -682,7 +735,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // Diagnostics are bounded and safe by construction (§14.2): the fields
         // above are the whole export — no paths, no bookmarks, no secrets.
         let note = NSTextField(wrappingLabelWithString: "These details are what diagnostics export contains. Nothing else is recorded.")
-        note.font = .systemFont(ofSize: 11.5)
+        note.font = OvFont.sans(11.5)
         note.textColor = Ov.textTertiary
         note.preferredMaxLayoutWidth = 560
         detailsCard.addArrangedSubview(note)
@@ -784,9 +837,7 @@ final class SidebarRowView: NSView {
     private let icon: NSImageView
 
     init(title: String, symbol: String) {
-        label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13)
-        label.textColor = Ov.textPrimary
+        label = OvFont.label(title, size: 13, color: Ov.textPrimary)
         icon = NSImageView()
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         icon.contentTintColor = Ov.textSecondary
@@ -817,7 +868,7 @@ final class SidebarRowView: NSView {
 
     private func applySelection() {
         layer?.backgroundColor = isSelected ? Ov.selectionTextBg.cgColor : NSColor.clear.cgColor
-        label.font = .systemFont(ofSize: 13, weight: isSelected ? .semibold : .regular)
+        label.font = OvFont.sans(13, isSelected ? 590 : 400)
     }
 
     override func layout() {
@@ -858,7 +909,7 @@ final class OvButton: NSButton {
         setButtonType(.momentaryPushIn)
         wantsLayer = true
         layer?.cornerRadius = 6
-        font = .systemFont(ofSize: 12.5, weight: .medium)
+        font = OvFont.sans(12.5, 500)
         contentTintColor = style == .primary ? Ov.onAccent : Ov.textPrimary
         applyStyle()
 
