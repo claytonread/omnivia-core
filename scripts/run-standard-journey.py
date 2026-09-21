@@ -837,7 +837,7 @@ def _knowledge_search_visible(command: str, arguments: Sequence[str]) -> bool:
                 errlog,
                 ["transport_entry"],
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 — any failed probe spawn is "not visible yet"
         return False
     called = observed.get("called")
     result = called.get("knowledge_search") if isinstance(called, dict) else None
