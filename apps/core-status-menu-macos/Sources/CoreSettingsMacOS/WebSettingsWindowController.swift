@@ -130,9 +130,14 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
 
 extension WebSettingsWindowController: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // The page is up; deliver the first projection (harness log line is
-        // developer verification only).
-        NSLog("settings bundle did load: %@", webView.title ?? "(no title)")
+        // The page is up; deliver the first projection.
         pushStatus()
+        // Developer-harness verification: confirm the projection landed in the
+        // page's state model.
+        webView.evaluateJavaScript(
+            "window.CoreFx ? JSON.stringify({startup: window.CoreFx.get().mac.coreStartup, notifications: window.CoreFx.get().mac.notifications}) : 'no CoreFx'"
+        ) { result, _ in
+            NSLog("projected state: %@", result as? String ?? "(none)")
+        }
     }
 }

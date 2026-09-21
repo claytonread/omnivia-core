@@ -204,10 +204,11 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
 
     // MARK: - Injected page-side half
 
-    /// Defines `window.CoreNativeBridge` in the page: `applyStatus` stores and
-    /// broadcasts the latest projection; clicking any `[data-act]` element
-    /// posts a typed request for the allowlisted acts. Page script has no
-    /// other native capability.
+    /// Injected page-side half. Defines `window.CoreNativeBridge` (status in,
+    /// typed actions out) and maps real projections onto the page's state
+    /// model. The page's own CSS and components render the data unchanged —
+    /// the prototype's simulated `mac` fixture handlers for bridge-owned acts
+    /// are intercepted so the simulated and real flows never mix.
     static let bridgeScript = """
     (function () {
       "use strict";
@@ -216,27 +217,58 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
       window.CoreNativeBridge = {
         applyStatus: function (projection) {
           latest = projection;
+          mapIntoState(projection);
           listeners.forEach(function (cb) { try { cb(projection); } catch (e) {} });
         },
         latest: function () { return latest; },
         onStatus: function (cb) { listeners.push(cb); }
       };
-      var ALLOWED = { "mac-refresh": "refreshStatus", "sys-open": null, "notif-allow": "requestNotifications" };
+
+      /* Map the native status projection onto the page's mac state model.
+         The page keeps rendering through its own components — only the data
+         source changes. */
+      var STARTUP = { "Enabled": "enabled", "Needs approval": "needs-approval", "Off · Optional": "off" };
+      var NOTIFY = { "Allowed": "allowed", "Blocked in macOS": "denied",
+                     "Limited — alerts are off": "limited", "Not set up": "not-requested",
+                     "Not checked": "unknown" };
+      function mapIntoState(projection) {
+        if (!window.CoreFx || !window.CoreMac) return;
+        var s = window.CoreFx.get();
+        if (!s || !s.mac) return;
+        var byId = {};
+        (projection.checks || []).forEach(function (c) { byId[c.checkId] = c; });
+        var bg = byId["core.background"], nt = byId["notifications.delivery"];
+        if (bg) s.mac.coreStartup = STARTUP[bg.statusWord] || "not-set-up";
+        if (nt) s.mac.notifications = NOTIFY[nt.statusWord] || "unknown";
+        s.mac.checking = !!projection.summary && projection.summary.kind === "checking";
+        s.mac.observedAt = projection.observedAt ? "just now" : null;
+        s.mac.pendingForever = false;
+        window.CoreFx.emit();
+      }
+
+      /* Typed action channel. Bridge-owned acts are intercepted before the
+         page's simulated dispatcher sees them; everything else is untouched. */
+      var HANDLED = { "mac-refresh": "refreshStatus", "notif-allow": "requestNotifications" };
+      var DESTINATIONS = { "login-items": "openLoginItems", "notifications": "openNotifications" };
       document.addEventListener("click", function (event) {
-        var el = event.target.closest("[data-act]");
+        var el = event.target && event.target.closest ? event.target.closest("[data-act]") : null;
         if (!el) return;
         var act = el.getAttribute("data-act");
-        var arg = el.getAttribute("data-arg");
         if (act === "sys-open") {
-          /* Typed destinations only: the page's route id must be one the
-             navigator knows; anything else is dropped here. */
-          var destinations = { "login-items": "openLoginItems", "notifications": "openNotifications" };
-          var mapped = destinations[arg];
-          if (mapped) window.webkit.messageHandlers.native.postMessage({ action: mapped });
+          var mapped = DESTINATIONS[el.getAttribute("data-arg")];
+          if (mapped) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            window.webkit.messageHandlers.native.postMessage({ action: mapped });
+          }
           return;
         }
-        var action = ALLOWED[act];
-        if (action) window.webkit.messageHandlers.native.postMessage({ action: action });
+        var action = HANDLED[act];
+        if (action) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          window.webkit.messageHandlers.native.postMessage({ action: action });
+        }
       }, true);
     })();
     """
