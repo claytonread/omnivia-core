@@ -128,18 +128,42 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Make the titlebar 60px tall with a titlebar accessory (the public,
-    /// supported mechanism): AppKit then centres the traffic lights in the
-    /// tall titlebar — level with the OmniVia mark. No private-view frames.
+    /// supported mechanism), then centre the traffic lights vertically in it
+    /// on every layout pass — level with the OmniVia mark. Titlebar layout
+    /// keeps re-top-anchoring the lights, so the reassert runs each update.
     private var accessoryInstalled = false
 
     private func positionWindowControls() {
-        guard let window, !accessoryInstalled else { return }
-        accessoryInstalled = true
-        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 60))
-        let accessory = NSTitlebarAccessoryViewController()
-        accessory.view = accessoryView
-        accessory.layoutAttribute = .right
-        window.addTitlebarAccessoryViewController(accessory)
+        guard let window,
+              let close = window.standardWindowButton(.closeButton),
+              let bar = close.superview else { return }
+
+        if !accessoryInstalled {
+            let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 60))
+            let accessory = NSTitlebarAccessoryViewController()
+            accessory.view = accessoryView
+            accessory.layoutAttribute = .right
+            window.addTitlebarAccessoryViewController(accessory)
+            accessoryInstalled = true
+        }
+
+        // The bar must span the branded header height; then centre the lights.
+        if bar.bounds.height < 60 {
+            bar.setFrameSize(NSSize(width: bar.frame.width, height: 60))
+        }
+        // Centre of the lights: 30pt below the window's top edge (the header's
+        // vertical centre). Convert from window coordinates so the bar's own
+        // orientation cannot flip the result.
+        let windowTop = window.frame.height
+        for button in [close,
+                       window.standardWindowButton(.miniaturizeButton),
+                       window.standardWindowButton(.zoomButton)].compactMap({ $0 }) {
+            let centreInWindow = NSPoint(x: button.frame.midX, y: windowTop - 30)
+            let centreInBar = bar.convert(centreInWindow, from: nil)
+            var frame = button.frame
+            frame.origin.y = centreInBar.y - frame.height / 2
+            button.setFrameOrigin(frame.origin)
+        }
     }
 
     public func windowDidResize(_ notification: Notification) {
