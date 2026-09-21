@@ -27,6 +27,14 @@ record that a step was reached. It is optional and absent by default, so a run w
 such plan behaves exactly as it did -- the first runnable step in ordinal order. It
 cannot invent a step, a route or an ordinal, because it is consulted about steps that are
 already open.
+
+**A run under an unsettled stop opens no attempt.** T-0688 states the rule -- a recorded
+stop is a refusal about *this run's* further effects, including the first one by an
+Attempt that has never stopped -- and this is the seam that has to hold it, because
+opening an attempt is the act that hands a step's work to something that executes it.
+:meth:`RuntimeScheduler._open_attempt` consults migration 0025's durable stop request
+before its first write, so the refusal covers a fresh claim, an advance and a retry
+alike, survives a restart, and leaves nothing behind that a re-poll could dispatch twice.
 """
 
 from __future__ import annotations
@@ -57,6 +65,9 @@ from omnivia_core_runtime.service.jobs import (
     _terminalize_application_job,
     read_job,
 )
+from omnivia_core_runtime.service.material_dispatch_safety import (
+    STOP_RUN_STOP_REQUESTED,
+)
 from omnivia_core_runtime.storage.agent_runtime import (
     read_run_id_by_job,
     read_run_sequence,
@@ -65,6 +76,7 @@ from omnivia_core_runtime.storage.agent_runtime import (
 )
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.jobs import _recover_stranded_application_jobs_locked
+from omnivia_core_runtime.storage.runtime_stop import read_unsettled_stop_request
 
 _QUEUED_RUNTIME_JOBS: Final = (
     "SELECT j.job_id, r.run_id FROM omnivia_durable_jobs j "
@@ -145,6 +157,20 @@ _STEP_STATUS_FAILED: Final = "failed"
 
 class RuntimeSchedulingError(StorageError):
     """A selected runtime-bound job has corrupt or contradictory history."""
+
+
+class RuntimeStopRequested(RuntimeSchedulingError):
+    """A run carrying an unsettled stop admits no further dispatch of its work.
+
+    Distinct from its base because it is not corrupt history: it is a refusal about
+    authority, and a caller that polls has to be able to tell "this run was asked to
+    stop" from "this run's rows disagree with each other". `stop_reason` is T-0688's
+    own literal rather than a second spelling of it, so the scheduler's refusal and
+    :class:`~omnivia_core_runtime.service.material_dispatch_safety.MaterialDispatchCoordinator`'s
+    state the same fact under the same name.
+    """
+
+    stop_reason: Final = STOP_RUN_STOP_REQUESTED
 
 
 class RuntimeStepPlan(Protocol):
@@ -701,7 +727,22 @@ class RuntimeScheduler:
         derived lineage. `settled_step_id` names the step whose settlement produced this
         attempt, where one did, so the event that opens a step also states the step it
         followed rather than leaving the order to be inferred from timestamps.
+
+        It is therefore also the one place the run's no-further-dispatch intent has to be
+        consulted, and it is consulted *first*. An open attempt is what hands a step's
+        work to a worker to execute, so a run under a recorded stop must not reach one --
+        not on a fresh claim, not on the advance out of a step that just succeeded, and
+        not on a retry. Refusing here rather than at each of those three callers is what
+        makes that one rule rather than three, and refusing before the first write is
+        what leaves nothing behind for a re-poll to find: the transaction the caller
+        opened rolls back, so the job is neither claimed nor half-advanced and no second
+        attempt at the same work can be issued off the back of this one.
         """
+        if self._stop_requested(run_id):
+            raise RuntimeStopRequested(
+                f"run {run_id!r} carries a recorded stop request and admits no "
+                f"further dispatch ({STOP_RUN_STOP_REQUESTED})"
+            )
         attempt_row = self.connection.execute(
             _NEXT_RUNTIME_ATTEMPT_NUMBER, (self.workspace_id, run_step_id)
         ).fetchone()
@@ -814,6 +855,30 @@ class RuntimeScheduler:
             details=details,
         )
 
+    def _stop_requested(self, run_id: str) -> bool:
+        """Whether this run's durable no-further-dispatch intent is recorded and open.
+
+        The authority is migration 0025's stop request, read through the storage seam on
+        every consultation rather than captured anywhere -- which is exactly what T-0688's
+        :data:`~omnivia_core_runtime.service.material_dispatch_safety.StopIntent` names as
+        the only honest source. A stop recorded by a `cancel` that could not settle
+        outlives the process that recorded it, so a restart is not an amnesty and an
+        in-process flag would be one.
+
+        An unsettled request is the whole test, and it is narrower than "this run was ever
+        asked to stop". A cancellation that settled in its own transaction left the run
+        terminal and the run's own status refuses further work; the request that stays
+        open is the other case -- the run holds material effects nobody can yet account
+        for -- and that is precisely the state in which no further effect of it is
+        authorised.
+        """
+        return (
+            read_unsettled_stop_request(
+                self.connection, workspace_id=self.workspace_id, run_id=run_id
+            )
+            is not None
+        )
+
     def _attempt_budget(self, job_id: str) -> int:
         row = self.connection.execute(
             _JOB_ATTEMPT_BUDGET, (self.workspace_id, job_id)
@@ -910,4 +975,5 @@ __all__ = [
     "RuntimeScheduler",
     "RuntimeSchedulingError",
     "RuntimeStepPlan",
+    "RuntimeStopRequested",
 ]

@@ -492,6 +492,7 @@ def test_the_classification_vocabulary_is_closed(service: Service) -> None:
             "durable_open_wait",
             "orphan_attempt",
             "no_open_attempt",
+            "stop_pending",
             "terminal_history",
             "contradictory_history",
         }

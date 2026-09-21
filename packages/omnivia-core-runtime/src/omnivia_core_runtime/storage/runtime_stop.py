@@ -53,6 +53,20 @@ not clear of an effect nobody can say the outcome of.
 owner-authorized recovery decision and never a grant inferred from cancellation,
 from an empty pending-effect count, or from a settled phase. This layer holds no
 such authorization, so it reports none.
+
+Requesting a stop without settling it, over migration 0025
+----------------------------------------------------------
+
+:meth:`RuntimeStopWriter.stop_run` records a request and settles it in one breath,
+which is the whole answer for a run with nothing unresolved behind it. A run holding
+material effects has no such answer yet: the no-further-dispatch intent has to become
+durable *before* anyone decides what may be released, and the cancellation cannot
+settle until the effects do. So the two halves are separable here --
+:meth:`RuntimeStopWriter.record_stop_intent` writes the 0025 request alone, and a later
+:meth:`RuntimeStopWriter.stop_run` for the same request settles it. 0025 puts no trigger
+on a request without an outcome, and 0042's progress rows are what keep such a request
+readable rather than dangling: :func:`read_stop_projection` still refuses one carrying
+neither.
 """
 
 from __future__ import annotations
@@ -98,11 +112,14 @@ __all__ = [
     "StopCleanupReceipt",
     "StopObligation",
     "StopProgress",
+    "read_run_effect_obligations",
     "read_run_stop_outcome",
+    "read_run_stop_requests",
     "read_stop_cleanup_receipts",
     "read_stop_obligations",
     "read_stop_progress",
     "read_stop_projection",
+    "read_unsettled_stop_request",
     "runtime_stop_writer",
     "stop_run",
     "transaction_local_stop_writer",
@@ -110,6 +127,8 @@ __all__ = [
 
 _REQUESTS: Final = "omnivia_runtime_stop_requests"
 _OUTCOMES: Final = "omnivia_runtime_stop_outcomes"
+_INTENTS: Final = "omnivia_runtime_effect_intents"
+_SETTLEMENTS: Final = "omnivia_runtime_effect_settlements"
 _PROGRESS: Final = "omnivia_runtime_stop_progress"
 _OBLIGATIONS: Final = "omnivia_runtime_stop_obligations"
 _CLEANUP_RECEIPTS: Final = "omnivia_runtime_stop_cleanup_receipts"
@@ -307,32 +326,18 @@ class RuntimeStopWriter:
         )
         return receipt
 
-    def stop_run(
-        self,
-        request: RunStopRequest,
-        *,
-        runtime_event_id: str,
-        occurred_at_us: int,
-        completed_at_us: int,
-        outcome_audit_ref: str | None = None,
-    ) -> RunStopOutcome:
-        """Request one run's cancellation and settle it, in the caller's transaction.
+    def record_stop_intent(self, request: RunStopRequest) -> RunStopRequest:
+        """Record that a run was asked to stop, and settle nothing.
 
-        The request and its outcome land together or neither does, because a
-        recorded request with no outcome is a run nobody can tell the state of:
-        it was asked to stop, and whether it did is unrecorded.
+        The durable half of "no further dispatch for this run", written before anyone
+        decides what may be released. A caller holding material effects it cannot yet
+        account for needs exactly this and nothing more: an outcome written here would
+        state how a cancellation ended that has not ended.
 
-        The outcome is decided here rather than taken as an argument. A caller
-        that could name its own outcome could report `accepted` for a run that
-        never cancelled, which is the one answer this ledger exists to prevent.
-
-        A replay is decided on the stored *request*, not on its identifier. A
-        `stop_request_id` is a caller-minted string, and answering the second use of
-        one with the first one's outcome would report a cancellation of the run the
-        first request named, attributed to the actor and reason the first one gave, to
-        a caller who asked about something else. So the recorded request is read back
-        and must be the same request in every field; anything else refuses before a
-        statement is issued, leaving no new request, no new outcome and no event.
+        Replay is decided on the stored request in every field, as
+        :meth:`stop_run` decides it and for the same reason -- a `stop_request_id` is a
+        caller-minted string, and accepting a second, different request under one is a
+        stop of some other run wearing this one's name.
         """
         recorded = _read_stop_request(
             self.connection, self.workspace_id, request.stop_request_id
@@ -343,27 +348,9 @@ class RuntimeStopWriter:
                     f"stop request {request.stop_request_id!r} was already recorded "
                     "on different terms"
                 )
-            settled = read_run_stop_outcome(
-                self.connection,
-                workspace_id=self.workspace_id,
-                stop_request_id=request.stop_request_id,
-            )
-            if settled is None:  # pragma: no cover - 0025 forbids reaching this
-                # Both rows land in one transaction and 0025 refuses a DELETE on
-                # either table, so a request without its outcome is unreachable. If it
-                # were reached, the honest answer to "did the run stop?" is a refusal
-                # rather than a fresh attempt that would collide with the request row
-                # already there.
-                raise StorageError(
-                    f"stop request {request.stop_request_id!r} is recorded with no "
-                    "outcome"
-                )
-            return settled
-
-        status = _latest_run_status(self.connection, self.workspace_id, request.run_id)
-        if status is None:
+            return recorded
+        if _latest_run_status(self.connection, self.workspace_id, request.run_id) is None:
             raise StorageError(f"run {request.run_id!r} is not a run of this workspace")
-
         self.connection.execute(
             f"INSERT INTO {_REQUESTS} (workspace_id, stop_request_id, run_id, "
             "requested_at_us, requested_by, reason, audit_ref) "
@@ -378,6 +365,50 @@ class RuntimeStopWriter:
                 request.audit_ref,
             ),
         )
+        return request
+
+    def stop_run(
+        self,
+        request: RunStopRequest,
+        *,
+        runtime_event_id: str,
+        occurred_at_us: int,
+        completed_at_us: int,
+        outcome_audit_ref: str | None = None,
+    ) -> RunStopOutcome:
+        """Request one run's cancellation and settle it, in the caller's transaction.
+
+        The outcome is decided here rather than taken as an argument. A caller
+        that could name its own outcome could report `accepted` for a run that
+        never cancelled, which is the one answer this ledger exists to prevent.
+
+        A replay is decided on the stored *request*, not on its identifier. A
+        `stop_request_id` is a caller-minted string, and answering the second use of
+        one with the first one's outcome would report a cancellation of the run the
+        first request named, attributed to the actor and reason the first one gave, to
+        a caller who asked about something else. So the recorded request is read back
+        and must be the same request in every field; anything else refuses before a
+        statement is issued, leaving no new request, no new outcome and no event.
+
+        A request already carrying an outcome returns that outcome and writes nothing,
+        which is what makes settlement single-shot however many callers reach it. A
+        request recorded by :meth:`record_stop_intent` and *not* yet settled is the
+        other case this reaches, and settling it is the whole point: the stop was
+        recorded when nobody could say how it would end, and this is the call that says
+        so once the obligations behind it have closed.
+        """
+        recorded = self.record_stop_intent(request)
+        settled = read_run_stop_outcome(
+            self.connection,
+            workspace_id=self.workspace_id,
+            stop_request_id=recorded.stop_request_id,
+        )
+        if settled is not None:
+            return settled
+
+        status = _latest_run_status(self.connection, self.workspace_id, request.run_id)
+        if status is None:  # pragma: no cover - record_stop_intent proved the run
+            raise StorageError(f"run {request.run_id!r} is not a run of this workspace")
 
         sequence: int | None = None
         if is_terminal_run_status(status):
@@ -492,6 +523,143 @@ def read_run_stop_outcome(
         reason=str(row[3]),
         audit_ref=str(row[4]),
     )
+
+
+def read_run_stop_requests(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[RunStopRequest, ...]:
+    """Every stop recorded against one run, oldest first."""
+    return tuple(
+        RunStopRequest(
+            stop_request_id=str(row[0]),
+            run_id=run_id,
+            requested_at_us=int(row[1]),
+            requested_by=str(row[2]),
+            reason=str(row[3]),
+            audit_ref=str(row[4]),
+        )
+        for row in connection.execute(
+            "SELECT stop_request_id, requested_at_us, requested_by, reason, audit_ref "
+            f"FROM {_REQUESTS} WHERE workspace_id = ? AND run_id = ? "
+            "ORDER BY requested_at_us, stop_request_id",
+            (workspace_id, run_id),
+        )
+    )
+
+
+def read_unsettled_stop_request(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> RunStopRequest | None:
+    """The one stop this run was asked for and that has not settled, if there is one.
+
+    A second cancellation of a run already under an unsettled stop is a *reconciliation*
+    of that stop rather than a new one, so the caller needs to find it before minting an
+    identifier of its own. Two unsettled stops for one run would be two answers to "is
+    this run stopping", so meeting two refuses rather than picking the older.
+    """
+    open_requests = tuple(
+        request
+        for request in read_run_stop_requests(
+            connection, workspace_id=workspace_id, run_id=run_id
+        )
+        if read_run_stop_outcome(
+            connection,
+            workspace_id=workspace_id,
+            stop_request_id=request.stop_request_id,
+        )
+        is None
+    )
+    if len(open_requests) > 1:
+        raise StorageError(
+            f"run {run_id!r} carries {len(open_requests)} unsettled stop requests; at "
+            "most one may be open"
+        )
+    return open_requests[0] if open_requests else None
+
+
+def read_run_effect_obligations(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[StopObligation, ...]:
+    """Every material effect of one run that a stop is still blocked on, right now.
+
+    Read from the effect ledger rather than from any stop row, because whether an effect
+    is still open is 0023 and 0024's question and they answer it once. Each of this run's
+    intents is walked to its current head by
+    :mod:`omnivia_core_runtime.storage.runtime_effect_head`, and three readings come back.
+
+    *Settled.* `committed` or `not_committed` is an answer, and an answered effect is not
+    an obligation. It is left out.
+
+    *Branched.* Two ends that disagree about whether a real external effect happened. It
+    is an obligation and stays one: the head reader never names a head for it, so no
+    later read can retire it by picking an arm, and nothing here picks one either.
+
+    *Unresolved.* The chain ends at an `unknown` settlement -- the effect may be in the
+    world -- so it is an obligation. An intent carrying *no* settlement at all is the one
+    unresolved reading that is not: 0023's intent row is the predeclaration, and the
+    `unknown` settlement is what records that something was issued against it, so an
+    intent with neither is an effect that was declared and demonstrably never left. It is
+    also the one case 0042 could not hold if it were: an obligation row must name an
+    `unknown` settlement of its own intent, and this intent has none to name.
+
+    The settlement each obligation names is therefore always an `unknown` one: the head
+    itself where the head is unknown, and otherwise the lowest-numbered `unknown`
+    settlement the intent carries, which a branch always has -- 0024 supersedes nothing
+    else. Chosen by identifier and never by instant, for the reason the head reader
+    states.
+    """
+    intents = tuple(
+        str(row[0])
+        for row in connection.execute(
+            f"SELECT effect_intent_id FROM {_INTENTS} "
+            "WHERE workspace_id = ? AND run_id = ? ORDER BY effect_intent_id",
+            (workspace_id, run_id),
+        )
+    )
+    if not intents:
+        return ()
+    heads = read_effect_heads(
+        connection, workspace_id=workspace_id, effect_intent_ids=intents
+    )
+    open_intents = [intent for intent in intents if not heads[intent].settled]
+    if not open_intents:
+        return ()
+
+    unknown: dict[str, str] = {}
+    placeholders = ", ".join("?" for _ in open_intents)
+    for row in connection.execute(
+        "SELECT effect_intent_id, MIN(effect_settlement_id) "
+        f"FROM {_SETTLEMENTS} WHERE workspace_id = ? "
+        f"AND effect_intent_id IN ({placeholders}) AND outcome = 'unknown' "
+        "GROUP BY effect_intent_id",
+        (workspace_id, *open_intents),
+    ):
+        unknown[str(row[0])] = str(row[1])
+
+    obligations = []
+    for intent in open_intents:
+        head = heads[intent]
+        settlement = (
+            head.effect_settlement_id
+            if head.outcome == "unknown" and head.effect_settlement_id is not None
+            else unknown.get(intent)
+        )
+        if settlement is None:
+            # Predeclared and never issued. See the docstring: not an obligation, and
+            # not a row 0042 would admit either.
+            continue
+        obligations.append(
+            StopObligation(effect_intent_id=intent, effect_settlement_id=settlement)
+        )
+    if len(obligations) > MAX_STOP_OBLIGATIONS:
+        # 0042 refuses the 257th obligation against one observation and the contract caps
+        # `pending_effect_count` at the same 256. Recording as many as fit would publish a
+        # count that understates what this run is actually blocked on, so it refuses.
+        raise StorageError(
+            f"run {run_id!r} is blocked on {len(obligations)} unresolved effects, which "
+            f"is more than the {MAX_STOP_OBLIGATIONS} one stop observation may record"
+        )
+    return tuple(obligations)
 
 
 def read_stop_progress(
