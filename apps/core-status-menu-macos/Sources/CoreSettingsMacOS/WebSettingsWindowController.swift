@@ -91,6 +91,9 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         self.webView = webView
 
         // The adapter is the entire native surface the page can reach.
+        bridge.onClose = { [weak self] in
+            self?.window?.performClose(nil)
+        }
         bridge.install(
             in: webView,
             coordinator: coordinator,
@@ -104,16 +107,12 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// Vertically centre the native traffic lights on the 60px branded header
-    /// (prototype .cs-head: controls at x 16, aligned with the brand row).
+    /// The page's .cs-traffic close control (positioned by .cs-head CSS) is
+    /// the window's close button; the native titlebar buttons are hidden so
+    /// there is exactly one control, aligned with the brand row by CSS.
     private func positionWindowControls() {
-        guard let window, let contentView = window.contentView else { return }
-        let close = window.standardWindowButton(.closeButton)
-        if let close {
-            let y = contentView.bounds.height - 30 - close.frame.height / 2
-            close.setFrameOrigin(CGPoint(x: 16, y: y))
-        }
-        // One close control per the owned-window grammar; the others stay hidden.
+        guard let window else { return }
+        window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
     }
