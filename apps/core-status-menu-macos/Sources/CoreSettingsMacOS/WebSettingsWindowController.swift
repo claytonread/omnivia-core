@@ -100,7 +100,26 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
 
         window.contentView = webView
         loadBundle(into: webView)
+        positionWindowControls()
         return window
+    }
+
+    /// Vertically centre the native traffic lights on the 60px branded header
+    /// (prototype .cs-head: controls at x 16, aligned with the brand row).
+    private func positionWindowControls() {
+        guard let window, let contentView = window.contentView else { return }
+        let close = window.standardWindowButton(.closeButton)
+        if let close {
+            let y = contentView.bounds.height - 30 - close.frame.height / 2
+            close.setFrameOrigin(CGPoint(x: 16, y: y))
+        }
+        // One close control per the owned-window grammar; the others stay hidden.
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+    }
+
+    public func windowDidResize(_ notification: Notification) {
+        positionWindowControls()
     }
 
     private func loadBundle(into webView: WKWebView) {
