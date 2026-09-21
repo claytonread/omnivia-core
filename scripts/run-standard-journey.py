@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
+import io
 import json
 import os
 import re
@@ -803,6 +804,71 @@ def _mcp_journey(
     }
 
 
+#: Bounded, deterministic wait for the record a CLI approval just landed to
+#: reach whatever an MCP host's `knowledge_search` reads from -- a separate
+#: connection from the CLI that approved it, with nothing yet proving it
+#: shares the CLI's view.  CI hit that gap twice (PR #111 ubuntu, PR #115
+#: macOS), passing on rerun and on every other platform in the same run: a
+#: read-visibility race, not a broken tool.  30s absorbs the lag observed
+#: there; a record that never turns visible still exhausts the budget and
+#: fails the journey exactly as before.
+_VISIBILITY_TIMEOUT_SECONDS: Final = 30.0
+_VISIBILITY_POLL_INTERVAL_SECONDS: Final = 2.0
+
+
+def _knowledge_search_visible(command: str, arguments: Sequence[str]) -> bool:
+    """One MCP `knowledge_search` call over a fresh stdio session: whether the
+    query-token search already finds a record.
+
+    Goes through `_mcp_session` directly rather than `_mcp_journey`: a single
+    tool call has no six-tool manifest to validate, and a session that fails
+    to complete at all -- the server not yet answering, a transient transport
+    hiccup -- is read the same as "not visible yet" and left to the caller's
+    own bounded deadline rather than raised here.
+    """
+    try:
+        observed = anyio.run(
+            _mcp_session,
+            command,
+            arguments,
+            {"knowledge_search": {"query": QUERY_TOKEN}},
+            io.StringIO(),
+            ["transport_entry"],
+        )
+    except Exception:
+        return False
+    called = observed.get("called")
+    result = called.get("knowledge_search") if isinstance(called, dict) else None
+    if not isinstance(result, dict) or result.get("is_error") is True:
+        return False
+    structured = result.get("structured_content")
+    records = structured.get("records") if isinstance(structured, dict) else None
+    return isinstance(records, list) and bool(records)
+
+
+def _await_knowledge_search_visibility(command: str, arguments: Sequence[str]) -> None:
+    """Poll `knowledge_search` through the real MCP path until the record the
+    CLI just approved is visible there too, or the bounded budget runs out.
+
+    Strictly additive: on success this proves the record turns visible within
+    the deadline, a stronger claim than before; on timeout it raises the same
+    diagnostic `_mcp_journey` would for this exact tool and host, plus the
+    elapsed budget, so the eventual failure -- unavoidable for a record that
+    never turns visible -- stays exactly as loud in CI logs.
+    """
+    started = time.monotonic()
+    deadline = started + _VISIBILITY_TIMEOUT_SECONDS
+    while not _knowledge_search_visible(command, arguments):
+        now = time.monotonic()
+        if now >= deadline:
+            raise JourneyError(
+                "MCP knowledge_search did not return a success for "
+                "official_python_sdk after waiting "
+                f"{now - started:.1f}s (budget {_VISIBILITY_TIMEOUT_SECONDS:.0f}s)"
+            )
+        time.sleep(_VISIBILITY_POLL_INTERVAL_SECONDS)
+
+
 def _host_interoperability(
     executable: Path,
     config: Path,
@@ -1068,6 +1134,7 @@ def run(output: Path) -> dict[str, Any]:
                 )
 
             config = _provisioned_configuration(cli, installation, workspace_id)
+            _await_knowledge_search_visibility(str(mcp), ["--config", str(config)])
             hosts = root / "host-configurations"
             hosts.mkdir()
             mcp_result = _host_interoperability(
