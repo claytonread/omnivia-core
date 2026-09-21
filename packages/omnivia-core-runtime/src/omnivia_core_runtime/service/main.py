@@ -101,6 +101,9 @@ from omnivia_core_runtime.service.transport import (
     LocalSocketServer,
     parse_endpoint,
 )
+from omnivia_core_runtime.service.workflow_release import (
+    WorkspaceWorkflowReleaseAuthority,
+)
 from omnivia_core_runtime.service.workspace_init import WorkspaceInitStatus
 from omnivia_core_runtime.service.workspace_init import (
     render_result as render_init_result,
@@ -261,6 +264,9 @@ def _build_production_application_surface(
     This helper is the production wiring seam and is exercised directly by the
     V06-5 integrated-registry suite. A handler that is absent, duplicated or
     outside the frozen catalogue prevents construction before a transport binds.
+
+    `resolve_workflow_release` is an override rather than a dependency: left out, the
+    Workflow release authority is composed here (founder Ruling 2). See below.
     """
     if started.workspace_id is None:
         raise ValueError("a production application surface needs a workspace")
@@ -314,21 +320,24 @@ def _build_production_application_surface(
         if execute_chat_generation is not None
         else _default_chat_generation(started),
     )
-    # The two Workflow authority seams, injected rather than resolved here.
+    # The two Workflow authority seams. They are no longer the same kind of seam.
     #
-    # This repository ships neither a release catalogue nor an approval store, so the
-    # *default* build passes neither and `workflow.start` and `workflow.control`'s
-    # `resolve_wait` refuse at the domain step with `dependency_unavailable` -- a served,
-    # typed refusal rather than an absence from the catalogue, with the other two
-    # Workflow operations fully served because reading a Run needs no such authority.
+    # *The release authority is composed here* (founder Ruling 2). Core owns resolving a
+    # released Workflow to the exact material a Run binds, so this bootstrap constructs
+    # the one authority for this workspace out of the accepted release record -- 0027's
+    # sealed plans and 0035's committed `RuntimeDefinitionBinding`s -- and no caller has
+    # to supply one for the production path to answer. Platform and hosted Dev consume
+    # it only through the registered `workflow.*` operations; nothing outside Core
+    # instantiates a competing resolver, and nothing substitutes a release decision when
+    # this one has no answer. `resolve_workflow_release` remains a parameter purely as a
+    # test and development override, and the console-script entry point exposes no flag
+    # that could reach it -- see `main()`.
     #
-    # They are parameters and not constants because a deployment that *does* have those
-    # authorities installs them here, and the whole Workflow lane below this point --
-    # admission, exact-version binding, the sealed plan's runtime steps, the scheduler
-    # that claims them and the recovery that adopts them -- is then live against them
-    # with nothing else to change. Fabricating either would be worse than refusing: an
-    # invented release binds a Run to material nobody published, and an invented policy
-    # resolves a wait nobody approved.
+    # *The wait policy is still injected*, because this repository ships no approval
+    # store: absent, `workflow.control`'s `resolve_wait` refuses at the domain step with
+    # `dependency_unavailable`, which is the honest answer for a build that cannot say
+    # whether a resolution was approved. Fabricating one would resolve a wait nobody
+    # approved.
     workflow = build_workflow_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
@@ -336,7 +345,13 @@ def _build_production_application_surface(
         workspace_id=started.workspace_id,
         fallback=chat,
         clock=started.clock,
-        resolve_release=resolve_workflow_release,
+        resolve_release=(
+            resolve_workflow_release
+            if resolve_workflow_release is not None
+            else WorkspaceWorkflowReleaseAuthority(
+                service=started, workspace_id=started.workspace_id
+            )
+        ),
         wait_policy=workflow_wait_policy,
     )
     return compose_production_application_surface(
@@ -659,17 +674,27 @@ def main(
 ) -> int:
     """Own one workspace until told to stop.
 
-    `resolve_workflow_release` and `workflow_wait_policy` are the two Workflow authority
-    seams, and they are parameters for exactly the reason `resolve_credential` is: this
-    lane ships no release catalogue and no approval store, so whoever embeds this service
-    supplies them. Passed, `workflow.start` binds a Run to the material that authority
-    states and `workflow.control`'s `resolve_wait` resolves what that policy permits, and
-    everything under them -- the sealed plan's canonical steps, the scheduler that claims
-    them, the recovery that adopts them across a restart -- is live with nothing further
-    to configure. Omitted, as the console-script entry point omits them, both operations
-    refuse with `dependency_unavailable` after the grant and before any write, which is
-    the honest answer for a build that cannot say what a Run would be executing or
-    whether a resolution was approved.
+    `resolve_workflow_release` is **an override, not a seam that has to be filled**.
+    Founder Ruling 2 puts the authoritative Workflow release resolver in this bootstrap,
+    so omitting it -- as the console-script entry point always does -- composes Core's
+    own `WorkspaceWorkflowReleaseAuthority` over this workspace's accepted release
+    record. `workflow.start` then binds a Run to the material that authority states, or
+    refuses explicitly: `not_found` for a version this workspace holds no release for,
+    `internal_non_recoverable` for one it holds but cannot believe. It never falls back
+    to a version nobody approved.
+
+    The parameter survives for tests and development only. It is deliberately reachable
+    from nowhere but an in-process call to this function: `build_parser()` defines no
+    argument that could set it, so the packaged posture -- the `omnivia-core-service`
+    console script -- always serves Core's own authority and cannot be pointed at
+    another. Core draws no other production/development distinction, so that is the
+    whole of the fail-closed rule here.
+
+    `workflow_wait_policy` is still a genuine seam, and a parameter for exactly the
+    reason `resolve_credential` is: this lane ships no approval store, so whoever embeds
+    this service supplies one. Omitted, `workflow.control`'s `resolve_wait` refuses with
+    `dependency_unavailable` after the grant and before any write, which is the honest
+    answer for a build that cannot say whether a resolution was approved.
 
     `resolve_credential` is the trusted credential resolver seam. It is a parameter
     rather than something read from the environment or a file because this lane

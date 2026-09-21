@@ -2014,12 +2014,19 @@ def test_the_production_runner_hands_out_a_scheduler_bound_to_its_own_authority(
 def test_the_production_surface_serves_workflow_against_an_injected_release_authority(
     workspace: ServiceSettings,
 ) -> None:
-    """The ordinary production composition, with the authority a deployment supplies.
+    """The ordinary production composition, and the development override beside it.
 
     `_build_production_application_surface` is the function `main()`'s own `serve` calls,
-    and the resolver reaching it here is the one `main()` threads through from its
-    embedder. Nothing about the Workflow lane is stubbed: this is the frozen catalogue,
-    the twelve-check authorization seam and the real handlers.
+    and the resolver reaching it here is the one `main()` threads through from an
+    embedder as a test and development override. Nothing about the Workflow lane is
+    stubbed: this is the frozen catalogue, the twelve-check authorization seam and the
+    real handlers.
+
+    The uninjected build is no longer authority-less. Founder Ruling 2 composes Core's
+    own release authority in that bootstrap, so a start for a version this workspace
+    holds no release for is `not_found` -- the authority answered -- rather than the
+    `dependency_unavailable` of a build that had none to ask. C06's Ruling-2 suite holds
+    that composition in full; what is kept here is that the override still overrides it.
     """
     runner = ServiceRunner(workspace, clock=FakeClock(wall=WALL))
     report = runner.start()
@@ -2040,7 +2047,7 @@ def test_the_production_surface_serves_workflow_against_an_injected_release_auth
             fallback=probe,
         )
 
-        refusing = _build_production_application_surface(
+        composed = _build_production_application_surface(
             started=runner, probe=probe, installation=installation
         )
         served_live = _build_production_application_surface(
@@ -2050,10 +2057,11 @@ def test_the_production_surface_serves_workflow_against_an_injected_release_auth
             resolve_workflow_release=app.resolver(app.release()),
         )
 
-        # The default build cannot say what a Run would execute, and refuses.
+        # The composed build has an authority and it holds no such release, so it
+        # refuses by name rather than by absence.
         assert (
             app.code(
-                refusing.dispatch(
+                composed.dispatch(
                     app.request(
                         WORKFLOW_START_OPERATION,
                         {
@@ -2066,7 +2074,7 @@ def test_the_production_surface_serves_workflow_against_an_injected_release_auth
                     )
                 )
             )
-            == "dependency_unavailable"
+            == "not_found"
         )
         # The injected one admits a Run, binds it and opens its steps.
         answer = served_live.dispatch(
