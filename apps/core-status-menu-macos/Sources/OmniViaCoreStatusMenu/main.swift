@@ -1,4 +1,5 @@
 import AppKit
+import CoreSettingsMacOS
 import Darwin
 import Foundation
 
@@ -15,7 +16,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let startItem = NSMenuItem(title: "Start Service", action: #selector(startService), keyEquivalent: "")
     private let stopItem = NSMenuItem(title: "Stop Service", action: #selector(stopService), keyEquivalent: "")
     private let logItem = NSMenuItem(title: "Show Service Log", action: #selector(showServiceLog), keyEquivalent: "l")
+    private let settingsItem = NSMenuItem(title: "Core Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private var pollTimer: Timer?
+    /// One owned Settings window (MR-001). Created on first open; closing it
+    /// never touches Core lifecycle.
+    private var settingsWindowController: SettingsWindowController?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -67,12 +72,14 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         titleItem.isEnabled = false
         detailItem.isEnabled = false
-        for item in [refreshItem, startItem, stopItem, logItem] {
+        for item in [refreshItem, startItem, stopItem, logItem, settingsItem] {
             item.target = self
         }
 
         menu.addItem(titleItem)
         menu.addItem(detailItem)
+        menu.addItem(.separator())
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(refreshItem)
         menu.addItem(startItem)
@@ -114,6 +121,20 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refresh() {
         coordinator.refresh()
+    }
+
+    @objc private func openSettings() {
+        if settingsWindowController == nil {
+            let context = ReadinessContext(
+                installationRevision: configuration.installationState.path,
+                localSessionRef: UUID().uuidString,
+                targetRef: "local",
+                workspaceRef: configuration.workspaceID,
+                configurationRevision: "1"
+            )
+            settingsWindowController = SettingsWindowController(coordinator: ReadinessCoordinator(context: context))
+        }
+        settingsWindowController?.openOrFocus()
     }
 
     @objc private func startService() {

@@ -12,14 +12,34 @@ let package = Package(
             name: "omnivia-core-status-menu",
             targets: ["OmniViaCoreStatusMenu"]
         ),
+        // Developer-only harness: opens the Core Settings window directly so
+        // the screen can be exercised without the full companion.
+        .executable(
+            name: "omnivia-core-settings-harness",
+            targets: ["CoreSettingsHarness"]
+        ),
     ],
     targets: [
+        // The settings screen and readiness model are a library so both the
+        // companion executable and the developer harness can host them.
+        .target(
+            name: "CoreSettingsMacOS",
+            resources: [
+                .copy("Resources/prototype"),
+                .copy("Resources/brand"),
+            ]
+        ),
         .executableTarget(
-            name: "OmniViaCoreStatusMenu"
+            name: "OmniViaCoreStatusMenu",
+            dependencies: ["CoreSettingsMacOS"]
+        ),
+        .executableTarget(
+            name: "CoreSettingsHarness",
+            dependencies: ["CoreSettingsMacOS"]
         ),
         .testTarget(
             name: "OmniViaCoreStatusMenuTests",
-            dependencies: ["OmniViaCoreStatusMenu"]
+            dependencies: ["OmniViaCoreStatusMenu", "CoreSettingsMacOS"]
         ),
     ]
 )

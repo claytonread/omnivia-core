@@ -1,0 +1,977 @@
+/* Canonical chrome tokens.
+   These were Vitre --gl-* tokens used directly by OmniVia App Shell and Chat —
+   a cross-system dependency in an --ov-* system. Each --gl-* name is now a thin
+   alias of an --ov-* canonical token declared alongside it, so the App UI owns its
+   own vocabulary and nothing downstream breaks. Consumers should read the --ov-*
+   name; the aliases exist for migration only and are deprecated. */
+/* ============================================================================
+   OmniVia overlay (Vitre Design System · OmniVia Brick theme)
+   ----------------------------------------------------------------------------
+   Loads LAST, after tokens.css + app.css + os.css. Re-skins ONLY the window
+   chrome (titlebar, sidebar, status bar, command palette, popovers, drawers,
+   tweaks) with Vitre's glass material language: a floating window on a
+   warm Brick desktop, genuinely translucent chrome that refracts the wallpaper
+   behind it, a 1px translucent glass border, and a specular top-edge highlight.
+   Content surfaces (editor, lists, data, cards) stay OPAQUE — glass is
+   structural, never behind dense data. Values lifted verbatim from Vitre's
+   materials.css + theme-omnivia.css.
+   ============================================================================ */
+
+/* ---- Dev module surface -------------------------------------------------
+   The Dev workspace mounts NATIVELY inside the shared shell (single window
+   chrome). The host owns the titlebar/toolbar, sidebar and status bar; the Dev
+   module renders only its screens into #osview. No chrome-hiding, no iframe. */
+.os-dev-host { min-height: 0; }
+
+:root {
+  /* ---- Vitre glass primitives (OmniVia Brick · light) ---- */
+  --ov-canvas-bg:            #fbfbfc;
+  --gl-canvas: var(--ov-canvas-bg);
+  --ov-specular-highlight:         inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  --gl-highlight: var(--ov-specular-highlight);
+  --ov-specular-highlight-soft:    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  --gl-highlight-soft: var(--ov-specular-highlight-soft);
+  --ov-specular-sidebar-highlight: inset 1px 0 0 rgba(255, 255, 255, 0.40);
+  --gl-sidebar-highlight: var(--ov-specular-sidebar-highlight);
+
+  /* Desktop — a hair darker than the sidebar gutter (#fafafb) so it blends into
+     the window's faint edge shadow instead of fighting it. */
+  --ov-desktop-bg: #F8FAFB;
+  --gl-desktop: var(--ov-desktop-bg);
+
+  /* Floating window frame — soft enough to define the window without casting a
+     dark band onto the matching desktop (keeps desktop ≈ gutter continuous). */
+  --ov-window-radius: 14px;
+  --gl-window-radius: var(--ov-window-radius);
+  /* Match the main-menu (sidebar) hairline exactly so the app frame and the
+     menu panel share one neutral grey border. */
+  --ov-window-border: rgba(60, 59, 66, 0.19);
+  --gl-window-border: var(--ov-window-border);
+  --ov-window-shadow:
+    0 2px 6px -6px rgba(33, 33, 38, 0.08),
+    0 1px 2px -2px rgba(33, 33, 38, 0.04),
+    0 0 0 0.5px rgba(33, 33, 38, 0.03);
+  --gl-window-shadow: var(--ov-window-shadow);
+
+  /* More translucent chrome materials so the desktop reads through the glass */
+  /* Inspector — genuinely translucent glass for the slide-out side rail, so
+     the content frosts through behind it (Vitre --gl-mat-inspector-bg). */
+
+  /* Floating-panel frame (concentric inside the 14px window) */
+  --ov-panel-radius: 10px;
+  --gl-panel-radius: var(--ov-panel-radius);
+  --ov-panel-margin: 10px;
+  --gl-panel-margin: var(--ov-panel-margin);
+  --ov-panel-border: rgba(60, 59, 66, 0.14);
+  --gl-panel-border: var(--ov-panel-border);
+  --ov-panel-shadow:
+    0 8px 20px -12px rgba(33, 33, 38, 0.26),
+    0 2px 6px -3px rgba(33, 33, 38, 0.16);
+  --gl-panel-shadow: var(--ov-panel-shadow);
+  /* Warm Brick sheen layered over the sidebar glass so it reads as a distinct
+     translucent pane even where the desktop behind it is pale. */
+  --ov-sidebar-sheen: linear-gradient(180deg, rgba(158,48,42,0.07) 0%, rgba(158,48,42,0) 26%, rgba(196,168,150,0.05) 100%);
+  --gl-sidebar-sheen: var(--ov-sidebar-sheen);
+  /* Left-anchored echo of the sidebar sheen so the warmth reads as continuous
+     across the titlebar-over-sidebar corner, fading out toward the content. */
+  --ov-titlebar-sheen: linear-gradient(90deg, rgba(158,48,42,0.09) 0%, rgba(158,48,42,0.045) 24%, rgba(158,48,42,0) 52%);
+  --gl-titlebar-sheen: var(--ov-titlebar-sheen);
+}
+
+[data-theme="dark"] {
+  --ov-specular-highlight:         inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  --gl-highlight: var(--ov-specular-highlight);
+  --ov-specular-highlight-soft:    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --gl-highlight-soft: var(--ov-specular-highlight-soft);
+  --ov-specular-sidebar-highlight: inset 1px 0 0 rgba(255, 255, 255, 0.05);
+  --gl-sidebar-highlight: var(--ov-specular-sidebar-highlight);
+
+  --ov-desktop-bg: #0e0e11;
+  --gl-desktop: var(--ov-desktop-bg);
+
+  --ov-window-border: rgba(255, 255, 255, 0.12);
+  --gl-window-border: var(--ov-window-border);
+  --ov-window-shadow:
+    0 30px 64px -28px rgba(0, 0, 0, 0.70),
+    0 10px 24px -14px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(255, 255, 255, 0.07);
+  --gl-window-shadow: var(--ov-window-shadow);
+
+
+  --ov-sidebar-border: rgba(255, 255, 255, 0.12);
+  --gl-sidebar-border: var(--ov-sidebar-border);
+  --ov-sidebar-border-right: rgba(255, 255, 255, 0.06);
+  --gl-sidebar-border-right: var(--ov-sidebar-border-right);
+  --ov-panel-border: rgba(255, 255, 255, 0.08);
+  --gl-panel-border: var(--ov-panel-border);
+  --ov-panel-shadow:
+    0 10px 24px -12px rgba(0, 0, 0, 0.58),
+    0 2px 6px -3px rgba(0, 0, 0, 0.42);
+  --gl-panel-shadow: var(--ov-panel-shadow);
+  --ov-sidebar-sheen: linear-gradient(180deg, rgba(210,117,108,0.10) 0%, rgba(210,117,108,0) 28%, rgba(150,96,70,0.07) 100%);
+  --gl-sidebar-sheen: var(--ov-sidebar-sheen);
+  --ov-titlebar-sheen: linear-gradient(90deg, rgba(210,117,108,0.13) 0%, rgba(210,117,108,0.06) 24%, rgba(210,117,108,0) 52%);
+  --gl-titlebar-sheen: var(--ov-titlebar-sheen);
+}
+
+/* ---------------------------------------------------------------------------
+   1 · The desktop + the floating window
+   --------------------------------------------------------------------------- */
+body {
+  background: var(--gl-desktop);
+  background-attachment: fixed;
+  background-size: cover;
+}
+
+#ov-root {
+  box-sizing: border-box;
+  height: 100vh;
+  padding: 18px;
+  display: flex;
+}
+
+/* The window now floats: transparent so the translucent chrome refracts the
+   desktop behind it, rounded + glass-bordered, with a deep diffuse shadow.
+   position:relative makes it the containing block for its absolutely-positioned
+   overlays (drawers, scrim, tweaks, toasts) now that it's inset from the
+   viewport — without it they'd anchor to the viewport and overflow. */
+.ov-window {
+  position: relative;
+  flex: 1 1 auto;
+  height: calc(100vh - 36px);
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  border-radius: var(--gl-window-radius);
+  border: 1px solid var(--gl-window-border);
+  box-shadow: var(--gl-window-shadow);
+}
+.ov-window.has-radius {
+  height: calc(100vh - 36px);
+  border-radius: var(--gl-window-radius);
+  box-shadow: var(--gl-window-shadow);
+}
+
+/* Content stays opaque — legibility first, no glass behind data. */
+.ov-main { background: var(--ov-bg-content); }
+
+/* The gutter the floating sidebar sits in — calm, light surface (a touch above
+   the window chrome). The desktop still frames the window at its outer edge. */
+.ov-body-row { background: #ffffff; }
+[data-theme="dark"] .ov-body-row { background: #232329; }
+
+/* ---------------------------------------------------------------------------
+   2 · Titlebar — toolbar glass with a specular top edge
+   --------------------------------------------------------------------------- */
+.ov-titlebar {
+  background: var(--gl-titlebar-sheen), var(--ov-material-titlebar);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: var(--gl-highlight-soft);
+  border-bottom: 1px solid var(--ov-separator);
+  border-radius: var(--gl-window-radius) var(--gl-window-radius) 0 0;
+}
+
+/* ---------------------------------------------------------------------------
+   3 · Sidebar — a DETACHED floating glass panel (Vitre AI-console pattern):
+       inset by a margin so the desktop shows around it, concentric panel
+       radius, a 1px translucent border, and a specular highlight + soft
+       shadow. No full-height divider.
+   --------------------------------------------------------------------------- */
+.ov-sidebar {
+  margin: 8px 8px 8px 8px;
+  border: 1px solid var(--gl-sidebar-border, rgba(60, 59, 66, 0.19));
+  border-radius: var(--gl-panel-radius);
+  background: var(--gl-sidebar-sheen), var(--ov-material-sidebar);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  backdrop-filter: blur(32px) saturate(200%);
+  box-shadow: var(--gl-highlight-soft), var(--gl-panel-shadow);
+  overflow: hidden;
+}
+/* right edge faces the content well — dilute it to half strength */
+.ov-window .ov-sidebar { border-right-color: var(--gl-sidebar-border-right, rgba(60, 59, 66, 0.095)); }
+
+/* ===========================================================================
+   COLLAPSIBLE RAIL — atlas-console pattern. "Collapsed" no longer hides the
+   sidebar; it shrinks the floating panel to a narrow icon-only rail that stays
+   in place. The toolbar toggle (and ⌘\) flip between full panel and rail.
+   =========================================================================== */
+:root { --ov-sidebar-rail-width: 45px; --gl-rail-w: var(--ov-sidebar-rail-width); }
+
+/* Re-map the width variable in collapsed scope — the base rule resolves its
+   width through this var, and the flex floor needs min-width:0 to shrink. */
+.ov-window.sidebar-collapsed { --ov-sidebar-width: var(--gl-rail-w); }
+.ov-window.sidebar-collapsed .ov-sidebar {
+  flex: 0 0 var(--gl-rail-w) !important;
+  width: var(--gl-rail-w) !important;
+  min-width: 0 !important;
+  margin: 8px 8px 8px 8px;
+  border: 1px solid var(--gl-sidebar-border, rgba(60, 59, 66, 0.19));
+  border-right-color: var(--gl-sidebar-border-right, rgba(60, 59, 66, 0.095));
+  border-radius: var(--gl-panel-radius);
+  transition: flex-basis var(--ov-duration-base) var(--ov-ease-standard);
+}
+
+/* All 13px Lucide icons → 16px. Precise selector list (mirrors every 13px rule
+   across os.css, runpanel.css, knowledge.css, flow.css, run-room.css,
+   componentbuilder.css) so 14/18/19px icons stay untouched. */
+.lucide.s13,
+.ic-13 .lucide,
+.ctile.sm .lucide,
+.sug .lucide,
+.perm-grp .pi .lucide,
+.ampanel-h .lucide,
+.composer-actions .hint .lucide,
+.conn-hint .lucide,
+.rp-label .lucide,
+.rp-source > .lucide,
+.rp-link > .lucide,
+.rp-ctrl .lucide,
+.asc-mini.muted > .lucide,
+.asc-last .lucide,
+.asc-act .lucide,
+.asc-toggle .lucide,
+.asc-approve-h .lucide,
+.kmsg-foot .lucide,
+.ov-step .si .lucide,
+.fi-pill .lucide,
+.fi-edge-path .lucide,
+.rr-perm .lucide,
+.cb-chip .lucide,
+.ib-label .lucide,
+.ib-add .lucide,
+.cb-flow-gate .lucide,
+.ov-sidebar .ov-row i,
+.ov-sidebar .ov-row svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+/* workspace header → just the centered ring glyph */
+.ov-window.sidebar-collapsed .ov-workspace { justify-content: center; padding-left: 0; padding-right: 0; }
+.ov-window.sidebar-collapsed .ov-workspace .ws-meta,
+.ov-window.sidebar-collapsed .ov-workspace .chev { display: none; }
+
+/* nav rows → centered icons, no text labels */
+.ov-window.sidebar-collapsed .ov-row {
+  position: relative;
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+  margin-left: 0 !important;
+}
+.ov-window.sidebar-collapsed .ov-row .row-label,
+.ov-window.sidebar-collapsed .ov-row .pin-dot,
+.ov-window.sidebar-collapsed .ov-sb-label { display: none; }
+
+/* count badge (e.g. Approvals ·4): hidden in the rail; the count is folded into
+   the hover tooltip as "(4)" by rail-tooltips.js instead of floating on the icon. */
+.ov-window.sidebar-collapsed .ov-row .row-count { display: none !important; }
+
+/* hide the nested/contextual + pinned sub-rows in rail mode — top-level icons only */
+.ov-window.sidebar-collapsed .ov-pinrow,
+.ov-window.sidebar-collapsed .ov-sb-section > div[style*="margin-left"] { display: none; }
+
+/* the rail is always visible, so disable the edge-peek machinery entirely */
+.ov-window.sidebar-collapsed .ov-edge-hotspot { display: none; }
+.ov-window.sidebar-collapsed.sidebar-peek .ov-sidebar,
+.ov-window.sidebar-collapsed.sidebar-peek-out .ov-sidebar {
+  position: static;
+  width: var(--gl-rail-w);
+  z-index: auto;
+  animation: none;
+}
+.ov-window.sidebar-collapsed.sidebar-peek .ov-peek-scrim,
+.ov-window.sidebar-collapsed.sidebar-peek-out .ov-peek-scrim { display: none; }
+
+/* rail hover tooltip — Vitre glass popover with the menu item's name */
+.ov-rail-tip {
+  position: absolute;
+  z-index: 60;
+  transform: translateY(-50%) translateX(-4px);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: var(--ov-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--ov-text-primary);
+  background: var(--ov-material-hud, rgba(251, 252, 252, 0.8));
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-default));
+  border-radius: 7px;
+  box-shadow: var(--ov-shadow-popover), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 110ms var(--ov-ease-out, ease), transform 110ms var(--ov-ease-out, ease);
+}
+.ov-rail-tip.show {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* ---------------------------------------------------------------------------
+   4 · Status bar — thin glass with a specular top edge
+   --------------------------------------------------------------------------- */
+.ov-statusbar {
+  background: var(--ov-material-bar);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  backdrop-filter: blur(18px) saturate(180%);
+  box-shadow: var(--gl-highlight-soft);
+}
+
+/* ---------------------------------------------------------------------------
+   5 · Overlays — command palette, tweaks, drawers, float panels, toasts
+       Vitre menu/popover glass + specular highlight. These already blur;
+       we deepen the translucency and add the top-edge highlight.
+   --------------------------------------------------------------------------- */
+.ov-palette {
+  background: var(--ov-material-hud);
+  box-shadow: var(--ov-shadow-hud), var(--gl-highlight);
+}
+
+.tweaks {
+  background: var(--ov-material-hud);
+  box-shadow: var(--ov-shadow-hud), var(--gl-highlight);
+}
+
+.ov-float-panel,
+.ov-toast {
+  box-shadow: var(--ov-shadow-popover), var(--gl-highlight);
+}
+
+/* The slide-out drawers (add-component · agent run) — float inside the window
+   as glass panels: inset below the toolbar and above the status bar,
+   concentric corners, a full 1px glass border, specular highlight + deep
+   shadow. Slide off to the right when closed. */
+.drawer {
+  top: calc(var(--ov-toolbar-height) + 10px);
+  right: 10px;
+  bottom: 36px; /* 26px status bar + 10px margin */
+  border: 1px solid var(--gl-panel-border);
+  border-radius: var(--gl-panel-radius);
+  background: var(--ov-material-sheet);
+  -webkit-backdrop-filter: blur(44px) saturate(190%);
+  backdrop-filter: blur(44px) saturate(190%);
+  box-shadow: var(--ov-shadow-window), var(--gl-highlight);
+  overflow: hidden;
+}
+.drawer:not(.open):not(.ci-panel) { transform: translateX(calc(100% + 18px)); }
+.run-drawer:not(.open) { transform: translateX(calc(100% + 18px)); }
+
+/* ---------------------------------------------------------------------------
+   6 · Reduced transparency / no backdrop-filter support — fall back to the
+       opaque chrome the design system already ships.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-transparency: reduce) {
+  .ov-titlebar { background: var(--ov-bg-bar); }
+  .ov-sidebar  { background: var(--ov-bg-sidebar); }
+  .ov-statusbar { background: var(--ov-bg-bar); }
+  .ov-palette, .tweaks, .drawer { background: var(--ov-bg-elevated); }
+  /* App-Framework overlays (Remediation §8): collapse any remaining glass. */
+  .lnch-back { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .lnch-panel, .gov-sheet, .gov-sheet-scrim, .flow-fs, .cc-card { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--ov-bg-elevated); }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ov-window { background: var(--ov-bg-window); }
+  .ov-titlebar { background: var(--ov-bg-bar); }
+  .ov-sidebar  { background: var(--ov-bg-sidebar); }
+  .ov-statusbar { background: var(--ov-bg-bar); }
+  .ov-palette, .tweaks, .drawer { background: var(--ov-bg-elevated); }
+}
+
+/* ===========================================================================
+   7 · PALETTE MATCH — remap OmniVia's neutral tokens to Vitre's OmniVia-Brick
+       theme values (verbatim from theme-omnivia.css) so the whole UI matches
+       the Conductor · OmniVia Brick sample: cooler solid neutrals with a faint
+       blue-violet cast, warm-neutral surfaces, Brick accent (already shared).
+   =========================================================================== */
+:root {
+  /* surfaces */
+
+  /* text — solid cool neutrals */
+
+  /* separators / borders — warm-cool grey */
+
+  /* interaction fills */
+
+  /* accent — Brick (matched hover + subtle tint) */
+}
+
+[data-theme="dark"] {
+
+
+
+
+}
+
+/* ===========================================================================
+   8 · Flow canvas — match the canvas surface (drop the darkened tint), keep
+       the faint grid lines.
+   =========================================================================== */
+.flow-canvas-wrap {
+  background-color: var(--ov-bg-canvas) !important;
+}
+
+/* ===========================================================================
+   9 · Flow inspector — now the generic ov-inspector component (os/inspector.css).
+       The Flow inspector element carries "ov-inspector glass flow-inspector", so
+       the floating glass slide-out (sheet material, concentric corners,
+       specular highlight, slide-off-on-close) lives in the base .ov-inspector.glass
+       variant and is shared by every inspector. Outside-click close is handled by
+       os/inspector.js (window.OVInspector). Only the builder preview override
+       remains flow-specific:
+   =========================================================================== */
+/* builder preview pane still hides the inspector entirely */
+.flow.compact .flow-inspector { display: none !important; }
+
+/* ===========================================================================
+   10 · Add-connection picker + setup sheet (conn-manager.js) — centred glass
+        modal, brand-marked rows, category groups.
+   =========================================================================== */
+.conn-sheet-backdrop {
+  position: absolute; inset: 0; z-index: 240;
+  display: flex; align-items: center; justify-content: center; padding: 32px;
+  background: color-mix(in srgb, var(--ov-bg-window) 46%, transparent);
+  -webkit-backdrop-filter: blur(4px) saturate(120%); backdrop-filter: blur(4px) saturate(120%);
+}
+.conn-sheet {
+  width: 600px; max-width: 100%; max-height: 100%;
+  margin: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--ov-bg-elevated);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-default));
+  border-radius: 16px;
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  animation: conn-rise 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+[data-theme="dark"] .conn-sheet { box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+/* transform-only rise (opacity stays 1) so the modal is never stranded invisible */
+@keyframes conn-rise { from { transform: translateY(10px) scale(0.985); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .conn-sheet { animation: none; } }
+
+.conn-head { gap: var(--ov-space-4); align-items: center; padding: var(--ov-space-5) var(--ov-space-5) var(--ov-space-5) var(--ov-space-6); }
+.conn-head .conn-head-t { flex: 1; min-width: 0; }
+.conn-head .conn-back { margin-right: 2px; }
+.conn-head-ico { background: var(--ov-accent-muted) !important; color: var(--ov-accent) !important; }
+
+/* brand / neutral tiles */
+.cp-tile, .cp-tile-lg { display: flex; align-items: center; justify-content: center; flex: none;
+  border-radius: 9px; color: #fff; overflow: hidden; }
+.cp-tile { width: 34px; height: 34px; }
+.cp-tile-lg { width: 38px; height: 38px; border-radius: 10px; }
+.cp-tile .lucide, .cp-tile-lg .lucide { width: 18px; height: 18px; }
+.ctile.neutral.cp-tile, .ctile.neutral.cp-tile-lg { background: var(--ov-bg-inset-deep); color: var(--ov-text-secondary); }
+
+/* toolbar: tabs + search on one line */
+.conn-toolbar { display: flex; align-items: center; gap: var(--ov-space-4);
+  padding: 0 var(--ov-space-6) var(--ov-space-3); }
+.conn-seg { display: inline-flex; background: var(--ov-bg-inset-deep); border-radius: var(--ov-radius-control); padding: 2px; gap: 2px; flex: none; }
+.conn-seg .seg-btn { height: 28px; padding: 0 14px; border: none; background: transparent; border-radius: 5px;
+  font-size: var(--ov-text-12); font-weight: var(--ov-weight-medium); color: var(--ov-text-secondary); cursor: default;
+  transition: background var(--ov-duration-fast), color var(--ov-duration-fast); }
+.conn-seg .seg-btn:hover { color: var(--ov-text-primary); }
+.conn-seg .seg-btn.sel { background: var(--ov-bg-elevated); color: var(--ov-text-primary); box-shadow: var(--ov-shadow-card); }
+.conn-search { flex: 1; margin: 0; }
+.conn-mode-note { display: flex; align-items: center; gap: 6px; padding: 0 var(--ov-space-6) var(--ov-space-4);
+  font-size: var(--ov-text-12); color: var(--ov-text-tertiary); }
+.conn-mode-note .lucide { width: 13px; height: 13px; flex: none; }
+
+.conn-body { padding: 0 var(--ov-space-6) var(--ov-space-6); }
+.conn-grp { font-size: var(--ov-text-11); font-weight: var(--ov-weight-semibold); letter-spacing: var(--ov-tracking-wide);
+  text-transform: uppercase; color: var(--ov-text-tertiary); margin: var(--ov-space-5) 0 var(--ov-space-2); }
+.conn-grp:first-child { margin-top: var(--ov-space-2); }
+.conn-grp-rows { display: flex; flex-direction: column; gap: 4px; }
+
+.conn-pick-row { display: flex; align-items: center; gap: var(--ov-space-4); width: 100%; text-align: left;
+  padding: var(--ov-space-3) var(--ov-space-4); border: 1px solid transparent; border-radius: var(--ov-radius-card);
+  background: transparent; cursor: default; transition: background var(--ov-duration-fast), border-color var(--ov-duration-fast); }
+.conn-pick-row:hover { background: var(--ov-hover-bg); border-color: var(--ov-border-subtle); }
+.conn-pick-row .cp-main { flex: 1; min-width: 0; }
+.conn-pick-row .cp-n { display: flex; align-items: center; gap: 7px; font-size: var(--ov-text-13); font-weight: var(--ov-weight-medium); }
+.conn-pick-row .cp-prov { font-weight: 400; color: var(--ov-text-tertiary); font-size: var(--ov-text-12); }
+.conn-pick-row .cp-d { font-size: var(--ov-text-12); color: var(--ov-text-secondary); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conn-pick-row .cp-chev { color: var(--ov-text-quaternary); flex: none; opacity: 0; transition: opacity var(--ov-duration-fast); }
+.conn-pick-row:hover .cp-chev { opacity: 1; }
+.conn-pick-row .st-chip { flex: none; }
+.conn-pick-empty { padding: var(--ov-space-9) var(--ov-space-6); text-align: center; color: var(--ov-text-tertiary); }
+.conn-pick-empty .lucide { width: 22px; height: 22px; margin-bottom: var(--ov-space-3); color: var(--ov-text-quaternary); }
+.conn-pick-empty .cpe-sub { font-size: var(--ov-text-12); margin-top: 2px; }
+
+/* setup step */
+.conn-set-sec { font-size: var(--ov-text-11); font-weight: var(--ov-weight-semibold); letter-spacing: var(--ov-tracking-wide);
+  text-transform: uppercase; color: var(--ov-text-tertiary); margin: var(--ov-space-6) 0 var(--ov-space-3); }
+.conn-set-sec:first-child { margin-top: var(--ov-space-1); }
+.conn-ext-note, .conn-auth-note { display: flex; align-items: flex-start; gap: 7px; font-size: var(--ov-text-12);
+  color: var(--ov-text-secondary); line-height: var(--ov-leading-snug); margin-bottom: var(--ov-space-4); }
+.conn-ext-note .lucide, .conn-auth-note .lucide { flex: none; margin-top: 1px; color: var(--ov-text-tertiary); }
+.conn-auth-note { margin-top: var(--ov-space-3); margin-bottom: 0; }
+.conn-oauth-btn { width: 100%; justify-content: center; }
+.conn-perm-card .set-row { padding-left: 0; padding-right: 0; }
+.conn-key-note { display: flex; align-items: flex-start; gap: var(--ov-space-4); margin-top: var(--ov-space-5);
+  padding: var(--ov-space-4) var(--ov-space-5); border-radius: var(--ov-radius-card);
+  background: var(--ov-success-muted); font-size: var(--ov-text-12); color: var(--ov-text-secondary); line-height: var(--ov-leading-snug); }
+.conn-key-note .lucide { flex: none; margin-top: 1px; color: var(--ov-success); }
+.conn-key-note b { color: var(--ov-text-primary); font-weight: var(--ov-weight-semibold); }
+.conn-foot { gap: var(--ov-space-3); }
+
+/* Workspace switcher popover: suite's ov-pop animation fades from opacity 0,
+   which can strand it invisible in a backgrounded view. Use the transform-only
+   rise instead (opacity stays 1), and give it the full glass treatment:
+   deeper blur + saturation, a translucent glass border, concentric radius, a
+   specular top-edge highlight and a soft window shadow. */
+.ov-ws-pop {
+  position: fixed;
+  box-sizing: border-box;
+  animation: conn-rise 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  top: 56px;
+  left: 14px;
+  width: 288px;
+  border: 1px solid var(--gl-panel-border, var(--ov-border-default));
+  border-radius: 14px;
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  padding: var(--ov-space-3) var(--ov-space-3) var(--ov-space-2);
+}
+[data-theme="dark"] .ov-ws-pop {
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* =========================================================================
+   SURFACE-AWARE GLASS — the full treatment, applied to every floating menu.
+   The tint lives on --ov-material-hud (so any menu using it is at least
+   surface-aware), but the *glass look* — top sheen, blur, brightness — must
+   live on the surfaces themselves; a colour token can't carry it. Keyed to the
+   off-white WINDOW tone so menus stay a distinct layer over white content, at a
+   high tint with LOW saturation so bright objects (e.g. the Brick selected row)
+   behind the menu are muted, not amplified.
+   ========================================================================= */
+.ov-window,
+:root {
+  --ov-material-hud: color-mix(in oklab, var(--ov-bg-window) 96%, transparent);
+}
+[data-theme="dark"] .ov-window,
+[data-theme="dark"]:root {
+  --ov-material-hud: color-mix(in oklab, var(--ov-bg-window) 96%, transparent);
+}
+.ov-palette, .tweaks, .cvpop, .ctxmenu, .ai-menu, .ai-statpop,
+.wt-panel, .ov-ws-pop, .lnch-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 16px),
+    color-mix(in oklab, var(--ov-bg-window) 96%, transparent) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(115%) brightness(1.02);
+  backdrop-filter: blur(30px) saturate(115%) brightness(1.02);
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.5) !important;
+}
+[data-theme="dark"] .ov-palette, [data-theme="dark"] .tweaks,
+[data-theme="dark"] .cvpop, [data-theme="dark"] .ctxmenu,
+[data-theme="dark"] .ai-menu, [data-theme="dark"] .ai-statpop,
+[data-theme="dark"] .wt-panel, [data-theme="dark"] .ov-ws-pop,
+[data-theme="dark"] .lnch-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 16px),
+    color-mix(in oklab, var(--ov-bg-window) 96%, transparent) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(115%) brightness(0.94);
+  backdrop-filter: blur(30px) saturate(115%) brightness(0.94);
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .ov-window, :root { --ov-material-hud: var(--ov-bg-window); }
+  .ov-palette, .tweaks, .cvpop, .ctxmenu, .ai-menu, .ai-statpop,
+  .wt-panel, .ov-ws-pop, .lnch-panel {
+    background: var(--ov-bg-elevated) !important;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+}
+.ov-ws-pop .grp { padding-top: var(--ov-space-3); }
+.ov-ws-pop .ov-ws-row { border-radius: 9px; padding: var(--ov-space-3) var(--ov-space-4); }
+/* the surface-aware glass now obscures whatever sits beneath, so this menu no
+   longer needs to blank the sidebar's selected row — it behaves like every
+   other menu. Its own selected row carries the accent-muted fill. */
+.ov-ws-pop .ov-ws-row.sel { background: var(--ov-accent-muted); }
+.ov-ws-pop .ov-ws-row:hover { background: var(--ov-hover-bg); }
+/* keyboard focus on a menu row — the accent ring, per the focus rule */
+.ov-ws-pop .ov-ws-row:focus { outline: none; }
+.ov-ws-pop .ov-ws-row:focus-visible { outline: none; background: var(--ov-hover-bg); box-shadow: var(--ov-focus-ring-shadow); }
+
+/* account / user footer button at the bottom of the main menu */
+.ov-sidebar { display: flex; flex-direction: column; }
+/* footer: an inset divider line (same width as the user-menu divider), then a
+   rounded-corner account button (hover fills only the button, inset from the
+   sidebar edges — not the whole bar). */
+.ov-userwrap {
+  margin-top: auto; flex: none;
+  padding: 0 8px 8px;
+}
+.ov-userwrap::before {
+  content: ""; display: block; height: 1px;
+  background: var(--ov-separator);
+  margin: 0 var(--ov-space-2) 8px;
+}
+.ov-user {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 8px;
+  cursor: default;
+}
+.ov-user:hover { background: var(--ov-hover-bg); }
+/* role switcher — preview progressive disclosure by role */
+.ov-roleswitch {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  margin-bottom: 6px; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--ov-separator); background: var(--ov-bg-inset);
+  font: inherit; font-size: var(--ov-text-11); color: var(--ov-text-secondary);
+  cursor: pointer; text-align: left;
+}
+.ov-roleswitch:hover { background: var(--ov-hover-bg); border-color: var(--ov-border-control); }
+.ov-roleswitch .lucide { color: var(--ov-text-tertiary); flex: none; }
+.ov-roleswitch .ov-rs-label { color: var(--ov-text-tertiary); }
+.ov-roleswitch .ov-rs-role { color: var(--ov-text-primary); font-weight: var(--ov-weight-semibold); }
+.ov-roleswitch .ov-rs-chev { margin-left: auto; }
+.ov-window.sidebar-collapsed .ov-roleswitch { display: none; }
+/* match the account-menu header row exactly */
+.ov-user .nm { flex: 1; min-width: 0; }
+.ov-user .nm b { font-size: var(--ov-text-13); font-weight: var(--ov-weight-medium); display: block; }
+.ov-user .nm s { font-size: var(--ov-text-11); color: var(--ov-text-tertiary);
+  font-family: var(--ov-font-sans); text-decoration: none; display: block;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-user-av {
+  width: 24px; height: 24px; flex: none; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, #B03A33, #852520); color: #fff;
+  font-size:11px; font-weight: var(--ov-weight-semibold); letter-spacing: 0.02em;
+}
+.ov-user-av.lg { width: 34px; height: 34px; font-size: 13px; }
+/* danger item in the user menu */
+.ov-ws-pop .ov-ws-row.danger .nm b { color: var(--ov-danger); }
+.ov-ws-pop .ov-ws-row.danger .g .lucide { color: var(--ov-danger); }
+.ov-ws-pop .ov-ws-row.danger:hover { background: var(--ov-danger-muted, rgba(192, 60, 50, 0.1)); }
+
+/* collapsed rail: center just the avatar, hide name/email */
+.ov-window.sidebar-collapsed .ov-userwrap { padding-left: 4px; padding-right: 4px; }
+.ov-window.sidebar-collapsed .ov-user { justify-content: center; padding-left: 0; padding-right: 0; }
+.ov-window.sidebar-collapsed .ov-user .nm { display: none; }
+.ov-ws-pop .div { margin: var(--ov-space-3) var(--ov-space-3); background: var(--gl-panel-border, var(--ov-separator)); }
+
+/* Modules install timeline uses the canonical suite stepper; its .ss is mono
+   (for short status). These rows carry sentences, so render them in the sans
+   stack for legibility while keeping the dot + connector-line styling. */
+#osview .ov-step .ss { font-family: var(--ov-font-sans); }
+/* knowledge.css (loads after suite.css) overrides .ov-step padding/gap, which
+   misaligns suite's connector-line ::before. Re-assert suite geometry so the
+   canonical stepper's line lines up between dots. */
+#osview .ov-steps { gap: 0; }
+#osview .ov-step { gap: var(--ov-space-5); padding: 0 0 var(--ov-space-6); align-items: flex-start; position: relative; }
+
+/* ===========================================================================
+   11 · Import screen (import-view.js) — glass redesign. Light content,
+        so glass/material treatment is appropriate here (not a dense data grid).
+   =========================================================================== */
+.lg-import-wrap { max-width: 760px; margin: 0 auto; padding: 28px 24px 64px; }
+
+/* hero dropzone — a glass panel with a Brick accent tile + specular highlight */
+.lg-import-drop {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  padding: 38px 24px 30px; border-radius: 16px;
+  background:
+    radial-gradient(120% 90% at 50% -10%, var(--ov-accent-muted) 0%, transparent 60%),
+    var(--ov-bg-content-secondary);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-default));
+  box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  transition: border-color var(--ov-duration-fast), box-shadow var(--ov-duration-fast), outline-color var(--ov-duration-fast);
+}
+[data-theme="dark"] .lg-import-drop { box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.lg-import-drop.dragover { border-color: transparent; outline: 2px dashed var(--ov-ai); outline-offset: 3px; box-shadow: 0 0 0 1px var(--ov-ai-muted), var(--ov-shadow-raised); }
+.lg-import-drop-tile {
+  width: 56px; height: 56px; border-radius: 14px; margin-bottom: 16px;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(180deg, #B03A33, #852520);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), var(--ov-shadow-card);
+}
+.lg-import-drop-tile .lucide { width: 26px; height: 26px; }
+.lg-import-drop-title { font-size: 16px; font-weight: var(--ov-weight-semibold); color: var(--ov-text-primary); }
+.lg-import-drop-sub { font-size: 13px; margin-top: 4px; color: var(--ov-text-secondary); }
+.lg-import-drop-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }
+
+/* section header */
+.lg-import-h { font-size: var(--ov-text-11); font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-wide); text-transform: uppercase; color: var(--ov-text-tertiary);
+  margin: 30px 0 12px; }
+
+/* source cards — glass cards with a chevron-on-hover affordance */
+.lg-import-srcs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.lg-import-src {
+  display: flex; align-items: flex-start; gap: 12px; text-align: left; width: 100%;
+  padding: 14px; border-radius: 12px; cursor: default;
+  background: var(--ov-bg-elevated);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-subtle));
+  box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: transform var(--ov-duration-fast), border-color var(--ov-duration-fast), box-shadow var(--ov-duration-fast);
+}
+[data-theme="dark"] .lg-import-src { box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+.lg-import-src:hover { transform: translateY(-1px); border-color: var(--ov-border-default);
+  box-shadow: var(--ov-shadow-raised), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
+.lg-import-srcico {
+  width: 38px; height: 38px; flex: none; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ov-bg-inset-deep); color: var(--ov-text-secondary);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.lg-import-srcico.accent { background: var(--ov-accent-muted); color: var(--ov-accent); }
+.lg-import-srcico.ai { background: var(--ov-ai-muted, rgba(80, 110, 170, 0.14)); color: var(--ov-ai); }
+.lg-import-src-body { flex: 1; min-width: 0; padding-top: 1px; }
+.lg-import-src-t { font-size: 13px; font-weight: var(--ov-weight-semibold); color: var(--ov-text-primary); }
+.lg-import-src-d { font-size: 12px; color: var(--ov-text-secondary); margin-top: 3px; line-height: var(--ov-leading-snug); }
+.lg-import-src-chev { color: var(--ov-text-quaternary); flex: none; opacity: 0; transition: opacity var(--ov-duration-fast); }
+.lg-import-src:hover .lg-import-src-chev { opacity: 1; }
+
+/* generic glass card used for settings / in-progress / review */
+.lg-import-card {
+  padding: 16px 18px; border-radius: 12px; margin-top: 0;
+  background: var(--ov-bg-elevated);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-subtle));
+  box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .lg-import-card { box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+.lg-import-prefs { padding: 4px 18px; }
+.lg-import-prefs .ov-pref-row { border-bottom: 1px solid var(--ov-separator); }
+.lg-import-prefs .ov-pref-row:last-child { border-bottom: none; }
+.lg-import-review { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
+
+/* ===========================================================================
+   12 · Launch screen (launch-view.js) — "Open a workspace" inside the shell.
+   =========================================================================== */
+.lg-launch-wrap { max-width: 760px; margin: 0 auto; padding: 28px 24px 56px; }
+.lg-launch-hero {
+  display: flex; align-items: flex-start; gap: 18px;
+  padding: 22px 22px; border-radius: 16px;
+  background:
+    radial-gradient(130% 120% at 0% 0%, var(--ov-accent-muted) 0%, transparent 55%),
+    var(--ov-bg-content-secondary);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-default));
+  box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+[data-theme="dark"] .lg-launch-hero { box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.lg-launch-appicon { width: 54px; height: 54px; flex: none; border-radius: 13px; box-shadow: var(--ov-shadow-card); }
+.lg-launch-hero-text { flex: 1; min-width: 0; }
+.lg-launch-name { font-size: 19px; font-weight: var(--ov-weight-bold); letter-spacing: var(--ov-tracking-tight); }
+.lg-launch-tag-line { font-size: 13px; color: var(--ov-text-secondary); margin-top: 4px; line-height: var(--ov-leading-snug); max-width: 52ch; }
+.lg-launch-meta { display: flex; gap: 18px; margin-top: 12px; }
+.lg-launch-meta .ov-prop { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.lg-launch-meta .k { color: var(--ov-text-tertiary); }
+.lg-launch-meta .v { color: var(--ov-text-secondary); }
+
+/* start cards reuse .lg-import-src; just ensure anchor styling is clean */
+.lg-launch-card { text-decoration: none; color: inherit; }
+
+/* recent workspace rows — glass rows */
+.lg-launch-recents { display: flex; flex-direction: column; gap: 8px; }
+.lg-launch-recent {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 11px 14px; border-radius: 11px; cursor: default;
+  background: var(--ov-bg-elevated);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-subtle));
+  box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: transform var(--ov-duration-fast), border-color var(--ov-duration-fast), box-shadow var(--ov-duration-fast);
+}
+[data-theme="dark"] .lg-launch-recent { box-shadow: var(--ov-shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+.lg-launch-recent:hover { transform: translateY(-1px); border-color: var(--ov-border-default);
+  box-shadow: var(--ov-shadow-raised), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
+.lg-launch-ring {
+  width: 34px; height: 34px; flex: none; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, #B03A33, #852520);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.lg-launch-recent-body { flex: 1; min-width: 0; }
+.lg-launch-recent-t { font-size: 13px; font-weight: var(--ov-weight-semibold); display: flex; align-items: center; gap: 8px; }
+.lg-launch-recent-p { font-size: 11px; color: var(--ov-text-tertiary); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lg-launch-tag {
+  font-size:11px; font-weight: var(--ov-weight-semibold); letter-spacing: var(--ov-tracking-wide);
+  text-transform: uppercase; color: var(--ov-accent);
+  background: var(--ov-accent-muted); padding: 1px 6px; border-radius: var(--ov-radius-pill);
+}
+.lg-launch-when { font-size: 11px; color: var(--ov-text-quaternary); flex: none; }
+.lg-launch-recent .lg-import-src-chev { color: var(--ov-text-quaternary); flex: none; opacity: 0; transition: opacity var(--ov-duration-fast); }
+.lg-launch-recent:hover .lg-import-src-chev { opacity: 1; }
+
+/* footer */
+.lg-launch-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; flex-wrap: wrap; }
+.lg-launch-reopen { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ov-text-secondary); cursor: default; }
+.lg-launch-trust { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ov-text-tertiary); }
+.lg-launch-trust .lucide { color: var(--ov-success); flex: none; }
+
+/* ⌘K omni-search pill: keep the placeholder on a single line (it was wrapping
+   to two lines inside the 28px pill), with the label flexing + truncating and
+   the icon/shortcut held at their natural size. Absolutely centered in the
+   titlebar so it stays put regardless of breadcrumb width on the left. */
+/* Kept IN FLOW and centred with auto margins (not absolute + z-index): out of
+   flow it didn't participate in flex sizing, so a long breadcrumb was laid out
+   as if the full width were free and then painted underneath the pill. In flow,
+   the breadcrumb is forced to shrink (min-width:0) and ellipsize instead. */
+/* min-width:0 so the flex children (breadcrumb, ⌘K pill) actually shrink
+   instead of overflowing the window at narrow widths. */
+.ov-titlebar { position: relative; min-width: 0; }
+.ov-omni-search {
+  margin-left: auto; margin-right: 0; flex: 0 1 170px;
+  width: 170px; max-width: 19vw; min-width: 120px; overflow: hidden; z-index: 1;
+}
+/* the trailing spacer would push the pill back toward centre — collapse it so the
+   pill sits directly beside the trailing control group (Ask OmniVia, theme, More) */
+/* Review mode chip sits directly left of the search pill: it takes over the auto
+   margin so the pair travels to the right edge together. */
+#rv-tbctl:has(+ .ov-omni-search) { margin-left: auto; }
+#rv-tbctl + .ov-omni-search { margin-left: var(--ov-space-3); }
+.ov-omni-search + .ov-tb-spacer { flex: 0 0 var(--ov-space-3); }
+.ov-omni-search > i, .ov-omni-search > .lucide { flex: none; }
+.ov-omni-search > span:first-of-type {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-align: left;
+}
+.ov-omni-search > span:last-of-type { flex: none; margin-left: var(--ov-space-3); }
+
+/* ===========================================================================
+   13 · Review mode (review-mode.js) — in-session design-review overlay.
+        Uses a distinct PLUMB accent (not the Brick app accent) so the mode
+        reads as visually separate from normal app usage.
+   =========================================================================== */
+:root { --rv-accent: var(--ov-plumb); --rv-accent-muted: var(--ov-plumb-muted); }
+
+/* floating plumb dock (replaces the full-width bar) */
+.rv-dock {
+  position: fixed; top: 34px; left: 50%; transform: translateX(-50%); z-index: 240;
+  display: flex; align-items: center; gap: 13px; padding: 6px 17px;
+  background: linear-gradient(180deg, #9162c4, #7a49ad); color: #fff; border-radius: 999px;
+  box-shadow: 0 12px 32px -10px rgba(108, 64, 160, 0.6), 0 2px 6px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  animation: rv-dock-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes rv-dock-in { from { transform: translateX(-50%) translateY(-10px); } to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { .rv-dock { animation: none; } }
+.rv-dock .rv-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; flex: none;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.25); }
+.rv-dock-hint { font-size: 13px; font-weight: var(--ov-weight-medium); color: rgba(255, 255, 255, 0.95); white-space: nowrap; }
+
+/* titlebar control: a plumb-tinted segment wrapping a "Review mode" status chip
+   + a standard small bordered toolbar button ("Exit") */
+.rv-tbctl { display: flex; align-items: center; }
+.rv-tbctl .rv-seg { display: flex; align-items: center; gap: 8px;
+  background: var(--ov-plumb-muted); border-radius: 9px; padding: 4px 5px 4px 7px; }
+.rv-tbctl .st-chip.rv-chip { color: var(--ov-plumb); background: transparent; border-color: transparent; }
+.rv-tbctl .rv-exit-btn { background: var(--ov-bg-elevated); }
+.rv-tbctl .rv-exit-btn .kbd { margin-left: 2px; }
+
+.rv-panel {
+  flex: none; width: 300px; display: flex; flex-direction: column;
+  background: var(--ov-material-sidebar);
+  -webkit-backdrop-filter: blur(30px) saturate(185%); backdrop-filter: blur(30px) saturate(185%);
+  border-left: 1px solid var(--ov-separator); box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .rv-panel { box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.05); }
+.rv-panel-head { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 14px;
+  border-bottom: 1px solid var(--ov-separator); flex: none; }
+.rv-panel-head > .lucide { width: 15px; height: 15px; color: var(--rv-accent); }
+.rv-panel-head .t { font-size: 13px; font-weight: var(--ov-weight-semibold); flex: 1; }
+.rv-badge { font-size: 11px; font-variant-numeric: tabular-nums; background: var(--rv-accent-muted);
+  color: var(--rv-accent); border-radius: var(--ov-radius-pill); padding: 1px 8px; font-weight: var(--ov-weight-semibold); }
+.rv-panel-scroll { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.rv-empty { margin: auto; text-align: center; color: var(--ov-text-tertiary); font-size: 12px;
+  padding: 30px 18px; display: flex; flex-direction: column; align-items: center; gap: 10px; line-height: 1.45; }
+.rv-empty .lucide { width: 22px; height: 22px; color: var(--ov-text-quaternary); }
+.rv-note { display: flex; gap: 9px; padding: 10px; border-radius: 10px; background: var(--ov-bg-elevated);
+  border: 1px solid var(--ov-border-subtle); box-shadow: var(--ov-shadow-card); }
+.rv-note-n { width: 18px; height: 18px; flex: none; border-radius: 50%; background: var(--rv-accent); color: #fff;
+  font-size:11px; font-weight: var(--ov-weight-semibold); display: flex; align-items: center; justify-content: center; }
+.rv-note-b { flex: 1; min-width: 0; }
+.rv-note-t { font-size: 11px; color: var(--ov-text-tertiary); font-family: var(--ov-font-mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rv-note-x { font-size: 12.5px; color: var(--ov-text-primary); line-height: 1.4; margin-top: 2px; }
+.rv-note-del { flex: none; width: 20px; height: 20px; border: 0; background: none; color: var(--ov-text-quaternary);
+  border-radius: 5px; cursor: default; display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity var(--ov-duration-fast); }
+.rv-note:hover .rv-note-del { opacity: 1; }
+.rv-note-del:hover { background: var(--ov-hover-bg); color: var(--ov-text-secondary); }
+.rv-note-del .lucide { width: 13px; height: 13px; }
+
+.rv-hl { position: fixed; z-index: 290; pointer-events: none; border-radius: 6px;
+  border: 1.5px solid var(--rv-accent); background: color-mix(in srgb, var(--rv-accent) 10%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rv-accent) 35%, transparent);
+  transition: left 60ms linear, top 60ms linear, width 60ms linear, height 60ms linear; }
+/* locked to the element being annotated while the note composer is open */
+.rv-hl.locked { border-width: 2px; background: color-mix(in srgb, var(--rv-accent) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rv-accent) 55%, transparent),
+    0 0 0 6px color-mix(in srgb, var(--rv-accent) 12%, transparent); transition: none; }
+
+.rv-pin { position: fixed; z-index: 300; transform: translate(-50%, -50%); width: 22px; height: 22px;
+  border-radius: 50% 50% 50% 3px; background: var(--rv-accent); color: #fff; font-size: 11px;
+  font-weight: var(--ov-weight-semibold); display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--ov-shadow-popover), 0 0 0 2px #fff; pointer-events: none; }
+
+.rv-comment { position: fixed; z-index: 320; width: 300px; box-sizing: border-box; padding: 12px;
+  background: var(--ov-bg-elevated); border: 1px solid var(--gl-panel-border, var(--ov-border-default));
+  border-radius: 12px; box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+.rv-comment-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ov-text-tertiary);
+  font-family: var(--ov-font-mono); margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rv-comment-target .lucide { width: 12px; height: 12px; flex: none; color: var(--rv-accent); }
+.rv-comment textarea { width: 100%; box-sizing: border-box; resize: none; border: 1px solid var(--ov-border-control);
+  border-radius: 7px; background: var(--ov-bg-inset); padding: 8px 9px; font: inherit; font-size: 12.5px;
+  color: var(--ov-text-primary); box-shadow: var(--ov-inner-well); outline: none; }
+.rv-comment textarea:focus { border-color: var(--rv-accent); box-shadow: 0 0 0 3px var(--rv-accent-muted); }
+.rv-comment-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+/* the comment's primary action wears plumb, not Brick */
+.rv-comment .ov-btn--primary { background: var(--rv-accent); border-color: var(--rv-accent); }
+.rv-comment .ov-btn--primary:hover { background: color-mix(in srgb, var(--rv-accent) 88%, #000); }
+
+.rv-menu { position: fixed; z-index: 240; min-width: 230px; padding: 6px;
+  background: var(--ov-material-hud, rgba(251, 252, 252, 0.8));
+  -webkit-backdrop-filter: blur(40px) saturate(190%); backdrop-filter: blur(40px) saturate(190%);
+  border: 1px solid var(--gl-panel-border, var(--ov-border-default)); border-radius: 12px;
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
+[data-theme="dark"] .rv-menu, [data-theme="dark"] .rv-comment {
+  box-shadow: var(--ov-shadow-window), inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+.rv-menu-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 8px;
+  font-size: 13px; color: var(--ov-text-primary); cursor: default; }
+.rv-menu-item:hover { background: var(--ov-hover-bg); }
+.rv-menu-item .lucide { width: 15px; height: 15px; color: var(--ov-text-secondary); flex: none; }
+.rv-menu-item .kbd { margin-left: auto; }
+.rv-menu-item.on, .rv-menu-item.on .lucide { color: var(--rv-accent); }
+
+/* Review queue approve bar: at narrow detail-pane widths the three buttons can
+   overflow, so collapse the low-priority "Skip" to icon-only and tighten the
+   bar's padding/gap; the explicit Approve verb is always preserved. */
+.ov-approve-bar { padding-left: var(--ov-space-5); padding-right: var(--ov-space-5); gap: var(--ov-space-3); }
+@media (max-width: 1120px) {
+  .ov-approve-bar [data-review-act="skip"] span { display: none; }
+}
+
+
+/* --ov-bg-titlebar is referenced by in-scope App Shell CSS but was declared
+   nowhere, so it resolved to nothing in BOTH themes. Aliased to the existing
+   semantic bar token rather than inventing a colour — --ov-bg-bar is already
+   themed, so this resolves correctly in light and dark with one declaration.
+   An earlier attempt to insert this mid-file silently no-op'd because the anchor
+   text did not exist after canonicalisation; appending is order-independent. */
+:root{--ov-bg-titlebar:var(--ov-bg-bar)}
+
+/* --ov-sidebar-border and --ov-sidebar-border-right existed ONLY in the dark
+   block; every light consumer relied on an inline var() fallback, so the light
+   token resolved to nothing. Declared here with the values those fallbacks were
+   already using, so the light theme resolves from the token layer. (An earlier
+   mid-file insertion silently no-op'd — its anchor text did not survive
+   canonicalisation. Appending is order-independent.) */
+:root{--ov-sidebar-border:rgba(60,59,66,.19);--ov-sidebar-border-right:rgba(60,59,66,.095)}
+[data-theme="dark"]{--ov-sidebar-border:rgba(255,255,255,.12);--ov-sidebar-border-right:rgba(255,255,255,.06)}
+
+
+/* ===========================================================================
+   OVUI governed modal / app modal wrapper.
+   dev.css styles the scrim and the card but never positions the wrapper, so in
+   any host that does not supply its own rule the card flows at the static
+   origin: flush left and clipped off the bottom, cutting the confirm row. The
+   wrapper owns the geometry; the card owns its own height and scrolls inside.
+   =========================================================================== */
+#ov-app-modal{position:fixed;inset:0;z-index:var(--ov-z-modal,900);display:grid;place-items:center;padding:24px}
+#ov-app-modal:empty{display:none}
+#ov-app-modal .sc-modal-scrim{position:fixed;inset:0}
+#ov-app-modal .sc-modal-card{position:relative;z-index:1;width:min(480px,calc(100vw - 48px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden}
+#ov-app-modal .sc-modal-body{overflow-y:auto;overscroll-behavior:contain}
+#ov-app-modal .sc-modal-foot,#ov-app-modal .sc-modal-actions{flex:none}

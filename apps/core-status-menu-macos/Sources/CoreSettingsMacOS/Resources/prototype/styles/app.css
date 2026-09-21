@@ -1,0 +1,623 @@
+/* ============================================================================
+   OmniVia UI Kit — component & shell styles
+   Depends on colors_and_type.css (--ov-* tokens). Sentence-case UI throughout.
+   ============================================================================ */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  font-family: var(--ov-font-sans);
+  color: var(--ov-text-primary);
+  background: var(--ov-bg-window);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+button { font-family: inherit; cursor: default; }
+::selection { background: var(--ov-selection-text-bg); }
+
+/* Lucide icon defaults (SF Symbols stand-in) */
+.lucide { width: 16px; height: 16px; stroke-width: 1.6; flex: none; }
+.ic-13 .lucide, .lucide.s13 { width: 13px; height: 13px; }
+.ic-14 .lucide { width: 14px; height: 14px; }
+.ic-18 .lucide { width: 18px; height: 18px; }
+.ic-20 .lucide { width: 20px; height: 20px; }
+
+/* ------------------------------------------------------------------ *
+ * APP SHELL
+ * ------------------------------------------------------------------ */
+.ov-window {
+  height: 100%;
+  display: grid;
+  grid-template-rows: var(--ov-toolbar-height) 1fr 26px;
+  background: var(--ov-bg-content);
+  overflow: hidden;
+}
+.ov-window.has-radius {
+  border-radius: var(--ov-radius-window);
+  box-shadow: var(--ov-shadow-window);
+}
+
+.ov-body-row {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  position: relative;          /* anchor for the edge hotspot + temporary drawer */
+  overflow: hidden;
+}
+.ov-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ov-bg-content);
+  overflow: hidden;
+  position: relative;
+}
+
+/* ------------------------------------------------------------------ *
+ * TITLEBAR + TOOLBAR (unified)
+ * ------------------------------------------------------------------ */
+.ov-titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--ov-space-3);
+  height: var(--ov-toolbar-height);
+  padding: 0 var(--ov-space-6) 0 84px; /* 84px traffic-light inset */
+  background: var(--ov-material-titlebar);
+  -webkit-backdrop-filter: blur(var(--ov-blur-regular)) saturate(180%);
+  backdrop-filter: blur(var(--ov-blur-regular)) saturate(180%);
+  border-bottom: 1px solid var(--ov-separator);
+  position: relative;
+  z-index: 30;
+}
+/* fake traffic lights ONLY for the web preview (the real app uses OS controls) */
+.ov-traffic {
+  position: absolute;
+  left: 18px; top: 50%; transform: translateY(-50%);
+  display: flex; gap: 8px;
+}
+.ov-traffic i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.ov-traffic .r { background: #ED6A5E; }
+.ov-traffic .y { background: #F4BE4F; }
+.ov-traffic .g { background: #61C554; }
+.ov-traffic--note { font-size: 9px; color: var(--ov-text-quaternary); }
+
+.ov-tb-group { display: flex; align-items: center; gap: var(--ov-space-2); }
+
+/* Product identity, immediately right of the window controls. Same mark +
+   wordmark treatment as the account sheet. Not a drag exclusion — it is inert,
+   so the whole block stays draggable like the rest of the titlebar. */
+.ov-tb-brand {
+  display: flex; align-items: center; gap: 7px;
+  /* One optical gap governs the whole cluster: window controls → mark, wordmark
+     → divider, divider → sidebar icon. Measured to visible edges, so the icon
+     button's 6px internal centring is accounted for on the trailing side. */
+  margin-left: 12px;
+  flex: none;
+  /* Symmetric optical gap either side of the divider, measured to the visible
+     icon glyph rather than the button box — the 28px icon button centres a 16px
+     glyph, so its box edge sits 6px left of anything the eye registers. */
+  padding-right: 25px; margin-right: 14px;
+  border-right: 1px solid var(--ov-separator);
+}
+.ov-tb-brand .mk { display: flex; color: var(--ov-accent); }
+.ov-tb-brand .wm {
+  font-size: 13px; font-weight: 590; letter-spacing: -0.006em;
+  color: var(--ov-text-primary); white-space: nowrap;
+}
+@media (max-width: 900px) { .ov-tb-brand .wm { display: none; } }
+.ov-tb-spacer { flex: 1; }
+/* The ⌘K pill is centered and OUT of flow (see overlay.css), so it can't
+   constrain the breadcrumb via flex. Cap the breadcrumb at the pill's left
+   edge (half the titlebar − half the pill − a gap) and let long workspace
+   names ellipsize rather than slide underneath it. */
+.ov-breadcrumb {
+  display: flex; align-items: center; gap: var(--ov-space-3);
+  font-size: var(--ov-text-13); color: var(--ov-text-secondary);
+  min-width: 0; max-width: 300px; overflow: hidden;
+}
+/* Only the leading (ancestor) crumbs absorb the squeeze; the current-page crumb
+   and separators never shrink, so "Chat" can't collapse to "C…". */
+.ov-breadcrumb > span:not(.sep):not(.crumb-current) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-breadcrumb .crumb-current { flex: 0 0 auto; overflow: visible; text-overflow: clip; white-space: nowrap; }
+.ov-breadcrumb .sep { flex: none; overflow: visible; }
+.ov-breadcrumb .crumb-current { color: var(--ov-text-primary); font-weight: var(--ov-weight-medium); }
+.ov-breadcrumb .sep { color: var(--ov-text-quaternary); }
+
+/* command-k pill in toolbar */
+.ov-omni-search {
+  display: flex; align-items: center; gap: var(--ov-space-3);
+  width: 280px; height: 28px; padding: 0 var(--ov-space-5);
+  background: var(--ov-bg-inset);
+  border: 1px solid var(--ov-border-control);
+  border-radius: var(--ov-radius-control);
+  color: var(--ov-text-placeholder); font-size: var(--ov-text-13);
+  box-shadow: var(--ov-inner-well);
+}
+.ov-omni-search .kbd { margin-left: auto; }
+
+/* ------------------------------------------------------------------ *
+ * PRIMITIVES — buttons
+ * ------------------------------------------------------------------ */
+.ov-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: var(--ov-space-3);
+  height: var(--ov-control-height-md); padding: 0 var(--ov-space-6);
+  border-radius: var(--ov-radius-control);
+  font-size: var(--ov-text-13); font-weight: var(--ov-weight-medium);
+  border: 1px solid transparent; white-space: nowrap;
+  transition: background var(--ov-duration-fast) var(--ov-ease-out),
+              filter var(--ov-duration-fast) var(--ov-ease-out);
+}
+.ov-btn:active { transform: translateY(0.5px); }
+.ov-btn--lg { height: var(--ov-control-height-lg); padding: 0 var(--ov-space-7); }
+.ov-btn--sm { height: var(--ov-control-height); padding: 0 var(--ov-space-5); font-size: var(--ov-text-12); }
+
+.ov-btn--primary { background: var(--ov-accent); color: var(--ov-text-on-accent);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, var(--ov-shadow-xs); }
+.ov-btn--primary:hover { background: var(--ov-accent-hover); }
+.ov-btn--primary:active { background: var(--ov-accent-active); }
+
+.ov-btn--bordered { background: var(--ov-bg-elevated); color: var(--ov-text-primary);
+  border-color: var(--ov-border-control);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, var(--ov-shadow-xs); }
+.ov-btn--bordered:hover { background: var(--ov-hover-bg); }
+
+.ov-btn--secondary { background: var(--ov-accent-muted); color: var(--ov-accent); }
+.ov-btn--secondary:hover { background: var(--ov-accent-muted-strong); }
+
+.ov-btn--plain { background: transparent; color: var(--ov-text-primary); padding: 0 var(--ov-space-4); }
+.ov-btn--plain:hover { background: var(--ov-hover-bg); }
+
+.ov-btn--danger { background: var(--ov-danger); color: #fff; }
+.ov-btn--danger:hover { background: var(--ov-danger-hover); }
+
+.ov-btn--warning { background: var(--ov-warning-muted); color: var(--ov-warning); border-color: transparent; box-shadow: none; }
+.ov-btn--warning:hover { background: color-mix(in srgb, var(--ov-warning) 22%, transparent); }
+.ov-btn--warning:active { background: color-mix(in srgb, var(--ov-warning) 22%, transparent); }
+
+.ov-btn--ai { background: var(--ov-ai-muted); color: var(--ov-ai); border-color: transparent; box-shadow: none; }
+.ov-btn--ai:hover { background: var(--ov-ai-muted-strong); }
+.ov-btn--ai:active { background: var(--ov-ai-muted-strong); }
+
+/* Safety — returns control to the user. Neither primary (this is not the
+   expected forward action) nor destructive (nothing is lost). Accent outline on
+   an elevated surface, so it reads as prominent and clearly distinct from both.
+   Use for Take over and equivalents; never for ordinary secondary actions. */
+.ov-btn--safety { background: var(--ov-bg-elevated); color: var(--ov-accent);
+  border-color: var(--ov-accent); font-weight: var(--ov-weight-medium);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, var(--ov-shadow-xs); }
+.ov-btn--safety:hover { background: var(--ov-accent-muted); }
+.ov-btn--safety:active { background: var(--ov-accent-muted-strong); }
+
+/* Protective, not destructive — prevents an effect rather than destroying data
+   ("Stop this action"). Bordered, with danger text. Filled --danger stays for
+   genuinely destructive actions: revoke, disable, delete, reject. */
+.ov-btn--danger-text { color: var(--ov-danger); border-color: color-mix(in srgb, var(--ov-danger) 45%, transparent); }
+.ov-btn--danger-text:hover { background: var(--ov-danger-muted); }
+
+.ov-btn--wide { width: 100%; }
+
+/* Governed-modal confirm: destructive actions must not look like ordinary
+   primary ones (do not make destructive and ordinary actions visually equal).
+   OVUI.AppGovernedModal stamps .is-danger on the wrapper from its documented
+   `danger` option; the button itself stays a canonical .ov-btn so only the fill
+   changes. Lives here, next to --danger, because every consumer needs it —
+   revoke a memory entry, clear all memory, revoke a connection, archive a
+   Workflow, and the Browser Companion's disable / unpair / detach / reject. */
+#ov-app-modal.is-danger [data-ok] { background: var(--ov-danger); border-color: transparent; }
+#ov-app-modal.is-danger [data-ok]:hover { background: var(--ov-danger-hover); }
+
+.ov-btn:disabled, .ov-btn[aria-disabled="true"] { opacity: var(--ov-disabled-opacity); pointer-events: none; }
+
+/* icon button */
+.ov-iconbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--ov-radius-control);
+  background: transparent; border: none; color: var(--ov-text-secondary);
+  transition: background var(--ov-duration-fast) var(--ov-ease-out), color var(--ov-duration-fast);
+}
+.ov-iconbtn:hover { background: var(--ov-hover-bg); color: var(--ov-text-primary); }
+.ov-iconbtn:active { background: var(--ov-active-bg); }
+.ov-iconbtn--active { background: var(--ov-accent-muted); color: var(--ov-accent); }
+.ov-iconbtn--active:hover { background: var(--ov-accent-muted-strong); color: var(--ov-accent); }
+
+/* notification bell + unread badge */
+.ov-notif-btn { position: relative; }
+.ov-notif-badge {
+  display: none; position: absolute; top: -2px; right: -2px;
+  min-width: 15px; height: 15px; padding: 0 4px; box-sizing: border-box;
+  align-items: center; justify-content: center;
+  background: var(--ov-accent); color: #fff;
+  font-family: var(--ov-font-sans); font-size: 9.5px; font-weight: 700;
+  line-height: 1; border-radius: 999px;
+  border: 1.5px solid var(--ov-bg-titlebar, var(--ov-bg-content));
+}
+
+/* keyboard hint */
+.kbd {
+  display: inline-flex; align-items: center; gap: 1px;
+  font-family: var(--ov-font-sans); font-size: 11px;
+  color: var(--ov-text-tertiary);
+  background: var(--ov-hover-bg); border-radius: 4px;
+  padding: 1px 5px; min-width: 16px; justify-content: center;
+}
+.kbd--bare { background: none; padding: 0; }
+
+/* pill / status */
+.ov-pill {
+  display: inline-flex; align-items: center; gap: var(--ov-space-2);
+  height: 20px; padding: 0 var(--ov-space-4);
+  border-radius: var(--ov-radius-pill); font-size: var(--ov-text-11);
+  font-weight: var(--ov-weight-medium);
+  background: var(--ov-bg-content-secondary); color: var(--ov-text-secondary);
+  border: 1px solid var(--ov-separator);
+}
+.ov-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ov-pill--success { color: var(--ov-success); background: var(--ov-success-muted); border-color: transparent; }
+.ov-pill--warning { color: var(--ov-warning); background: var(--ov-warning-muted); border-color: transparent; }
+.ov-pill--danger { color: var(--ov-danger); background: var(--ov-danger-muted); border-color: transparent; }
+.ov-pill--ai { color: var(--ov-ai); background: var(--ov-ai-muted); border-color: transparent; }
+.ov-pill--accent { color: var(--ov-accent); background: var(--ov-accent-muted); border-color: transparent; }
+
+/* tag / chip */
+.ov-tag {
+  display: inline-flex; align-items: center; gap: var(--ov-space-2);
+  height: 22px; padding: 0 var(--ov-space-4);
+  border-radius: var(--ov-radius-sm); font-size: var(--ov-text-12);
+  background: var(--ov-bg-content-secondary); color: var(--ov-text-secondary);
+  border: 1px solid var(--ov-separator);
+}
+.ov-tag .type-dot { width: 7px; height: 7px; border-radius: 2px; }
+
+/* text field */
+.ov-field {
+  display: flex; align-items: center; gap: var(--ov-space-3);
+  height: var(--ov-control-height-lg); padding: 0 var(--ov-space-5);
+  background: var(--ov-bg-inset); border: 1px solid var(--ov-border-control);
+  border-radius: var(--ov-radius-control); box-shadow: var(--ov-inner-well);
+  color: var(--ov-text-primary); font-size: var(--ov-text-13);
+}
+.ov-field:focus-within { border-color: var(--ov-accent); box-shadow: var(--ov-focus-ring-shadow); }
+.ov-field input { flex: 1; min-width: 0; border: none; outline: none; background: none;
+  color: inherit; font: inherit; }
+.ov-field input::placeholder { color: var(--ov-text-placeholder); }
+.ov-field .lucide { color: var(--ov-text-tertiary); }
+
+/* toggle */
+.ov-toggle { width: 32px; height: 19px; border-radius: 999px; background: var(--ov-border-strong);
+  position: relative; transition: background var(--ov-duration-base) var(--ov-ease-standard); flex: none; }
+.ov-toggle.on { background: var(--ov-accent); }
+.ov-toggle .knob { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  transition: transform var(--ov-duration-base) var(--ov-ease-standard); }
+.ov-toggle.on .knob { transform: translateX(13px); }
+
+/* segmented control */
+.ov-segmented { display: inline-flex; padding: 2px; gap: 2px;
+  background: var(--ov-bg-inset-deep); border-radius: var(--ov-radius-control); }
+.ov-segmented button { height: 24px; padding: 0 var(--ov-space-5); border: none; background: transparent;
+  border-radius: 5px; font-size: var(--ov-text-12); font-weight: var(--ov-weight-medium);
+  color: var(--ov-text-secondary); display: inline-flex; align-items: center; gap: 5px;
+  transition: all var(--ov-duration-fast) var(--ov-ease-out); }
+.ov-segmented button.sel { background: var(--ov-bg-elevated); color: var(--ov-text-primary);
+  box-shadow: var(--ov-shadow-card); }
+
+/* ------------------------------------------------------------------ *
+ * SIDEBAR
+ * ------------------------------------------------------------------ */
+.ov-sidebar {
+  width: var(--ov-sidebar-width); flex: none;
+  display: flex; flex-direction: column;
+  background: var(--ov-material-sidebar);
+  -webkit-backdrop-filter: blur(var(--ov-blur-regular)) saturate(180%);
+  backdrop-filter: blur(var(--ov-blur-regular)) saturate(180%);
+  border-right: 1px solid var(--ov-separator);
+  overflow: hidden;
+  transition: width var(--ov-duration-base) var(--ov-ease-standard);
+  will-change: width;
+}
+/* Collapsed sidebar — permanent state set by the collapse/expand button (⌘\). */
+.ov-window.sidebar-collapsed .ov-sidebar {
+  width: 0;
+  border-right: none;
+}
+
+/* ── Edge-hover temporary navigation drawer ──────────────────────────────
+   When collapsed, the far-left edge is a reveal hotspot. Hovering it slides
+   the SAME sidebar back in as an elevated overlay above the workspace —
+   without resizing or shifting the main content (it is positioned absolutely).
+   Dismissed by clicking outside (scrim), selecting an item, or Escape.        */
+.ov-edge-hotspot { display: none; }
+.ov-window.sidebar-collapsed .ov-edge-hotspot {
+  display: block;
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 12px; z-index: 40;
+}
+.ov-window.sidebar-peek .ov-edge-hotspot,
+.ov-window.sidebar-peek-out .ov-edge-hotspot { pointer-events: none; }
+
+/* transparent dismiss area behind the revealed drawer */
+.ov-peek-scrim { display: none; }
+.ov-window.sidebar-peek .ov-peek-scrim,
+.ov-window.sidebar-peek-out .ov-peek-scrim {
+  display: block;
+  position: absolute; inset: 0; z-index: 50;
+  background: transparent;
+}
+
+/* the revealed drawer — same .ov-sidebar, promoted to an elevated overlay */
+.ov-window.sidebar-collapsed.sidebar-peek .ov-sidebar,
+.ov-window.sidebar-collapsed.sidebar-peek-out .ov-sidebar {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: var(--ov-sidebar-width);
+  z-index: 60;
+  border-right: 1px solid var(--ov-separator);
+  box-shadow: var(--ov-shadow-window);
+  transition: none;            /* slide handled by keyframes, not the width tween */
+}
+.ov-window.sidebar-collapsed.sidebar-peek .ov-sidebar {
+  animation: ov-sidebar-peek-in var(--ov-duration-base) var(--ov-ease-standard);
+}
+.ov-window.sidebar-collapsed.sidebar-peek-out .ov-sidebar {
+  animation: ov-sidebar-peek-out var(--ov-duration-fast) var(--ov-ease-in-out) forwards;
+}
+@keyframes ov-sidebar-peek-in {
+  from { transform: translateX(-101%); opacity: 0.5; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+@keyframes ov-sidebar-peek-out {
+  from { transform: translateX(0); opacity: 1; }
+  to   { transform: translateX(-101%); opacity: 0.5; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov-sidebar { transition: none; }
+  .ov-window.sidebar-peek .ov-sidebar,
+  .ov-window.sidebar-peek-out .ov-sidebar { animation: none; }
+}
+.ov-workspace {
+  display: flex; align-items: center; gap: var(--ov-space-4);
+  padding: var(--ov-space-4) var(--ov-space-5); margin: var(--ov-space-3) var(--ov-space-3) var(--ov-space-2);
+  border-radius: var(--ov-radius-md); cursor: default;
+  transition: background var(--ov-duration-fast);
+}
+.ov-workspace:hover { background: var(--ov-hover-bg); }
+.ov-workspace .ws-glyph { width: 26px; height: 26px; border-radius: 7px;
+  background: var(--ov-accent); color: #fff;
+  display: flex; align-items: center; justify-content: center; flex: none; }
+/* display is explicit: dev.css defines a bare, unrelated .ws-meta as inline-flex
+   for the Dev module's own header, and any host loading both stylesheets would
+   otherwise collapse the name and sub onto one line. */
+.ov-workspace .ws-meta { min-width: 0; flex: 1; display: block; }
+.ov-workspace .ws-name { font-size: var(--ov-text-13); font-weight: var(--ov-weight-semibold);
+  color: var(--ov-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-workspace .ws-sub { font-size: var(--ov-text-11); color: var(--ov-text-tertiary); }
+.ov-workspace .chev { color: var(--ov-text-tertiary); }
+
+.ov-sb-scroll { flex: 1; overflow-y: auto; padding: var(--ov-space-2) var(--ov-space-3) var(--ov-space-6); }
+.ov-sb-section { margin-top: var(--ov-space-5); }
+.ov-sb-section:first-child { margin-top: var(--ov-space-2); }
+.ov-sb-label { display: flex; align-items: center; justify-content: space-between;
+  padding: 0 var(--ov-space-4) var(--ov-space-2); }
+.ov-sb-label span { font-size: var(--ov-text-11); font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-wide); text-transform: uppercase; color: var(--ov-text-tertiary); }
+
+.ov-row {
+  display: flex; align-items: center; gap: var(--ov-space-4);
+  height: var(--ov-row-height); padding: 0 var(--ov-space-4);
+  border-radius: var(--ov-radius-control); color: var(--ov-text-primary);
+  font-size: var(--ov-text-13); cursor: default; position: relative;
+  transition: background var(--ov-duration-instant);
+}
+.ov-row:hover { background: var(--ov-hover-bg); }
+.ov-row.sel { background: var(--ov-selection-bg); color: var(--ov-selection-text); font-weight: var(--ov-weight-medium); }
+.ov-row.sel .lucide { color: var(--ov-selection-text); }
+.ov-row .lucide { color: var(--ov-text-secondary); }
+.ov-row .row-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-row .row-count { font-size: var(--ov-text-11); color: var(--ov-text-tertiary);
+  font-variant-numeric: tabular-nums; }
+.ov-row.sel .row-count { color: rgba(255,255,255,0.8); }
+.ov-row .node-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+/* ------------------------------------------------------------------ *
+ * STATUS BAR
+ * ------------------------------------------------------------------ */
+.ov-statusbar {
+  display: flex; align-items: center; gap: var(--ov-space-6);
+  height: 26px; padding: 0 var(--ov-space-6);
+  background: var(--ov-bg-bar); border-top: 1px solid var(--ov-separator);
+  font-size: var(--ov-text-11); color: var(--ov-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ov-statusbar .st { display: flex; align-items: center; gap: var(--ov-space-3); }
+.ov-statusbar .st .dot { width: 7px; height: 7px; border-radius: 50%; }
+.ov-statusbar .spacer { flex: 1; }
+.ov-mini-progress { width: 90px; height: 4px; border-radius: 2px; background: var(--ov-bg-inset-deep);
+  overflow: hidden; }
+.ov-mini-progress i { display: block; height: 100%; background: var(--ov-warning); border-radius: 2px; }
+
+/* AI context button — promoted status-bar item; opens the Context Status panel */
+.ov-status-ai { display: inline-flex; align-items: center; gap: var(--ov-space-3); height: 18px;
+  padding: 0 var(--ov-space-4); border-radius: var(--ov-radius-pill);
+  border: 1px solid var(--ov-separator); background: var(--ov-bg-elevated);
+  font: inherit; font-size: var(--ov-text-11); color: var(--ov-text-secondary);
+  font-variant-numeric: tabular-nums; cursor: default; transition: all var(--ov-duration-fast); }
+.ov-status-ai:hover { background: var(--ov-ai-muted);
+  border-color: color-mix(in srgb, var(--ov-ai) 30%, transparent); color: var(--ov-text-primary); }
+.ov-status-ai .lucide { width: 12px; height: 12px; color: var(--ov-ai); }
+.ov-status-ai .chev { width: 11px; height: 11px; color: var(--ov-text-tertiary); }
+
+/* ------------------------------------------------------------------ *
+ * CONTENT — generic view header
+ * ------------------------------------------------------------------ */
+.ov-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.ov-view-scroll { flex: 1; overflow-y: auto; }
+.ov-pad { padding: var(--ov-space-9) var(--ov-space-10); }.ov-grid { display: grid; gap: var(--ov-space-6); }
+.ov-grid--3 { grid-template-columns: repeat(3, 1fr); }
+.ov-grid--2 { grid-template-columns: repeat(2, 1fr); }
+
+.ov-card {
+  background: var(--ov-bg-elevated); border-radius: var(--ov-radius-card);
+  border: 1px solid var(--ov-border-subtle); box-shadow: var(--ov-shadow-card);
+  padding: var(--ov-space-6); transition: box-shadow var(--ov-duration-fast),
+    transform var(--ov-duration-fast);
+}
+.ov-card--hover:hover { box-shadow: var(--ov-shadow-raised); }
+.ov-card-title { font-size: var(--ov-text-15); font-weight: var(--ov-weight-semibold);
+  display: flex; align-items: center; gap: var(--ov-space-3); }
+.ov-card-snippet { margin-top: var(--ov-space-3); font-size: var(--ov-text-13);
+  color: var(--ov-text-secondary); line-height: var(--ov-leading-normal); }
+.ov-card-meta { margin-top: var(--ov-space-5); display: flex; align-items: center; gap: var(--ov-space-4);
+  font-size: var(--ov-text-11); color: var(--ov-text-tertiary); font-variant-numeric: tabular-nums; }
+/* activity / agent log entries */
+.ov-activity { display: flex; flex-direction: column; }
+.ov-activity-item { display: flex; gap: var(--ov-space-5); padding: var(--ov-space-4) 0;
+  border-bottom: 1px solid var(--ov-separator); }
+.ov-activity-item:last-child { border-bottom: none; }
+.ov-activity-icon { width: 26px; height: 26px; border-radius: 7px; flex: none;
+  display: flex; align-items: center; justify-content: center; }
+.ov-activity-icon.ai { background: var(--ov-ai-muted); color: var(--ov-ai); }
+.ov-activity-icon.user { background: var(--ov-accent-muted); color: var(--ov-accent); }
+.ov-activity-icon.sys { background: var(--ov-bg-content-secondary); color: var(--ov-text-secondary); }
+.ov-activity-body { flex: 1; min-width: 0; }
+.ov-activity-body .a-title { font-size: var(--ov-text-13); }
+.ov-activity-body .a-title b { font-weight: var(--ov-weight-semibold); }
+.ov-activity-body .a-time { font-size: var(--ov-text-11); color: var(--ov-text-tertiary);
+  font-family: var(--ov-font-mono); margin-top: 2px; }
+
+/* ------------------------------------------------------------------ *
+ * GRAPH
+ * ------------------------------------------------------------------ */
+.ov-graph-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden;
+  background:
+    radial-gradient(circle at 1px 1px, var(--ov-border-subtle) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--ov-bg-canvas); }
+.ov-graph-svg { width: 100%; height: 100%; display: block; }
+.ov-graph-edge { stroke: var(--ov-graph-edge); stroke-width: 1.5; }
+.ov-graph-edge.ai { stroke: var(--ov-ai); stroke-dasharray: 4 4; opacity: 0.8; }
+.ov-graph-edge.active { stroke: var(--ov-accent); stroke-width: 2; }
+.ov-graph-node circle { stroke: var(--ov-graph-node-border); stroke-width: 1.5; cursor: pointer;
+  transition: stroke var(--ov-duration-fast), filter var(--ov-duration-fast); }
+.ov-graph-node text { fill: var(--ov-text-primary); font-size: 12px; font-weight: 500;
+  font-family: var(--ov-font-sans); pointer-events: none; }
+.ov-graph-node.sel circle { stroke: var(--ov-accent); stroke-width: 2.5; }
+.ov-graph-node.ghost circle { stroke: var(--ov-ai); stroke-dasharray: 4 3; fill: var(--ov-ai-muted); }
+.ov-graph-node.ghost text { fill: var(--ov-ai); }
+
+.ov-graph-controls { position: absolute; left: var(--ov-space-6); bottom: var(--ov-space-6);
+  display: flex; gap: var(--ov-space-3); }
+.ov-graph-toolbar { position: absolute; left: var(--ov-space-6); top: var(--ov-space-6);
+  display: flex; gap: var(--ov-space-3); align-items: center; }
+.ov-float-panel { background: var(--ov-material-thick);
+  -webkit-backdrop-filter: blur(var(--ov-blur-thin)) saturate(180%);
+  backdrop-filter: blur(var(--ov-blur-thin)) saturate(180%);
+  border: 1px solid var(--ov-border-subtle); border-radius: var(--ov-radius-md);
+  box-shadow: var(--ov-shadow-popover); padding: var(--ov-space-2); display: flex; gap: 2px; }
+
+/* ------------------------------------------------------------------ *
+ * RIGHT RAIL — inspector / AI
+ * ------------------------------------------------------------------ */
+.ov-rail { width: var(--ov-inspector-width); flex: none; display: flex; flex-direction: column;
+  background: var(--ov-bg-content-secondary); border-left: 1px solid var(--ov-separator); overflow: hidden; }
+.ov-rail-head { display: flex; align-items: center; gap: var(--ov-space-3);
+  height: 44px; padding: 0 var(--ov-space-5); border-bottom: 1px solid var(--ov-separator); }
+.ov-rail-head .title { font-size: var(--ov-text-13); font-weight: var(--ov-weight-semibold); flex: 1; }
+.ov-rail-scroll { flex: 1; overflow-y: auto; padding: var(--ov-space-5); }
+
+.ov-prop { display: flex; align-items: baseline; gap: var(--ov-space-4); padding: var(--ov-space-3) 0;
+  border-bottom: 1px solid var(--ov-separator); }
+.ov-prop:last-child { border-bottom: none; }
+.ov-prop .k { width: 96px; flex: none; font-size: var(--ov-text-12); color: var(--ov-text-tertiary); }
+.ov-prop .v { flex: 1; font-size: var(--ov-text-13); color: var(--ov-text-primary); }
+.ov-prop .v.mono { font-family: var(--ov-font-mono); font-size: var(--ov-text-12); }
+
+.ov-rail-section-label { font-size: var(--ov-text-11); font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-wide); text-transform: uppercase; color: var(--ov-text-tertiary);
+  margin: var(--ov-space-7) 0 var(--ov-space-3); }
+
+/* backlink / evidence row */
+.ov-link-row { display: flex; gap: var(--ov-space-4); padding: var(--ov-space-4);
+  border-radius: var(--ov-radius-md); transition: background var(--ov-duration-fast); }
+.ov-link-row:hover { background: var(--ov-hover-bg); }
+.ov-link-row .node-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
+.ov-link-row .lr-body .lr-title { font-size: var(--ov-text-13); font-weight: var(--ov-weight-medium); }
+.ov-link-row .lr-body .lr-snip { font-size: var(--ov-text-12); color: var(--ov-text-secondary);
+  line-height: var(--ov-leading-snug); margin-top: 2px; }
+/* evidence source card inside chat */
+.ov-source-card { display: flex; gap: var(--ov-space-4); padding: var(--ov-space-4);
+  border-radius: var(--ov-radius-md); border: 1px solid var(--ov-border-subtle);
+  background: var(--ov-bg-elevated); }
+.ov-source-card .sc-num { width: 18px; height: 18px; border-radius: 4px; flex: none;
+  background: var(--ov-ai-muted); color: var(--ov-ai); display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 600; font-family: var(--ov-font-mono); }
+.ov-source-card .sc-title { font-size: var(--ov-text-12); font-weight: var(--ov-weight-medium); }
+.ov-source-card .sc-snip { font-size: var(--ov-text-11); color: var(--ov-text-secondary); margin-top: 2px;
+  line-height: var(--ov-leading-snug); }
+/* ------------------------------------------------------------------ *
+ * DOCUMENT VIEW
+ * ------------------------------------------------------------------ */
+.ov-doc { max-width: 720px; margin: 0 auto; padding: var(--ov-space-10) var(--ov-space-9) var(--ov-space-13); }
+/* ------------------------------------------------------------------ *
+ * COMMAND PALETTE
+ * ------------------------------------------------------------------ */
+.ov-overlay { position: absolute; inset: 0; z-index: 100; display: flex; justify-content: center;
+  align-items: flex-start; padding-top: 14vh; background: rgba(0,0,0,0.16);
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+.ov-palette { width: 580px; max-width: 92vw; border-radius: var(--ov-radius-popover);
+  background: var(--ov-material-hud);
+  -webkit-backdrop-filter: blur(var(--ov-blur-thick)) saturate(180%);
+  backdrop-filter: blur(var(--ov-blur-thick)) saturate(180%);
+  box-shadow: var(--ov-shadow-hud); overflow: hidden;
+  animation: ov-pop var(--ov-duration-fast) var(--ov-ease-out); }
+@keyframes ov-pop { from { opacity: 0; transform: scale(0.98) translateY(-4px); } to { opacity: 1; transform: none; } }
+.ov-palette-field { display: flex; align-items: center; gap: var(--ov-space-4);
+  padding: var(--ov-space-5) var(--ov-space-6); border-bottom: 1px solid var(--ov-separator); }
+.ov-palette-field input { flex: 1; border: none; outline: none; background: none; font: inherit;
+  font-size: var(--ov-text-17); color: var(--ov-text-primary); }
+.ov-palette-field input::placeholder { color: var(--ov-text-placeholder); }
+.ov-palette-field .lucide { color: var(--ov-text-tertiary); width: 18px; height: 18px; }
+.ov-palette-list { max-height: 50vh; overflow-y: auto; padding: var(--ov-space-3); }
+.ov-pal-group { font-size: var(--ov-text-11); font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-wide); text-transform: uppercase; color: var(--ov-text-tertiary);
+  padding: var(--ov-space-4) var(--ov-space-4) var(--ov-space-2); }
+.ov-pal-item { display: flex; align-items: center; gap: var(--ov-space-4); height: 36px;
+  padding: 0 var(--ov-space-4); border-radius: var(--ov-radius-control); color: var(--ov-text-primary);
+  font-size: var(--ov-text-14); }
+.ov-pal-item .lucide { color: var(--ov-text-secondary); }
+.ov-pal-item .pi-label { flex: 1; }
+.ov-pal-item.sel { background: var(--ov-accent); color: #fff; }
+.ov-pal-item.sel .lucide { color: #fff; }
+.ov-pal-item .pi-hint { font-size: var(--ov-text-12); color: var(--ov-text-tertiary); }
+.ov-pal-item.sel .pi-hint { color: rgba(255,255,255,0.8); }
+.ov-palette-foot { display: flex; align-items: center; gap: var(--ov-space-5);
+  padding: var(--ov-space-3) var(--ov-space-6); border-top: 1px solid var(--ov-separator);
+  font-size: var(--ov-text-11); color: var(--ov-text-tertiary); }
+.ov-palette-foot .ft { display: flex; align-items: center; gap: var(--ov-space-2); }
+
+/* empty state */
+.ov-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; text-align: center; gap: var(--ov-space-4); color: var(--ov-text-tertiary); }
+.ov-empty .lucide { width: 26px; height: 26px; color: var(--ov-text-quaternary); }
+.ov-empty h3 { font-size: var(--ov-text-15); font-weight: var(--ov-weight-semibold); color: var(--ov-text-secondary); }
+.ov-empty p { font-size: var(--ov-text-13); max-width: 280px; }
+
+/* toast */
+.ov-toast { position: absolute; right: var(--ov-space-7); bottom: 38px; z-index: 90;
+  display: flex; align-items: center; gap: var(--ov-space-4); padding: var(--ov-space-4) var(--ov-space-5);
+  background: var(--ov-material-thick);
+  -webkit-backdrop-filter: blur(var(--ov-blur-thin)) saturate(180%);
+  backdrop-filter: blur(var(--ov-blur-thin)) saturate(180%);
+  border: 1px solid var(--ov-border-subtle); border-radius: var(--ov-radius-md);
+  box-shadow: var(--ov-shadow-popover); font-size: var(--ov-text-13);
+  animation: ov-pop var(--ov-duration-base) var(--ov-ease-out); }
+
+/* scrollbars — keep subtle, do not fully restyle in production */
+.ov-sb-scroll::-webkit-scrollbar, .ov-view-scroll::-webkit-scrollbar,
+.ov-rail-scroll::-webkit-scrollbar, .ov-chat-scroll::-webkit-scrollbar,
+.ov-palette-list::-webkit-scrollbar { width: 10px; }
+.ov-sb-scroll::-webkit-scrollbar-thumb, .ov-view-scroll::-webkit-scrollbar-thumb,
+.ov-rail-scroll::-webkit-scrollbar-thumb, .ov-chat-scroll::-webkit-scrollbar-thumb,
+.ov-palette-list::-webkit-scrollbar-thumb { background: var(--ov-border-strong); border-radius: 6px;
+  border: 3px solid transparent; background-clip: content-box; }
+.ov-sb-scroll::-webkit-scrollbar-thumb:hover { background: var(--ov-text-tertiary); background-clip: content-box; }

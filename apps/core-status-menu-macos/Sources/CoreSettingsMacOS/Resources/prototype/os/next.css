@@ -1,0 +1,553 @@
+/* ============================================================================
+   OmniVia Next candidate — shared component layer
+   ----------------------------------------------------------------------------
+   Loads AFTER the module stylesheets and BEFORE os/overlay.css, so glass and
+   window chrome stay owned by the overlay layer (handoff §34). Everything here
+   is either (a) a shared .ov-n* pattern used by Briefing / Chat / Work / Apps,
+   or (b) a candidate-scoped token correction under [data-ov-next="true"].
+   No new colour is introduced: every value resolves to an existing --ov-* token.
+============================================================================ */
+
+/* --- candidate-scoped contrast corrections ---------------------------------
+   The nine failing AA pairs recorded in Processes-Module-Accessibility-Review
+   §3b, corrected here first (answers §K1) so they are reviewable before being
+   promoted into the global contract. Attribute selectors outrank :root and
+   [data-theme], so load order does not matter. Hues are unchanged — only
+   lightness moves. */
+[data-ov-next="true"]{--ov-text-tertiary:rgba(0,0,0,.56);--ov-text-quaternary:rgba(0,0,0,.50);--ov-border-default:rgba(60,59,66,.30);--ov-success:#1F7A50;--ov-warning:#8A5A0B;--ov-danger:#C0272C}
+[data-ov-next="true"][data-theme="dark"]{--ov-text-tertiary:rgba(255,255,255,.64);--ov-text-quaternary:rgba(255,255,255,.52);--ov-border-default:rgba(255,255,255,.26);--ov-success:#4ED396;--ov-warning:#F0B95A;--ov-danger:#FF8A8E}
+@media (prefers-color-scheme:dark){[data-ov-next="true"]:not([data-theme="light"]){--ov-text-tertiary:rgba(255,255,255,.64);--ov-text-quaternary:rgba(255,255,255,.52);--ov-border-default:rgba(255,255,255,.26);--ov-success:#4ED396;--ov-warning:#F0B95A;--ov-danger:#FF8A8E}}
+[data-ov-next="true"] [data-theme="dark"]{--ov-text-tertiary:rgba(255,255,255,.64);--ov-text-quaternary:rgba(255,255,255,.52);--ov-border-default:rgba(255,255,255,.26);--ov-success:#4ED396;--ov-warning:#F0B95A;--ov-danger:#FF8A8E}
+@media (prefers-color-scheme:dark){[data-ov-next="true"] [data-theme]:not([data-theme="light"]){--ov-text-tertiary:rgba(255,255,255,.64);--ov-text-quaternary:rgba(255,255,255,.52);--ov-border-default:rgba(255,255,255,.26);--ov-success:#4ED396;--ov-warning:#F0B95A;--ov-danger:#FF8A8E}}
+/* Dark mode: Brick as a solid fill reads heavy. Filled buttons and source-list
+   selection take the MUTED accent as their
+   fill. Text and icons stay white. Light mode keeps the solid Brick. */
+[data-ov-next="true"][data-theme="dark"] .ov-btn--primary,
+[data-ov-next="true"][data-theme="dark"] .ov-row.sel{background:var(--ov-accent-muted);border-color:color-mix(in oklab,var(--ov-accent) 42%,transparent);color:#fff;box-shadow:none}
+[data-ov-next="true"][data-theme="dark"] .ov-row.sel .lucide,
+[data-ov-next="true"][data-theme="dark"] .ov-btn--primary .lucide{color:#fff}
+@media (prefers-color-scheme:dark){
+  [data-ov-next="true"]:not([data-theme="light"]) .ov-btn--primary,
+  [data-ov-next="true"]:not([data-theme="light"]) .ov-row.sel{background:var(--ov-accent-muted);border-color:color-mix(in oklab,var(--ov-accent) 42%,transparent);color:#fff;box-shadow:none}
+  [data-ov-next="true"]:not([data-theme="light"]) .ov-row.sel .lucide,
+  [data-ov-next="true"]:not([data-theme="light"]) .ov-btn--primary .lucide{color:#fff}
+}
+[data-ov-next="true"][data-theme="dark"] .ov-nchip.is-accent,
+[data-ov-next="true"][data-theme="dark"] .insn-contrib .pc{color:#EDA69D}
+[data-ov-next="true"] .ov-nstate.is-ok b,[data-ov-next="true"] .ov-nstate.is-warn b,[data-ov-next="true"] .ov-nstate.is-danger b{font-weight:var(--ov-weight-medium)}
+
+/* --- page scaffold -------------------------------------------------------- */
+.ov-nscroll{scroll-behavior:smooth}
+.ov-npad{padding:24px 30px 64px}
+.ov-nwrap{max-width:940px;margin:0 auto}
+.ov-nwrap-wide{max-width:1180px;margin:0 auto}
+/* Two grid columns, not a flex race. The old shape was flex with
+   .ov-nph-main{flex:1;min-width:0} beside .ov-nph-actions{flex:none}: the text
+   column had flex-basis 0 AND min-width 0, so it never asserted an intrinsic width
+   and took only leftovers, while the actions refused to shrink. Any head carrying a
+   secondary action alongside the primary handed 48–58% of the bar to two buttons and
+   shredded the 28px h1 into 2–4 ragged lines (measured on 12 of 83 routes).
+   This is the same constraint V69 fixed for .ov-wfbar and never carried across:
+   a grid item's min-content floor is clamped by its own min-width, so the text needs
+   its own column with a REAL floor while the actions column is the one that yields.
+   minmax(58%,1fr) guarantees the title always holds the majority of the bar; the
+   actions take minmax(0,auto) and their labels ellipsis instead. */
+.ov-npagehead{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,max-content);align-items:start;gap:20px;margin:0 0 22px}
+.ov-nph-main{grid-column:1;min-width:0}
+.ov-nph-eyebrow{font-size:11px;font-weight:var(--ov-weight-semibold);letter-spacing:.06em;text-transform:uppercase;color:var(--ov-text-tertiary);margin-bottom:7px}
+.ov-npagehead h1{font-size:28px;font-weight:var(--ov-weight-bold);letter-spacing:-.02em;margin:0;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-nph-desc{font-size:13.5px;line-height:1.5;color:var(--ov-text-secondary);margin:6px 0 0;max-width:64ch;text-wrap:pretty}
+.ov-nph-ctx{font-size:12px;color:var(--ov-text-tertiary);margin:7px 0 0;font-variant-numeric:tabular-nums}
+/* justify-self:end sizes a grid item to max-content and only aligns it — the item
+   is then not bounded by its track, so the actions rendered 278–332px inside a
+   221px column and overhung the title's reserved 58%, and the ellipsis below never
+   engaged. Stretch to the track and align the buttons INSIDE it instead. */
+.ov-nph-actions{grid-column:2;justify-self:stretch;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;padding-top:4px}
+.ov-nph-actions .ov-btn{min-width:0}
+.ov-nph-actions .ov-btn>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-nph-actions .ov-btn .lucide{flex:none}
+.ov-nsechead{display:flex;align-items:center;gap:10px;margin:26px 0 12px}
+.ov-nsechead h2{font-size:14.5px;font-weight:var(--ov-weight-semibold);margin:0;white-space:nowrap;color:var(--ov-text-primary)}
+.ov-nsechead .rule{flex:1;height:1px;background:var(--ov-separator)}
+.ov-nsechead .meta{font-size:11.5px;color:var(--ov-text-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ov-nlink{background:none;border:none;padding:0;font:inherit;font-size:12px;color:var(--ov-accent);cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+.ov-nlink:hover{text-decoration:underline}
+.ov-nlink.is-danger{color:var(--ov-danger)}
+.ov-nlink:focus-visible,.ov-nobjrow:focus-visible,.ov-nworkrow:focus-visible,.ov-nbrief:focus-visible,.ov-nagent:focus-visible,.ov-nevsum:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+.ov-nrows{display:flex;flex-direction:column;gap:7px}
+.ov-nlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ov-nlist li{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;color:var(--ov-text-secondary);line-height:1.45}
+.ov-nlist li .lucide{flex:none;margin-top:2px;color:var(--ov-text-tertiary)}
+.ov-nchips{display:flex;flex-wrap:wrap;gap:6px}
+.ov-ngrid{display:grid;gap:12px}
+.ov-ngrid.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.ov-ngrid.c2{grid-template-columns:repeat(2,minmax(0,1fr))}
+
+/* --- status, chips, kv, notes, tabs -------------------------------------- */
+.ov-nstate{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ov-text-secondary);white-space:nowrap}
+.ov-nstate .d{width:7px;height:7px;border-radius:50%;background:var(--ov-text-quaternary);flex:none}
+.ov-nstate b{font-weight:var(--ov-weight-medium);color:var(--ov-text-primary)}
+.ov-nstate em{font-style:normal;color:var(--ov-text-tertiary)}
+.ov-nstate.is-ok .d{background:var(--ov-success)}
+.ov-nstate.is-warn .d{background:var(--ov-warning)}
+.ov-nstate.is-danger .d{background:var(--ov-danger)}
+.ov-nstate.is-info .d{background:var(--ov-ai)}
+.ov-nstate.is-muted .d{background:var(--ov-text-quaternary)}
+.ov-nstate.is-strong{height:22px;padding:0 9px;border-radius:var(--ov-radius-pill);background:var(--ov-bg-inset-deep)}
+.ov-nchip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:var(--ov-radius-pill);font-size:11px;background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary);white-space:nowrap}
+.ov-nchip.is-ok{background:var(--ov-success-muted);color:var(--ov-success)}
+.ov-nchip.is-warn{background:var(--ov-warning-muted);color:var(--ov-warning)}
+.ov-nchip.is-danger{background:var(--ov-danger-muted);color:var(--ov-danger)}
+.ov-nchip.is-ai{background:var(--ov-ai-muted);color:var(--ov-ai)}
+.ov-nchip.is-accent{background:var(--ov-accent-muted);color:var(--ov-accent)}
+.ov-nkv{display:grid;gap:11px 20px;margin:12px 0}
+/* status summary: a labelled fact grid, the same pattern as .ov-nkv but keyed
+   by sentence-case labels rather than uppercase eyebrows */
+.ov-nstatsum{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px 22px;margin:14px 0;padding:14px 16px;background:var(--ov-bg-content-secondary);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card)}
+.ov-nstatsum .s{min-width:0}
+.ov-nstatsum .k{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin-bottom:4px}
+.ov-nstatsum .v{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font-size:12.5px;color:var(--ov-text-primary);line-height:1.45}
+.ov-nkv.cols-1{grid-template-columns:1fr}
+.ov-nkv.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ov-nkv .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin-bottom:3px}
+.ov-nkv .v{font-size:12.5px;color:var(--ov-text-primary);line-height:1.45}
+.ov-nnote{display:flex;align-items:flex-start;gap:8px;padding:9px 11px;border-radius:var(--ov-radius-control);font-size:12px;line-height:1.45;background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary);margin:10px 0}
+.ov-nnote .lucide{flex:none;margin-top:2px}
+.ov-nnote.is-warn{background:var(--ov-warning-muted);color:var(--ov-warning)}
+.ov-nnote.is-err{background:var(--ov-danger-muted);color:var(--ov-danger)}
+.ov-nnote.is-ai{background:var(--ov-ai-muted);color:var(--ov-ai)}
+/* Soft Glass segmented tab bar — sits on the content surface; one sliding indicator (.ind) per tablist */
+.ov-ntabs{position:relative;display:flex;align-items:center;gap:2px;margin:0 0 18px;overflow-x:auto;overflow-y:hidden;padding-bottom:1px;background:linear-gradient(var(--ov-separator),var(--ov-separator)) bottom/100% 1px no-repeat}
+.ov-ntabs button{height:34px;padding:0 16px;border:none;background:transparent;font:inherit;font-size:13.5px;font-weight:500;color:var(--ov-text-secondary);border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;transition:background-color 120ms var(--ov-ease-standard,ease),color 120ms var(--ov-ease-standard,ease)}
+.ov-ntabs button:hover:not(.sel):not([disabled]){color:var(--ov-text-primary);background:var(--ov-hover-bg)}
+.ov-ntabs button:active:not(.sel):not([disabled]){background:var(--ov-active-bg);transition-duration:80ms}
+.ov-ntabs button[disabled]{opacity:.5;cursor:default}
+.ov-ntabs button.sel{color:var(--ov-accent);background:var(--ov-accent-muted)}
+.ov-ntabs .ind{position:absolute;bottom:0;height:4px;margin-bottom:-1px;border-radius:2px;background:var(--ov-accent);transition:left 140ms cubic-bezier(.2,.8,.2,1),width 140ms cubic-bezier(.2,.8,.2,1);pointer-events:none}
+.ov-ntabs.no-anim .ind{transition:none}
+.ov-ntabs button:focus-visible{outline:none;box-shadow:0 0 0 2px var(--ov-bg-content),0 0 0 4px var(--ov-accent);transition:none}
+@media (prefers-reduced-motion:reduce){.ov-ntabs button,.ov-ntabs .ind{transition:none}}
+.ov-ntabs .n{font-size:11px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--ov-bg-inset-deep);display:inline-flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.ov-ntabs button.sel .n{background:var(--ov-accent-muted);color:var(--ov-accent)}
+
+/* --- rows ---------------------------------------------------------------- */
+.ov-nobjrow{display:flex;align-items:center;gap:11px;padding:10px 12px;background:var(--ov-bg-elevated);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card);box-shadow:var(--ov-shadow-card)}
+.ov-nobjrow.is-nav{cursor:pointer}
+.ov-nobjrow.is-nav:hover{background:var(--ov-hover-bg)}
+.ov-nobjrow.is-nav:active{background:var(--ov-active-bg)}
+.ov-nobjrow.is-sel{border-color:var(--ov-accent);background:var(--ov-accent-muted)}
+.ov-nobjrow .g{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary)}
+.ov-nobjrow .g.is-accent{background:var(--ov-accent-muted);color:var(--ov-accent)}
+.ov-nobjrow .g.is-ai{background:var(--ov-ai-muted);color:var(--ov-ai)}
+.ov-nobjrow .g.is-ok{background:var(--ov-success-muted);color:var(--ov-success)}
+.ov-nobjrow .g.is-warn{background:var(--ov-warning-muted);color:var(--ov-warning)}
+.ov-nobjrow .g.is-danger{background:var(--ov-danger-muted);color:var(--ov-danger)}
+.ov-nobjrow .m{flex:1;min-width:0}
+.ov-nobjrow .t{font-size:13px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary);display:flex;align-items:center;gap:7px}
+.ov-nobjrow .s{font-size:11.5px;color:var(--ov-text-secondary);margin-top:2px;line-height:1.4}
+.ov-nobjrow .c{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.ov-nobjrow .r{flex:none;display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--ov-text-tertiary);font-variant-numeric:tabular-nums}
+.ov-nobjrow .chev{flex:none;color:var(--ov-text-quaternary);display:flex}
+.ov-nworkrow{display:block;padding:12px 14px;background:var(--ov-bg-elevated);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card);box-shadow:var(--ov-shadow-card);cursor:pointer;text-align:left;width:100%}
+.ov-nworkrow:hover{background:var(--ov-hover-bg)}
+/* Selection changes only the border COLOUR — never geometry, and no fill. The same
+   1px border and the same card shadow as an unselected row, in accent.
+   Two things were wrong before: `box-shadow:0 0 0 1px accent` on top of the 1px
+   border gave a selected row a 2px edge against every neighbour's 1px (and dropped
+   its card shadow), and my first correction added an --ov-accent-muted fill, which
+   on a card this size washes the whole row 20% brick. The design system offers a 1px
+   accent ring OR a muted tint; for a large card the ring is the quiet one. */
+.ov-nworkrow.is-sel{border-color:var(--ov-accent);box-shadow:var(--ov-shadow-card)}
+/* Every row in the master-detail list carries the SAME visible hairline, so the list
+   reads as cards of one weight and selection is only a colour change on a frame that
+   is already there. Unselected rows use --ov-border-subtle (8% white), which is
+   invisible against the card fill in dark mode — so the selected row read as a boxed
+   card among borderless bands. That was the non-uniformity, and it was never
+   geometric: measured left/right/width/border-width/radius are identical in both
+   states. */
+.ov-nmd .ov-nworkrow{border-color:var(--ov-border-default)}
+.ov-nmd .ov-nworkrow.is-sel{border-color:var(--ov-accent)}
+/* is-attn once carried a coloured left-border accent. Removing the accent (design
+   system: no coloured left-border accents) removed the whole left border with it, so
+   every attention row rendered a THREE-SIDED frame — border-width 1px 1px 1px 0.
+   The border stays, uniform on all four sides; only its colour ever changes. */
+.ov-nworkrow .hd{display:flex;align-items:baseline;gap:12px}
+.ov-nworkrow .hd .t{flex:1;min-width:0;font-size:13.5px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary);text-wrap:pretty}
+.ov-nworkrow .sm{font-size:12px;color:var(--ov-text-secondary);margin-top:4px;line-height:1.45}
+.ov-nworkrow .mt{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:11px;color:var(--ov-text-tertiary);font-variant-numeric:tabular-nums}
+.ov-nworkrow .mt .sep{font-style:normal;opacity:.6}
+.ov-nworkrow .mt .src{margin-left:auto;padding:0 6px;height:17px;display:inline-flex;align-items:center;border-radius:var(--ov-radius-pill);background:var(--ov-bg-inset-deep);color:var(--ov-text-tertiary);font-size:11px}
+.ov-nworkrow .na{display:flex;align-items:center;gap:7px;margin-top:9px;padding-top:9px;border-top:1px solid var(--ov-separator);font-size:11.5px;color:var(--ov-text-secondary)}
+.ov-nworkrow .na b{color:var(--ov-text-primary);font-weight:var(--ov-weight-medium)}
+.ov-nworkrow .na .lucide{color:var(--ov-warning)}
+.ov-nempty{text-align:center;padding:44px 24px;display:flex;flex-direction:column;align-items:center;gap:9px}
+.ov-nempty .lucide{color:var(--ov-text-quaternary)}
+.ov-nempty h3{font-size:14.5px;font-weight:var(--ov-weight-semibold);margin:2px 0 0;color:var(--ov-text-primary)}
+.ov-nempty p{font-size:12.5px;color:var(--ov-text-secondary);margin:0;max-width:46ch;line-height:1.5}
+.ov-nempty .a{display:flex;gap:8px;margin-top:6px}
+.ov-nloading{display:flex;flex-direction:column;gap:9px;padding:8px 0}
+.ov-nskel{height:11px;border-radius:5px;background:var(--ov-bg-inset-deep)}
+.s20{width:20px;height:20px}
+
+/* --- agent chip, evidence ------------------------------------------------ */
+/* the avatar is concentric with the pill: an equal 1.5px ring on every side, so
+   its edge stays parallel to the rounded end at any chip height */
+/* Icon sizes the candidate asks for. `.s12` has no rule in the shipped
+   stylesheets, so a 12px request silently fell through to .lucide's 16px — a
+   16px glyph inside a 17px avatar. Scoped to the candidate: defining .s12
+   globally would resize icons in the current design's chrome. */
+[data-ov-next="true"] .lucide.s12{width:12px;height:12px}
+[data-ov-next="true"] .ov-nagent .av .lucide{width:11px;height:11px}
+.ov-nagent{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 1.5px;border-radius:var(--ov-radius-pill);border:1px solid var(--ov-ai-muted-strong);background:var(--ov-ai-muted);color:var(--ov-text-primary);font:inherit;font-size:11.5px;cursor:pointer}
+.ov-nagent:hover{border-color:var(--ov-ai)}
+.ov-nagent .av{height:calc(100% - 3px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;background:var(--ov-ai);color:#fff;flex:none}
+.ov-nagent .p{color:var(--ov-text-tertiary)}
+.ov-nagent b{font-weight:var(--ov-weight-medium)}
+.ov-nagent.is-system{border-color:var(--ov-border-subtle);background:var(--ov-bg-inset-deep);cursor:default}
+.ov-nagent.is-system .lucide{color:var(--ov-text-tertiary)}
+.ov-nagent.is-lg{height:26px;font-size:12.5px}
+.ov-nagent-head{display:flex;align-items:center;gap:11px;margin-bottom:12px}
+.ov-nagent-head .av{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--ov-ai);color:#fff;flex:none}
+[data-ov-next="true"] .ov-nagent-head .av .lucide{width:17px;height:17px}
+.ov-nagent-head .nm{font-size:15px}
+.ov-nagent-head .rl{font-size:11.5px;color:var(--ov-text-tertiary)}
+.ov-nagent-resp{font-size:12.5px;color:var(--ov-text-secondary);line-height:1.5;margin:0}
+.ov-nevsum{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 9px;border-radius:var(--ov-radius-pill);border:1px solid var(--ov-border-subtle);background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary);font:inherit;font-size:11.5px;cursor:pointer}
+.ov-nevsum:hover{border-color:var(--ov-border-control);color:var(--ov-text-primary)}
+.ov-nevsum b{color:var(--ov-text-primary);font-weight:var(--ov-weight-medium);font-variant-numeric:tabular-nums}
+.ov-nevsum i{font-style:normal;opacity:.5;margin:0 2px}
+.ov-nevsum .lucide{color:var(--ov-ai)}
+
+/* --- run plan, approval, question, progress, result ---------------------- */
+.ov-nplan,.ov-napproval,.ov-nquestion,.ov-nprogress,.ov-nresult{background:var(--ov-bg-elevated);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-popover);box-shadow:var(--ov-shadow-card);padding:16px 18px;margin:14px 0}
+.ov-nplan-eyebrow{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:var(--ov-weight-semibold);letter-spacing:.06em;text-transform:uppercase;color:var(--ov-ai)}
+.ov-nplan-head h3{font-size:17px;font-weight:var(--ov-weight-semibold);letter-spacing:-.01em;margin:7px 0 0;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-nplan-meta{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:10px}
+.ov-nplan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 22px;margin:16px 0 4px;padding-top:14px;border-top:1px solid var(--ov-separator)}
+.ov-nplan-grid .pl .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin-bottom:6px}
+.ov-nplan-grid .pl ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+.ov-nplan-grid .pl li{position:relative;padding-left:14px;font-size:12.5px;color:var(--ov-text-secondary);line-height:1.45}
+.ov-nplan-grid .pl li:before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;border-radius:50%;background:var(--ov-text-quaternary)}
+.ov-nplan-grid .pl.is-stop li:before{background:var(--ov-danger);border-radius:1px;height:2px;width:7px;left:0;top:8px}
+.ov-nplan-grid .pl.is-attn li:before{background:var(--ov-warning)}
+.ov-nplan-grid .pl.is-stop .k,.ov-nplan-grid .pl.is-attn .k{color:var(--ov-text-secondary)}
+.ov-nplan-foot{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-top:14px;padding-top:13px;border-top:1px solid var(--ov-separator)}
+.ov-nplan-foot .cost .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);display:block;margin-bottom:3px}
+.ov-nplan-foot .cost .v{font-size:12.5px;color:var(--ov-text-primary);font-variant-numeric:tabular-nums;font-family:var(--ov-font-mono)}
+.ov-nplan-foot .cost .h{display:block;font-size:11px;color:var(--ov-text-tertiary);margin-top:3px}
+.ov-nplan-foot .priv{display:flex;align-items:flex-start;gap:6px;max-width:44ch;font-size:11.5px;color:var(--ov-text-tertiary);line-height:1.45}
+.ov-nplan-foot .priv .lucide{flex:none;margin-top:2px;color:var(--ov-success)}
+.ov-nplan-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px;padding-top:14px;border-top:1px solid var(--ov-separator)}
+.ov-nplan-actions.is-quiet{margin-top:12px;padding-top:11px}
+.ov-napproval .hd,.ov-nquestion .hd,.ov-nresult .hd{display:flex;align-items:flex-start;gap:9px}
+.ov-napproval .hd .lucide{color:var(--ov-warning);margin-top:2px;flex:none}
+.ov-napproval .hd h3,.ov-nquestion .hd h3{font-size:15px;font-weight:var(--ov-weight-semibold);margin:0;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-napproval .inputs{display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-radius:var(--ov-radius-control);background:var(--ov-bg-inset-deep);margin:4px 0 0}
+.ov-napproval .inputs .i{display:flex;align-items:baseline;gap:9px;font-size:11.5px}
+.ov-napproval .inputs .k{width:88px;flex:none;color:var(--ov-text-tertiary)}
+.ov-napproval .inputs code{font-family:var(--ov-font-mono);font-size:11.5px;color:var(--ov-text-primary)}
+.ov-nquestion .hd .lucide{color:var(--ov-ai);margin-top:2px;flex:none}
+.ov-nquestion .why,.ov-nquestion .blk{font-size:12.5px;color:var(--ov-text-secondary);line-height:1.5;margin:10px 0 0}
+.ov-nquestion .why b{color:var(--ov-text-primary);font-weight:var(--ov-weight-medium)}
+.ov-nquestion .opts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.ov-nquestion .ans{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-size:12px;color:var(--ov-text-secondary)}
+.ov-nquestion .ans .lucide{color:var(--ov-success)}
+.ov-nquestion .ans b{color:var(--ov-text-primary)}
+.ov-nquestion.is-answered{background:var(--ov-bg-content-secondary);box-shadow:none}
+.ov-nprogress .hd{display:flex;align-items:baseline;gap:12px}
+.ov-nprogress .hd .t{flex:1;font-size:14px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary)}
+.ov-nprogress .mt{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:10px}
+.ov-nprogress .bar{height:5px;border-radius:3px;background:var(--ov-bg-inset-deep);overflow:hidden;margin-top:13px}
+.ov-nprogress .bar i{display:block;height:100%;background:var(--ov-accent);border-radius:3px;transition:width var(--ov-duration-base) var(--ov-ease-out)}
+.ov-nprogress .pv{font-size:11px;color:var(--ov-text-tertiary);margin-top:5px;font-variant-numeric:tabular-nums}
+.ov-nprogress .ms{list-style:none;margin:13px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ov-nprogress .ms li{display:flex;align-items:baseline;gap:7px;font-size:12px;color:var(--ov-text-secondary)}
+.ov-nprogress .ms li .lucide{color:var(--ov-success);flex:none}
+.ov-nprogress .ms li b{color:var(--ov-text-primary);font-weight:var(--ov-weight-medium)}
+.ov-nresult .hd .lucide{color:var(--ov-success);margin-top:3px;flex:none}
+.ov-nresult .q{font-size:11.5px;color:var(--ov-text-tertiary)}
+.ov-nresult .hd h3{font-size:16px;font-weight:var(--ov-weight-semibold);margin:3px 0 0;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-nresult .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 22px;margin:16px 0 0;padding-top:14px;border-top:1px solid var(--ov-separator)}
+.ov-nresult .rb .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin-bottom:6px}
+.ov-nresult .rb ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+.ov-nresult .rb li{position:relative;padding-left:14px;font-size:12.5px;color:var(--ov-text-secondary);line-height:1.45}
+.ov-nresult .rb li:before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;border-radius:50%;background:var(--ov-text-quaternary)}
+.ov-nresult .rb.is-fact li:before{background:var(--ov-success)}
+.ov-nresult .rb.is-assume li:before{background:var(--ov-ai)}
+.ov-nresult .rb.is-open li:before{background:var(--ov-warning)}
+.ov-nresult .rb.is-ext li:before{background:var(--ov-accent)}
+.ov-nresult .foot{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin-top:16px}
+
+/* --- briefing cards ------------------------------------------------------ */
+.ov-nbrief{display:block;background:var(--ov-bg-elevated);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card);box-shadow:var(--ov-shadow-card);padding:14px 16px;text-align:left}
+.ov-nbrief.is-attn{cursor:pointer}
+.ov-nbrief.is-attn:hover{box-shadow:var(--ov-shadow-raised)}
+.ov-nbrief .hd{display:flex;align-items:baseline;gap:12px}
+.ov-nbrief .hd h3{flex:1;font-size:14.5px;font-weight:var(--ov-weight-semibold);margin:0;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-nbrief .body{font-size:12.5px;color:var(--ov-text-secondary);line-height:1.5;margin:8px 0 0;text-wrap:pretty}
+.ov-nbrief .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px 18px;margin-top:13px;padding-top:12px;border-top:1px solid var(--ov-separator)}
+/* The statement and its button are one group: the arrow carries the eye into the
+   control, so the pair reads as a single instruction rather than two fragments. */
+.ov-nbrief .foot .next{display:inline-flex;align-items:center;gap:5px;min-width:0;font-size:13.5px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary);white-space:nowrap}
+.ov-nbrief .foot .next .lucide{width:13px;height:13px;color:currentColor;stroke-width:2;flex:none}
+.ov-nbrief .foot .ov-btn{min-width:92px;justify-content:center;flex:none}
+@media (max-width:760px){.ov-nbrief .foot{flex-wrap:wrap}.ov-nbrief .foot .next{width:100%;text-align:left;order:2}.ov-nbrief .foot .ov-btn{order:3}}
+.ov-nbrief .facts .k{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin-bottom:2px}
+.ov-nbrief .facts .v{font-size:12px;color:var(--ov-text-primary)}
+.ov-nbrief .foot{display:flex;align-items:center;gap:10px;margin-top:14px}
+.ov-nbrief .foot .grow{flex:1}
+.ov-nbrief.is-change{padding:13px 15px}
+.ov-nbrief .ch{display:flex;align-items:flex-start;gap:10px}
+.ov-nbrief .ch .g{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary)}
+.ov-nbrief .ch .g.is-ok{background:var(--ov-success-muted);color:var(--ov-success)}
+.ov-nbrief .ch .g.is-warn{background:var(--ov-warning-muted);color:var(--ov-warning)}
+.ov-nbrief .ch .o{font-size:13px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary);line-height:1.4;text-wrap:pretty}
+.ov-nbrief .ml{display:flex;gap:9px;margin-top:9px;font-size:12px;color:var(--ov-text-secondary);line-height:1.45}
+.ov-nbrief .ml .k{flex:none;width:88px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ov-text-tertiary);padding-top:2px}
+.ov-nbrief.is-change .ov-nlink{margin-top:12px}
+
+/* --- recovery, scope ----------------------------------------------------- */
+.ov-nrecovery{margin-top:16px;padding:13px 14px;border-radius:var(--ov-radius-card);background:var(--ov-bg-content-secondary);border:1px solid var(--ov-border-subtle)}
+.ov-nrecovery .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin-bottom:9px}
+.ov-nrecovery .a{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ov-nrec-off{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:var(--ov-radius-control);border:1px dashed var(--ov-border-default);color:var(--ov-text-quaternary);font-size:11.5px;cursor:not-allowed}
+.ov-nrec-off em{font-style:normal;font-size:11px;color:var(--ov-text-tertiary);margin-left:4px}
+.ov-btn--bordered.is-danger{color:var(--ov-danger);border-color:var(--ov-danger-muted)}
+.ov-nscope{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ov-text-tertiary)}
+.ov-nscope select{height:26px;padding:0 7px;font:inherit;font-size:12px;color:var(--ov-text-primary);background:var(--ov-bg-elevated);border:1px solid var(--ov-border-control);border-radius:var(--ov-radius-control)}
+
+/* --- sheet, drawer, reviewer notes -------------------------------------- */
+.ov-nsheet-scrim,.ov-ndrawer-scrim{position:absolute;inset:0;z-index:300;background:rgba(20,18,20,.14);opacity:0;transition:opacity var(--ov-duration-base) var(--ov-ease-out);display:flex}
+.ov-nsheet-scrim.open,.ov-ndrawer-scrim.open{opacity:1}
+.ov-nsheet-scrim{align-items:flex-start;justify-content:center}
+.ov-nsheet{width:min(560px,92%);margin-top:8vh;max-height:76vh;display:flex;flex-direction:column;background:var(--ov-bg-elevated);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-sheet);box-shadow:var(--ov-shadow-window);transform:translateY(-8px);transition:transform var(--ov-duration-base) var(--ov-ease-out)}
+.ov-nsheet.is-wide{width:min(760px,94%)}
+.ov-nsheet-scrim.open .ov-nsheet{transform:none}
+.ov-nsheet .sh,.ov-ndrawer .dh{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--ov-separator)}
+.ov-nsheet .sh h2,.ov-ndrawer .dh h2{flex:1;font-size:14px;font-weight:var(--ov-weight-semibold);margin:0}
+.ov-nsheet .sb,.ov-ndrawer .db{padding:14px 16px 18px;overflow-y:auto}
+.ov-ndrawer-scrim{justify-content:flex-end}
+.ov-ndrawer{width:min(380px,92%);display:flex;flex-direction:column;background:var(--ov-bg-elevated);border-left:1px solid var(--ov-border-subtle);box-shadow:var(--ov-shadow-window);transform:translateX(12px);transition:transform var(--ov-duration-base) var(--ov-ease-out)}
+.ov-ndrawer-scrim.open .ov-ndrawer{transform:none}
+.ov-nadv{margin-top:16px;border-top:1px solid var(--ov-separator);padding-top:10px}
+.ov-nadv summary{font-size:12px;color:var(--ov-text-secondary);cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px}
+.ov-nadv summary:before{content:"\203a";color:var(--ov-text-tertiary);transition:transform var(--ov-duration-fast)}
+.ov-nadv[open] summary:before{transform:rotate(90deg)}
+.ov-nrnote{display:flex;align-items:flex-start;gap:8px;padding:9px 11px;border-radius:var(--ov-radius-control);background:var(--ov-plumb-muted);color:var(--ov-plumb);font-size:11.5px;line-height:1.45;margin:10px 0}
+.ov-nrnote .lucide{flex:none;margin-top:2px}
+
+
+/* --- master–detail (Work) ----------------------------------------------- */
+.ov-nmd{display:grid;grid-template-columns:minmax(288px,340px) minmax(0,1fr);height:100%;min-height:0}
+.ov-nmd-list{border-right:1px solid var(--ov-separator);display:flex;flex-direction:column;min-height:0;background:var(--ov-bg-content-secondary)}
+.ov-nmd-listhead{padding:12px 14px 0}
+.ov-nmd-listscroll{flex:1;overflow-y:auto;padding:10px 12px 22px;display:flex;flex-direction:column;gap:7px}
+.ov-nmd-detail{overflow-y:auto;min-width:0;background:var(--ov-bg-content)}
+.ov-nmd-inner{padding:20px 24px 56px;max-width:820px}
+.ov-nmd-back{display:none}
+.ov-ndetail-head{margin-bottom:16px}
+/* Matched on both levels so a heading-level change cannot orphan the style, which
+   is exactly what happened when this became an h2 to fix the document outline. */
+.ov-ndetail-head h1,.ov-ndetail-head h2{font-size:21px;font-weight:var(--ov-weight-bold);letter-spacing:-.015em;margin:0;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-ndetail-sub{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:9px}
+.ov-ntimeline{list-style:none;margin:0;padding:0}
+.ov-ntimeline li{position:relative;padding:0 0 15px 22px;border-left:1px solid var(--ov-separator);margin-left:5px}
+.ov-ntimeline li:last-child{border-left-color:transparent;padding-bottom:0}
+.ov-ntimeline li:before{content:"";position:absolute;left:-4.5px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--ov-success);border:2px solid var(--ov-bg-content)}
+.ov-ntimeline li.is-attn:before{background:var(--ov-warning)}
+.ov-ntimeline li.is-adv:before{background:var(--ov-text-quaternary)}
+.ov-ntimeline .t{font-size:12.5px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary)}
+.ov-ntimeline .d{font-size:11.5px;color:var(--ov-text-secondary);margin-top:2px;line-height:1.45}
+.ov-ntimeline .w{font-size:11px;color:var(--ov-text-tertiary);font-variant-numeric:tabular-nums;font-family:var(--ov-font-mono);margin-top:3px}
+
+/* --- chat surface (candidate) -------------------------------------------- */
+.ov-nchat{display:flex;flex-direction:column;height:100%;min-height:0}
+.ov-nchat-head{display:flex;align-items:center;gap:12px;padding:14px 24px 10px;border-bottom:1px solid var(--ov-separator)}
+.ov-nchat-head h1{font-size:15px;font-weight:var(--ov-weight-semibold);margin:0}
+.ov-nchat-head .sp{flex:1}
+.ov-nchat-body{flex:1;overflow-y:auto;min-height:0}
+.ov-nchat-col{max-width:720px;margin:0 auto;padding:22px 24px 30px}
+.ov-nchat-col.is-wide{max-width:820px}
+.ov-nmsg{margin:0 0 16px}
+.ov-nmsg.is-user{display:flex;justify-content:flex-end}
+.ov-nmsg.is-user .b{max-width:78%;padding:10px 13px;border-radius:14px 14px 4px 14px;background:var(--ov-accent-muted);color:var(--ov-text-primary);font-size:13px;line-height:1.5}
+.ov-nmsg.is-ai .b{font-size:13.5px;line-height:1.6;color:var(--ov-text-primary);text-wrap:pretty}
+.ov-nmsg .who{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--ov-text-tertiary);margin-bottom:6px}
+.ov-nmsg .who .lucide{color:var(--ov-ai)}
+.ov-nchat-empty{max-width:620px;margin:0 auto;padding:8vh 24px 0;text-align:center}
+.ov-nchat-empty h2{font-size:22px;font-weight:var(--ov-weight-bold);letter-spacing:-.02em;margin:0 0 8px}
+.ov-nchat-empty p{font-size:13px;color:var(--ov-text-secondary);margin:0 auto 22px;max-width:46ch;line-height:1.5}
+.ov-nsugg{display:flex;flex-direction:column;gap:7px;margin-top:18px;text-align:left}
+.ov-nsugg button{display:flex;align-items:center;gap:9px;width:100%;padding:10px 13px;border-radius:var(--ov-radius-card);border:1px solid var(--ov-border-subtle);background:var(--ov-bg-elevated);font:inherit;font-size:12.5px;color:var(--ov-text-primary);cursor:pointer;text-align:left}
+.ov-nsugg button:hover{background:var(--ov-hover-bg);border-color:var(--ov-border-control)}
+.ov-nsugg button .lucide{color:var(--ov-text-tertiary);flex:none}
+.ov-ncomposer{border-top:1px solid var(--ov-separator);padding:12px 24px 16px;background:var(--ov-bg-content)}
+.ov-ncomposer-in{max-width:720px;margin:0 auto;display:flex;align-items:flex-end;gap:9px;padding:9px 11px;border:1px solid var(--ov-border-control);border-radius:var(--ov-radius-popover);background:var(--ov-bg-elevated);box-shadow:var(--ov-inner-well,none)}
+.ov-ncomposer-in:focus-within{border-color:var(--ov-accent);box-shadow:var(--ov-focus-ring-shadow)}
+.ov-ncomposer textarea{flex:1;border:none;background:none;resize:none;font:inherit;font-size:13px;line-height:1.5;color:var(--ov-text-primary);max-height:120px;min-height:22px;outline:none}
+.ov-ncomposer .hint{max-width:720px;margin:7px auto 0;font-size:11px;color:var(--ov-text-tertiary);display:flex;gap:10px}
+.ov-ninspector{width:320px;flex:none;border-left:1px solid var(--ov-separator);background:var(--ov-bg-content-secondary);overflow-y:auto;padding:14px 16px 24px}
+.ov-nchat-split{display:flex;flex:1;min-height:0}
+
+/* --- sidebar zones (grouped nav) ---------------------------------------- */
+.ov-nzone{margin:14px 0 4px;padding:0 10px;display:flex;align-items:center;gap:6px;font:inherit;font-size:11px;font-weight:var(--ov-weight-semibold);letter-spacing:.06em;text-transform:uppercase;color:var(--ov-text-tertiary);background:none;border:none;box-shadow:none;text-align:left;width:100%;box-sizing:border-box;cursor:default;user-select:none;appearance:none;-webkit-appearance:none}
+.ov-nzone.is-toggle{cursor:pointer}
+.ov-nzone .lucide{width:11px;height:11px;transition:transform var(--ov-duration-fast)}
+.ov-nzone.is-open .lucide{transform:rotate(90deg)}
+.ov-nzone .grow{flex:1}
+.sidebar-collapsed .ov-nzone{opacity:0;height:8px;margin:6px 0;overflow:hidden}
+.ov-ncandidate{display:inline-flex;align-items:center;gap:5px;color:var(--ov-plumb)}
+/* the canonical Needs-you indicator owns its badge's containing block */
+.ov-nattn{position:relative}
+
+/* --- Processes designer hierarchy (candidate) ------------------------------
+   The primary designer modes were one of two tab layers of equal weight. In the
+   candidate the mode tabs are dominant and the inspector view switcher becomes a
+   quieter segmented control (brief §23). Scoped, so the current design is unchanged. */
+[data-ov-next="true"] .pr-dsnhead .pr-tabs{margin-top:12px;border-bottom-width:1px}
+[data-ov-next="true"] .pr-dsnhead .pr-tabs button{height:36px;padding:0 14px;font-size:13.5px}
+[data-ov-next="true"] .pr-dsnhead .pr-tabs button.sel{font-weight:var(--ov-weight-semibold);border-bottom-width:2.5px}
+[data-ov-next="true"] .pr-dtoolbar .ov-segmented{transform:scale(.92);transform-origin:left center}
+[data-ov-next="true"] .pr-dtoolbar .ov-segmented button{font-size:11.5px}
+[data-ov-next="true"] .pr-dtoolbar{padding-top:6px;opacity:.94}
+[data-ov-next="true"] .pr-dtoolbar:hover,[data-ov-next="true"] .pr-dtoolbar:focus-within{opacity:1}
+
+/* --- responsive, motion, transparency ----------------------------------- */
+[data-ov-next="true"] .ov-breadcrumb span{flex:none;white-space:nowrap}
+[data-ov-next="true"] .ov-breadcrumb .crumb-current{max-width:320px;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:1180px){.ov-nplan-grid,.ov-nresult .grid{grid-template-columns:1fr}}
+@media (max-width:980px){.ov-nmd{grid-template-columns:1fr}.ov-nmd.has-detail .ov-nmd-list{display:none}.ov-nmd:not(.has-detail) .ov-nmd-detail{display:none}.ov-nmd-back{display:inline-flex;margin-bottom:14px}.ov-nmd-inner{padding:16px 20px 48px}.ov-ninspector{display:none}}
+/* Dark mode: --ov-ai (#7FA8C4) on --ov-ai-muted measures 4.3:1 — just under AA.
+   Use the design system's own lifted slate (--ov-ai-hover, #8FB4CC) for AI text
+   on a muted fill. No new color is introduced. */
+[data-theme="dark"] .ov-nchip.is-ai,[data-theme="dark"] .ov-nnote.is-ai,[data-theme="dark"] .ov-nobjrow .g.is-ai{color:var(--ov-ai-hover)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .ov-nchip.is-ai,:root:not([data-theme="light"]) .ov-nnote.is-ai,:root:not([data-theme="light"]) .ov-nobjrow .g.is-ai{color:var(--ov-ai-hover)}}
+/* Breadcrumb: app.css caps the trail at 300px and lets every ancestor shrink
+   below its text width (flex:0 1 auto; min-width:0). The candidate collapses deep
+   trails to an ellipsis instead (fitCrumbs in next-shell.js), so segments must NOT
+   shrink — matched at higher specificity than app.css's own rule. The container
+   still clips, so a mis-measure can never paint text outside the titlebar. */
+[data-ov-next="true"] .ov-titlebar .ov-breadcrumb{max-width:none;overflow:hidden;flex:0 1 auto;min-width:0}
+[data-ov-next="true"] .ov-titlebar .ov-breadcrumb > span:not(.sep){flex:0 0 auto;min-width:auto;overflow:visible;text-overflow:clip}
+[data-ov-next="true"] .ov-titlebar .ov-breadcrumb.is-tight > span.crumb-current{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[data-ov-next="true"] .ov-titlebar .ov-breadcrumb > span.crumb-more{color:var(--ov-text-tertiary);padding:0 1px;cursor:default}
+[data-ov-next="true"] .ov-titlebar .ov-breadcrumb > span.crumb-current{color:var(--ov-text-primary);font-weight:var(--ov-weight-medium)}
+@media (max-width:900px){.ov-npad{padding:20px 18px 56px}.ov-npagehead{grid-template-columns:minmax(0,1fr);gap:12px}.ov-nph-main,.ov-nph-actions{grid-column:1}.ov-nph-actions{justify-self:start;justify-content:flex-start;padding-top:0}}
+@media (prefers-reduced-motion:reduce){.ov-nsheet,.ov-ndrawer,.ov-nsheet-scrim,.ov-ndrawer-scrim,.ov-nprogress .bar i{transition:none}.ov-nscroll{scroll-behavior:auto}}
+@media (prefers-contrast:more){.ov-nworkrow .mt,.ov-nobjrow .s,.ov-nkv .k,/* The statement and its button are one group: the arrow carries the eye into the
+   control, so the pair reads as a single instruction rather than two fragments. */
+.ov-nbrief .foot .next{display:inline-flex;align-items:center;gap:5px;min-width:0;font-size:13.5px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary);white-space:nowrap}
+.ov-nbrief .foot .next .lucide{width:13px;height:13px;color:currentColor;stroke-width:2;flex:none}
+.ov-nbrief .foot .ov-btn{min-width:92px;justify-content:center;flex:none}
+@media (max-width:760px){.ov-nbrief .foot{flex-wrap:wrap}.ov-nbrief .foot .next{width:100%;text-align:left;order:2}.ov-nbrief .foot .ov-btn{order:3}}
+.ov-nbrief .facts .k{color:var(--ov-text-secondary)}.ov-nchip{border:1px solid var(--ov-border-default);background:none;color:var(--ov-text-primary)}}
+.ov-reduce-transparency .ov-nsheet-scrim,.ov-reduce-transparency .ov-ndrawer-scrim{background:rgba(20,18,20,.28)}
+
+/* --- candidate delegation parts inside chat-v2's transcript ---------------
+   ONE card, and it is the part's own. chat-v2's .bcard wrapper is switched to
+   its own .card-bare in chat-next.js, so the run plan, question, approval,
+   progress and result render in a chat turn exactly as they do in Work and
+   Briefing — their own hairline, radius, background and padding. The only thing
+   removed here is the vertical margin the standalone cards carry, because the
+   turn already provides the rhythm. Do not add border/shadow/padding resets
+   below: that was the earlier mistake, and it left text on the border. */
+.pt-nx{margin:0}
+.pt-nx>.ov-nplan,.pt-nx>.ov-napproval,.pt-nx>.ov-nquestion,.pt-nx>.ov-nprogress,.pt-nx>.ov-nresult{margin:0}
+.pt-nx .ov-nworkrow{background:var(--ov-bg-content)}
+
+/* --- a proposal addressed to the surface you are on ---------------------- */
+.ov-nproposal{margin:0 0 16px}
+.ov-nproposal .pr{padding:13px 15px;border-radius:var(--ov-radius-card);border:1px solid var(--ov-ai-muted-strong);background:var(--ov-ai-muted)}
+.ov-nproposal .hd{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ov-text-secondary)}
+.ov-nproposal .hd .lucide{color:var(--ov-ai);flex:none}
+.ov-nproposal .hd b{color:var(--ov-text-primary);font-weight:var(--ov-weight-medium)}
+.ov-nproposal .hd .src{margin-left:auto;color:var(--ov-text-tertiary)}
+.ov-nproposal .t{font-size:13.5px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary);margin-top:7px}
+.ov-nproposal .d{font-size:12.5px;color:var(--ov-text-secondary);line-height:1.45;margin-top:3px;max-width:76ch}
+.ov-nproposal .a{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:11px}
+
+/* --- Processes deep screens onto the shared layer -------------------------
+   The module's primitives were already close to the shared ones; these are the
+   real deltas, candidate-scoped so the current design keeps its own scale. Two
+   of them are legibility, not taste: the meta key tier was quaternary (1.78:1
+   light) and row meta was tertiary, where the shared vocabulary uses tertiary
+   and secondary for the same roles. */
+[data-ov-next="true"] .pr-title--sm{font-size:21px;letter-spacing:-.015em}
+[data-ov-next="true"] .pr-sec{margin:26px 0 12px}
+[data-ov-next="true"] .pr-sec h2{font-size:14.5px}
+[data-ov-next="true"] .pr-sec .meta{font-size:11.5px}
+[data-ov-next="true"] .pr-pmeta .k{color:var(--ov-text-tertiary);letter-spacing:.05em}
+[data-ov-next="true"] .pr-row .t{font-size:13px}
+[data-ov-next="true"] .pr-row .m{font-size:11.5px;color:var(--ov-text-secondary)}
+[data-ov-next="true"] .pr-row .m .dot{opacity:.6;color:var(--ov-text-quaternary)}
+[data-ov-next="true"] .pr-card{border-radius:var(--ov-radius-card)}
+[data-ov-next="true"] .pr-sub{font-size:13.5px;max-width:64ch;text-wrap:pretty}
+/* an accepted learning proposal, recorded on the surface that owns the change */
+.ov-nrecorded{display:flex;align-items:flex-start;gap:9px;margin:0 0 14px;padding:10px 12px;border-radius:var(--ov-radius-card);background:var(--ov-bg-content-secondary);border:1px solid var(--ov-border-subtle)}
+.ov-nrecorded .lucide{flex:none;margin-top:2px;color:var(--ov-success)}
+.ov-nrecorded .b{flex:1;min-width:0}
+.ov-nrecorded .t{font-size:12.5px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary)}
+.ov-nrecorded .m{font-size:11.5px;color:var(--ov-text-secondary);margin-top:2px;line-height:1.45}
+.ov-nrecorded .w{font-size:11px;color:var(--ov-text-tertiary);margin-top:3px}
+
+/* --- captured run path, re-orderable ------------------------------------- */
+.ov-nsteps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ov-nstep{display:flex;align-items:center;gap:10px;padding:9px 11px;background:var(--ov-bg-elevated);border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card);box-shadow:var(--ov-shadow-card)}
+.ov-nstep .n{width:20px;flex:none;text-align:center;font-size:11px;font-family:var(--ov-font-mono);font-variant-numeric:tabular-nums;color:var(--ov-text-tertiary)}
+.ov-nstep .g{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary)}
+.ov-nstep .g.is-warn{background:var(--ov-warning-muted);color:var(--ov-warning)}
+.ov-nstep .g.is-accent{background:var(--ov-accent-muted);color:var(--ov-accent)}
+.ov-nstep .b{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.ov-nstep .t{font-size:13px;font-weight:var(--ov-weight-medium);color:var(--ov-text-primary)}
+.ov-nstep .m{font-size:11.5px;color:var(--ov-text-secondary);line-height:1.4}
+.ov-nstep .m em{font-style:normal;color:var(--ov-warning)}
+.ov-nstep .a{display:flex;gap:2px;flex:none}
+.ov-nstep .a .ov-iconbtn[disabled]{opacity:.3;pointer-events:none}
+.ov-nstep.is-moved{border-color:var(--ov-warning)}
+
+
+/* Dark: the last three AA failures on the v2 owner surfaces.
+   · the search placeholder was rgba(255,255,255,.32) = 2.9:1 — a placeholder is
+     still text a person has to read
+   · the notification badge is white on --ov-accent (a lifted tone meant as text
+     on dark), 3.23:1 — dark ink instead, as with the other filled badges
+   · the selected tab count is the lifted accent on its own 20% tint, 4.00:1 */
+[data-ov-next="true"] [data-theme="dark"] .ov-omni-search,
+[data-ov-next="true"] [data-theme="dark"] .ov-omni-search input::placeholder{color:rgba(255,255,255,.62)}
+[data-ov-next="true"] [data-theme="dark"] .ov-notif-badge{color:var(--ov-bg-window);font-size:11px}
+[data-ov-next="true"] [data-theme="dark"] .ov-ntabs .sel .n{color:#F2C4BF;background:rgba(210,117,108,.28)}
+@media (prefers-color-scheme:dark){
+  [data-ov-next="true"] [data-theme]:not([data-theme="light"]) .ov-omni-search,
+  [data-ov-next="true"] [data-theme]:not([data-theme="light"]) .ov-omni-search input::placeholder{color:rgba(255,255,255,.62)}
+  [data-ov-next="true"] [data-theme]:not([data-theme="light"]) .ov-notif-badge{color:var(--ov-bg-window);font-size:11px}
+  [data-ov-next="true"] [data-theme]:not([data-theme="light"]) .ov-ntabs .sel .n{color:#F2C4BF;background:rgba(210,117,108,.28)}
+}
+
+/* Titlebar chrome in light: the breadcrumb separator (3.92:1) and the search
+   placeholder (2.11:1) inherit pre-existing tones that miss AA. A placeholder is
+   still text someone has to read, and the separator carries the trail's structure. */
+[data-ov-next="true"] .ov-breadcrumb .sep{color:var(--ov-text-tertiary)}
+[data-ov-next="true"] .ov-omni-search,[data-ov-next="true"] .ov-omni-search span{color:var(--ov-text-secondary)}
+
+/* Visually hidden, still in the accessibility tree. */
+.ov-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ===== Shared token: --ov-shadow-pop (RESOLUTION §2.3, §4.2) ====================
+   Defined centrally, once, as an alias of the approved floating-overlay role
+   (--ov-shadow-popover, which the design system declares in both light and dark).
+   Not a v2-only value, not a per-component substitute, not a new shadow system.
+   Declared on :root so it resolves for every consumer; the popover token it
+   aliases already re-declares per theme, so this follows automatically. */
+:root{--ov-shadow-pop:var(--ov-shadow-popover)}
+
+/* Agent avatar disc: --ov-ai is the same blue the pill and its border are tinted
+   from, so in dark mode a white 11px glyph sat on too light a field. Darken the disc
+   one step in the same hue — dark mode only; light mode was already legible. */
+[data-theme="dark"] .ov-nagent .av,
+[data-theme="dark"] .ov-nagent-head .av{background:color-mix(in oklab,var(--ov-ai) 68%,#000)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .ov-nagent .av,
+  :root:not([data-theme="light"]) .ov-nagent-head .av,
+  [data-theme]:not([data-theme="light"]) .ov-nagent .av,
+  [data-theme]:not([data-theme="light"]) .ov-nagent-head .av{background:color-mix(in oklab,var(--ov-ai) 68%,#000)}
+}

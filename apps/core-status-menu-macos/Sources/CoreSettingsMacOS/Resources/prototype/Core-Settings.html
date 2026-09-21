@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-ov-next="true" data-ov-next2="true">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="assets/omnivia-favicon.svg" type="image/svg+xml" />
+<title>OmniVia Core — Settings</title>
+<link rel="stylesheet" href="styles/tokens.css" />
+<link rel="stylesheet" href="lib/ov-ui/tokens/ov-ui-palette.css?v=4" />
+<link rel="stylesheet" href="styles/app.css" />
+<link rel="stylesheet" href="os/next.css?v=46" />
+<link rel="stylesheet" href="os/overlay.css?v=93" />
+<link rel="stylesheet" href="ai-settings/ai-settings.css?v=6" />
+<link rel="stylesheet" href="settings-window/settings-window.css?v=4" />
+<link rel="stylesheet" href="core-settings/core-settings.css?v=1" />
+<script src="lib/ov-icons-local.js?v=2"></script>
+</head>
+<body>
+<template id="__bundler_thumbnail" data-bg-color="#f5f5f4"><svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" fill="none"><circle cx="200" cy="200" r="120" stroke="#9E302A" stroke-width="23"></circle><circle cx="200" cy="200" r="73" stroke="#9E302A" stroke-width="19"></circle></svg></template>
+<div id="cs-win" role="dialog" aria-labelledby="cs-title">
+<header class="cs-head">
+<div class="ov-traffic cs-traffic" role="group" aria-label="Window controls"><button class="r" id="cs-close" aria-label="Close Core Settings"></button><i class="y" aria-hidden="true"></i><i class="g" aria-hidden="true"></i></div>
+<div class="cs-brand"><span class="mk" aria-hidden="true"><svg viewBox="0 0 80 80" fill="none"><circle cx="40" cy="40" r="34.5" stroke="currentColor" stroke-width="6.6"></circle><circle cx="40" cy="40" r="21" stroke="currentColor" stroke-width="5.4"></circle></svg></span><div class="tt"><span class="wm" id="cs-title">OmniVia</span><span class="sub">Core Settings</span></div></div>
+</header>
+<div id="sw-root">
+<nav class="sw-side" aria-label="Core settings sections">
+<div class="sw-nav" id="sw-nav"></div>
+<div class="cs-foot" id="cs-foot"></div>
+</nav>
+<main class="sw-main" id="sw-main" tabindex="-1"></main>
+</div>
+</div>
+<div id="cs-closed"><div>Core Settings closed. Core keeps running on this Mac.</div><button class="ov-btn ov-btn--bordered" id="cs-reopen">Reopen Core Settings</button></div>
+<div id="cs-dev" aria-label="Development harness"></div>
+<div id="sw-toasts"></div>
+<p class="sw-sr" id="sw-live" role="status" aria-live="polite"></p>
+<script src="core-settings/core-fixtures.js?v=1"></script>
+<script src="core-settings/core-ui.js?v=1"></script>
+<script src="core-settings/core-mac.js?v=1"></script>
+<script src="core-settings/core-panes.js?v=1"></script>
+<script src="core-settings/core-actions.js?v=1"></script>
+<script src="core-settings/core-settings.js?v=1"></script>
+</body>
+</html>

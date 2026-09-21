@@ -1,0 +1,81 @@
+/* ============================================================================
+   OmniVia UI — surface / material / state deltas (window, sidebar, bars,
+   elevated, inset, canvas, hover/active, accent tints, glass materials).
+   ----------------------------------------------------------------------------
+   The canonical Brick CONTENT / TEXT / SEPARATOR / BORDER tokens no longer live
+   here — they were diverging from the design system (H-3), so they now come from
+   the single source `styles/brick-tokens.css`, imported first below. This file
+   keeps only the surface + material values it legitimately owns.
+   Structural glass (blur, borders, window frame, --gl-* primitives) stays in
+   os/overlay.css.
+   ============================================================================ */
+@import url("../../../styles/brick-tokens.css");
+
+:root {
+  --ov-bg-window: #f5f5f6;
+  --ov-bg-sidebar: #fafafb;
+  --ov-bg-bar: #f9f9fa;
+  --ov-bg-elevated: #ffffff;
+  --ov-bg-inset: #ffffff;
+  --ov-bg-inset-deep: #eeeef0;
+  --ov-bg-canvas: #fbfbfc;
+  --ov-hover-bg: rgba(120, 114, 120, 0.09);
+  --ov-hover-bg-strong: rgba(120, 114, 120, 0.13);
+  --ov-active-bg: rgba(120, 114, 120, 0.17);
+  --ov-accent-hover: #8d2924;
+  --ov-accent-muted: rgba(158, 48, 42, 0.12);
+  --ov-accent-muted-strong: rgba(158, 48, 42, 0.18);
+  --ov-material-titlebar: rgba(246, 245, 247, 0.70);
+  --ov-material-sidebar: rgba(244, 244, 247, 0.46);
+  --ov-material-bar: rgba(246, 245, 247, 0.70);
+  --ov-material-sheet: rgba(248, 249, 249, 0.66);
+  --ov-material-hud: rgba(251, 252, 252, 0.80);
+  --ov-material-thick: rgba(251, 252, 252, 0.78);
+}
+
+[data-theme="dark"] {
+  --ov-bg-window: #1c1c21;
+  --ov-bg-sidebar: #1c1c21;
+  --ov-bg-bar: #1c1c21;
+  --ov-bg-elevated: #26262e;
+  --ov-bg-inset: #16161b;
+  --ov-bg-inset-deep: #141417;
+  --ov-bg-canvas: #141417;
+  --ov-hover-bg: rgba(185, 178, 188, 0.09);
+  --ov-hover-bg-strong: rgba(185, 178, 188, 0.13);
+  --ov-active-bg: rgba(185, 178, 188, 0.18);
+  --ov-accent-hover: #d87e76;
+  --ov-accent-muted: rgba(210, 117, 108, 0.20);
+  --ov-accent-muted-strong: rgba(210, 117, 108, 0.30);
+  --ov-material-titlebar: rgba(30, 30, 36, 0.64);
+  --ov-material-sidebar: rgba(22, 22, 27, 0.40);
+  --ov-material-bar: rgba(30, 30, 36, 0.66);
+  --ov-material-sheet: rgba(27, 28, 33, 0.61);
+  --ov-material-hud: rgba(37, 36, 42, 0.80);
+  --ov-material-thick: rgba(38, 39, 46, 0.74);
+}
+
+/* Follow the system when no explicit data-theme is set (mirrors tokens.css). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ov-bg-window: #1c1c21;
+    --ov-bg-sidebar: #1c1c21;
+    --ov-bg-bar: #1c1c21;
+    --ov-bg-elevated: #26262e;
+    --ov-bg-inset: #16161b;
+    --ov-bg-inset-deep: #141417;
+    --ov-bg-canvas: #141417;
+    --ov-hover-bg: rgba(185, 178, 188, 0.09);
+    --ov-hover-bg-strong: rgba(185, 178, 188, 0.13);
+    --ov-active-bg: rgba(185, 178, 188, 0.18);
+    --ov-accent-hover: #d87e76;
+    --ov-accent-muted: rgba(210, 117, 108, 0.20);
+    --ov-accent-muted-strong: rgba(210, 117, 108, 0.30);
+    --ov-material-titlebar: rgba(30, 30, 36, 0.64);
+    --ov-material-sidebar: rgba(22, 22, 27, 0.40);
+    --ov-material-bar: rgba(30, 30, 36, 0.66);
+    --ov-material-sheet: rgba(27, 28, 33, 0.61);
+    --ov-material-hud: rgba(37, 36, 42, 0.80);
+    --ov-material-thick: rgba(38, 39, 46, 0.74);
+  }
+}

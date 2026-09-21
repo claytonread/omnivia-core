@@ -1,0 +1,58 @@
+/* ============================================================================
+   OmniVia — canonical Brick surface / text / border tokens (single source).
+   ----------------------------------------------------------------------------
+   These are the values that WERE duplicated (and diverged) between the design
+   system's colors_and_type.css and lib/ov-ui/tokens/ov-ui-palette.css. They now
+   live in exactly ONE place, matching the OmniVia Brick design system, and every
+   surface — including ov-ui-palette — defers to them (H-3 remediation).
+
+   Scope: content canvases, the text hierarchy, and separators/borders. Window /
+   sidebar / material / hover deltas stay in ov-ui-palette.css.
+   ============================================================================ */
+
+:root {
+  --ov-bg-content: #FFFFFF;
+  --ov-bg-content-secondary: #FBFBFA;
+  --ov-text-primary: rgba(0, 0, 0, 0.85);
+  --ov-text-secondary: rgba(0, 0, 0, 0.55);
+  --ov-text-tertiary: rgba(0, 0, 0, 0.38);
+  --ov-text-quaternary: rgba(0, 0, 0, 0.24);
+  --ov-text-placeholder: rgba(0, 0, 0, 0.30);
+  --ov-separator: rgba(0, 0, 0, 0.09);
+  --ov-border-subtle: rgba(0, 0, 0, 0.07);
+  --ov-border-default: rgba(0, 0, 0, 0.12);
+  --ov-border-strong: rgba(0, 0, 0, 0.20);
+  --ov-border-control: rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="dark"] {
+  --ov-bg-content: #1E1E20;
+  --ov-bg-content-secondary: #232326;
+  --ov-text-primary: rgba(255, 255, 255, 0.92);
+  --ov-text-secondary: rgba(255, 255, 255, 0.58);
+  --ov-text-tertiary: rgba(255, 255, 255, 0.40);
+  --ov-text-quaternary: rgba(255, 255, 255, 0.26);
+  --ov-text-placeholder: rgba(255, 255, 255, 0.32);
+  --ov-separator: rgba(255, 255, 255, 0.10);
+  --ov-border-subtle: rgba(255, 255, 255, 0.08);
+  --ov-border-default: rgba(255, 255, 255, 0.13);
+  --ov-border-strong: rgba(255, 255, 255, 0.22);
+  --ov-border-control: rgba(255, 255, 255, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ov-bg-content: #1E1E20;
+    --ov-bg-content-secondary: #232326;
+    --ov-text-primary: rgba(255, 255, 255, 0.92);
+    --ov-text-secondary: rgba(255, 255, 255, 0.58);
+    --ov-text-tertiary: rgba(255, 255, 255, 0.40);
+    --ov-text-quaternary: rgba(255, 255, 255, 0.26);
+    --ov-text-placeholder: rgba(255, 255, 255, 0.32);
+    --ov-separator: rgba(255, 255, 255, 0.10);
+    --ov-border-subtle: rgba(255, 255, 255, 0.08);
+    --ov-border-default: rgba(255, 255, 255, 0.13);
+    --ov-border-strong: rgba(255, 255, 255, 0.22);
+    --ov-border-control: rgba(255, 255, 255, 0.18);
+  }
+}

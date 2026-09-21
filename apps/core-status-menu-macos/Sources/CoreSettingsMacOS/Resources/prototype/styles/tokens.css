@@ -1,0 +1,531 @@
+/* ============================================================================
+   OmniVia Design System — Foundations
+   colors_and_type.css
+
+   Local-first knowledge graph & AI workspace for macOS (Electron webview).
+   Token namespace: --ov-*
+
+   This file defines:
+     1. Typography (font stacks, type scale, semantic text roles)
+     2. Spacing, radius, borders
+     3. Shadows & elevation
+     4. Blur / material effects
+     5. Color: backgrounds, text hierarchy, accents, semantics, states
+     6. Light mode (:root) + Dark mode ([data-theme="dark"] / prefers-color-scheme)
+
+   Design intent: SF Pro / SF Mono via the macOS system stack. On a real Mac
+   these resolve to Apple's system fonts natively — do NOT bundle web fonts for
+   the shell. A non-Mac fallback is provided only so previews don't break.
+   ============================================================================ */
+
+:root {
+  /* ------------------------------------------------------------------ *
+   * 1. TYPOGRAPHY
+   * ------------------------------------------------------------------ */
+
+  /* Font families — system-native first. SF Pro Text/Display + SF Mono. */
+  --ov-font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --ov-font-mono:
+    ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Monaco,
+    "JetBrains Mono", "Cascadia Code", monospace;
+
+  /* macOS optical sizing: Display ≥ ~20px, Text below. The system stack
+     handles this automatically; this var documents the breakpoint. */
+  --ov-font-display-threshold: 20px;
+
+  /* Weights — SF Pro reads heavier than web fonts; favor 400/500/590/700.
+     590 ("semibold") is the canonical macOS emphasis weight. */
+  --ov-weight-regular: 400;
+  --ov-weight-medium: 500;
+  --ov-weight-semibold: 590;
+  --ov-weight-bold: 700;
+
+  /* Type scale — Mac-native point sizes (px). Compact, information-dense. */
+  --ov-text-11: 11px;   /* caption / metadata */
+  --ov-text-12: 12px;   /* secondary controls, tags */
+  --ov-text-13: 13px;   /* base body / sidebar item — the macOS workhorse */
+  --ov-text-14: 14px;   /* comfortable body, AI response */
+  --ov-text-15: 15px;   /* emphasized body */
+  --ov-text-17: 17px;   /* document subtitle, large control */
+  --ov-text-20: 20px;   /* section heading */
+  --ov-text-22: 22px;   /* document title */
+  --ov-text-28: 28px;   /* view title */
+  --ov-text-34: 34px;   /* large title / empty-state hero */
+
+  /* Line heights — tight, as native AppKit text. */
+  --ov-leading-tight: 1.2;
+  --ov-leading-snug: 1.35;
+  --ov-leading-normal: 1.45;
+  --ov-leading-relaxed: 1.6;   /* long-form / AI prose */
+
+  /* Letter spacing — SF tightens slightly at large sizes. */
+  --ov-tracking-tight: -0.014em;
+  --ov-tracking-snug: -0.006em;
+  --ov-tracking-normal: 0em;
+  --ov-tracking-wide: 0.04em;   /* uppercase section labels */
+
+  /* ------------------------------------------------------------------ *
+   * 2. SPACING — 4px base grid (Mac UIs are denser than web)
+   * ------------------------------------------------------------------ */
+  --ov-space-0: 0px;
+  --ov-space-1: 2px;
+  --ov-space-2: 4px;
+  --ov-space-3: 6px;
+  --ov-space-4: 8px;
+  --ov-space-5: 10px;
+  --ov-space-6: 12px;
+  --ov-space-7: 16px;
+  --ov-space-8: 20px;
+  --ov-space-9: 24px;
+  --ov-space-10: 32px;
+  --ov-space-11: 40px;
+  --ov-space-12: 48px;
+  --ov-space-13: 64px;
+
+  /* Standard control metrics */
+  --ov-control-height-sm: 20px;
+  --ov-control-height: 24px;     /* default toolbar control */
+  --ov-control-height-md: 28px;
+  --ov-control-height-lg: 32px;  /* primary buttons, fields */
+  --ov-row-height: 28px;         /* source-list / sidebar row */
+  --ov-toolbar-height: 52px;
+  --ov-titlebar-height: 28px;    /* traffic-light zone */
+  --ov-sidebar-width: 248px;
+  --ov-sidebar-min: 200px;
+  --ov-sidebar-max: 360px;
+  --ov-inspector-width: 300px;
+
+  /* ------------------------------------------------------------------ *
+   * 3. RADIUS — Mac controls are gently rounded, not pill-by-default
+   * ------------------------------------------------------------------ */
+  --ov-radius-xs: 4px;
+  --ov-radius-sm: 5px;
+  --ov-radius-control: 6px;   /* buttons, text fields, menu items */
+  --ov-radius-md: 8px;
+  --ov-radius-card: 10px;     /* cards, popovers content */
+  --ov-radius-window: 10px;   /* Electron/OS rounds the window; match insets */
+  --ov-radius-popover: 12px;
+  --ov-radius-sheet: 12px;
+  --ov-radius-pill: 999px;
+
+  /* ------------------------------------------------------------------ *
+   * 4. BORDERS — hairlines. Use 1px; on retina this is a crisp 0.5pt.
+   * ------------------------------------------------------------------ */
+  --ov-border-width: 1px;
+  --ov-hairline: 1px;
+
+  /* ------------------------------------------------------------------ *
+   * 5. BLUR / MATERIALS — backdrop-filter strengths for vibrancy
+   * ------------------------------------------------------------------ */
+  --ov-blur-ultrathin: 8px;
+  --ov-blur-thin: 20px;
+  --ov-blur-regular: 30px;
+  --ov-blur-thick: 50px;
+  --ov-material-saturate: 180%;  /* pair with blur for true vibrancy */
+
+  /* ================================================================== *
+   *  LIGHT MODE COLORS
+   * ================================================================== */
+
+  /* --- Background layers (opaque) --- */
+/* base window chrome */
+/* fallback if material unsupported */
+/* primary editable canvas */
+/* toolbar / titlebar fallback */
+/* popovers, menus, cards */
+/* text-field well */
+/* recessed track / progress trough */
+/* graph canvas backdrop */
+
+  /* --- Translucent materials (rgba; layer over content + backdrop-blur) --- */
+  --ov-material-regular: rgba(249, 249, 248, 0.72);
+  --ov-material-thin: rgba(255, 255, 255, 0.66);
+  --ov-material-ultrathin: rgba(255, 255, 255, 0.46);
+/* command palette */
+
+  /* --- Text hierarchy (label colors; alpha-based like AppKit) --- */
+  --ov-text-on-accent: #FFFFFF;
+  --ov-text-on-dark: rgba(255, 255, 255, 0.92);
+  --ov-text-link: var(--ov-accent);
+
+  /* --- Accent (signature OmniVia Brick) --- */
+  --ov-accent: #9E302A;          /* brick 500 — anchor */
+/* brick 600 */
+  --ov-accent-active: #631A17;   /* brick 700 */
+/* tint fills (≈ brick 50) */
+  --ov-accent-contrast: #FFFFFF;
+
+  /* --- Brick alias (formal name for the accent, Remediation §8) --- */
+  --ov-brick: var(--ov-accent);
+  --ov-brick-hover: var(--ov-accent-hover);
+  --ov-brick-muted: var(--ov-accent-muted);
+
+  /* --- AI / secondary accent (Slate) — marks AI-authored content & info --- */
+  --ov-ai: #3B6580;              /* slate 500 — anchor */
+  --ov-ai-hover: #2D5269;        /* slate 600 */
+  --ov-ai-muted: rgba(59, 101, 128, 0.12);
+  --ov-ai-muted-strong: rgba(59, 101, 128, 0.20);
+
+  /* --- Slate alias (formal name for the AI/operator accent, Remediation §8) --- */
+  --ov-slate: var(--ov-ai);
+  --ov-slate-hover: var(--ov-ai-hover);
+  --ov-slate-muted: var(--ov-ai-muted);
+  --ov-slate-surface: linear-gradient(90deg, var(--ov-ai-muted), transparent);
+
+  /* --- Plumb accent — marks Review mode / annotation tooling (distinct from Brick & Slate) --- */
+  --ov-plumb: #8A5CB8;            /* plumb 500 — anchor */
+  --ov-plumb-hover: #76499F;      /* plumb 600 */
+  --ov-plumb-muted: rgba(138, 92, 184, 0.13);
+  --ov-plumb-muted-strong: rgba(138, 92, 184, 0.22);
+
+  /* --- Semantic colors --- */
+  --ov-success: #2E9E6B;            /* local / trusted / verified */
+  --ov-success-muted: rgba(46, 158, 107, 0.14);
+  --ov-warning: #C8821E;            /* indexing / processing / caution */
+  --ov-warning-muted: rgba(200, 130, 30, 0.14);
+  --ov-danger: #E0484D;             /* destructive / error */
+  --ov-danger-hover: #CB3A40;
+  --ov-danger-muted: rgba(224, 72, 77, 0.13);
+  --ov-info: #3B6580;               /* slate — informational */
+  --ov-info-muted: rgba(59, 101, 128, 0.12);
+
+  /* --- Borders & separators --- */
+/* hairline dividers */
+/* button/field outline */
+
+  /* --- Selection (source-list / sidebar) --- */
+  --ov-selection-bg: var(--ov-accent);            /* focused window */
+  --ov-selection-text: #FFFFFF;
+  --ov-selection-bg-inactive: rgba(0, 0, 0, 0.08); /* window not focused */
+  --ov-selection-text-inactive: var(--ov-text-primary);
+  --ov-selection-text-bg: rgba(158, 48, 42, 0.20); /* highlighted prose text */
+
+  /* --- Focus ring (keyboard) --- */
+  --ov-focus-ring: rgba(158, 48, 42, 0.50);
+  --ov-focus-ring-width: 3px;
+  --ov-focus-ring-shadow: 0 0 0 3px rgba(158, 48, 42, 0.38);
+
+  /* --- Hover / active surfaces (rows, menu items, icon buttons) --- */
+
+  /* --- Disabled --- */
+  --ov-disabled-opacity: 0.40;
+  --ov-disabled-bg: rgba(0, 0, 0, 0.04);
+
+  /* --- Graph-specific --- */
+  --ov-graph-node: #FFFFFF;
+  --ov-graph-node-border: rgba(0, 0, 0, 0.18);
+  --ov-graph-node-selected: var(--ov-accent);
+  --ov-graph-edge: rgba(0, 0, 0, 0.22);
+  --ov-graph-edge-active: var(--ov-accent);
+  --ov-graph-cluster-1: #9E302A;   /* brick */
+  --ov-graph-cluster-2: #3B6580;   /* slate */
+  --ov-graph-cluster-3: #C8821E;   /* amber */
+  --ov-graph-cluster-4: #4F8A6B;   /* sage */
+  --ov-graph-cluster-5: #8A5470;   /* plum */
+  --ov-graph-cluster-neutral: #6B6B72;  /* grey — files & untyped nodes */
+
+  /* ------------------------------------------------------------------ *
+   * 6. SHADOWS / ELEVATION
+   * ------------------------------------------------------------------ */
+  --ov-shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.05);
+  --ov-shadow-card:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  --ov-shadow-raised:
+    0 2px 6px rgba(0, 0, 0, 0.10),
+    0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  --ov-shadow-popover:
+    0 8px 24px rgba(0, 0, 0, 0.16),
+    0 0 0 0.5px rgba(0, 0, 0, 0.10);
+  --ov-shadow-window:
+    0 24px 60px rgba(0, 0, 0, 0.24),
+    0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  --ov-shadow-hud:
+    0 16px 50px rgba(0, 0, 0, 0.28),
+    0 0 0 0.5px rgba(0, 0, 0, 0.14);
+  --ov-inner-well: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+
+  /* ------------------------------------------------------------------ *
+   * 7. MOTION — calm, native easing. macOS rarely bounces.
+   * ------------------------------------------------------------------ */
+  --ov-ease-standard: cubic-bezier(0.32, 0.72, 0, 1);   /* sheets, panels */
+  --ov-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ov-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ov-duration-instant: 80ms;
+  --ov-duration-fast: 140ms;
+  --ov-duration-base: 220ms;
+  --ov-duration-slow: 320ms;
+}
+
+/* ====================================================================== *
+ *  DARK MODE
+ *  Applied via [data-theme="dark"] OR system preference (when no override).
+ * ====================================================================== */
+
+[data-theme="dark"] {
+  /* --- Background layers --- */
+
+  /* --- Translucent materials --- */
+  --ov-material-regular: rgba(36, 36, 39, 0.68);
+  --ov-material-thin: rgba(48, 48, 52, 0.55);
+  --ov-material-ultrathin: rgba(60, 60, 64, 0.40);
+
+  /* --- Text hierarchy --- */
+  --ov-text-on-accent: #FFFFFF;
+
+  /* --- Accent (Brick, lifted for contrast on dark) --- */
+  --ov-accent: #D2756C;
+  --ov-accent-active: #E6968D;
+
+  /* --- AI / secondary accent (Slate, lifted) --- */
+  --ov-ai: #7FA8C4;
+  --ov-ai-hover: #8FB4CC;
+  --ov-ai-muted: rgba(127, 168, 196, 0.18);
+  --ov-ai-muted-strong: rgba(127, 168, 196, 0.28);
+
+  /* --- Plumb (lifted for contrast on dark) --- */
+  --ov-plumb: #B994E2;
+  --ov-plumb-hover: #C6A6EA;
+  --ov-plumb-muted: rgba(185, 148, 226, 0.18);
+  --ov-plumb-muted-strong: rgba(185, 148, 226, 0.28);
+
+  /* --- Semantic --- */
+  --ov-success: #3DBE83;
+  --ov-success-muted: rgba(61, 190, 131, 0.18);
+  --ov-warning: #E0A33E;
+  --ov-warning-muted: rgba(224, 163, 62, 0.18);
+  --ov-danger: #F2585D;
+  --ov-danger-hover: #F46B70;
+  --ov-danger-muted: rgba(242, 88, 93, 0.18);
+  --ov-info: #7FA8C4;
+  --ov-info-muted: rgba(127, 168, 196, 0.18);
+
+  /* --- Borders & separators --- */
+
+  /* --- Selection --- */
+  --ov-selection-bg: var(--ov-accent);
+  --ov-selection-text: #FFFFFF;
+  --ov-selection-bg-inactive: rgba(255, 255, 255, 0.11);
+  --ov-selection-text-inactive: var(--ov-text-primary);
+  --ov-selection-text-bg: rgba(210, 117, 108, 0.30);
+
+  /* --- Focus ring --- */
+  --ov-focus-ring: rgba(210, 117, 108, 0.60);
+  --ov-focus-ring-shadow: 0 0 0 3px rgba(210, 117, 108, 0.45);
+
+  /* --- Hover / active --- */
+
+  /* --- Disabled --- */
+  --ov-disabled-opacity: 0.36;
+  --ov-disabled-bg: rgba(255, 255, 255, 0.05);
+
+  /* --- Graph --- */
+  --ov-graph-node: #2C2C30;
+  --ov-graph-node-border: rgba(255, 255, 255, 0.18);
+  --ov-graph-edge: rgba(255, 255, 255, 0.20);
+  --ov-graph-cluster-1: #D2756C;
+  --ov-graph-cluster-2: #7FA8C4;
+  --ov-graph-cluster-3: #E0A33E;
+  --ov-graph-cluster-4: #5FB088;
+  --ov-graph-cluster-5: #C77FA8;
+  --ov-graph-cluster-neutral: #8E8E96;
+
+  /* --- Shadows (deeper, with a top highlight ring) --- */
+  --ov-shadow-card:
+    0 1px 2px rgba(0, 0, 0, 0.40),
+    0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --ov-shadow-raised:
+    0 2px 8px rgba(0, 0, 0, 0.45),
+    0 0 0 0.5px rgba(255, 255, 255, 0.07);
+  --ov-shadow-popover:
+    0 10px 30px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(255, 255, 255, 0.10);
+  --ov-shadow-window:
+    0 28px 70px rgba(0, 0, 0, 0.65),
+    0 0 0 0.5px rgba(255, 255, 255, 0.10);
+  --ov-shadow-hud:
+    0 18px 56px rgba(0, 0, 0, 0.70),
+    0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --ov-inner-well: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/* Follow the system when no explicit data-theme is set. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+
+    --ov-material-regular: rgba(36, 36, 39, 0.68);
+    --ov-material-thin: rgba(48, 48, 52, 0.55);
+    --ov-material-ultrathin: rgba(60, 60, 64, 0.40);
+
+
+    --ov-accent: #D2756C;
+    --ov-accent-active: #E6968D;
+
+    --ov-ai: #7FA8C4;
+    --ov-ai-hover: #8FB4CC;
+    --ov-ai-muted: rgba(127, 168, 196, 0.18);
+    --ov-ai-muted-strong: rgba(127, 168, 196, 0.28);
+
+    --ov-plumb: #B994E2;
+    --ov-plumb-hover: #C6A6EA;
+    --ov-plumb-muted: rgba(185, 148, 226, 0.18);
+    --ov-plumb-muted-strong: rgba(185, 148, 226, 0.28);
+
+    --ov-success: #3DBE83;
+    --ov-success-muted: rgba(61, 190, 131, 0.18);
+    --ov-warning: #E0A33E;
+    --ov-warning-muted: rgba(224, 163, 62, 0.18);
+    --ov-danger: #F2585D;
+    --ov-danger-hover: #F46B70;
+    --ov-danger-muted: rgba(242, 88, 93, 0.18);
+    --ov-info: #7FA8C4;
+    --ov-info-muted: rgba(127, 168, 196, 0.18);
+
+
+    --ov-selection-bg-inactive: rgba(255, 255, 255, 0.11);
+    --ov-selection-text-bg: rgba(210, 117, 108, 0.30);
+    --ov-focus-ring: rgba(210, 117, 108, 0.60);
+    --ov-focus-ring-shadow: 0 0 0 3px rgba(210, 117, 108, 0.45);
+
+    --ov-disabled-opacity: 0.36;
+    --ov-disabled-bg: rgba(255, 255, 255, 0.05);
+
+    --ov-graph-node: #2C2C30;
+    --ov-graph-node-border: rgba(255, 255, 255, 0.18);
+    --ov-graph-edge: rgba(255, 255, 255, 0.20);
+    --ov-graph-cluster-1: #D2756C;
+    --ov-graph-cluster-2: #7FA8C4;
+    --ov-graph-cluster-3: #E0A33E;
+    --ov-graph-cluster-4: #5FB088;
+    --ov-graph-cluster-5: #C77FA8;
+    --ov-graph-cluster-neutral: #8E8E96;
+
+    --ov-shadow-card: 0 1px 2px rgba(0,0,0,0.40), 0 0 0 0.5px rgba(255,255,255,0.06);
+    --ov-shadow-raised: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 0.5px rgba(255,255,255,0.07);
+    --ov-shadow-popover: 0 10px 30px rgba(0,0,0,0.55), 0 0 0 0.5px rgba(255,255,255,0.10);
+    --ov-shadow-window: 0 28px 70px rgba(0,0,0,0.65), 0 0 0 0.5px rgba(255,255,255,0.10);
+    --ov-shadow-hud: 0 18px 56px rgba(0,0,0,0.70), 0 0 0 0.5px rgba(255,255,255,0.12);
+    --ov-inner-well: inset 0 1px 2px rgba(0,0,0,0.35);
+  }
+}
+
+/* ====================================================================== *
+ *  SEMANTIC TEXT ROLES — apply directly to elements.
+ *  These compose the tokens above into ready-to-use type styles.
+ * ====================================================================== */
+
+.ov-window-title {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-13);
+  font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-snug);
+  color: var(--ov-text-primary);
+  line-height: var(--ov-leading-tight);
+}
+
+.ov-sidebar-section {            /* uppercase group label */
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-11);
+  font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-wide);
+  text-transform: uppercase;
+  color: var(--ov-text-tertiary);
+}
+
+.ov-sidebar-item {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-13);
+  font-weight: var(--ov-weight-regular);
+  color: var(--ov-text-primary);
+  line-height: var(--ov-leading-tight);
+}
+.ov-sidebar-item--selected { font-weight: var(--ov-weight-medium); }
+
+.ov-toolbar-label {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-11);
+  font-weight: var(--ov-weight-regular);
+  color: var(--ov-text-secondary);
+}
+
+.ov-document-title {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-22);
+  font-weight: var(--ov-weight-bold);
+  letter-spacing: var(--ov-tracking-tight);
+  color: var(--ov-text-primary);
+  line-height: var(--ov-leading-tight);
+}
+
+.ov-view-title {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-28);
+  font-weight: var(--ov-weight-bold);
+  letter-spacing: var(--ov-tracking-tight);
+  color: var(--ov-text-primary);
+  line-height: var(--ov-leading-tight);
+}
+
+.ov-section-heading {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-20);
+  font-weight: var(--ov-weight-semibold);
+  letter-spacing: var(--ov-tracking-snug);
+  color: var(--ov-text-primary);
+}
+
+.ov-body {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-13);
+  font-weight: var(--ov-weight-regular);
+  color: var(--ov-text-primary);
+  line-height: var(--ov-leading-normal);
+}
+
+.ov-body-lg {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-15);
+  line-height: var(--ov-leading-relaxed);
+  color: var(--ov-text-primary);
+}
+
+.ov-ai-response {                /* AI prose — airier, slate-tinted source marks */
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-14);
+  font-weight: var(--ov-weight-regular);
+  line-height: var(--ov-leading-relaxed);
+  color: var(--ov-text-primary);
+}
+
+.ov-metadata {
+  font-family: var(--ov-font-mono);
+  font-size: var(--ov-text-11);
+  font-weight: var(--ov-weight-regular);
+  letter-spacing: var(--ov-tracking-normal);
+  color: var(--ov-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-caption {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-11);
+  color: var(--ov-text-secondary);
+  line-height: var(--ov-leading-snug);
+}
+
+.ov-code {
+  font-family: var(--ov-font-mono);
+  font-size: var(--ov-text-12);
+  color: var(--ov-text-primary);
+  font-variant-ligatures: none;
+}
+
+.ov-graph-label {
+  font-family: var(--ov-font-sans);
+  font-size: var(--ov-text-12);
+  font-weight: var(--ov-weight-medium);
+  letter-spacing: var(--ov-tracking-snug);
+  color: var(--ov-text-primary);
+}
