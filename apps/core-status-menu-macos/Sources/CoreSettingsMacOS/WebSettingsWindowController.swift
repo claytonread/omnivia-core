@@ -105,9 +105,8 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Size the native titlebar container to the branded header (60px) and
-    /// pin the close button to its vertical centre with constraints, so the
-    /// traffic lights sit level with the OmniVia mark and survive every
-    /// layout pass.
+    /// pin the traffic lights to its vertical centre with constraints, so
+    /// they sit level with the OmniVia mark and survive every layout pass.
     private var controlsPinned = false
 
     private func positionWindowControls() {
@@ -117,9 +116,6 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
               let container = titlebarView.superview else { return }
         let contentHeight = window.contentView?.bounds.height ?? 0
         container.frame = NSRect(x: 0, y: contentHeight - 60, width: window.frame.width, height: 60)
-        // One close control per the owned-window grammar.
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
 
         if controlsPinned { return }
         titlebarView.translatesAutoresizingMaskIntoConstraints = false
@@ -129,10 +125,20 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
             titlebarView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             titlebarView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        let miniaturize = window.standardWindowButton(.miniaturizeButton)
+        let zoom = window.standardWindowButton(.zoomButton)
+        for button in [closeButton, miniaturize, zoom].compactMap({ $0 }) {
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.centerYAnchor.constraint(equalTo: titlebarView.centerYAnchor),
+            ])
+        }
+        // Standard 8px spacing between the lights, leading at the header's
+        // traffic zone (x16).
         NSLayoutConstraint.activate([
-            closeButton.centerYAnchor.constraint(equalTo: titlebarView.centerYAnchor),
             closeButton.leadingAnchor.constraint(equalTo: titlebarView.leadingAnchor, constant: 16),
+            miniaturize!.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 8),
+            zoom!.leadingAnchor.constraint(equalTo: miniaturize!.trailingAnchor, constant: 8),
         ])
         controlsPinned = true
     }
