@@ -289,9 +289,23 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             row.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor),
         ])
 
-        // The mark: two concentric circles, brick (assets/omnivia-mark.svg geometry).
-        let mark = MarkView(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
-        row.addArrangedSubview(mark)
+        // The mark: the brand SVG (template-rendered so it tints), with the
+        // drawn tile as fallback when the resource is absent.
+        let markView: NSView
+        if var image = BrandAssets.image(named: "omnivia-mark") {
+            image.isTemplate = true
+            let icon = NSImageView()
+            icon.image = image
+            icon.contentTintColor = Ov.accent
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            icon.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            icon.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            markView = icon
+        } else {
+            let drawn = MarkView(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
+            markView = drawn
+        }
+        row.addArrangedSubview(markView)
 
         let titleColumn = NSStackView()
         titleColumn.orientation = .vertical

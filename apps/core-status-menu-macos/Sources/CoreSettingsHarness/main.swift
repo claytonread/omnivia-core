@@ -13,6 +13,10 @@ import CoreSettingsMacOS
 try MainActor.assumeIsolated {
     let application = NSApplication.shared
     application.setActivationPolicy(.regular)
+    // The brand app icon (Resources/brand/omnivia-appicon.svg).
+    if let icon = BrandAssets.image(named: "omnivia-appicon") {
+        application.applicationIconImage = icon
+    }
 
     // Visual-fidelity host: renders the Core Settings design package itself.
     // Pass `--native` to open the AppKit-rendered window instead.

@@ -25,7 +25,8 @@ let package = Package(
         .target(
             name: "CoreSettingsMacOS",
             resources: [
-                .copy("Resources/prototype")
+                .copy("Resources/prototype"),
+                .copy("Resources/brand"),
             ]
         ),
         .executableTarget(
