@@ -97,7 +97,7 @@ enum OvFont {
 
     // Prototype roles.
     static func paneTitle(_ text: String) -> NSTextField {
-        label(text, size: 20, cssWeight: 700, color: Ov.textPrimary, tracking: -0.014)
+        label(text, size: 20, cssWeight: 700, color: Ov.textPrimary, tracking: -0.02)
     }
     static func groupHeader(_ text: String) -> NSTextField {
         label(text.uppercased(), size: 11, cssWeight: 700, color: Ov.textTertiary, tracking: 0.05)
@@ -223,7 +223,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 0
-        content.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 56, right: 24)
+        content.edgeInsets = NSEdgeInsets(top: 30, left: 40, bottom: 90, right: 40)
         let contentHost = NSView()
         contentHost.wantsLayer = true
         contentHost.layer?.backgroundColor = Ov.bgContent.cgColor
@@ -329,8 +329,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 10, bottom: 10, right: 10)
+        stack.spacing = 1
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 12, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -372,7 +372,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let title = OvFont.paneTitle(selectedPane.rawValue)
         content.addArrangedSubview(title)
-        content.addArrangedSubview(ovSpacer(18))
+        content.addArrangedSubview(ovSpacer(22))
 
         switch selectedPane {
         case .general: renderGeneral(content)
@@ -396,9 +396,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         card.orientation = .vertical
         card.alignment = .leading
         card.spacing = 0
-        card.edgeInsets = NSEdgeInsets(top: 4, left: 16, bottom: 4, right: 16)
+        card.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         card.wantsLayer = true
-        card.layer?.backgroundColor = Ov.bgContentSecondary.cgColor
+        card.layer?.backgroundColor = Ov.bgContent.cgColor
         card.layer?.cornerRadius = 10
         card.layer?.borderWidth = 0.5
         card.layer?.borderColor = Ov.borderSubtle.cgColor
@@ -422,7 +422,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         case .neu, .checking: symbol = "circle.dashed"
         }
         let icon = NSImageView()
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: text) {
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: text)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) {
             icon.image = image
             icon.contentTintColor = tone == .ok ? Ov.success : (tone == .warn ? Ov.warning : Ov.textTertiary)
         }
@@ -457,8 +458,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let body = NSStackView()
         body.orientation = .vertical
         body.alignment = .leading
-        body.spacing = 4
-        body.edgeInsets = NSEdgeInsets(top: 11, left: 0, bottom: 11, right: 0)
+        body.spacing = 3
+        body.edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
         body.addArrangedSubview(line)
         if let detail {
             let d = NSTextField(wrappingLabelWithString: detail)
@@ -494,7 +495,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         block.spacing = 6
         block.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         block.wantsLayer = true
-        block.layer?.backgroundColor = Ov.bgContent.cgColor
+        block.layer?.backgroundColor = Ov.bgContentSecondary.cgColor
         block.layer?.cornerRadius = 8
         block.layer?.borderWidth = 1
         block.layer?.borderColor = warn ? Ov.warning.withAlphaComponent(0.35).cgColor : Ov.borderSubtle.cgColor
@@ -861,7 +862,8 @@ final class SidebarRowView: NSView {
     init(title: String, symbol: String) {
         label = OvFont.label(title, size: 13, color: Ov.textPrimary)
         icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
         icon.contentTintColor = Ov.textSecondary
         super.init(frame: .zero)
         wantsLayer = true
@@ -870,10 +872,11 @@ final class SidebarRowView: NSView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        row.spacing = 9
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
         NSLayoutConstraint.activate([
             row.topAnchor.constraint(equalTo: topAnchor),
             row.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -889,8 +892,10 @@ final class SidebarRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     private func applySelection() {
-        layer?.backgroundColor = isSelected ? Ov.selectionTextBg.cgColor : NSColor.clear.cgColor
-        label.font = OvFont.sans(13, isSelected ? 590 : 400)
+        layer?.backgroundColor = isSelected ? Ov.accent.cgColor : NSColor.clear.cgColor
+        label.textColor = isSelected ? Ov.onAccent : Ov.textPrimary
+        label.font = OvFont.sans(13, isSelected ? 500 : 400)
+        icon.contentTintColor = isSelected ? Ov.onAccent : Ov.textSecondary
     }
 
     override func layout() {
@@ -909,11 +914,13 @@ final class SidebarRowView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         if !isSelected { layer?.backgroundColor = Ov.hoverBg.cgColor }
+        icon.contentTintColor = isSelected ? Ov.onAccent : Ov.textPrimary
     }
 
     override func mouseExited(with event: NSEvent) { applySelection() }
 
     @objc private func clicked() { onSelect?() }
+    override var acceptsFirstResponder: Bool { true }
 }
 
 // MARK: - OmniVia buttons (.ov-btn / .ov-btn--bordered / --primary)
@@ -931,12 +938,12 @@ final class OvButton: NSButton {
         setButtonType(.momentaryPushIn)
         wantsLayer = true
         layer?.cornerRadius = 6
-        font = OvFont.sans(12.5, 500)
+        font = OvFont.sans(13, 500)
         contentTintColor = style == .primary ? Ov.onAccent : Ov.textPrimary
         applyStyle()
 
-        heightAnchor.constraint(equalToConstant: 26).isActive = true
-        widthAnchor.constraint(greaterThanOrEqualToConstant: textWidth + 22).isActive = true
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
+        widthAnchor.constraint(greaterThanOrEqualToConstant: textWidth + 24).isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }

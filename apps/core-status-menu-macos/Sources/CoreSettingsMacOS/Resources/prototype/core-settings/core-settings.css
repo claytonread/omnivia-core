@@ -1,0 +1,166 @@
+/* ============================================================================
+   OmniVia Core Settings — the settings shell (settings-window.css) adapted for
+   the Core companion window. Only what differs from Settings.html is here.
+   ============================================================================ */
+html,body{height:100%;margin:0}
+body{background:var(--ov-bg-window);display:flex;flex-direction:column;align-items:center;justify-content:safe center;gap:18px;padding:24px;box-sizing:border-box;overflow:auto}
+#cs-win{margin-top:auto}#cs-dev{margin-bottom:auto}
+#ai-root{height:auto;overflow:visible}
+/* ---- window --------------------------------------------------------------
+   Same window grammar as the owned-window host: 10px OS corner, window shadow,
+   one close control. 900×640 fallback size; adapts to smaller viewports. */
+#cs-win{width:min(900px,100%);height:min(640px,calc(100vh - 110px));min-height:420px;display:flex;flex-direction:column;background:var(--ov-bg-content);border-radius:10px;border:1px solid rgba(0,0,0,.18);box-shadow:var(--ov-shadow-window);overflow:hidden;flex:none}
+/* ---- branded header ------------------------------------------------------ */
+.cs-head{position:relative;height:60px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px 0 78px;background:var(--ov-titlebar-sheen,none),var(--ov-material-titlebar,var(--ov-bg-bar));-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border-bottom:1px solid var(--ov-separator);box-shadow:var(--ov-specular-highlight,none);-webkit-app-region:drag}
+/* Native window controls: the shell's .ov-traffic; the real app uses OS buttons. Close is live, the others are inert here. */
+.cs-traffic{left:16px}
+.cs-traffic button{width:12px;height:12px;border-radius:50%;border:0;padding:0;display:block;cursor:default;-webkit-app-region:no-drag}
+.cs-traffic button.r{background:#ED6A5E}
+.cs-traffic:hover button.r::before{content:"";display:block;width:6px;height:6px;margin:3px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234d0000' stroke-width='3.4' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat}
+.cs-traffic button:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+#cs-win:not(:focus-within) .cs-traffic i,#cs-win:not(:focus-within) .cs-traffic button{background:var(--ov-border-strong)}
+.cs-brand{display:flex;align-items:center;gap:10px;min-width:0;flex:1;-webkit-app-region:no-drag}
+.cs-brand .mk{width:22px;height:22px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--ov-accent)}
+.cs-brand .mk svg{width:22px;height:22px;display:block}
+.cs-brand .tt{display:flex;flex-direction:column;min-width:0;line-height:1.2}
+.cs-brand .wm{font-size:13px;font-weight:590;color:var(--ov-text-primary);letter-spacing:-.01em}
+.cs-brand .sub{font-size:11px;color:var(--ov-text-secondary);margin-top:1px}
+.cs-x{width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center;border:0;border-radius:6px;background:none;color:var(--ov-text-secondary);cursor:default}
+.cs-x:hover{background:var(--ov-hover-bg);color:var(--ov-text-primary)}
+.cs-x:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+.cs-x .lucide{width:14px;height:14px}
+/* ---- body: source list + pane ------------------------------------------- */
+#sw-root{flex:1;min-height:0;height:auto;display:flex}
+.sw-side{width:200px;background:var(--ov-sidebar-sheen,none),var(--ov-material-sidebar,var(--ov-bg-sidebar))}
+.sw-nav{padding-top:10px}
+.cs-foot{flex:none;padding:10px 16px 12px;border-top:1px solid var(--ov-separator);font-size:11.5px;color:var(--ov-text-secondary);display:flex;align-items:center;gap:7px;line-height:1.4}
+.cs-foot .ai-dot{width:7px;height:7px}
+.cs-foot .ai-dot.stop{background:var(--ov-text-quaternary)}
+.cs-foot .ai-dot.lost{background:var(--ov-warning)}
+.cs-foot .ai-dot.wait{background:var(--ov-warning)}
+.sw-pane{max-width:none;margin:0;padding:24px 24px 56px}
+.sw-head{margin-bottom:18px}
+.sw-head h1{font-size:20px}
+.sw-group{margin-top:18px}
+/* rows may hold wrapping controls; keep the reference row but allow stacking */
+.sw-row-c{gap:8px;max-width:58%}
+.sw-row-c .ov-btn{height:26px;font-size:12.5px;padding:0 11px}
+.sw-row-t .ov-pill{margin-left:8px;vertical-align:1px}
+.sw-row-d b{font-weight:600;color:var(--ov-text-secondary)}
+.sw-row.off .sw-row-l{opacity:var(--ov-disabled-opacity,.5)}
+.sw-row-sub{padding:0 16px 12px;font-size:11.5px;color:var(--ov-text-tertiary);line-height:1.45;margin-top:-4px}
+.sw-rows .sw-row-sub{border-bottom:1px solid var(--ov-separator)}
+.sw-rows .sw-row-sub:last-child{border-bottom:none}
+/* nested row list (e.g. Manage sources) sits flush inside the group, not as an inset box */
+.sw-row-sub .sw-rows{border:0;border-radius:0;margin:0 -16px;background:var(--ov-bg-content-secondary);border-top:1px solid var(--ov-separator)}
+.sw-row-sub .sw-rows .sw-row{padding:11px 16px}
+.sw-row-sub .sw-rows .sw-row:last-child{border-bottom:none}
+.sw-row-sub .cs-note{margin:10px 0 0}
+.sw-rows .sw-row-sub:has(> .sw-rows){padding:0 16px;margin-top:0}
+/* value rows (display data, not settings) */
+.cs-val{font-size:12.5px;color:var(--ov-text-primary);text-align:right}
+.cs-val.mono{font-family:var(--ov-font-mono);font-size:11.5px;color:var(--ov-text-secondary)}
+.cs-path{max-width:260px;flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left;font-family:var(--ov-font-mono);font-size:11.5px;color:var(--ov-text-secondary)}
+.cs-path span{direction:ltr;unicode-bidi:bidi-override}
+.cs-scope{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ov-text-secondary)}
+.cs-scope .lucide{width:12px;height:12px;color:var(--ov-text-tertiary)}
+.cs-note{display:flex;gap:8px;align-items:flex-start;margin-top:14px;font-size:11.5px;line-height:1.5;color:var(--ov-text-tertiary)}
+.cs-note .lucide{width:13px;height:13px;flex:none;margin-top:1px}
+.cs-note.attn{color:var(--ov-text-secondary)}
+.cs-note.attn .lucide{color:var(--ov-warning)}
+.cs-inline-err{display:flex;gap:7px;align-items:flex-start;font-size:11.5px;color:var(--ov-danger);line-height:1.45;margin-top:5px}
+.cs-inline-err .lucide{width:13px;height:13px;flex:none;margin-top:1px}
+.cs-pending{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ov-text-secondary);white-space:nowrap}
+.cs-sp{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--ov-border-control);border-top-color:var(--ov-text-tertiary);animation:cs-rot 800ms linear infinite;flex:none}
+@keyframes cs-rot{to{transform:rotate(360deg)}}
+/* toggle as a real control */
+button.ov-toggle{border:0;padding:0;cursor:default;display:inline-block}
+button.ov-toggle:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+button.ov-toggle:disabled{opacity:var(--ov-disabled-opacity,.5)}
+/* select on the .ov-field tokens (the AI page precedent) */
+.cs-select{height:26px;padding:0 26px 0 9px;border-radius:var(--ov-radius-control);border:1px solid var(--ov-border-control);background:var(--ov-bg-elevated) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23777' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center;color:var(--ov-text-primary);font-family:inherit;font-size:12.5px;-webkit-appearance:none;appearance:none;cursor:default;box-shadow:0 1px 0 rgba(255,255,255,.5) inset,var(--ov-shadow-xs)}
+.cs-select:focus-visible{outline:none;border-color:var(--ov-accent);box-shadow:var(--ov-focus-ring-shadow)}
+.cs-select:disabled{opacity:var(--ov-disabled-opacity,.5)}
+.ai-select{height:30px}
+/* disclosure inside a group */
+.cs-disc{margin-top:10px}
+.cs-disc>summary{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:590;color:var(--ov-text-secondary);cursor:default;list-style:none;padding:3px 6px 3px 3px;border-radius:5px}
+.cs-disc>summary:hover{background:var(--ov-hover-bg);color:var(--ov-text-primary)}
+.cs-disc>summary::-webkit-details-marker{display:none}
+.cs-disc>summary .lucide{width:13px;height:13px;transition:transform var(--ov-duration-fast,.14s) var(--ov-ease-standard,ease)}
+.cs-disc[open]>summary .lucide{transform:rotate(90deg)}
+.cs-disc>summary:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+.cs-disc-b{margin-top:8px}
+.cs-disc-b .sw-rows .sw-row{padding:10px 16px}
+.cs-disc-b .sw-row-t{font-weight:500}
+/* application rows */
+.cs-app{display:block}
+.cs-app-d{padding:4px 16px 14px;border-top:1px solid var(--ov-separator);background:var(--ov-bg-content-secondary)}
+.cs-app-d .ai-dl-r dt{width:130px}
+.cs-app-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.cs-progress{height:4px;border-radius:2px;background:var(--ov-bg-inset-deep);overflow:hidden;margin-top:8px}
+.cs-progress i{display:block;height:100%;background:var(--ov-accent);transition:width .4s var(--ov-ease-standard,ease)}
+/* radios in sheets */
+.cs-radio,.ai-field label.cs-radio{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--ov-separator);cursor:default;font-size:13px;font-weight:400;color:var(--ov-text-primary);margin-bottom:0}
+.cs-radio:last-child{border-bottom:none}
+.cs-radio input{margin:2px 0 0;accent-color:var(--ov-accent)}
+.cs-radio .t{font-size:13px;font-weight:600}
+.cs-radio .d{font-size:11.5px;font-weight:400;color:var(--ov-text-secondary);line-height:1.45;margin-top:2px}
+.cs-check{display:flex;gap:9px;align-items:flex-start;padding:6px 0;font-size:12.5px}
+.cs-check .lucide{width:14px;height:14px;flex:none;margin-top:1px}
+.cs-check.in .lucide{color:var(--ov-success)}
+.cs-check.out .lucide{color:var(--ov-text-quaternary)}
+.cs-check .q{display:block;font-size:11.5px;color:var(--ov-text-tertiary)}
+.cs-log{font-family:var(--ov-font-mono);font-size:11px;line-height:1.65;padding:10px 12px;border-radius:7px;background:var(--ov-bg-inset-deep);color:var(--ov-text-secondary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
+.cs-save{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+/* ---- macOS readiness: status words + recovery blocks ---------------------- */
+.cs-status{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--ov-text-secondary);white-space:nowrap}
+.cs-status .lucide{width:13px;height:13px;flex:none}
+.cs-status.ok .lucide{color:var(--ov-success)}
+.cs-status.warn{color:var(--ov-text-primary)}
+.cs-status.warn .lucide{color:var(--ov-warning)}
+.cs-status.neu .lucide{color:var(--ov-text-tertiary)}
+.sw-row-d .cs-status{margin-top:4px}
+.cs-fix{margin:8px 0 2px;padding:10px 12px;border-radius:8px;border:1px solid var(--ov-border-subtle);background:var(--ov-bg-content-secondary)}
+.cs-fix.warn{border-color:color-mix(in srgb,var(--ov-warning) 35%,var(--ov-border-subtle))}
+.cs-fix-t{font-size:12.5px;font-weight:600;color:var(--ov-text-primary)}
+.cs-fix-d{font-size:11.5px;color:var(--ov-text-secondary);line-height:1.45;margin-top:3px}
+.cs-fix-d b{font-weight:600}
+.cs-fix-a{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
+.cs-fix-a .ov-btn{height:26px;font-size:12.5px;padding:0 11px}
+.cs-fix .cs-note{margin-top:8px}
+.sw-row.focus{background:var(--ov-accent-muted);transition:background .6s var(--ov-ease-out,ease)}
+.cs-sum{display:flex;align-items:flex-start;gap:10px}
+.cs-sum .lucide{width:15px;height:15px;flex:none;margin-top:1px;color:var(--ov-text-tertiary)}
+.cs-sum.ok .lucide{color:var(--ov-success)}
+.cs-sum.attention .lucide{color:var(--ov-warning)}
+.cs-sum .cs-sp{margin-top:2px}
+.cs-sum-l{display:grid;gap:4px;margin-top:8px}
+.cs-sum-l button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;padding:5px 6px;border-radius:5px;font:inherit;font-size:12px;color:var(--ov-text-primary);cursor:default}
+.cs-sum-l button:hover{background:var(--ov-hover-bg)}
+.cs-sum-l button:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+.cs-sum-l button .lucide{width:12px;height:12px;color:var(--ov-warning)}
+.cs-sum-l button .go{margin-left:auto;color:var(--ov-text-tertiary);font-size:11.5px}
+.cs-mono-tbl .ai-dl-r dt{width:150px}
+#cs-dev .tag{display:inline-block;padding:0 6px;border-radius:3px;background:var(--ov-warning-muted);color:var(--ov-warning);font-weight:650}
+.sw-rows .sw-row-sub .cs-fix{margin:0}
+.sw-rows .sw-row-sub:has(> .cs-fix){padding:0 16px 14px;margin-top:0}
+.sw-rows .sw-row-sub:has(> .cs-fix)::before{content:"";display:block;height:1px;background:var(--ov-separator);margin:0 0 12px}
+/* closed state */
+#cs-closed{display:none;width:min(900px,100%);padding:40px 24px;text-align:center;font-size:12.5px;color:var(--ov-text-secondary);line-height:1.6}
+#cs-closed .ov-btn{margin-top:10px}
+body.closed #cs-win{display:none}
+body.closed #cs-closed{display:block}
+/* ---- development harness (outside the window) --------------------------- */
+#cs-dev{width:min(900px,100%);flex:none;padding:10px 12px;border-radius:8px;border:1px dashed var(--ov-border-default);background:var(--ov-bg-content-secondary);font-family:var(--ov-font-mono);font-size:11px;line-height:1.7;color:var(--ov-text-tertiary)}
+#cs-dev b{font-weight:650;color:var(--ov-text-secondary)}
+#cs-dev .r{display:flex;flex-wrap:wrap;gap:4px 5px;align-items:center}
+#cs-dev button{padding:1px 8px;border-radius:4px;border:1px solid var(--ov-border-control);background:var(--ov-bg-content);font-family:inherit;font-size:10.5px;color:var(--ov-text-secondary);cursor:default}
+#cs-dev button:hover{background:var(--ov-hover-bg)}
+#cs-dev button.on{background:var(--ov-accent);border-color:transparent;color:#fff}
+#cs-dev .lg{margin-top:6px;max-height:96px;overflow:auto;border-top:1px solid var(--ov-separator);padding-top:5px}
+#cs-dev .lg .refused{color:var(--ov-danger)}
+#cs-dev .lg .ok{color:var(--ov-success)}
+@media (prefers-reduced-motion:reduce){.cs-sp{animation:none}.cs-disc>summary .lucide{transition:none}.cs-progress i{transition:none}}
+@media (prefers-reduced-transparency:reduce){.cs-head,.sw-side{-webkit-backdrop-filter:none;backdrop-filter:none}}
+@media (max-width:640px){.sw-side{width:160px}.sw-row{flex-wrap:wrap}.sw-row-c{max-width:none}.cs-path{max-width:200px}}

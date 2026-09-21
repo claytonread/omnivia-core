@@ -14,19 +14,24 @@ try MainActor.assumeIsolated {
     let application = NSApplication.shared
     application.setActivationPolicy(.regular)
 
-    let coordinator = ReadinessCoordinator(
-        context: ReadinessContext(
-            installationRevision: "harness-install",
-            localSessionRef: UUID().uuidString,
-            targetRef: "local",
-            workspaceRef: "harness-workspace",
-            configurationRevision: "1"
+    // Visual-fidelity host: renders the Core Settings design package itself.
+    // Pass `--native` to open the AppKit-rendered window instead.
+    let useNative = CommandLine.arguments.contains("--native")
+    if useNative {
+        let coordinator = ReadinessCoordinator(
+            context: ReadinessContext(
+                installationRevision: "harness-install",
+                localSessionRef: UUID().uuidString,
+                targetRef: "local",
+                workspaceRef: "harness-workspace",
+                configurationRevision: "1"
+            )
         )
-    )
-    let controller = SettingsWindowController(coordinator: coordinator)
-    controller.startCoreAtLoginSelected = false
-    controller.attentionNotificationsSelected = true
-    controller.hasWorkspace = false
-    controller.openOrFocus()
+        let controller = SettingsWindowController(coordinator: coordinator)
+        controller.attentionNotificationsSelected = true
+        controller.openOrFocus()
+    } else {
+        PrototypeSettingsWindowController().openOrFocus()
+    }
     application.run()
 }

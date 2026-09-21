@@ -1,0 +1,93 @@
+/* ============================================================================
+   OmniVia — Settings window (owned page).
+   The macOS Settings grammar the design system asks for: a separate window
+   with a source list of panes, never a full-page route inside the main window.
+   Chrome is the host's (.ov-wfown); everything below is the page's own.
+   ============================================================================ */
+html,body{height:100%;margin:0}
+body{background:var(--ov-bg-content);color:var(--ov-text-primary);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--ov-text-link,var(--ov-accent))}
+a:hover{color:var(--ov-accent-hover)}
+#sw-root{height:100vh;display:flex;min-height:0}
+
+/* ---- source list -------------------------------------------------------
+   Translucent sidebar, 28px rows, uppercase group labels — the shell's own
+   sidebar vocabulary, not a second navigation language. */
+.sw-side{width:232px;flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--ov-separator);background:var(--ov-material-sidebar,var(--ov-bg-sidebar));-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%)}
+.sw-search{flex:none;padding:12px 12px 8px}
+/* Ownership stated in place of a link, where the destination is not registered. */
+.ai-owner{display:inline-block;margin-left:2px;font-size:11.5px;color:var(--ov-text-tertiary)}
+.sw-nav{flex:1;min-height:0;overflow-y:auto;padding:0 8px 12px}
+.sw-grp{font-size:11px;font-weight:590;letter-spacing:.05em;text-transform:uppercase;color:var(--ov-text-tertiary);margin:14px 0 5px;padding:0 8px}
+.sw-grp:first-child{margin-top:4px}
+.sw-i{display:flex;align-items:center;gap:9px;width:100%;height:28px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--ov-text-primary);font-family:inherit;font-size:13px;text-align:left;cursor:default}
+.sw-i:hover{background:var(--ov-hover-bg)}
+.sw-i:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+.sw-i.sel{background:var(--ov-accent);color:var(--ov-text-on-accent,#fff);font-weight:500}
+.sw-i.sel .lucide{color:currentColor}
+.sw-i .lucide{width:15px;height:15px;flex:none;color:var(--ov-text-secondary)}
+.sw-i .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-i .tag{font-size:10px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--ov-text-quaternary)}
+.sw-i.sel .tag{color:rgba(255,255,255,.72)}
+.sw-empty{padding:16px 10px;font-size:12px;color:var(--ov-text-tertiary);line-height:1.5}
+
+/* ---- content pane ------------------------------------------------------- */
+.sw-main{flex:1;min-width:0;min-height:0;overflow-y:auto;background:var(--ov-bg-content)}
+.sw-pane{max-width:720px;margin:0 auto;padding:30px 40px 90px}
+.sw-head{margin-bottom:22px}
+.sw-eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ov-text-tertiary)}
+.sw-head h1{font-size:23px;font-weight:700;letter-spacing:-.02em;margin:5px 0 0}
+.sw-head .sub{font-size:12.5px;color:var(--ov-text-secondary);margin-top:5px;line-height:1.45}
+
+/* ---- rows --------------------------------------------------------------- */
+.sw-group{margin-top:22px}
+.sw-group:first-of-type{margin-top:0}
+.sw-group-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ov-text-tertiary);margin:0 0 8px}
+.sw-rows{border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card);overflow:hidden;background:var(--ov-bg-content)}
+.sw-row{display:flex;align-items:center;gap:18px;padding:13px 16px;border-bottom:1px solid var(--ov-separator)}
+.sw-row:last-child{border-bottom:none}
+.sw-row-l{flex:1;min-width:0}
+.sw-row-t{font-size:13px;font-weight:600}
+.sw-row-d{font-size:11.5px;color:var(--ov-text-tertiary);margin-top:3px;line-height:1.4}
+.sw-row-c{flex:none;display:flex;align-items:center;justify-content:flex-end}
+
+/* ---- segmented ---------------------------------------------------------- */
+.sw-seg{display:inline-flex;padding:2px;border-radius:7px;background:var(--ov-bg-inset-deep);gap:2px}
+.sw-seg button{height:24px;padding:0 12px;border:0;border-radius:5px;background:transparent;color:var(--ov-text-secondary);font-family:inherit;font-size:12.5px;cursor:default}
+.sw-seg button:hover{color:var(--ov-text-primary)}
+.sw-seg button.sel{background:var(--ov-bg-elevated);color:var(--ov-text-primary);font-weight:590;box-shadow:var(--ov-shadow-card)}
+.sw-seg button:focus-visible{outline:none;box-shadow:var(--ov-focus-ring-shadow)}
+
+/* ---- honest stub -------------------------------------------------------- */
+.sw-stub{padding:38px 24px;text-align:center;border:1px solid var(--ov-border-subtle);border-radius:var(--ov-radius-card);background:var(--ov-bg-content-secondary)}
+.sw-stub .lucide{width:22px;height:22px;color:var(--ov-text-quaternary)}
+.sw-stub h2{font-size:15px;font-weight:650;margin:11px 0 0}
+.sw-stub p{font-size:12.5px;color:var(--ov-text-secondary);line-height:1.5;margin:6px auto 0;max-width:42ch}
+
+/* ---- the AI pane hosts the AI settings page's own modules ---------------
+   Same implementation as AI-Settings.html standalone; only the viewport
+   assumptions differ, so those are the only rules overridden. */
+.sw-pane #ai-root{height:auto;overflow:visible}
+.sw-pane .ai-wrap{max-width:none;margin:0;padding:0}
+
+/* ---- mounted shell modules ---------------------------------------------
+   The real Licence & account, Members & Teams, Integrations, Notifications and
+   Diagnostics screens, mounted here rather than recreated. They were authored
+   for a full-height #osview, so the only overrides needed are the ones that
+   let their view chrome flow inside this pane's scroller. */
+.sw-mounted{min-height:0}
+.sw-mounted .ov-view,.sw-mounted .ov-view-scroll{height:auto;min-height:0;overflow:visible;display:block}
+.sw-mounted .os-pad{padding:30px 40px 90px}
+.sw-mounted .os-wrap{max-width:720px;margin:0 auto}
+
+/* ---- toasts -------------------------------------------------------------
+   The shell's toast lives in the main window; a pane that reports "Saved"
+   needs somewhere to say it inside this one. */
+#sw-toasts{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:80;display:flex;flex-direction:column;gap:7px;align-items:center;pointer-events:none}
+.sw-toast{display:flex;align-items:center;gap:8px;max-width:min(460px,80vw);padding:9px 14px;border-radius:var(--ov-radius-pill,999px);background:var(--ov-material-hud,var(--ov-bg-elevated));-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--ov-border-default);box-shadow:var(--ov-shadow-popover);font-size:12.5px;color:var(--ov-text-primary);opacity:1;transition:opacity .2s var(--ov-ease-out,ease)}
+.sw-toast.out{opacity:0}
+.sw-toast .lucide{width:14px;height:14px;flex:none;color:var(--ov-text-secondary)}
+.sw-toast.ok .lucide{color:var(--ov-success)}
+.sw-toast.warn .lucide{color:var(--ov-warning)}
+
+.sw-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}

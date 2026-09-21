@@ -23,7 +23,10 @@ let package = Package(
         // The settings screen and readiness model are a library so both the
         // companion executable and the developer harness can host them.
         .target(
-            name: "CoreSettingsMacOS"
+            name: "CoreSettingsMacOS",
+            resources: [
+                .copy("Resources/prototype")
+            ]
         ),
         .executableTarget(
             name: "OmniViaCoreStatusMenu",
