@@ -46,7 +46,7 @@ try MainActor.assumeIsolated {
             )
         )
         let controller = WebSettingsWindowController(coordinator: coordinator)
-        controller.attentionNotificationsSelected = true
+        controller.hasWorkspace = !controller.attentionNotificationsSelected && false
         controller.openOrFocus()
     }
     application.run()

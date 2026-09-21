@@ -23,6 +23,8 @@ enum BridgeAction: String, CaseIterable {
     case openLoginItems
     case openNotifications
     case requestNotifications
+    case toggleStartAtLogin
+    case toggleAttentionNotifications
 }
 
 struct SettingsStatusProjection: Encodable {
@@ -39,12 +41,18 @@ struct SettingsStatusProjection: Encodable {
         let allowedActions: [String]
     }
 
+    struct Preferences: Encodable {
+        let startAtLogin: Bool
+        let attentionNotifications: Bool
+    }
+
     let type = "statusProjection"
     let schemaVersion = 1
     let generation: Int
     let observedAt: String?
     let summary: Summary
     let checks: [Check]
+    let preferences: Preferences
 }
 
 @MainActor
@@ -53,6 +61,8 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
     private var navigator: SettingsNavigator?
     private weak var notificationCenter: UNUserNotificationCenter?
     private var lastActionAt: [String: Date] = [:]
+    /// Preference toggles and other actions the owning controller resolves.
+    public var actionHandler: ((BridgeAction) -> Void)?
     /// Deliver status through an injected bridge script; nil until installed.
     private weak var webView: WKWebView?
 
@@ -88,12 +98,27 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
             generation: snapshot.generation,
             observedAt: snapshot.observedAt.map { ISO8601DateFormatter().string(from: $0) },
             summary: .init(kind: summaryKind(summary.kind), headline: summary.headline, detail: summary.detail),
-            checks: checks
+            checks: checks,
+            preferences: .init(
+                startAtLogin: preferences.startCoreAtLoginSelected,
+                attentionNotifications: preferences.attentionNotificationsSelected
+            )
         )
         guard let data = try? JSONEncoder().encode(projection),
               let json = String(data: data, encoding: .utf8) else { return }
         webView?.evaluateJavaScript(
             "window.CoreNativeBridge && CoreNativeBridge.applyStatus(\(json));",
+            completionHandler: nil
+        )
+    }
+
+    /// Honest-decline notice via the page's own toast component.
+    public func showToast(_ text: String) {
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        webView?.evaluateJavaScript(
+            "window.CoreUI && CoreUI.toast(\"\(escaped)\", \"warn\", \"alert-circle\");",
             completionHandler: nil
         )
     }
@@ -129,6 +154,8 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
             }
         case .requestNotifications:
             requestNotificationsExplicitly()
+        case .toggleStartAtLogin, .toggleAttentionNotifications:
+            actionHandler?(action)
         }
     }
 
@@ -264,9 +291,9 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         onStatus: function (cb) { listeners.push(cb); }
       };
 
-      /* Map the native status projection onto the page's mac state model.
-         The page keeps rendering through its own components — only the data
-         source changes. */
+      /* Map the native status projection onto the page's state model: both the
+         mac readiness facts and the companion preferences. The page keeps
+         rendering through its own components — only the data source changes. */
       var STARTUP = { "Enabled": "enabled", "Needs approval": "needs-approval", "Off · Optional": "off" };
       var NOTIFY = { "Allowed": "allowed", "Blocked in macOS": "denied",
                      "Limited — alerts are off": "limited", "Not set up": "not-requested",
@@ -280,6 +307,10 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
         var bg = byId["core.background"], nt = byId["notifications.delivery"];
         if (bg) s.mac.coreStartup = STARTUP[bg.statusWord] || "not-set-up";
         if (nt) s.mac.notifications = NOTIFY[nt.statusWord] || "unknown";
+        if (projection.preferences) {
+          s.companion.startCoreAtLogin = !!projection.preferences.startAtLogin;
+          s.companion.notifyAttention = !!projection.preferences.attentionNotifications;
+        }
         s.mac.checking = !!projection.summary && projection.summary.kind === "checking";
         s.mac.observedAt = projection.observedAt ? "just now" : null;
         s.mac.pendingForever = false;
@@ -288,7 +319,9 @@ final class SettingsBridge: NSObject, WKScriptMessageHandler {
 
       /* Typed action channel. Bridge-owned acts are intercepted before the
          page's simulated dispatcher sees them; everything else is untouched. */
-      var HANDLED = { "mac-refresh": "refreshStatus", "notif-allow": "requestNotifications" };
+      var HANDLED = { "mac-refresh": "refreshStatus", "notif-allow": "requestNotifications",
+                      "gen-start": "toggleStartAtLogin", "gen-start-off": "toggleStartAtLogin",
+                      "gen-notify": "toggleAttentionNotifications" };
       var DESTINATIONS = { "login-items": "openLoginItems", "notifications": "openNotifications" };
       document.addEventListener("click", function (event) {
         var el = event.target && event.target.closest ? event.target.closest("[data-act]") : null;

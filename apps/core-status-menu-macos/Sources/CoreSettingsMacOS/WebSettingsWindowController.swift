@@ -42,8 +42,32 @@ public final class WebSettingsWindowController: NSObject, NSWindowDelegate {
             self.notificationCenter = nil
         }
         super.init()
+        // Companion preferences are persisted by their existing owner (§14.1):
+        // the notification preference is a real local preference; startup
+        // registration has no qualified mechanism, so its state stays off.
+        attentionNotificationsSelected = UserDefaults.standard.bool(
+            forKey: "omnivia.core.settings.attentionNotifications"
+        )
         coordinator.$snapshot.sink { [weak self] _ in self?.pushStatus() }.store(in: &cancellables)
         coordinator.$refreshInFlight.sink { [weak self] _ in self?.pushStatus() }.store(in: &cancellables)
+        bridge.actionHandler = { [weak self] action in
+            switch action {
+            case .toggleAttentionNotifications:
+                guard let self else { return }
+                self.attentionNotificationsSelected.toggle()
+                UserDefaults.standard.set(
+                    self.attentionNotificationsSelected,
+                    forKey: "omnivia.core.settings.attentionNotifications"
+                )
+                self.pushStatus()
+            case .toggleStartAtLogin:
+                // §19 binding: no qualified registration mechanism exists in
+                // this build. Decline honestly; never simulate a registration.
+                self?.bridge.showToast("Starting Core at login isn't available in this build.")
+            default:
+                break
+            }
+        }
     }
 
     private var notificationCenter: UNUserNotificationCenter?
