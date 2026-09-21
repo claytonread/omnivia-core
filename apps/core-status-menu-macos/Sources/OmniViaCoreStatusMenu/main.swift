@@ -1,4 +1,5 @@
 import AppKit
+import CoreSettingsMacOS
 import Darwin
 import Foundation
 

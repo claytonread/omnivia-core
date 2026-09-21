@@ -13,7 +13,7 @@ import AppKit
 import Foundation
 import ServiceManagement
 
-enum SettingsDestination: String, Equatable, Sendable {
+public enum SettingsDestination: String, Equatable, Sendable {
     case loginItems
     case notifications
     case filesAndFolders
@@ -27,7 +27,7 @@ enum SettingsDestination: String, Equatable, Sendable {
     case systemSettings
 }
 
-enum NavigationResult: Equatable, Sendable {
+public enum NavigationResult: Equatable, Sendable {
     /// The dedicated API reported it asked the OS to open the pane.
     case navigationRequested
     /// The System Settings application was launched via generic discovery.
@@ -37,16 +37,20 @@ enum NavigationResult: Equatable, Sendable {
     case cancelled
 }
 
-struct SettingsNavigator {
+public struct SettingsNavigator {
     /// The affected component's display name for manual instructions. Display
     /// data only — never executable input (§10.1).
-    let componentName: String
+    public let componentName: String
+
+    public init(componentName: String) {
+        self.componentName = componentName
+    }
 
     /// §10.2 resolution order. `openSystemSettingsLoginItems` is the one
     /// qualified dedicated API in this build; everything else uses the generic
     /// fallback with version-appropriate manual instructions. No private
     /// x-apple.systempreferences links are shipped unqualified.
-    func open(_ destination: SettingsDestination) async -> (NavigationResult, String?) {
+    public func open(_ destination: SettingsDestination) async -> (NavigationResult, String?) {
         switch destination {
         case .loginItems:
             if #available(macOS 13.0, *) {
@@ -84,7 +88,7 @@ struct SettingsNavigator {
     /// Manual routes (§10.3). English reference labels for this build's
     /// supported release; localisation and per-release qualification are the
     /// route registry's job.
-    func manualRoute(for destination: SettingsDestination) -> String? {
+    public func manualRoute(for destination: SettingsDestination) -> String? {
         switch destination {
         case .loginItems:
             return "System Settings → General → Login Items & Extensions. Review \"\(componentName)\" under Allow in the background."

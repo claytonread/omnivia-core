@@ -6,7 +6,7 @@
 // ============================================================================
 
 import XCTest
-@testable import OmniViaCoreStatusMenu
+@testable import CoreSettingsMacOS
 
 @MainActor
 final class SettingsReadinessTests: XCTestCase {

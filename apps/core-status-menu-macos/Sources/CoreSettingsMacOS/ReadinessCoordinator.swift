@@ -11,7 +11,7 @@
 import Foundation
 
 /// What triggered a passive refresh (§8.1).
-enum ReadinessRefreshTrigger: Equatable, Sendable {
+public enum ReadinessRefreshTrigger: Equatable, Sendable {
     case windowOpened
     case foregroundReturn
     case explicitRefresh
@@ -19,10 +19,10 @@ enum ReadinessRefreshTrigger: Equatable, Sendable {
 }
 
 @MainActor
-final class ReadinessCoordinator: ObservableObject {
+public final class ReadinessCoordinator: ObservableObject {
     /// Published for the settings window. Replaced wholesale per generation.
-    @Published private(set) var snapshot: ReadinessSnapshot
-    @Published private(set) var refreshInFlight: Bool = false
+    @Published private(set) public var snapshot: ReadinessSnapshot
+    @Published private(set) public var refreshInFlight: Bool = false
 
     private let providers: [ReadinessProviding]
     private var context: ReadinessContext
@@ -41,7 +41,7 @@ final class ReadinessCoordinator: ObservableObject {
     /// Local, in-memory only (§14.1). Nothing is persisted to disk.
     private var lastObserved: [ReadinessCheckID: ReadinessCheck] = [:]
 
-    init(
+    public init(
         providers: [ReadinessProviding] = ReadinessProviderRegistry.providers(),
         context: ReadinessContext,
         coalesceInterval: TimeInterval = 0.3,
@@ -63,7 +63,7 @@ final class ReadinessCoordinator: ObservableObject {
     /// The window asks for this when the user changes preferences or the
     /// workspace/target changes. Identity revisions are revalidated before any
     /// commit, so results can never cross contexts (MT-036).
-    func updateContext(_ newContext: ReadinessContext) {
+    public func updateContext(_ newContext: ReadinessContext) {
         guard newContext != context else { return }
         context = newContext
         // Configuration/workspace change invalidates dependent evidence (§14.1):
@@ -72,7 +72,7 @@ final class ReadinessCoordinator: ObservableObject {
         scheduleRefresh(.contextChanged)
     }
 
-    func invalidate(reason: ReadinessRefreshTrigger) {
+    public func invalidate(reason: ReadinessRefreshTrigger) {
         lastObserved.removeAll()
         everObserved = false
         snapshot = ReadinessSnapshot(
@@ -105,7 +105,7 @@ final class ReadinessCoordinator: ObservableObject {
 
     /// Passive refresh entry point. Coalesces rapid triggers, runs providers
     /// concurrently with a soft timeout each, and publishes one new snapshot.
-    func scheduleRefresh(_ trigger: ReadinessRefreshTrigger) {
+    public func scheduleRefresh(_ trigger: ReadinessRefreshTrigger) {
         // Coalesce: if a refresh started within the coalescing window, skip.
         if let last = lastRefreshStarted, Date().timeIntervalSince(last) < coalesceInterval {
             return

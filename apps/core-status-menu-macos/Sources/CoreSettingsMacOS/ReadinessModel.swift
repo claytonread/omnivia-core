@@ -14,7 +14,7 @@ import Foundation
 
 /// Closed set of readiness checks (§6.1). Parameterised checks carry an opaque
 /// reference the owning feature minted; the readiness layer never resolves one.
-enum ReadinessCheckID: Equatable, Sendable, Hashable {
+public enum ReadinessCheckID: Equatable, Sendable, Hashable {
     case companionLogin
     case coreBackground
     case notificationsDelivery
@@ -39,7 +39,7 @@ enum ReadinessCheckID: Equatable, Sendable, Hashable {
 // MARK: - The seven dimensions (§7.1)
 
 /// 1. Applicability: is this check relevant, and did the user choose the feature?
-enum ReadinessApplicability: Equatable, Sendable {
+public enum ReadinessApplicability: Equatable, Sendable {
     case notApplicable
     /// The feature exists but the user has not selected it. Neutral, never a failure.
     case optional
@@ -47,7 +47,7 @@ enum ReadinessApplicability: Equatable, Sendable {
 }
 
 /// 2. Availability: can this adapter produce evidence at all on this installation?
-enum ReadinessAvailability: Equatable, Sendable {
+public enum ReadinessAvailability: Equatable, Sendable {
     case supported
     /// The capability is not implemented yet. It is omitted from actionable UI.
     case unimplemented
@@ -56,14 +56,14 @@ enum ReadinessAvailability: Equatable, Sendable {
 }
 
 /// 3. User intent: what the user asked for in Core preferences. Never OS truth.
-enum ReadinessUserIntent: Equatable, Sendable {
+public enum ReadinessUserIntent: Equatable, Sendable {
     case on
     case off
     case unspecified
 }
 
 /// 4. Observed state: what the responsible owner or native query reported.
-enum ReadinessObservedState: Equatable, Sendable {
+public enum ReadinessObservedState: Equatable, Sendable {
     case enabled
     case notRegistered
     case requiresApproval
@@ -83,7 +83,7 @@ enum ReadinessObservedState: Equatable, Sendable {
 }
 
 /// 5. Freshness of the evidence behind the observed state.
-enum ReadinessFreshness: Equatable, Sendable {
+public enum ReadinessFreshness: Equatable, Sendable {
     case currentObservation
     case lastObserved
     case invalidated
@@ -91,7 +91,7 @@ enum ReadinessFreshness: Equatable, Sendable {
 }
 
 /// 7.3 Observation categories: what a piece of evidence actually proves.
-enum ReadinessEvidenceKind: Equatable, Sendable {
+public enum ReadinessEvidenceKind: Equatable, Sendable {
     case nativeStatusQuery
     case ownerOperationResult
     case qualifiedInstallMetadata
@@ -101,7 +101,7 @@ enum ReadinessEvidenceKind: Equatable, Sendable {
 }
 
 /// 6. Operation lifecycle of any explicit action on this check.
-enum ReadinessActivity: Equatable, Sendable {
+public enum ReadinessActivity: Equatable, Sendable {
     case idle
     case checking
     case requesting
@@ -115,7 +115,7 @@ enum ReadinessActivity: Equatable, Sendable {
 /// Safe, localisable reason codes. Raw NSError text never becomes one of these
 /// or a UI action; unknown failures stay `unsupportedState` or
 /// `accessDeniedUnclassified` rather than being guessed into a TCC denial.
-enum ReadinessReasonCode: String, Equatable, Sendable {
+public enum ReadinessReasonCode: String, Equatable, Sendable {
     case queryTimedOut
     case componentUnavailable
     case installationUnqualified
@@ -140,7 +140,7 @@ enum ReadinessReasonCode: String, Equatable, Sendable {
 /// Policy: what the current actor may do, independent of the macOS state.
 /// The set is closed; a raw URL, path or shell command can never enter it
 /// (MT-035 — the navigator takes a typed destination, nothing else).
-enum ReadinessAction: Equatable, Sendable {
+public enum ReadinessAction: Equatable, Sendable {
     case requestNotifications
     case openLoginItems
     case openNotifications
@@ -154,7 +154,7 @@ enum ReadinessAction: Equatable, Sendable {
 
 // MARK: - Evidence and snapshots
 
-struct ReadinessSubject: Equatable, Sendable {
+public struct ReadinessSubject: Equatable, Sendable {
     /// The component that actually performs the relevant action (§4.3). A
     /// companion read is never attributed to the Core reader.
     let componentRef: String
@@ -163,7 +163,7 @@ struct ReadinessSubject: Equatable, Sendable {
     let identityVerified: Bool
 }
 
-struct ReadinessEvidence: Equatable, Sendable {
+public struct ReadinessEvidence: Equatable, Sendable {
     let kind: ReadinessEvidenceKind
     let observedAt: Date?
     let ownerRevision: String?
@@ -172,7 +172,7 @@ struct ReadinessEvidence: Equatable, Sendable {
     let confidence: String
 }
 
-struct ReadinessCheck: Equatable, Sendable {
+public struct ReadinessCheck: Equatable, Sendable {
     let checkID: ReadinessCheckID
     let subject: ReadinessSubject
     let availability: ReadinessAvailability
@@ -189,15 +189,29 @@ struct ReadinessCheck: Equatable, Sendable {
 /// Context fencing (§8.3): every observation is bound to the installation,
 /// session, target, workspace and configuration revision it was taken under.
 /// A result from any other context must be discarded, not applied.
-struct ReadinessContext: Equatable, Sendable {
-    let installationRevision: String
-    let localSessionRef: String
-    let targetRef: String
-    let workspaceRef: String
-    let configurationRevision: String
+public struct ReadinessContext: Equatable, Sendable {
+    public let installationRevision: String
+    public let localSessionRef: String
+    public let targetRef: String
+    public let workspaceRef: String
+    public let configurationRevision: String
+
+    public init(
+        installationRevision: String,
+        localSessionRef: String,
+        targetRef: String,
+        workspaceRef: String,
+        configurationRevision: String
+    ) {
+        self.installationRevision = installationRevision
+        self.localSessionRef = localSessionRef
+        self.targetRef = targetRef
+        self.workspaceRef = workspaceRef
+        self.configurationRevision = configurationRevision
+    }
 }
 
-struct ReadinessSnapshot: Equatable, Sendable {
+public struct ReadinessSnapshot: Equatable, Sendable {
     let generation: Int
     let context: ReadinessContext
     let checks: [ReadinessCheck]

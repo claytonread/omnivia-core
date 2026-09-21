@@ -7,7 +7,7 @@ import Foundation
 
 /// User preferences this feature is allowed to know: what the user selected in
 /// Core's own settings. These are Core preference facts, never OS truth.
-struct ReadinessPreferences: Equatable, Sendable {
+public struct ReadinessPreferences: Equatable, Sendable {
     var startCoreAtLoginSelected: Bool
     var attentionNotificationsSelected: Bool
     var hasWorkspace: Bool
@@ -21,7 +21,7 @@ struct ReadinessPreferences: Equatable, Sendable {
 
 /// The compact macOS access summary (amendment: `cs-sum`) and the General-pane
 /// aggregation. Kinds mirror the prototype's summary kinds.
-enum ReadinessSummaryKind: Equatable, Sendable {
+public enum ReadinessSummaryKind: Equatable, Sendable {
     /// Optional features are off; nothing is checked as a failure.
     case noAdditionalAccess
     /// Applicable checks produced appropriate confirming evidence.
@@ -33,12 +33,12 @@ enum ReadinessSummaryKind: Equatable, Sendable {
     case needsVerification
 }
 
-struct ReadinessIssue: Equatable, Sendable {
+public struct ReadinessIssue: Equatable, Sendable {
     let checkID: ReadinessCheckID
     let title: String
 }
 
-struct ReadinessSummary: Equatable, Sendable {
+public struct ReadinessSummary: Equatable, Sendable {
     let kind: ReadinessSummaryKind
     let headline: String
     let detail: String?
@@ -46,7 +46,7 @@ struct ReadinessSummary: Equatable, Sendable {
     let unverifiedSubjects: [String]
 }
 
-enum ReadinessReducer {
+public enum ReadinessReducer {
     /// Failure reason codes that mean a selected feature is genuinely blocked.
     private static let failureCodes: Set<ReadinessReasonCode> = [
         .approvalRequired,

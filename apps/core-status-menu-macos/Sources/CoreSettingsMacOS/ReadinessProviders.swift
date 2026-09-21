@@ -19,14 +19,14 @@ import Foundation
 import UserNotifications
 
 /// What a passive provider produced for one subject.
-enum ReadinessProviderOutcome: Equatable, Sendable {
+public enum ReadinessProviderOutcome: Equatable, Sendable {
     case observed(ReadinessObservedState, ReadinessEvidence, ReadinessReasonCode)
     /// The adapter is known not to exist on this installation. Honest absence.
     case unimplemented(explanation: String)
     case failed(code: ReadinessReasonCode)
 }
 
-protocol ReadinessProviding: Sendable {
+public protocol ReadinessProviding: Sendable {
     var checkID: ReadinessCheckID { get }
     /// Read the supported status for the named subject. Must not prompt, probe,
     /// register, connect or write (§8.4). Called only by the coordinator.
@@ -39,8 +39,8 @@ protocol ReadinessProviding: Sendable {
 /// authorisation (MT-013): `UNUserNotificationCenter.getNotificationSettings`
 /// is documented as passive; `requestAuthorization` is a separate explicit
 /// action owned by the window, not by this provider.
-struct NotificationReadinessProvider: ReadinessProviding {
-    let checkID: ReadinessCheckID = .notificationsDelivery
+public struct NotificationReadinessProvider: ReadinessProviding {
+    public let checkID: ReadinessCheckID = .notificationsDelivery
 
     private let center: UNUserNotificationCenter?
 
@@ -48,7 +48,7 @@ struct NotificationReadinessProvider: ReadinessProviding {
         self.center = center
     }
 
-    func read() async -> ReadinessProviderOutcome {
+    public func read() async -> ReadinessProviderOutcome {
         guard let center else {
             return .unimplemented(
                 explanation: "This build has no notification centre identity."
@@ -99,14 +99,14 @@ struct NotificationReadinessProvider: ReadinessProviding {
 /// helper, no launchd plist owned by this package). Per §19 the safe default
 /// is to read nothing and show an installation-honest state rather than
 /// attribute a status to a guessed service.
-struct LoginItemReadinessProvider: ReadinessProviding {
-    let checkID: ReadinessCheckID
+public struct LoginItemReadinessProvider: ReadinessProviding {
+    public let checkID: ReadinessCheckID
 
     init(checkID: ReadinessCheckID) {
         self.checkID = checkID
     }
 
-    func read() async -> ReadinessProviderOutcome {
+    public func read() async -> ReadinessProviderOutcome {
         .unimplemented(
             explanation: "No qualified startup-registration mechanism is installed for this component."
         )
@@ -119,30 +119,35 @@ struct LoginItemReadinessProvider: ReadinessProviding {
 /// gated capabilities (D08). No owner seam exists in this build, so these
 /// adapters report honest unimplemented states and the UI omits or shows them
 /// as neutral — never as broken toggles (MT-007).
-struct UnimplementedFeatureProvider: ReadinessProviding {
-    let checkID: ReadinessCheckID
+public struct UnimplementedFeatureProvider: ReadinessProviding {
+    public let checkID: ReadinessCheckID
 
-    func read() async -> ReadinessProviderOutcome {
+    public func read() async -> ReadinessProviderOutcome {
         .unimplemented(explanation: "The owning feature is not installed in this build.")
     }
 }
 
 // MARK: - Provider registry (§6.1 applicability)
 
-enum ReadinessProviderRegistry {
+public enum ReadinessProviderRegistry {
     /// All candidate checks this build can describe. The coordinator runs at
     /// most four concurrently (§12.3) and the reducer drops what is not
     /// applicable or unimplemented.
-    static func providers() -> [ReadinessProviding] {
-        [
+    public static func providers() -> [ReadinessProviding] {
+        // UNUserNotificationCenter.current() raises NSException when the
+        // process has no bundle (a bare SwiftPM executable). The provider
+        // degrades to an honest unimplemented state instead of crashing.
+        let notificationCenter: UNUserNotificationCenter? =
+            Bundle.main.bundleIdentifier != nil ? UNUserNotificationCenter.current() : nil
+        return [
             LoginItemReadinessProvider(checkID: .companionLogin),
             LoginItemReadinessProvider(checkID: .coreBackground),
-            NotificationReadinessProvider(),
+            NotificationReadinessProvider(center: notificationCenter),
             UnimplementedFeatureProvider(checkID: .shareExtension),
         ]
     }
 
-    static func baseCheck(for provider: ReadinessProviding) -> ReadinessCheck {
+    public static func baseCheck(for provider: ReadinessProviding) -> ReadinessCheck {
         ReadinessCheck(
             checkID: provider.checkID,
             subject: ReadinessSubject(
@@ -169,7 +174,7 @@ enum ReadinessProviderRegistry {
         )
     }
 
-    static func operationClass(for checkID: ReadinessCheckID) -> String {
+    public static func operationClass(for checkID: ReadinessCheckID) -> String {
         switch checkID {
         case .companionLogin, .coreBackground: return "startupRegistration"
         case .notificationsDelivery: return "notificationAuthorisation"
@@ -180,7 +185,7 @@ enum ReadinessProviderRegistry {
         }
     }
 
-    static func allowedActions(for checkID: ReadinessCheckID) -> [ReadinessAction] {
+    public static func allowedActions(for checkID: ReadinessCheckID) -> [ReadinessAction] {
         switch checkID {
         case .companionLogin, .coreBackground:
             return [.openLoginItems, .refreshStatus]
