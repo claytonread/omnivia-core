@@ -291,7 +291,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         // The mark: two concentric circles, brick (assets/omnivia-mark.svg geometry).
         let mark = MarkView(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
-        mark.color = Ov.accent
         row.addArrangedSubview(mark)
 
         let titleColumn = NSStackView()
@@ -373,7 +372,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let title = OvFont.paneTitle(selectedPane.rawValue)
         content.addArrangedSubview(title)
-        content.addArrangedSubview(ovSpacer(16))
+        content.addArrangedSubview(ovSpacer(18))
 
         switch selectedPane {
         case .general: renderGeneral(content)
@@ -391,7 +390,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         if let header {
             let label = OvFont.groupHeader(header)
             stack.addArrangedSubview(label)
-            stack.addArrangedSubview(ovSpacer(6))
+            stack.addArrangedSubview(ovSpacer(8))
         }
         let card = NSStackView()
         card.orientation = .vertical
@@ -807,22 +806,45 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-// MARK: - The OmniVia mark (two concentric circles, assets/omnivia-mark.svg)
+// MARK: - The OmniVia brand mark (assets/omnivia-wordmark.svg geometry:
+// rounded brick tile, rx 34/120, with two white concentric rings)
 
 final class MarkView: NSView {
-    var color: NSColor = Ov.accent { didSet { needsDisplay = true } }
+    var tile = NSColor(srgbRed: 0x9E / 255.0, green: 0x30 / 255.0, blue: 0x2A / 255.0, alpha: 1)
+        { didSet { needsDisplay = true } }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let mid = min(bounds.width, bounds.height) / 2
+        // viewBox geometry: tile 120×120 (rx 34); ring paths on the 80pt circle
+        // set (outer ring r 37.8→31.2, inner ring r 23.7→18.3 around centre).
+        let size = min(bounds.width, bounds.height)
+        context.setFillColor(tile.cgColor)
+        let radius = size * 34.0 / 120.0
+        let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
+        path.fill()
+
         let centre = CGPoint(x: bounds.midX, y: bounds.midY)
-        color.setStroke()
-        // Outer circle r=34.5 stroke 6.6; inner r=21 stroke 5.4 (viewBox 80).
-        for (radius, width) in [(mid, mid * 6.6 / 40.0), (mid * 21.0 / 34.5, mid * 5.4 / 34.5)] {
-            context.setLineWidth(width)
-            context.strokeEllipse(in: CGRect(
-                x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2
-            ))
+        // Ring geometry from the wordmark SVG, normalised to the 120 tile.
+        // Outer ring: outer r 37.8, inner 31.2 → annulus centred on tile.
+        // Inner ring: outer r 23.7, inner 18.3.
+        let rings: [(outer: CGFloat, inner: CGFloat)] = [
+            (37.8 / 120.0, 31.2 / 120.0),
+            (23.7 / 120.0, 18.3 / 120.0),
+        ]
+        context.setFillColor(NSColor.white.cgColor)
+        for ring in rings {
+            let outer = ring.outer * size
+            let inner = ring.inner * size
+            let outerPath = CGPath(ellipseIn: CGRect(
+                x: centre.x - outer, y: centre.y - outer, width: outer * 2, height: outer * 2
+            ), transform: nil)
+            let innerPath = CGPath(ellipseIn: CGRect(
+                x: centre.x - inner, y: centre.y - inner, width: inner * 2, height: inner * 2
+            ), transform: nil)
+            // Annulus: even-odd fill of the outer ellipse minus the inner one.
+            context.addPath(outerPath)
+            context.addPath(innerPath)
+            context.fillPath(using: .evenOdd)
         }
     }
 }
