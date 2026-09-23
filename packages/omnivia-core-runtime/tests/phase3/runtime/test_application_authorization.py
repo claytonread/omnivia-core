@@ -271,7 +271,7 @@ INSTALLATION_ENTRY = INSTALLATION_ENTRIES[0]
 
 
 def test_the_catalogue_under_test_is_the_whole_accepted_catalogue() -> None:
-    assert len(CATALOGUE) == 28
+    assert len(CATALOGUE) == 43
     assert len(INSTALLATION_ENTRIES) + len(WORKSPACE_ENTRIES) == len(CATALOGUE)
 
 

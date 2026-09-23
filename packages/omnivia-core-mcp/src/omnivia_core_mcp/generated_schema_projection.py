@@ -1550,6 +1550,1459 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionEvaluateInput",
+        "description": "Input for `decision.evaluate`: one bounded, evidence-bearing assessment request. Identity, effective authority, scopes and purpose come from the authorised request envelope, never from these fields. The envelope's `idempotency_key` (required by the catalogue) is bound to the canonical request digest; reuse with a different request is an explicit conflict. Evaluation has durable side effects - it reads authorised sources and writes evaluation, attempt and audit records - even though it never mutates business records.",
+        "type": "object",
+        "properties": {
+            "schema_version": {
+                "$ref": "#/$defs/decision__DecisionSchemaVersion",
+                "description": "DecisionSchemaVersion \u2014 The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+            },
+            "definition_ref": {
+                "$ref": "#/$defs/decision__DecisionDefinitionRef",
+                "description": "DecisionDefinitionRef \u2014 An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+            },
+            "subject_refs": {
+                "type": "array",
+                "description": "The subjects this evaluation is about.",
+                "items": {
+                    "$ref": "#/$defs/decision__DecisionSubjectRef",
+                },
+                "minItems": 1,
+                "maxItems": 8,
+            },
+            "input": {
+                "$ref": "#/$defs/decision__DecisionInputBundle",
+                "description": "Authorised evidence inputs, resolved after admission.",
+            },
+            "execution": {
+                "$ref": "#/$defs/decision__DecisionExecutionConstraints",
+                "description": "DecisionExecutionConstraints \u2014 Caller constraints on one evaluation. Policy composes these with installation, workspace and definition limits using the most restrictive effective result; a caller cannot elevate an unqualified template or escape a local-only floor.",
+            },
+        },
+        "required": [
+            "schema_version",
+            "definition_ref",
+            "subject_refs",
+            "input",
+            "execution",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "decision__DecisionDefinitionRef": {
+                "title": "DecisionDefinitionRef",
+                "description": "An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable definition identifier, such as `core.document_category`.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Semantic version of the definition, such as `1.0.0`.",
+                        "minLength": 5,
+                        "maxLength": 32,
+                    },
+                },
+                "required": [
+                    "id",
+                    "version",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionExecutionConstraints": {
+                "title": "DecisionExecutionConstraints",
+                "description": "Caller constraints on one evaluation. Policy composes these with installation, workspace and definition limits using the most restrictive effective result; a caller cannot elevate an unqualified template or escape a local-only floor.",
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "$ref": "#/$defs/decision__DecisionExecutionMode",
+                        "description": "DecisionExecutionMode \u2014 How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+                    },
+                    "privacy": {
+                        "$ref": "#/$defs/decision__DecisionPrivacyFloor",
+                        "description": "DecisionPrivacyFloor \u2014 The most permissive processing location the caller accepts. `local_only` binds every attempt to the selected Core host; the server may narrow but never widen this.",
+                    },
+                    "deadline_ms": {
+                        "type": "integer",
+                        "description": "Requested wall-clock budget for the whole evaluation, including queue wait. Policy may permit longer job deadlines; it may never shorten past the minimum the definition requires.",
+                        "minimum": 100,
+                        "maximum": 600000,
+                    },
+                    "maximum_provider_attempts": {
+                        "type": "integer",
+                        "description": "Maximum provider attempts. One is the default and the release maximum; a single transient-failure retry is a separately enabled policy.",
+                        "minimum": 1,
+                        "maximum": 2,
+                    },
+                },
+                "required": [
+                    "mode",
+                    "privacy",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionExecutionMode": {
+                "title": "DecisionExecutionMode",
+                "description": "How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+                "type": "string",
+                "enum": [
+                    "advisory",
+                ],
+            },
+            "decision__DecisionInputBundle": {
+                "title": "DecisionInputBundle",
+                "description": "Authorised evidence inputs for one evaluation. Source references are resolved and access-checked by the runtime after admission; inline state is caller-supplied evidence, never verified organisational truth, and is preserved as such in the record.",
+                "type": "object",
+                "properties": {
+                    "source_refs": {
+                        "type": "array",
+                        "description": "Opaque authorised source references, resolved against the caller's effective grant.",
+                        "items": {
+                            "$ref": "#/$defs/decision__DecisionSubjectRef",
+                        },
+                        "maxItems": 16,
+                    },
+                    "inline_state": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Optional caller-supplied structured state, data-only and bounded. It is never executed and never treated as verified fact.",
+                    },
+                },
+                "required": [
+                    "source_refs",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionPrivacyFloor": {
+                "title": "DecisionPrivacyFloor",
+                "description": "The most permissive processing location the caller accepts. `local_only` binds every attempt to the selected Core host; the server may narrow but never widen this.",
+                "type": "string",
+                "enum": [
+                    "local_only",
+                ],
+            },
+            "decision__DecisionSchemaVersion": {
+                "title": "DecisionSchemaVersion",
+                "description": "The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                "type": "string",
+                "const": "decision.1",
+            },
+            "decision__DecisionSubjectRef": {
+                "title": "DecisionSubjectRef",
+                "description": "One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning.",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Opaque subject identifier, such as `document:847`.",
+                    },
+                    "revision": {
+                        "type": "string",
+                        "description": "The subject revision the caller last observed, as an opaque token.",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                },
+                "required": [
+                    "id",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionEvaluateResult",
+        "description": "Admission result for `decision.evaluate`: the durable evaluation identity and its job reference. A bounded caller wait may return the terminal record via `decision.record.get`; a cold start returns pending status without holding the transport.",
+        "type": "object",
+        "properties": {
+            "schema_version": {
+                "$ref": "#/$defs/decision__DecisionSchemaVersion",
+                "description": "DecisionSchemaVersion \u2014 The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+            },
+            "evaluation_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Durable evaluation identifier; opaque, and not a bearer authorisation token.",
+            },
+            "job": {
+                "$ref": "#/$defs/jobs__JobHandle",
+                "description": "The durable job carrying the evaluation.",
+            },
+        },
+        "required": [
+            "schema_version",
+            "evaluation_id",
+            "job",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__AuditReference": {
+                "title": "AuditReference",
+                "description": "Bounded, non-empty server-issued reference to the audit record for a completed operation.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__DurationMs": {
+                "title": "DurationMs",
+                "description": "A bounded non-negative duration in milliseconds.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400000,
+            },
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "decision__DecisionSchemaVersion": {
+                "title": "DecisionSchemaVersion",
+                "description": "The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                "type": "string",
+                "const": "decision.1",
+            },
+            "envelopes__OperationName": {
+                "title": "OperationName",
+                "description": "Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states; what each name binds to -- its input and result schemas, and its scope, capability, completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture -- is published per operation by `operations.schema.json`'s `x-omnivia-operation-catalogue`. The pattern admits any well-formed name, including ones no catalogue entry defines: whether a name is a v1 application operation is a semantic question (see `omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$(?![\\s\\S])",
+            },
+            "errors__ApiError": {
+                "title": "ApiError",
+                "description": "A single typed failure. The code and retry class are the contract; the message is not.",
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "$ref": "#/$defs/errors__ErrorCode",
+                        "description": "Stable failure code.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable explanation. Never parse it and never branch on it.",
+                        "maxLength": 2048,
+                    },
+                    "retry_class": {
+                        "$ref": "#/$defs/errors__RetryClass",
+                        "description": "Retry semantics for this failure. Unknown values are treated as non-retryable.",
+                    },
+                    "retry_after_ms": {
+                        "$ref": "#/$defs/common__DurationMs",
+                        "description": "Minimum backoff before a retry is worth attempting, when the server can state one.",
+                    },
+                    "details": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Optional structured detail. Must never carry credentials.",
+                    },
+                },
+                "required": [
+                    "code",
+                    "message",
+                    "retry_class",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "errors__ErrorCode": {
+                "title": "ErrorCode",
+                "description": "Stable machine-readable failure code. OPEN by design: this is a patterned string, not an enum, so compatible minor releases can add codes. Decoders must preserve unknown codes and must not map them onto a known code.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+            },
+            "errors__RetryClass": {
+                "title": "RetryClass",
+                "description": "How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized retry class MUST fail safe as non-retryable: never infer that an unknown class is retryable.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+            },
+            "jobs__JobAttempt": {
+                "title": "JobAttempt",
+                "description": "One execution attempt of a job. A job that is retried has more than one attempt. An attempt exists because execution started, so `queued` is not an attempt state: waiting to run is a state of the *job*, not of an execution of it, and an attempt numbered against a job that never ran would make the attempt history unreadable. Within one job's history attempts are numbered `1..N` contiguously, never overlap, and only a `failed` or `cancelled` attempt may be followed by another one -- a `succeeded` attempt is final.",
+                "type": "object",
+                "properties": {
+                    "attempt_number": {
+                        "type": "integer",
+                        "description": "1-based ordinal of this attempt.",
+                        "minimum": 1,
+                    },
+                    "started_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this attempt started.",
+                    },
+                    "finished_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this attempt finished, when it has.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "State this attempt reached.",
+                    },
+                    "error": {
+                        "$ref": "#/$defs/errors__ApiError",
+                        "description": "The failure this attempt ended with, when it failed.",
+                    },
+                },
+                "required": [
+                    "attempt_number",
+                    "started_at",
+                    "state",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobCancellationAvailability": {
+                "title": "JobCancellationAvailability",
+                "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right now and where an already-requested cancellation stands, with four known values: `cancellable` (a `job.cancel` would be accepted), `cancellation_pending` (a cancellation is already requested and has not yet taken effect), `cancelled` (the job is already cancelled), and `not_cancellable` (a `job.cancel` would be refused). This is an availability statement about the job as observed, not the outcome of a control call: what a particular `job.cancel` did is reported by `JobCancellationDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation is permitted, and carries no scheduler, worker, lease, or persistence detail.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobControl": {
+                "title": "JobControl",
+                "description": "The control actions a caller may take on a job right now: cancellation and recovery. There are exactly two, because there are exactly two control operations -- `job.cancel` and `job.retry`. There is deliberately no `resume` member and no `job.resume` operation: retrying a failed job and resuming a cancelled resumable one are two readings of the same single recovery operation, chosen from server state rather than selected by the caller, so a separate resume disposition would have offered a control the contract does not have. Deliberately exposes only these caller-facing availabilities, never scheduler, worker, lease, checkpoint, or persistence detail.",
+                "type": "object",
+                "properties": {
+                    "cancellation": {
+                        "$ref": "#/$defs/jobs__JobCancellationAvailability",
+                        "description": "Whether this job may be cancelled and where an already-requested cancellation stands.",
+                    },
+                    "recovery": {
+                        "$ref": "#/$defs/jobs__JobRecoveryAvailability",
+                        "description": "Whether this job may be recovered by `job.retry`, and which recovery that would be.",
+                    },
+                },
+                "required": [
+                    "cancellation",
+                    "recovery",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobHandle": {
+                "title": "JobHandle",
+                "description": "What a caller holds to track a job over time: its identity, current state, latest known progress and attempt, and which control actions are available. `latest_attempt` is the job's attempt *N*, not a history: a `running` job reports the running attempt it executes under, a `succeeded` or `failed` job reports the finished attempt that produced that outcome, and a `queued` job either has never executed (no attempt at all) or reports the finished `failed`/`cancelled` attempt retained after an accepted `job.retry` scheduled recovery -- never a succeeded, running, queued, or unfinished one, since none of those describes a job waiting to start.",
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "$ref": "#/$defs/jobs__JobIdentity",
+                        "description": "Identity of this job.",
+                    },
+                    "state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "Current state of this job.",
+                    },
+                    "created_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this job was created.",
+                    },
+                    "updated_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When this job's state was last observed to change.",
+                    },
+                    "control": {
+                        "$ref": "#/$defs/jobs__JobControl",
+                        "description": "Which control actions a caller may take on this job right now.",
+                    },
+                    "progress": {
+                        "$ref": "#/$defs/jobs__JobProgress",
+                        "description": "Latest known progress, while running.",
+                    },
+                    "latest_attempt": {
+                        "$ref": "#/$defs/jobs__JobAttempt",
+                        "description": "Most recent execution attempt.",
+                    },
+                },
+                "required": [
+                    "identity",
+                    "state",
+                    "created_at",
+                    "updated_at",
+                    "control",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobIdentity": {
+                "title": "JobIdentity",
+                "description": "The identity of one asynchronous job: what it is, which application operation started it, its immutable audit linkage, and, when applicable, which workspace it runs against.",
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque, server-issued identifier of this job.",
+                    },
+                    "job_kind": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Open code naming the kind of work this job performs, such as `ingestion.import`.",
+                    },
+                    "originating_operation": {
+                        "$ref": "#/$defs/envelopes__OperationName",
+                        "description": "The application operation whose invocation started this job.",
+                    },
+                    "audit_reference": {
+                        "$ref": "#/$defs/common__AuditReference",
+                        "description": "Immutable reference to the audit record for the operation invocation that started this job.",
+                    },
+                    "workspace_id": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "Workspace this job runs against, when the job is workspace-scoped.",
+                    },
+                },
+                "required": [
+                    "job_id",
+                    "job_kind",
+                    "originating_operation",
+                    "audit_reference",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobProgress": {
+                "title": "JobProgress",
+                "description": "A point-in-time progress statement for a running job.",
+                "type": "object",
+                "properties": {
+                    "unit": {
+                        "$ref": "#/$defs/jobs__JobProgressUnit",
+                        "description": "What `completed_units`/`total_units` count, so the counters are interpretable without job-kind-specific knowledge.",
+                    },
+                    "completed_units": {
+                        "type": "integer",
+                        "description": "Units of work completed so far, counted in `unit`.",
+                        "minimum": 0,
+                    },
+                    "total_units": {
+                        "type": "integer",
+                        "description": "Total units of work expected, when known in advance, counted in `unit`.",
+                        "minimum": 0,
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable progress note. Not a stable interface.",
+                        "maxLength": 2048,
+                    },
+                },
+                "required": [
+                    "unit",
+                    "completed_units",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "jobs__JobProgressUnit": {
+                "title": "JobProgressUnit",
+                "description": "Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such as `item` or `byte` or `document`. Open by design so a compatible minor release can add units without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobRecoveryAvailability": {
+                "title": "JobRecoveryAvailability",
+                "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right now, with three known values: `retryable` (a failed job that `job.retry` would run again), `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and `not_retryable` (a `job.retry` would be refused). `job.retry` is the single recovery operation and carries no action selector, so this code reports which recovery server state would choose rather than offering the caller a choice; what a particular `job.retry` did is reported by `JobRecoveryDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies recovery is permitted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "jobs__JobState": {
+                "title": "JobState",
+                "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionRecordGetInput",
+        "description": "Input for `decision.record.get`. Authorisation is re-checked against the caller's current grant; idempotent replay of a record is not a permission bypass.",
+        "type": "object",
+        "properties": {
+            "evaluation_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Identifier \u2014 Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+            },
+        },
+        "required": [
+            "evaluation_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionRecordGetResult",
+        "description": "Wraps one DecisionRecord document.",
+        "type": "object",
+        "properties": {
+            "record": {
+                "$ref": "#/$defs/decision__DecisionRecord",
+                "description": "DecisionRecord \u2014 The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes.",
+            },
+        },
+        "required": [
+            "record",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "decision__DecisionDefinitionRef": {
+                "title": "DecisionDefinitionRef",
+                "description": "An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable definition identifier, such as `core.document_category`.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Semantic version of the definition, such as `1.0.0`.",
+                        "minLength": 5,
+                        "maxLength": 32,
+                    },
+                },
+                "required": [
+                    "id",
+                    "version",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionDisposition": {
+                "title": "DecisionDisposition",
+                "description": "The deterministic policy result governing how this prediction may be used. `authorises_action` is false for every first-release evaluation; it can never be inferred from any probability, confidence or action-head field.",
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "enum": [
+                            "advisory_only",
+                            "review_required",
+                            "abstained",
+                            "deterministic_rule",
+                            "policy_denied",
+                        ],
+                        "description": "Bounded enumerated value.",
+                    },
+                    "reason_codes": {
+                        "type": "array",
+                        "description": "Bounded reason codes from the canonical decision reason catalogue, such as `TASK_NOT_QUALIFIED_FOR_AUTOMATION` or `INPUT_CAPACITY_EXCEEDED`.",
+                        "items": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": 64,
+                        },
+                        "maxItems": 16,
+                    },
+                    "authorises_action": {
+                        "type": "boolean",
+                        "const": False,
+                        "description": "Constant false in this release. Action authority always lives outside the Decision Runtime.",
+                    },
+                },
+                "required": [
+                    "code",
+                    "reason_codes",
+                    "authorises_action",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionExecutionFacts": {
+                "title": "DecisionExecutionFacts",
+                "description": "Measured execution facts for the terminal attempt. `configured_compute_units` is reported separately by the provider; execution location and remote-processing flags are honest per-attempt facts, never marketing claims.",
+                "type": "object",
+                "properties": {
+                    "provider_id": {
+                        "type": "string",
+                        "description": "Provider adapter identifier, such as `deterministic_rules` or `laya_coreml`.",
+                        "minLength": 3,
+                        "maxLength": 64,
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "description": "Model profile identifier, or null for the deterministic route.",
+                        "maxLength": 128,
+                    },
+                    "execution_location": {
+                        "type": "string",
+                        "enum": [
+                            "core_host",
+                            "remote",
+                        ],
+                        "description": "Where the assessment actually executed. `remote` is unimplemented in this release.",
+                    },
+                    "remote_processing_used": {
+                        "type": "boolean",
+                        "const": False,
+                        "description": "Constant false in this release; local-only constraints always win.",
+                    },
+                    "provider_forward_passes": {
+                        "type": "integer",
+                        "description": "Model forward passes consumed. Multiple questions mean multiple passes; this is counted separately from user requests.",
+                        "minimum": 0,
+                    },
+                    "output_tokens": {
+                        "type": "integer",
+                        "description": "Output tokens consumed, if the provider reports them.",
+                        "minimum": 0,
+                    },
+                },
+                "required": [
+                    "provider_id",
+                    "execution_location",
+                    "remote_processing_used",
+                    "provider_forward_passes",
+                    "output_tokens",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionExecutionMode": {
+                "title": "DecisionExecutionMode",
+                "description": "How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+                "type": "string",
+                "enum": [
+                    "advisory",
+                ],
+            },
+            "decision__DecisionPrediction": {
+                "title": "DecisionPrediction",
+                "description": "One typed prediction with its full provider distribution. `kind` selects which fields are meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic acceptance threshold. `probability_semantics` names what the numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty abstention is possible.",
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "boolean",
+                            "choice",
+                            "ordinal",
+                        ],
+                        "description": "Bounded enumerated value.",
+                    },
+                    "selected_option_id": {
+                        "type": "string",
+                        "description": "For choice: the highest-probability declared option. For ordinal: the highest-probability rubric category.",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                    "probabilities": {
+                        "type": "object",
+                        "description": "Full returned distribution over the declared answer space, at provider precision.",
+                        "additionalProperties": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                        },
+                        "required": [],
+                    },
+                    "probability_true": {
+                        "type": "number",
+                        "description": "For boolean: the provider's probability of true. False is its complement; a false result is not a failure.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "expected_index": {
+                        "type": "number",
+                        "description": "For ordinal: the expected zero-based rubric index. A rubric position, never an event probability.",
+                        "minimum": 0,
+                    },
+                    "normalised_position": {
+                        "type": "number",
+                        "description": "For ordinal: expected_index / (K - 1), labelled as a rubric position only.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "probability_semantics": {
+                        "type": "string",
+                        "description": "What the distribution numbers mean, such as `model_class_probability`.",
+                        "minLength": 3,
+                        "maxLength": 64,
+                    },
+                    "provider_decimal_precision": {
+                        "type": "integer",
+                        "description": "Decimal places the provider itself returns.",
+                        "minimum": 0,
+                        "maximum": 12,
+                    },
+                },
+                "required": [
+                    "kind",
+                    "probability_semantics",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionQuality": {
+                "title": "DecisionQuality",
+                "description": "Quality and qualification facts, kept strictly separate from the prediction and from authority. `empirical_correctness_probability` stays null until a held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release evaluation.",
+                "type": "object",
+                "properties": {
+                    "calibration_status": {
+                        "type": "string",
+                        "enum": [
+                            "unvalidated_for_task",
+                            "advisory_validated",
+                            "qualified_for_named_use",
+                            "expired",
+                            "revoked",
+                        ],
+                        "description": "Bounded enumerated value.",
+                    },
+                    "empirical_correctness_probability": {
+                        "type": "number",
+                        "description": "Held-out task-specific estimate, or null while unsupported.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "input_complete": {
+                        "type": "boolean",
+                        "description": "Whether the loss-aware preflight admitted the context without any unapproved loss.",
+                    },
+                    "qualification_ref": {
+                        "type": "string",
+                        "description": "Opaque reference to the applicable qualification profile, or null.",
+                        "maxLength": 128,
+                    },
+                },
+                "required": [
+                    "calibration_status",
+                    "input_complete",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionRecord": {
+                "title": "DecisionRecord",
+                "description": "The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes.",
+                "type": "object",
+                "properties": {
+                    "schema_version": {
+                        "$ref": "#/$defs/decision__DecisionSchemaVersion",
+                        "description": "DecisionSchemaVersion \u2014 The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                    },
+                    "evaluation_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier \u2014 Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                    },
+                    "status": {
+                        "$ref": "#/$defs/decision__DecisionRecordStatus",
+                        "description": "DecisionRecordStatus \u2014 Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure are normal product outcomes, not errors of the envelope.",
+                    },
+                    "mode": {
+                        "$ref": "#/$defs/decision__DecisionExecutionMode",
+                        "description": "DecisionExecutionMode \u2014 How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+                    },
+                    "definition_ref": {
+                        "$ref": "#/$defs/decision__DecisionDefinitionRef",
+                        "description": "DecisionDefinitionRef \u2014 An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+                    },
+                    "subject_refs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/decision__DecisionSubjectRef",
+                        },
+                        "description": "DecisionSubjectRef \u2014 One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning.",
+                    },
+                    "prediction": {
+                        "$ref": "#/$defs/decision__DecisionPrediction",
+                        "description": "DecisionPrediction \u2014 One typed prediction with its full provider distribution. `kind` selects which fields are meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic acceptance threshold. `probability_semantics` names what the numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty abstention is possible.",
+                    },
+                    "quality": {
+                        "$ref": "#/$defs/decision__DecisionQuality",
+                        "description": "DecisionQuality \u2014 Quality and qualification facts, kept strictly separate from the prediction and from authority. `empirical_correctness_probability` stays null until a held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release evaluation.",
+                    },
+                    "disposition": {
+                        "$ref": "#/$defs/decision__DecisionDisposition",
+                        "description": "DecisionDisposition \u2014 The deterministic policy result governing how this prediction may be used. `authorises_action` is false for every first-release evaluation; it can never be inferred from any probability, confidence or action-head field.",
+                    },
+                    "execution": {
+                        "$ref": "#/$defs/decision__DecisionExecutionFacts",
+                        "description": "DecisionExecutionFacts \u2014 Measured execution facts for the terminal attempt. `configured_compute_units` is reported separately by the provider; execution location and remote-processing flags are honest per-attempt facts, never marketing claims.",
+                    },
+                    "abstention_reasons": {
+                        "type": "array",
+                        "description": "Bounded abstention reason codes, present for abstained records.",
+                        "items": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": 64,
+                        },
+                        "maxItems": 16,
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "description": "When the evaluation was admitted.",
+                        "minLength": 20,
+                        "maxLength": 40,
+                    },
+                    "observed_at": {
+                        "type": "string",
+                        "description": "When the terminal record committed, if terminal.",
+                    },
+                },
+                "required": [
+                    "schema_version",
+                    "evaluation_id",
+                    "status",
+                    "mode",
+                    "definition_ref",
+                    "subject_refs",
+                    "quality",
+                    "disposition",
+                    "execution",
+                    "created_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionRecordStatus": {
+                "title": "DecisionRecordStatus",
+                "description": "Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure are normal product outcomes, not errors of the envelope.",
+                "type": "string",
+                "enum": [
+                    "pending",
+                    "running",
+                    "succeeded",
+                    "abstained",
+                    "failed",
+                    "cancelled",
+                ],
+            },
+            "decision__DecisionSchemaVersion": {
+                "title": "DecisionSchemaVersion",
+                "description": "The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                "type": "string",
+                "const": "decision.1",
+            },
+            "decision__DecisionSubjectRef": {
+                "title": "DecisionSubjectRef",
+                "description": "One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning.",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Opaque subject identifier, such as `document:847`.",
+                    },
+                    "revision": {
+                        "type": "string",
+                        "description": "The subject revision the caller last observed, as an opaque token.",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                },
+                "required": [
+                    "id",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionRecordListInput",
+        "description": "Input for `decision.record.list`: the caller's authorised evaluation records for the selected workspace, newest first.",
+        "type": "object",
+        "properties": {
+            "definition_id": {
+                "type": "string",
+                "description": "Optional filter by definition identifier.",
+                "maxLength": 128,
+            },
+            "status": {
+                "type": "string",
+                "description": "Optional filter by record status.",
+                "enum": [
+                    "pending",
+                    "running",
+                    "succeeded",
+                    "abstained",
+                    "failed",
+                    "cancelled",
+                ],
+            },
+            "limit": {
+                "$ref": "#/$defs/common__PageLimit",
+                "description": "Bounded maximum number of records to return in this page.",
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "Pagination position; an absent page asks for the first page.",
+            },
+        },
+        "unevaluatedProperties": False,
+        "required": [],
+        "$defs": {
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageLimit": {
+                "title": "PageLimit",
+                "description": "A bounded positive page size a caller requests for a paginated read.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionRecordListResult",
+        "description": "One page of authorised evaluation records.",
+        "type": "object",
+        "properties": {
+            "records": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/decision__DecisionRecord",
+                },
+                "description": "DecisionRecord \u2014 The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes.",
+            },
+            "next_cursor": {
+                "type": "string",
+                "description": "Cursor for the next page, or null when the list is exhausted.",
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "Pagination position: the continuation for the next page, always present.",
+            },
+        },
+        "required": [
+            "records",
+            "page",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionDefinitionRef": {
+                "title": "DecisionDefinitionRef",
+                "description": "An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable definition identifier, such as `core.document_category`.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Semantic version of the definition, such as `1.0.0`.",
+                        "minLength": 5,
+                        "maxLength": 32,
+                    },
+                },
+                "required": [
+                    "id",
+                    "version",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionDisposition": {
+                "title": "DecisionDisposition",
+                "description": "The deterministic policy result governing how this prediction may be used. `authorises_action` is false for every first-release evaluation; it can never be inferred from any probability, confidence or action-head field.",
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "enum": [
+                            "advisory_only",
+                            "review_required",
+                            "abstained",
+                            "deterministic_rule",
+                            "policy_denied",
+                        ],
+                        "description": "Bounded enumerated value.",
+                    },
+                    "reason_codes": {
+                        "type": "array",
+                        "description": "Bounded reason codes from the canonical decision reason catalogue, such as `TASK_NOT_QUALIFIED_FOR_AUTOMATION` or `INPUT_CAPACITY_EXCEEDED`.",
+                        "items": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": 64,
+                        },
+                        "maxItems": 16,
+                    },
+                    "authorises_action": {
+                        "type": "boolean",
+                        "const": False,
+                        "description": "Constant false in this release. Action authority always lives outside the Decision Runtime.",
+                    },
+                },
+                "required": [
+                    "code",
+                    "reason_codes",
+                    "authorises_action",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionExecutionFacts": {
+                "title": "DecisionExecutionFacts",
+                "description": "Measured execution facts for the terminal attempt. `configured_compute_units` is reported separately by the provider; execution location and remote-processing flags are honest per-attempt facts, never marketing claims.",
+                "type": "object",
+                "properties": {
+                    "provider_id": {
+                        "type": "string",
+                        "description": "Provider adapter identifier, such as `deterministic_rules` or `laya_coreml`.",
+                        "minLength": 3,
+                        "maxLength": 64,
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "description": "Model profile identifier, or null for the deterministic route.",
+                        "maxLength": 128,
+                    },
+                    "execution_location": {
+                        "type": "string",
+                        "enum": [
+                            "core_host",
+                            "remote",
+                        ],
+                        "description": "Where the assessment actually executed. `remote` is unimplemented in this release.",
+                    },
+                    "remote_processing_used": {
+                        "type": "boolean",
+                        "const": False,
+                        "description": "Constant false in this release; local-only constraints always win.",
+                    },
+                    "provider_forward_passes": {
+                        "type": "integer",
+                        "description": "Model forward passes consumed. Multiple questions mean multiple passes; this is counted separately from user requests.",
+                        "minimum": 0,
+                    },
+                    "output_tokens": {
+                        "type": "integer",
+                        "description": "Output tokens consumed, if the provider reports them.",
+                        "minimum": 0,
+                    },
+                },
+                "required": [
+                    "provider_id",
+                    "execution_location",
+                    "remote_processing_used",
+                    "provider_forward_passes",
+                    "output_tokens",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionExecutionMode": {
+                "title": "DecisionExecutionMode",
+                "description": "How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+                "type": "string",
+                "enum": [
+                    "advisory",
+                ],
+            },
+            "decision__DecisionPrediction": {
+                "title": "DecisionPrediction",
+                "description": "One typed prediction with its full provider distribution. `kind` selects which fields are meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic acceptance threshold. `probability_semantics` names what the numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty abstention is possible.",
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "boolean",
+                            "choice",
+                            "ordinal",
+                        ],
+                        "description": "Bounded enumerated value.",
+                    },
+                    "selected_option_id": {
+                        "type": "string",
+                        "description": "For choice: the highest-probability declared option. For ordinal: the highest-probability rubric category.",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                    "probabilities": {
+                        "type": "object",
+                        "description": "Full returned distribution over the declared answer space, at provider precision.",
+                        "additionalProperties": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                        },
+                        "required": [],
+                    },
+                    "probability_true": {
+                        "type": "number",
+                        "description": "For boolean: the provider's probability of true. False is its complement; a false result is not a failure.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "expected_index": {
+                        "type": "number",
+                        "description": "For ordinal: the expected zero-based rubric index. A rubric position, never an event probability.",
+                        "minimum": 0,
+                    },
+                    "normalised_position": {
+                        "type": "number",
+                        "description": "For ordinal: expected_index / (K - 1), labelled as a rubric position only.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "probability_semantics": {
+                        "type": "string",
+                        "description": "What the distribution numbers mean, such as `model_class_probability`.",
+                        "minLength": 3,
+                        "maxLength": 64,
+                    },
+                    "provider_decimal_precision": {
+                        "type": "integer",
+                        "description": "Decimal places the provider itself returns.",
+                        "minimum": 0,
+                        "maximum": 12,
+                    },
+                },
+                "required": [
+                    "kind",
+                    "probability_semantics",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionQuality": {
+                "title": "DecisionQuality",
+                "description": "Quality and qualification facts, kept strictly separate from the prediction and from authority. `empirical_correctness_probability` stays null until a held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release evaluation.",
+                "type": "object",
+                "properties": {
+                    "calibration_status": {
+                        "type": "string",
+                        "enum": [
+                            "unvalidated_for_task",
+                            "advisory_validated",
+                            "qualified_for_named_use",
+                            "expired",
+                            "revoked",
+                        ],
+                        "description": "Bounded enumerated value.",
+                    },
+                    "empirical_correctness_probability": {
+                        "type": "number",
+                        "description": "Held-out task-specific estimate, or null while unsupported.",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "input_complete": {
+                        "type": "boolean",
+                        "description": "Whether the loss-aware preflight admitted the context without any unapproved loss.",
+                    },
+                    "qualification_ref": {
+                        "type": "string",
+                        "description": "Opaque reference to the applicable qualification profile, or null.",
+                        "maxLength": 128,
+                    },
+                },
+                "required": [
+                    "calibration_status",
+                    "input_complete",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionRecord": {
+                "title": "DecisionRecord",
+                "description": "The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes.",
+                "type": "object",
+                "properties": {
+                    "schema_version": {
+                        "$ref": "#/$defs/decision__DecisionSchemaVersion",
+                        "description": "DecisionSchemaVersion \u2014 The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                    },
+                    "evaluation_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier \u2014 Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                    },
+                    "status": {
+                        "$ref": "#/$defs/decision__DecisionRecordStatus",
+                        "description": "DecisionRecordStatus \u2014 Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure are normal product outcomes, not errors of the envelope.",
+                    },
+                    "mode": {
+                        "$ref": "#/$defs/decision__DecisionExecutionMode",
+                        "description": "DecisionExecutionMode \u2014 How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+                    },
+                    "definition_ref": {
+                        "$ref": "#/$defs/decision__DecisionDefinitionRef",
+                        "description": "DecisionDefinitionRef \u2014 An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+                    },
+                    "subject_refs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/decision__DecisionSubjectRef",
+                        },
+                        "description": "DecisionSubjectRef \u2014 One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning.",
+                    },
+                    "prediction": {
+                        "$ref": "#/$defs/decision__DecisionPrediction",
+                        "description": "DecisionPrediction \u2014 One typed prediction with its full provider distribution. `kind` selects which fields are meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic acceptance threshold. `probability_semantics` names what the numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty abstention is possible.",
+                    },
+                    "quality": {
+                        "$ref": "#/$defs/decision__DecisionQuality",
+                        "description": "DecisionQuality \u2014 Quality and qualification facts, kept strictly separate from the prediction and from authority. `empirical_correctness_probability` stays null until a held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release evaluation.",
+                    },
+                    "disposition": {
+                        "$ref": "#/$defs/decision__DecisionDisposition",
+                        "description": "DecisionDisposition \u2014 The deterministic policy result governing how this prediction may be used. `authorises_action` is false for every first-release evaluation; it can never be inferred from any probability, confidence or action-head field.",
+                    },
+                    "execution": {
+                        "$ref": "#/$defs/decision__DecisionExecutionFacts",
+                        "description": "DecisionExecutionFacts \u2014 Measured execution facts for the terminal attempt. `configured_compute_units` is reported separately by the provider; execution location and remote-processing flags are honest per-attempt facts, never marketing claims.",
+                    },
+                    "abstention_reasons": {
+                        "type": "array",
+                        "description": "Bounded abstention reason codes, present for abstained records.",
+                        "items": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": 64,
+                        },
+                        "maxItems": 16,
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "description": "When the evaluation was admitted.",
+                        "minLength": 20,
+                        "maxLength": 40,
+                    },
+                    "observed_at": {
+                        "type": "string",
+                        "description": "When the terminal record committed, if terminal.",
+                    },
+                },
+                "required": [
+                    "schema_version",
+                    "evaluation_id",
+                    "status",
+                    "mode",
+                    "definition_ref",
+                    "subject_refs",
+                    "quality",
+                    "disposition",
+                    "execution",
+                    "created_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "decision__DecisionRecordStatus": {
+                "title": "DecisionRecordStatus",
+                "description": "Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure are normal product outcomes, not errors of the envelope.",
+                "type": "string",
+                "enum": [
+                    "pending",
+                    "running",
+                    "succeeded",
+                    "abstained",
+                    "failed",
+                    "cancelled",
+                ],
+            },
+            "decision__DecisionSchemaVersion": {
+                "title": "DecisionSchemaVersion",
+                "description": "The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                "type": "string",
+                "const": "decision.1",
+            },
+            "decision__DecisionSubjectRef": {
+                "title": "DecisionSubjectRef",
+                "description": "One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning.",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Opaque subject identifier, such as `document:847`.",
+                    },
+                    "revision": {
+                        "type": "string",
+                        "description": "The subject revision the caller last observed, as an opaque token.",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                },
+                "required": [
+                    "id",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionStatusInput",
+        "description": "Input for `decision.status`. Passive; carries nothing.",
+        "type": "object",
+        "properties": {
+            "include_profiles": {
+                "type": "boolean",
+                "description": "Whether the status projection includes per-profile installation state. Absent defaults to false; the projection stays passive either way.",
+            },
+        },
+        "required": [],
+        "unevaluatedProperties": False,
+    },
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "DecisionStatusResult",
+        "description": "Passive status projection for `decision.status`: engine availability on the selected host, processing state and the caller's applicable grants. Reading it never downloads, warms, starts Core or processes records.",
+        "type": "object",
+        "properties": {
+            "schema_version": {
+                "$ref": "#/$defs/decision__DecisionSchemaVersion",
+                "description": "DecisionSchemaVersion \u2014 The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+            },
+            "host_engine_available": {
+                "type": "boolean",
+                "description": "Whether any local provider can run on the selected Core host. False on unsupported hosts, truthfully, regardless of client hardware.",
+            },
+            "host_support_reason": {
+                "type": "string",
+                "description": "Bounded explanation when unavailable, such as an unsupported host class.",
+                "maxLength": 256,
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Whether Local Decisions processing is currently enabled.",
+            },
+            "installed_profiles": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Structured payload value.",
+            },
+            "active_subscriptions": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Structured payload value.",
+            },
+        },
+        "required": [
+            "schema_version",
+            "host_engine_available",
+            "enabled",
+            "installed_profiles",
+            "active_subscriptions",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "decision__DecisionSchemaVersion": {
+                "title": "DecisionSchemaVersion",
+                "description": "The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+                "type": "string",
+                "const": "decision.1",
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "EvidenceCaptureInput",

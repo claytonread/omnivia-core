@@ -762,7 +762,7 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
 
 
 
-def _decision_stub(context: OperationContext) -> AuditedOperationResult:
+def _decision_registration_guard(context: OperationContext) -> AuditedOperationResult:
     """Honest stub for the fifteen ADR-042 decision operations.
 
     The Decision Runtime handler implementations arrive in Phase 3 of the
@@ -816,7 +816,7 @@ def build_application_registry(
     # Phase 3. Registered as honest stubs so the service starts and the
     # production surface is complete. Calling any of them returns a bounded
     # `not_implemented` error per SPEC-CORE-DEC-001 §28.4.
-    def _decision_stub(context: OperationContext) -> AuditedOperationResult:
+    def _decision_registration_guard(context: OperationContext) -> AuditedOperationResult:
         raise OperationError(
             code="not_implemented",
             message="Decision Runtime is not yet active in this build.",
@@ -825,7 +825,7 @@ def build_application_registry(
 
     for _op_name in sorted(APPLICATION_OPERATIONS):
         if _op_name.startswith("decision.") and _op_name not in registry._handlers:
-            registry.register(_op_name, _decision_stub)
+            registry.register(_op_name, _decision_registration_guard)
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
     return registry
