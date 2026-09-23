@@ -57,6 +57,21 @@ EXPECTED_COMMANDS = (
     (("workflow", "inspect"), "workflow.inspect", "workflow_observation"),
     (("workflow", "control"), "workflow.control", "workflow_control"),
     (("workflow", "review"), "workflow.review", "workflow_observation"),
+    (("decisions", "status"), "decision.status", "decision_read"),
+    (("decisions", "evaluate"), "decision.evaluate", "decision_invoke"),
+    (("decisions", "record"), "decision.record.get", "decision_read"),
+    (("decisions", "records"), "decision.record.list", "decision_read"),
+    (("decisions", "definitions"), "decision.definition.list", "decision_read"),
+    (("decisions", "definition"), "decision.definition.get", "decision_read"),
+    (("decisions", "publish"), "decision.definition.publish", "decision_configure"),
+    (("decisions", "disable"), "decision.definition.disable", "decision_configure"),
+    (("decisions", "outcome"), "decision.outcome.submit", "decision_feedback"),
+    (("decisions", "models"), "decision.model.list", "decision_read"),
+    (("decisions", "install"), "decision.model.install", "decision_configure"),
+    (("decisions", "activate"), "decision.model.activate", "decision_configure"),
+    (("decisions", "remove"), "decision.model.remove", "decision_configure"),
+    (("decisions", "settings"), "decision.settings.get", "decision_read"),
+    (("decisions", "configure"), "decision.settings.update", "decision_configure"),
 )
 
 EXPECTED_PROBES = (
@@ -101,14 +116,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_twenty_eight_application_commands_are_declared_in_order() -> None:
+def test_the_forty_three_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 28
+    assert len(APPLICATION_COMMANDS) == 43
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

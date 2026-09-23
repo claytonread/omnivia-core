@@ -63,6 +63,8 @@ from omnivia_core.contracts.v1 import (
     get_operation_metadata,
 )
 from omnivia_core_runtime.ownership.identity import Clock, SystemClock
+from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
+from omnivia_core_runtime.service.operations import APPLICATION_OPERATIONS
 from omnivia_core_runtime.service.admission import (
     ALLOW_APPLICATION_REQUEST,
     ApplicationAdmissionPolicy,
@@ -193,6 +195,11 @@ CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
 #: allowlist entry, and where nothing may be served without one.
 WORKSPACE_INSPECTION_PURPOSE: Final = "workspace_inspection"
 KNOWLEDGE_RETRIEVAL_PURPOSE: Final = "knowledge_retrieval"
+DECISION_STATUS_PURPOSE: Final = "decision_status"
+DECISION_RECORD_PURPOSE: Final = "decision_record"
+DECISION_READ_PURPOSE: Final = "decision_read"
+DECISION_SETTINGS_PURPOSE: Final = "decision_settings"
+
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         WORKSPACE_INSPECT_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
@@ -201,6 +208,13 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         MEMORY_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        "decision.status": DECISION_STATUS_PURPOSE,
+        "decision.record.get": DECISION_RECORD_PURPOSE,
+        "decision.record.list": DECISION_RECORD_PURPOSE,
+        "decision.definition.list": DECISION_READ_PURPOSE,
+        "decision.definition.get": DECISION_READ_PURPOSE,
+        "decision.model.list": DECISION_READ_PURPOSE,
+        "decision.settings.get": DECISION_SETTINGS_PURPOSE,
     }
 )
 
@@ -746,6 +760,24 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
     return registry
 
 
+
+
+def _decision_stub(context: OperationContext) -> AuditedOperationResult:
+    """Honest stub for the fifteen ADR-042 decision operations.
+
+    The Decision Runtime handler implementations arrive in Phase 3 of the
+    implementation plan. Calling any decision operation in this build returns
+    a bounded `not_implemented` error rather than a simulated result, per
+    SPEC-CORE-DEC-001 §28.4: an intentionally unavailable state is correct
+    when the backend or authority is absent.
+    """
+    raise OperationError(
+        code="not_implemented",
+        message="Decision Runtime is not yet active in this build.",
+        retry_class="non_retryable",
+    )
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -780,6 +812,20 @@ def build_application_registry(
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
+    # Decision Runtime (ADR-042): fifteen operations whose handlers arrive in
+    # Phase 3. Registered as honest stubs so the service starts and the
+    # production surface is complete. Calling any of them returns a bounded
+    # `not_implemented` error per SPEC-CORE-DEC-001 §28.4.
+    def _decision_stub(context: OperationContext) -> AuditedOperationResult:
+        raise OperationError(
+            code="not_implemented",
+            message="Decision Runtime is not yet active in this build.",
+            retry_class="non_retryable",
+        )
+
+    for _op_name in sorted(APPLICATION_OPERATIONS):
+        if _op_name.startswith("decision.") and _op_name not in registry._handlers:
+            registry.register(_op_name, _decision_stub)
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
     return registry

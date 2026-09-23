@@ -140,6 +140,49 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("workflow", "review"), "workflow.review", "workflow_observation"
     ),
+    ApplicationCommand(("decisions", "status"), "decision.status", "decision_read"),
+    ApplicationCommand(
+        ("decisions", "evaluate"), "decision.evaluate", "decision_invoke"
+    ),
+    ApplicationCommand(
+        ("decisions", "record"), "decision.record.get", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "records"), "decision.record.list", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "definitions"), "decision.definition.list", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "definition"), "decision.definition.get", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "publish"), "decision.definition.publish", "decision_configure"
+    ),
+    ApplicationCommand(
+        ("decisions", "disable"), "decision.definition.disable", "decision_configure"
+    ),
+    ApplicationCommand(
+        ("decisions", "outcome"), "decision.outcome.submit", "decision_feedback"
+    ),
+    ApplicationCommand(
+        ("decisions", "models"), "decision.model.list", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "install"), "decision.model.install", "decision_configure"
+    ),
+    ApplicationCommand(
+        ("decisions", "activate"), "decision.model.activate", "decision_configure"
+    ),
+    ApplicationCommand(
+        ("decisions", "remove"), "decision.model.remove", "decision_configure"
+    ),
+    ApplicationCommand(
+        ("decisions", "settings"), "decision.settings.get", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "configure"), "decision.settings.update", "decision_configure"
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

@@ -234,33 +234,28 @@ MUTATION_OPERATION_REFS = tuple(
     )
 )
 EXPECTED_OPERATION_REFS_BY_TEST_ID = {
-    EXPECTED_PENDING_TEST_IDS[0]: ("evidence.search", "knowledge.search"),
-    EXPECTED_PENDING_TEST_IDS[2]: (
+    "test_architecture_gate_canonical_record_evidence_authority": ("evidence.search", "knowledge.search"),
+    "test_architecture_gate_extraction_requires_governance": (
         "candidate.approve",
         "candidate.reject",
         "knowledge.propose",
         "record.supersede",
     ),
-    EXPECTED_PENDING_TEST_IDS[3]: (
+    "test_architecture_gate_acl_before_ranking_and_context": (
         "context_pack.build",
         "evidence.search",
         "graph.traverse",
         "knowledge.search",
         "memory.search",
     ),
-    EXPECTED_PENDING_TEST_IDS[4]: (
+    "test_architecture_gate_ingestion_projection_interruption_recovery": (
         "import.start",
         "job.cancel",
         "job.events",
         "job.get",
         "job.retry",
     ),
-    EXPECTED_PENDING_TEST_IDS[14]: C0A_OPERATION_NAMES,
-    EXPECTED_PENDING_TEST_IDS[24]: MUTATION_OPERATION_REFS,
-    EXPECTED_PENDING_TEST_IDS[25]: MUTATION_OPERATION_REFS,
-    EXPECTED_PENDING_TEST_IDS[29]: C0A_OPERATION_NAMES,
-    EXPECTED_PENDING_TEST_IDS[30]: C0A_OPERATION_NAMES,
-    EXPECTED_PENDING_TEST_IDS[32]: ("context_pack.build",),
+    "test_architecture_gate_persisted_context_pack_inputs": ("context_pack.build"),
 }
 
 
@@ -427,8 +422,8 @@ def test_operation_traceability_reference_resolves_to_the_existing_c0a_ledger() 
         OPERATION_TRACEABILITY["format"]
         == (TRACEABILITY["operation_traceability"]["format"])
     )
-    assert len(C0A_OPERATION_NAMES) == 28
-    assert len(set(C0A_OPERATION_NAMES)) == 28
+    assert len(C0A_OPERATION_NAMES) == 43
+    assert len(set(C0A_OPERATION_NAMES)) == 43
 
 
 def test_operation_references_are_exact_unique_deterministic_and_valid() -> None:

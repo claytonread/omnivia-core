@@ -82,6 +82,7 @@ from omnivia_core_runtime.service.managed_start import (
 from omnivia_core_runtime.service.mcp_control import (
     AuthenticatedApplicationDispatch,
 )
+from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,
@@ -278,7 +279,12 @@ def _build_production_application_surface(
             principal_id=LOCAL_PRINCIPAL,
             installation_id=installation_id,
             workspace_id=started.workspace_id,
-            operations=registry.operations,
+            operations=frozenset(
+                op for op in registry.operations
+                if next(
+                    e for e in OPERATION_CATALOGUE if e.name == op
+                ).scope.side_effect == "none"
+            ),
         ),
         binding=ServiceBinding(
             installation_id=installation_id, workspace_id=started.workspace_id
