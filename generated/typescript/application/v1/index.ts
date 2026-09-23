@@ -18,6 +18,7 @@
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 //   contracts/application/v1/schemas/runtime.schema.json
 //   contracts/application/v1/schemas/chat.schema.json
+//   contracts/application/v1/schemas/decision.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -571,6 +572,415 @@ export function isContextPackDigest(value: unknown): value is ContextPackDigest 
     value.length <= 71 &&
     new RegExp(CONTEXT_PACK_DIGEST_PATTERN).test(value)
   );
+}
+
+/**
+ * The payload schema version for every decision payload in this boundary. Independent of the
+ * application envelope and workspace format versions.
+ */
+export type DecisionSchemaVersion = string;
+
+/**
+ * How the caller intends to use the result. `advisory` is the only mode in this release: the
+ * assessment is evidence for a human or an authorised executor, never an executed action. Later
+ * modes are separately qualified catalogue changes.
+ */
+export type DecisionExecutionMode = string;
+
+/**
+ * The closed `DecisionExecutionMode` vocabulary, emitted from the schema's `enum`.
+ */
+export const DECISION_EXECUTION_MODE_VALUES = [
+  "advisory",
+] as const;
+
+/**
+ * Return whether a value is a declared `DecisionExecutionMode`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isDecisionExecutionMode(value: unknown): value is DecisionExecutionMode {
+  return (
+    typeof value === "string" &&
+    (DECISION_EXECUTION_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The most permissive processing location the caller accepts. `local_only` binds every attempt
+ * to the selected Core host; the server may narrow but never widen this.
+ */
+export type DecisionPrivacyFloor = string;
+
+/**
+ * The closed `DecisionPrivacyFloor` vocabulary, emitted from the schema's `enum`.
+ */
+export const DECISION_PRIVACY_FLOOR_VALUES = [
+  "local_only",
+] as const;
+
+/**
+ * Return whether a value is a declared `DecisionPrivacyFloor`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isDecisionPrivacyFloor(value: unknown): value is DecisionPrivacyFloor {
+  return (
+    typeof value === "string" &&
+    (DECISION_PRIVACY_FLOOR_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * One typed prediction with its full provider distribution. `kind` selects which fields are
+ * meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic
+ * acceptance threshold. `probability_semantics` names what the numbers are;
+ * `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty
+ * abstention is possible.
+ */
+export interface DecisionPrediction {
+  /**
+   * Bounded enumerated value.
+   */
+  readonly kind: string;
+  /**
+   * For choice: the highest-probability declared option. For ordinal: the highest-probability
+   * rubric category.
+   */
+  readonly selected_option_id?: string;
+  /**
+   * Full returned distribution over the declared answer space, at provider precision.
+   */
+  readonly probabilities?: Readonly<Record<string, number>>;
+  /**
+   * For boolean: the provider's probability of true. False is its complement; a false result
+   * is not a failure.
+   */
+  readonly probability_true?: number;
+  /**
+   * For ordinal: the expected zero-based rubric index. A rubric position, never an event
+   * probability.
+   */
+  readonly expected_index?: number;
+  /**
+   * For ordinal: expected_index / (K - 1), labelled as a rubric position only.
+   */
+  readonly normalised_position?: number;
+  /**
+   * What the distribution numbers mean, such as `model_class_probability`.
+   */
+  readonly probability_semantics: string;
+  /**
+   * Decimal places the provider itself returns.
+   */
+  readonly provider_decimal_precision?: number;
+}
+
+/**
+ * Quality and qualification facts, kept strictly separate from the prediction and from
+ * authority. `empirical_correctness_probability` stays null until a held-out task-specific
+ * calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release
+ * evaluation.
+ */
+export interface DecisionQuality {
+  /**
+   * Bounded enumerated value.
+   */
+  readonly calibration_status: string;
+  /**
+   * Held-out task-specific estimate, or null while unsupported.
+   */
+  readonly empirical_correctness_probability?: number;
+  /**
+   * Whether the loss-aware preflight admitted the context without any unapproved loss.
+   */
+  readonly input_complete: boolean;
+  /**
+   * Opaque reference to the applicable qualification profile, or null.
+   */
+  readonly qualification_ref?: string;
+}
+
+/**
+ * The deterministic policy result governing how this prediction may be used. `authorises_action`
+ * is false for every first-release evaluation; it can never be inferred from any probability,
+ * confidence or action-head field.
+ */
+export interface DecisionDisposition {
+  /**
+   * Bounded enumerated value.
+   */
+  readonly code: string;
+  /**
+   * Bounded reason codes from the canonical decision reason catalogue, such as
+   * `TASK_NOT_QUALIFIED_FOR_AUTOMATION` or `INPUT_CAPACITY_EXCEEDED`.
+   */
+  readonly reason_codes: readonly string[];
+  /**
+   * Constant false in this release. Action authority always lives outside the Decision
+   * Runtime.
+   */
+  readonly authorises_action: boolean;
+}
+
+/**
+ * Measured execution facts for the terminal attempt. `configured_compute_units` is reported
+ * separately by the provider; execution location and remote-processing flags are honest per-
+ * attempt facts, never marketing claims.
+ */
+export interface DecisionExecutionFacts {
+  /**
+   * Provider adapter identifier, such as `deterministic_rules` or `laya_coreml`.
+   */
+  readonly provider_id: string;
+  /**
+   * Model profile identifier, or null for the deterministic route.
+   */
+  readonly profile_id?: string;
+  /**
+   * Where the assessment actually executed. `remote` is unimplemented in this release.
+   */
+  readonly execution_location: string;
+  /**
+   * Constant false in this release; local-only constraints always win.
+   */
+  readonly remote_processing_used: boolean;
+  /**
+   * Model forward passes consumed. Multiple questions mean multiple passes; this is counted
+   * separately from user requests.
+   */
+  readonly provider_forward_passes: number;
+  /**
+   * Output tokens consumed, if the provider reports them.
+   */
+  readonly output_tokens: number;
+}
+
+/**
+ * Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure
+ * are normal product outcomes, not errors of the envelope.
+ */
+export type DecisionRecordStatus = string;
+
+/**
+ * The closed `DecisionRecordStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const DECISION_RECORD_STATUS_VALUES = [
+  "pending",
+  "running",
+  "succeeded",
+  "abstained",
+  "failed",
+  "cancelled",
+] as const;
+
+/**
+ * Return whether a value is a declared `DecisionRecordStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isDecisionRecordStatus(value: unknown): value is DecisionRecordStatus {
+  return (
+    typeof value === "string" &&
+    (DECISION_RECORD_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * One declared option of a choice definition: a stable identifier, a human label and a bounded
+ * description. Options are an ordered list; the order is part of the definition's identity and
+ * digest. One-option decisions are ill-formed - a constant belongs in deterministic code.
+ */
+export interface DecisionOption {
+  /**
+   * Stable option identifier used in predictions.
+   */
+  readonly id: string;
+  /**
+   * Human-readable option label.
+   */
+  readonly label: string;
+  /**
+   * Bounded description given to the model alongside the label.
+   */
+  readonly description: string;
+}
+
+/**
+ * Input for `decision.definition.list`: permitted definition versions for the selected
+ * workspace.
+ */
+export interface DecisionDefinitionListInput {
+  /**
+   * Whether disabled versions appear in the list.
+   */
+  readonly include_disabled?: boolean;
+}
+
+/**
+ * Input for `decision.definition.publish`: one new immutable definition version. The document is
+ * structured data only - identifiers, bounded text, ordered options and recipe references.
+ * Executable content of any kind is not a valid field, and a semantic change to any meaning-
+ * bearing part requires a new version and qualification review.
+ */
+export interface DecisionDefinitionPublishInput {
+  /**
+   * The immutable definition document: stable id, semantic version, title, purpose, owning
+   * product, author provenance, decision kind, ordered options or rubric, instructions,
+   * required evidence fields, context recipe version, supported languages, minimum source
+   * freshness, risk floor, permitted output uses, privacy floor and approved candidate profile
+   * identifiers. Bounded to the definition schema; a digest is computed by the service.
+   */
+  readonly definition: JsonObject;
+}
+
+/**
+ * One approved model profile as `decision.model.list` reports it, with the five lifecycle
+ * dimensions kept separate (installation, activation, health, qualification, processing). A
+ * model being installed or ready says nothing about task qualification.
+ */
+export interface DecisionModelProfileSummary {
+  /**
+   * Approved profile identifier, such as `laya.multilingual.general.fp16`.
+   */
+  readonly profile_id: string;
+  /**
+   * Structured payload value.
+   */
+  readonly name: string;
+  /**
+   * The profile's total token capacity.
+   */
+  readonly capacity_total_tokens: number;
+  /**
+   * The profile's maximum option count.
+   */
+  readonly maximum_options: number;
+  /**
+   * Complete on-disk bundle size when installed.
+   */
+  readonly installed_size_bytes?: number;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly installation: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly activation: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly health: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly qualification: string;
+  /**
+   * Configured compute units, reported separately from observed execution evidence.
+   */
+  readonly compute_configuration: string;
+}
+
+/**
+ * Input for `decision.model.list`: approved profiles and their current state. Passive; never
+ * triggers downloads or loading.
+ */
+export interface DecisionModelListInput {
+  /**
+   * Whether profiles without task qualification appear in the list. Absent defaults to true:
+   * unvalidated profiles are shown as advisory.
+   */
+  readonly include_unqualified?: boolean;
+}
+
+/**
+ * Input for `decision.model.install`, `decision.model.activate` and `decision.model.remove`: one
+ * approved profile identifier. Profile identifiers must come from the signed catalogue; the page
+ * and the CLI cannot select arbitrary model files or repositories.
+ */
+export interface DecisionModelActionInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * Input for `decision.settings.get`. Passive.
+ */
+export interface DecisionSettingsGetInput {
+  /**
+   * Whether unset values are reported with the specification's conservative defaults. Absent
+   * defaults to false: unset values are omitted.
+   */
+  readonly include_defaults?: boolean;
+}
+
+/**
+ * Input for `decision.settings.update`: compare-and-swap configuration change. The revision must
+ * match the caller's last observed value; a mismatch is a conflict, and the update cannot enable
+ * processing the caller has no grant for.
+ */
+export interface DecisionSettingsUpdateInput {
+  /**
+   * The configuration revision the caller last observed.
+   */
+  readonly revision: number;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly processing?: string;
+  /**
+   * Structured payload value.
+   */
+  readonly subscription_enabled?: boolean;
+  /**
+   * New daily ceiling, bounded by installation policy.
+   */
+  readonly subscription_daily_budget?: number;
+}
+
+/**
+ * Input for `decision.status`. Passive; carries nothing.
+ */
+export interface DecisionStatusInput {
+  /**
+   * Whether the status projection includes per-profile installation state. Absent defaults to
+   * false; the projection stays passive either way.
+   */
+  readonly include_profiles?: boolean;
+}
+
+/**
+ * Input for `decision.model.activate`: one approved, installed profile identifier to select for
+ * inference.
+ */
+export interface DecisionModelActivateInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * Input for the model management action: one approved profile identifier.
+ */
+export interface DecisionModelInstallInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * Input for the model management action: one approved profile identifier.
+ */
+export interface DecisionModelRemoveInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
 }
 
 /**
@@ -3037,6 +3447,224 @@ export interface ContextPackBuildInput {
 }
 
 /**
+ * One subject the evaluation is about: an opaque identifier minted by the owning feature, and
+ * the revision the caller last observed. The runtime resolves the reference through the owner;
+ * the string itself carries no path or storage meaning.
+ */
+export interface DecisionSubjectRef {
+  /**
+   * Opaque subject identifier, such as `document:847`.
+   */
+  readonly id: Identifier;
+  /**
+   * The subject revision the caller last observed, as an opaque token.
+   */
+  readonly revision?: string;
+}
+
+/**
+ * Caller constraints on one evaluation. Policy composes these with installation, workspace and
+ * definition limits using the most restrictive effective result; a caller cannot elevate an
+ * unqualified template or escape a local-only floor.
+ */
+export interface DecisionExecutionConstraints {
+  /**
+   * DecisionExecutionMode — How the caller intends to use the result. `advisory` is the only
+   * mode in this release: the assessment is evidence for a human or an authorised executor,
+   * never an executed action. Later modes are separately qualified catalogue changes.
+   */
+  readonly mode: DecisionExecutionMode;
+  /**
+   * DecisionPrivacyFloor — The most permissive processing location the caller accepts.
+   * `local_only` binds every attempt to the selected Core host; the server may narrow but
+   * never widen this.
+   */
+  readonly privacy: DecisionPrivacyFloor;
+  /**
+   * Requested wall-clock budget for the whole evaluation, including queue wait. Policy may
+   * permit longer job deadlines; it may never shorten past the minimum the definition
+   * requires.
+   */
+  readonly deadline_ms?: number;
+  /**
+   * Maximum provider attempts. One is the default and the release maximum; a single transient-
+   * failure retry is a separately enabled policy.
+   */
+  readonly maximum_provider_attempts?: number;
+}
+
+/**
+ * An immutable Decision Definition version. Definitions are immutable; a semantic change to
+ * question, rubric, options or recipe is a new version.
+ */
+export interface DecisionDefinitionRef {
+  /**
+   * Stable definition identifier, such as `core.document_category`.
+   */
+  readonly id: Identifier;
+  /**
+   * Semantic version of the definition, such as `1.0.0`.
+   */
+  readonly version: string;
+}
+
+/**
+ * Input for `decision.record.get`. Authorisation is re-checked against the caller's current
+ * grant; idempotent replay of a record is not a permission bypass.
+ */
+export interface DecisionRecordGetInput {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+}
+
+/**
+ * One permitted definition version as `decision.definition.list` and `decision.definition.get`
+ * report it.
+ */
+export interface DecisionDefinitionSummary {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly id: Identifier;
+  /**
+   * Structured payload value.
+   */
+  readonly version: string;
+  /**
+   * Structured payload value.
+   */
+  readonly title: string;
+  /**
+   * What this definition assesses and for whom.
+   */
+  readonly purpose: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly kind: string;
+  /**
+   * Structured payload value.
+   */
+  readonly option_count: number;
+  /**
+   * Whether this version currently admits evaluations.
+   */
+  readonly enabled: boolean;
+  /**
+   * Opaque definition digest binding question, rubric, options, recipe and model settings.
+   */
+  readonly digest: string;
+}
+
+/**
+ * Approved model profiles and their lifecycle state.
+ */
+export interface DecisionModelListResult {
+  /**
+   * DecisionModelProfileSummary — One approved model profile as `decision.model.list` reports
+   * it, with the five lifecycle dimensions kept separate (installation, activation, health,
+   * qualification, processing). A model being installed or ready says nothing about task
+   * qualification.
+   */
+  readonly profiles: readonly DecisionModelProfileSummary[];
+}
+
+/**
+ * Passive status projection for `decision.status`: engine availability on the selected host,
+ * processing state and the caller's applicable grants. Reading it never downloads, warms, starts
+ * Core or processes records.
+ */
+export interface DecisionStatusResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Whether any local provider can run on the selected Core host. False on unsupported hosts,
+   * truthfully, regardless of client hardware.
+   */
+  readonly host_engine_available: boolean;
+  /**
+   * Bounded explanation when unavailable, such as an unsupported host class.
+   */
+  readonly host_support_reason?: string;
+  /**
+   * Whether Local Decisions processing is currently enabled.
+   */
+  readonly enabled: boolean;
+  /**
+   * Structured payload value.
+   */
+  readonly installed_profiles: number;
+  /**
+   * Structured payload value.
+   */
+  readonly active_subscriptions: number;
+}
+
+/**
+ * Applicable Local Decisions configuration as `decision.settings.get` reports it: processing
+ * state, subscription state and bounded budgets. Defaults are the specification's conservative
+ * set; disabling never deletes history.
+ */
+export interface DecisionSettings {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly processing: string;
+  /**
+   * Whether the bounded new-document classification subscription admits work.
+   */
+  readonly subscription_enabled: boolean;
+  /**
+   * Daily provider forward-pass ceiling for the subscription.
+   */
+  readonly subscription_daily_budget: number;
+  /**
+   * Configuration revision for compare-and-swap updates.
+   */
+  readonly revision: number;
+}
+
+/**
+ * Result for `decision.outcome.submit`: the appended outcome identity. The original prediction
+ * and its evidence remain preserved.
+ */
+export interface DecisionOutcomeSubmitResult {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly outcome_id: Identifier;
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+}
+
+/**
+ * Result for `decision.model.remove`: the profile's refreshed lifecycle state after removal or
+ * drain refusal is reported separately by policy.
+ */
+export interface DecisionModelRemoveResult {
+  /**
+   * The profile's refreshed state.
+   */
+  readonly profile: DecisionModelProfileSummary;
+}
+
+/**
  * A single typed failure. The code and retry class are the contract; the message is not.
  */
 export interface ApiError {
@@ -4940,6 +5568,263 @@ export interface ContextPackRecordCitation {
 export type ContextPackAuthorizedCandidate = ContextPackAuthorizedEvidenceCandidate | ContextPackAuthorizedRecordCandidate;
 
 /**
+ * The durable record of one evaluation. Every terminal record identifies the evaluation, the
+ * effective context it ran under, the exact definition/subject/source revisions, provider and
+ * preparation identities, the typed prediction, the deterministic disposition and the execution
+ * facts. Abstention, cancellation and failure are first-class terminal states with their own
+ * reason codes.
+ */
+export interface DecisionRecord {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+  /**
+   * DecisionRecordStatus — Terminal and non-terminal lifecycle states of one evaluation
+   * record. Abstention and failure are normal product outcomes, not errors of the envelope.
+   */
+  readonly status: DecisionRecordStatus;
+  /**
+   * DecisionExecutionMode — How the caller intends to use the result. `advisory` is the only
+   * mode in this release: the assessment is evidence for a human or an authorised executor,
+   * never an executed action. Later modes are separately qualified catalogue changes.
+   */
+  readonly mode: DecisionExecutionMode;
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * DecisionSubjectRef — One subject the evaluation is about: an opaque identifier minted by
+   * the owning feature, and the revision the caller last observed. The runtime resolves the
+   * reference through the owner; the string itself carries no path or storage meaning.
+   */
+  readonly subject_refs: readonly DecisionSubjectRef[];
+  /**
+   * DecisionPrediction — One typed prediction with its full provider distribution. `kind`
+   * selects which fields are meaningful; boolean, choice and ordinal semantics are distinct
+   * and must not share a generic acceptance threshold. `probability_semantics` names what the
+   * numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-
+   * uncertainty abstention is possible.
+   */
+  readonly prediction?: DecisionPrediction;
+  /**
+   * DecisionQuality — Quality and qualification facts, kept strictly separate from the
+   * prediction and from authority. `empirical_correctness_probability` stays null until a
+   * held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task`
+   * for every first-release evaluation.
+   */
+  readonly quality: DecisionQuality;
+  /**
+   * DecisionDisposition — The deterministic policy result governing how this prediction may be
+   * used. `authorises_action` is false for every first-release evaluation; it can never be
+   * inferred from any probability, confidence or action-head field.
+   */
+  readonly disposition: DecisionDisposition;
+  /**
+   * DecisionExecutionFacts — Measured execution facts for the terminal attempt.
+   * `configured_compute_units` is reported separately by the provider; execution location and
+   * remote-processing flags are honest per-attempt facts, never marketing claims.
+   */
+  readonly execution: DecisionExecutionFacts;
+  /**
+   * Bounded abstention reason codes, present for abstained records.
+   */
+  readonly abstention_reasons?: readonly string[];
+  /**
+   * When the evaluation was admitted.
+   */
+  readonly created_at: string;
+  /**
+   * When the terminal record committed, if terminal.
+   */
+  readonly observed_at?: string;
+}
+
+/**
+ * Input for `decision.record.list`: the caller's authorised evaluation records for the selected
+ * workspace, newest first.
+ */
+export interface DecisionRecordListInput {
+  /**
+   * Optional filter by definition identifier.
+   */
+  readonly definition_id?: string;
+  /**
+   * Optional filter by record status.
+   */
+  readonly status?: string;
+  /**
+   * Bounded maximum number of records to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Pagination position; an absent page asks for the first page.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Permitted definition versions.
+ */
+export interface DecisionDefinitionListResult {
+  /**
+   * DecisionDefinitionSummary — One permitted definition version as `decision.definition.list`
+   * and `decision.definition.get` report it.
+   */
+  readonly definitions: readonly DecisionDefinitionSummary[];
+}
+
+/**
+ * Input for `decision.definition.get`.
+ */
+export interface DecisionDefinitionGetInput {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+}
+
+/**
+ * Input for `decision.definition.disable`: stop one version admitting evaluations. Records and
+ * history are unaffected.
+ */
+export interface DecisionDefinitionDisableInput {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+}
+
+/**
+ * Input for `decision.outcome.submit`: append one evidenced outcome or correction to an
+ * evaluation. The original prediction is preserved, never overwritten. An actor preference is
+ * not automatically ground truth; outcome provenance records who submitted it and on what
+ * evidence.
+ */
+export interface DecisionOutcomeSubmitInput {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+  /**
+   * The reviewer's or system's evidenced conclusion about the assessment.
+   */
+  readonly outcome: string;
+  /**
+   * For corrected choice/ordinal outcomes: the evidenced correct option.
+   */
+  readonly corrected_option_id?: string;
+  /**
+   * Bounded reviewer note.
+   */
+  readonly note?: string;
+  /**
+   * Opaque evidence references supporting the outcome.
+   */
+  readonly evidence_refs?: readonly DecisionSubjectRef[];
+}
+
+/**
+ * Result for `decision.definition.publish`: the immutable version now registered, with its
+ * computed digest. Publication binds contract metadata; it does not enable evaluations or grant
+ * any caller.
+ */
+export interface DecisionDefinitionPublishResult {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * Opaque definition digest computed by the service.
+   */
+  readonly digest: string;
+  /**
+   * Whether the version admits evaluations immediately (publish and enable are separate
+   * concerns).
+   */
+  readonly enabled: boolean;
+}
+
+/**
+ * Result for `decision.definition.disable`.
+ */
+export interface DecisionDefinitionDisableResult {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * Structured payload value.
+   */
+  readonly enabled: boolean;
+}
+
+/**
+ * Authorised evidence inputs for one evaluation. Source references are resolved and access-
+ * checked by the runtime after admission; inline state is caller-supplied evidence, never
+ * verified organisational truth, and is preserved as such in the record.
+ */
+export interface DecisionInputBundle {
+  /**
+   * Opaque authorised source references, resolved against the caller's effective grant.
+   */
+  readonly source_refs: readonly DecisionSubjectRef[];
+  /**
+   * Optional caller-supplied structured state, data-only and bounded. It is never executed and
+   * never treated as verified fact.
+   */
+  readonly inline_state?: JsonObject;
+}
+
+/**
+ * Wraps one DecisionDefinitionSummary document.
+ */
+export interface DecisionDefinitionGetResult {
+  /**
+   * DecisionDefinitionSummary — One permitted definition version as `decision.definition.list`
+   * and `decision.definition.get` report it.
+   */
+  readonly definition: DecisionDefinitionSummary;
+}
+
+/**
+ * Wraps one DecisionSettings document.
+ */
+export interface DecisionSettingsGetResult {
+  /**
+   * DecisionSettings — Applicable Local Decisions configuration as `decision.settings.get`
+   * reports it: processing state, subscription state and bounded budgets. Defaults are the
+   * specification's conservative set; disabling never deletes history.
+   */
+  readonly settings: DecisionSettings;
+}
+
+/**
+ * Wraps one DecisionSettings document.
+ */
+export interface DecisionSettingsUpdateResult {
+  /**
+   * DecisionSettings — Applicable Local Decisions configuration as `decision.settings.get`
+   * reports it: processing state, subscription state and bounded budgets. Defaults are the
+   * specification's conservative set; disabling never deletes history.
+   */
+  readonly settings: DecisionSettings;
+}
+
+/**
  * Everything the server needs to route, scope, bound, and audit a request, independent of the
  * operation payload.
  */
@@ -6172,6 +7057,77 @@ export interface ContextPackAuthorizedCandidateSetManifest {
 }
 
 /**
+ * Input for `decision.evaluate`: one bounded, evidence-bearing assessment request. Identity,
+ * effective authority, scopes and purpose come from the authorised request envelope, never from
+ * these fields. The envelope's `idempotency_key` (required by the catalogue) is bound to the
+ * canonical request digest; reuse with a different request is an explicit conflict. Evaluation
+ * has durable side effects - it reads authorised sources and writes evaluation, attempt and
+ * audit records - even though it never mutates business records.
+ */
+export interface DecisionEvaluateInput {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * The subjects this evaluation is about.
+   */
+  readonly subject_refs: readonly DecisionSubjectRef[];
+  /**
+   * Authorised evidence inputs, resolved after admission.
+   */
+  readonly input: DecisionInputBundle;
+  /**
+   * DecisionExecutionConstraints — Caller constraints on one evaluation. Policy composes these
+   * with installation, workspace and definition limits using the most restrictive effective
+   * result; a caller cannot elevate an unqualified template or escape a local-only floor.
+   */
+  readonly execution: DecisionExecutionConstraints;
+}
+
+/**
+ * One page of authorised evaluation records.
+ */
+export interface DecisionRecordListResult {
+  /**
+   * DecisionRecord — The durable record of one evaluation. Every terminal record identifies
+   * the evaluation, the effective context it ran under, the exact definition/subject/source
+   * revisions, provider and preparation identities, the typed prediction, the deterministic
+   * disposition and the execution facts. Abstention, cancellation and failure are first-class
+   * terminal states with their own reason codes.
+   */
+  readonly records: readonly DecisionRecord[];
+  /**
+   * Cursor for the next page, or null when the list is exhausted.
+   */
+  readonly next_cursor?: string;
+  /**
+   * Pagination position: the continuation for the next page, always present.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Wraps one DecisionRecord document.
+ */
+export interface DecisionRecordGetResult {
+  /**
+   * DecisionRecord — The durable record of one evaluation. Every terminal record identifies
+   * the evaluation, the effective context it ran under, the exact definition/subject/source
+   * revisions, provider and preparation identities, the typed prediction, the deterministic
+   * disposition and the execution facts. Abstention, cancellation and failure are first-class
+   * terminal states with their own reason codes.
+   */
+  readonly record: DecisionRecord;
+}
+
+/**
  * A single application request: what to do, under what conditions, with what payload.
  */
 export interface RequestEnvelope {
@@ -6820,6 +7776,59 @@ export interface ContextPackReproducibility {
    * rendered by ECMAScript `Number::toString`, both as RFC 8785 requires.
    */
   readonly artifact_checksum: ContextPackDigest;
+}
+
+/**
+ * Admission result for `decision.evaluate`: the durable evaluation identity and its job
+ * reference. A bounded caller wait may return the terminal record via `decision.record.get`; a
+ * cold start returns pending status without holding the transport.
+ */
+export interface DecisionEvaluateResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Durable evaluation identifier; opaque, and not a bearer authorisation token.
+   */
+  readonly evaluation_id: Identifier;
+  /**
+   * The durable job carrying the evaluation.
+   */
+  readonly job: JobHandle;
+}
+
+/**
+ * Immediate admission result for the model management action: the durable job carrying it. The
+ * refreshed profile state is the job's terminal result.
+ */
+export interface DecisionModelInstallResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * The durable job carrying the install/activation.
+   */
+  readonly job: JobHandle;
+}
+
+/**
+ * Immediate admission result for the model management action: the durable job carrying it. The
+ * refreshed profile state is the job's terminal result.
+ */
+export interface DecisionModelActivateResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * The durable job carrying the install/activation.
+   */
+  readonly job: JobHandle;
 }
 
 /**
@@ -8883,6 +9892,532 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_request",
       "rate_limited",
       "upgrade_required",
+    ],
+  },
+  {
+    name: "decision.status",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.evaluate",
+    scope: { required_scopes: ["decision:invoke"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateResult",
+    required_capability: { id: "decision.invoke", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "decision.evaluate",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecord",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.record.get",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.record.list",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 1000 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.list",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.get",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.publish",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.disable",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.outcome.submit",
+    scope: {
+      required_scopes: ["decision:feedback"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitResult",
+    required_capability: { id: "decision.feedback", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.list",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.install",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "decision.model_install",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallResult",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.activate",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "decision.model_activate",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateResult",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.remove",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.settings.get",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.settings.update",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
     ],
   },
 ] as const;

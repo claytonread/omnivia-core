@@ -64,7 +64,9 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "graph",
     "context-pack",
     "compatibility-matrix",
+    "chat",
     "runtime",
+    "decision",
 )
 
 

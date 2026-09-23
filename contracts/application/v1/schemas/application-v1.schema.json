@@ -21,7 +21,8 @@
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
     "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
-    "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+    "https://contracts.omnivia.dev/application/v1/chat.schema.json",
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -812,6 +813,150 @@
     },
     "WorkflowReviewResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult"
+    },
+    "DecisionSchemaVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion"
+    },
+    "DecisionSubjectRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSubjectRef"
+    },
+    "DecisionExecutionMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionMode"
+    },
+    "DecisionPrivacyFloor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionPrivacyFloor"
+    },
+    "DecisionExecutionConstraints": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionConstraints"
+    },
+    "DecisionDefinitionRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef"
+    },
+    "DecisionEvaluateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateInput"
+    },
+    "DecisionPrediction": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionPrediction"
+    },
+    "DecisionQuality": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionQuality"
+    },
+    "DecisionDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDisposition"
+    },
+    "DecisionExecutionFacts": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionFacts"
+    },
+    "DecisionRecordStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordStatus"
+    },
+    "DecisionRecord": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecord"
+    },
+    "DecisionRecordGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetInput"
+    },
+    "DecisionRecordListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListInput"
+    },
+    "DecisionRecordListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListResult"
+    },
+    "DecisionOption": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOption"
+    },
+    "DecisionDefinitionSummary": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionSummary"
+    },
+    "DecisionDefinitionListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListInput"
+    },
+    "DecisionDefinitionListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListResult"
+    },
+    "DecisionDefinitionGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetInput"
+    },
+    "DecisionDefinitionPublishInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishInput"
+    },
+    "DecisionDefinitionDisableInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableInput"
+    },
+    "DecisionOutcomeSubmitInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitInput"
+    },
+    "DecisionModelProfileSummary": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelProfileSummary"
+    },
+    "DecisionModelListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListInput"
+    },
+    "DecisionModelListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListResult"
+    },
+    "DecisionModelActionInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActionInput"
+    },
+    "DecisionStatusResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusResult"
+    },
+    "DecisionSettings": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettings"
+    },
+    "DecisionSettingsGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetInput"
+    },
+    "DecisionSettingsUpdateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateInput"
+    },
+    "DecisionDefinitionPublishResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishResult"
+    },
+    "DecisionDefinitionDisableResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableResult"
+    },
+    "DecisionOutcomeSubmitResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitResult"
+    },
+    "DecisionStatusInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusInput"
+    },
+    "DecisionInputBundle": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionInputBundle"
+    },
+    "DecisionEvaluateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateResult"
+    },
+    "DecisionModelInstallResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallResult"
+    },
+    "DecisionModelActivateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateResult"
+    },
+    "DecisionModelRemoveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveResult"
+    },
+    "DecisionRecordGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetResult"
+    },
+    "DecisionDefinitionGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetResult"
+    },
+    "DecisionSettingsGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetResult"
+    },
+    "DecisionSettingsUpdateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateResult"
+    },
+    "DecisionModelActivateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateInput"
+    },
+    "DecisionModelInstallInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallInput"
+    },
+    "DecisionModelRemoveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveInput"
     }
   }
 }

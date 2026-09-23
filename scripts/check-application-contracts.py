@@ -103,6 +103,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "compatibility-matrix",
     "runtime",
     "chat",
+    "decision",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1229,6 +1230,14 @@ _WORKFLOW_CONTROL: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "not_found"))
 )
 
+#: Decision Runtime (ADR-042). Reads reuse POINT_READ; evaluation adds the
+#: provider/queue/admission failures an assessment can hit (dependency for the
+#: optional worker, deadline and rate for bounded budgets, not_found for an
+#: unknown definition); configuration mutations reuse the governance profile.
+_DECISION_EVALUATE: tuple[str, ...] = tuple(
+    sorted(set((*_CREATE_MUT, "dependency_unavailable", "deadline_exceeded", "not_found", "rate_limited")))
+)
+_DECISION_CONFIGURE: tuple[str, ...] = _GOV_MUT
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
@@ -1248,6 +1257,20 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "JOB_EVENTS": _JOB_EVENTS,
     "WORKFLOW_START": _WORKFLOW_START,
     "WORKFLOW_CONTROL": _WORKFLOW_CONTROL,
+    "DECISION_STATUS": _POINT_READ,
+    "DECISION_EVALUATE": _DECISION_EVALUATE,
+    "DECISION_RECORD_GET": _POINT_READ,
+    "DECISION_RECORD_LIST": _POINT_READ,
+    "DECISION_DEFINITION_LIST": _POINT_READ,
+    "DECISION_DEFINITION_GET": _POINT_READ,
+    "DECISION_CONFIGURE": _DECISION_CONFIGURE,
+    "DECISION_OUTCOME_SUBMIT": _DECISION_EVALUATE,
+    "DECISION_MODEL_LIST": _POINT_READ,
+    "DECISION_MODEL_INSTALL": _DECISION_CONFIGURE,
+    "DECISION_MODEL_ACTIVATE": _DECISION_CONFIGURE,
+    "DECISION_MODEL_REMOVE": _DECISION_CONFIGURE,
+    "DECISION_SETTINGS_GET": _POINT_READ,
+    "DECISION_SETTINGS_UPDATE": _DECISION_CONFIGURE,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1397,12 +1420,79 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "installation", ("workspace:read",), "none", "workspace.read",
         "workspace", "WorkspaceList", "INSTALL_READ", True,
     ),
+    # --- Decision Runtime (ADR-042 / SPEC-CORE-DEC-001) -----------------------
+    "decision.status": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionStatus", "DECISION_STATUS", False,
+    ),
+    "decision.evaluate": FrozenOperation(
+        "workspace", ("decision:invoke",), "update", "decision.invoke",
+        "decision", "DecisionEvaluate", "DECISION_EVALUATE", False,
+        job_kind="decision.evaluate", terminal_result="DecisionRecord",
+    ),
+    "decision.record.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionRecordGet", "DECISION_RECORD_GET", False,
+    ),
+    "decision.record.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionRecordList", "DECISION_RECORD_LIST", True,
+    ),
+    "decision.definition.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionDefinitionList", "DECISION_DEFINITION_LIST", False,
+    ),
+    "decision.definition.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionDefinitionGet", "DECISION_DEFINITION_GET", False,
+    ),
+    "decision.definition.publish": FrozenOperation(
+        "workspace", ("decision:configure",), "create", "decision.configure",
+        "decision", "DecisionDefinitionPublish", "DECISION_CONFIGURE", False,
+    ),
+    "decision.definition.disable": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionDefinitionDisable", "DECISION_CONFIGURE", False,
+    ),
+    "decision.outcome.submit": FrozenOperation(
+        "workspace", ("decision:feedback",), "create", "decision.feedback",
+        "decision", "DecisionOutcomeSubmit", "DECISION_EVALUATE", False,
+    ),
+    "decision.model.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionModelList", "DECISION_MODEL_LIST", False,
+    ),
+    "decision.model.install": FrozenOperation(
+        "workspace", ("decision:configure",), "create", "decision.configure",
+        "decision", "DecisionModelInstall", "DECISION_CONFIGURE", False,
+        job_kind="decision.model_install", terminal_result="DecisionModelInstallResult",
+    ),
+    "decision.model.activate": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionModelActivate", "DECISION_CONFIGURE", False,
+        job_kind="decision.model_activate", terminal_result="DecisionModelActivateResult",
+    ),
+    "decision.model.remove": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionModelRemove", "DECISION_CONFIGURE", False,
+    ),
+    "decision.settings.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionSettingsGet", "DECISION_SETTINGS_GET", False,
+    ),
+    "decision.settings.update": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionSettingsUpdate", "DECISION_CONFIGURE", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
-#: precondition. Every other operation sets both precondition booleans false.
+#: precondition, plus `decision.settings.update`, whose compare-and-swap
+#: revision is a mutation precondition: a mismatch is a state the caller
+#: re-reads and re-decides against.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
-    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede"}
+    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
+     "decision.settings.update"}
 )
 
 
