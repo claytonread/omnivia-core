@@ -48,6 +48,10 @@ EXPECTED_RESTRICTED = (
     ("memory_search", "memory.search", "knowledge_retrieval"),
     ("graph_traverse", "graph.traverse", "knowledge_retrieval"),
     ("context_pack_build", "context_pack.build", "knowledge_retrieval"),
+    ("decision_evaluate", "decision.evaluate", "decision_evaluation"),
+    ("decision_record_get", "decision.record.get", "decision_record"),
+    ("decision_record_list", "decision.record.list", "decision_record"),
+    ("decision_status", "decision.status", "decision_read"),
 )
 
 EXPECTED_AUTHORING = EXPECTED_RESTRICTED + (
@@ -63,9 +67,16 @@ EXPECTED_SURFACES = {
     "authoring": EXPECTED_AUTHORING,
 }
 
-# The three mutations the authoring profile admits, and the only side-effecting
+# The four mutations the authoring profile admits, and the only side-effecting
 # operations any profile may name.
-EXPECTED_MUTATIONS = frozenset({"memory.create", "evidence.capture", "import.start"})
+EXPECTED_MUTATIONS = frozenset(
+    {
+        "memory.create",
+        "evidence.capture",
+        "import.start",
+        "decision.evaluate",
+    }
+)
 
 # The operations forbidden as model-callable tools, in every profile. Named
 # literally, because the point is that a future edit that adds one has to delete
@@ -144,22 +155,22 @@ def test_the_exposed_surface_is_exactly_the_reviewed_inventory_in_order(
     )
 
 
-def test_the_two_profiles_are_exactly_six_and_eleven_tools() -> None:
+def test_the_two_profiles_are_exactly_ten_and_fifteen_tools() -> None:
     """The counts the requirements fix, asserted as counts as well as names: a
     listing that gained a tool and lost one would satisfy neither line."""
-    assert len(manifest.exposure_manifest("restricted")) == 6
-    assert len(manifest.exposure_manifest("authoring")) == 11
-    assert len(manifest.tools("restricted")) == 6
-    assert len(manifest.tools("authoring")) == 11
+    assert len(manifest.exposure_manifest("restricted")) == 10
+    assert len(manifest.exposure_manifest("authoring")) == 15
+    assert len(manifest.tools("restricted")) == 10
+    assert len(manifest.tools("authoring")) == 15
 
 
-def test_the_authoring_profile_is_the_restricted_six_plus_five() -> None:
-    """Concatenation, not a second listing of the shared six: the profiles cannot
+def test_the_authoring_profile_is_the_restricted_ten_plus_five() -> None:
+    """Concatenation, not a second listing of the shared ten: the profiles cannot
     drift in a tool name, a title or a description they both advertise."""
     restricted = manifest.exposure_manifest("restricted")
-    assert manifest.exposure_manifest("authoring")[:6] == restricted
+    assert manifest.exposure_manifest("authoring")[:10] == restricted
     assert [
-        entry.tool_name for entry in manifest.exposure_manifest("authoring")[6:]
+        entry.tool_name for entry in manifest.exposure_manifest("authoring")[10:]
     ] == ["memory_create", "evidence_capture", "import_start", "job_get", "job_events"]
 
 
