@@ -96,4 +96,3 @@ BEFORE DELETE ON omnivia_decision_settings
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_decision_settings is append-only; DELETE is never permitted');
 END;
-

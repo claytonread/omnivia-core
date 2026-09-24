@@ -726,4 +726,3 @@ BEFORE DELETE ON omnivia_decision_outbox
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_decision_outbox is append-only; DELETE is never permitted');
 END;
-

@@ -242,4 +242,3 @@ BEFORE DELETE ON omnivia_decision_qualifications
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_decision_qualifications is append-only; DELETE is never permitted');
 END;
-
