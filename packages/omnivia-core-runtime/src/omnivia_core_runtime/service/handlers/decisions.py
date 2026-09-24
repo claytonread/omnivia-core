@@ -89,6 +89,7 @@ from omnivia_core_runtime.service.decision_runtime import (
 )
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
+    MutationOutcome,
     MutationSettlementContext,
     execute_mutation,
     issue_mutation_grant,
@@ -237,7 +238,7 @@ class DecisionHandlers:
             return True
 
         conflict: MutationIdempotencyConflict | None = None
-        outcome: Mapping[str, Any] | None = None
+        outcome: MutationOutcome | None = None
         try:
             outcome = execute_mutation(
                 connection,
@@ -253,15 +254,20 @@ class DecisionHandlers:
         except MutationIdempotencyConflict as error:
             conflict = error
         if conflict is not None or outcome is None:
+            code = (
+                ERROR_CODE_IDEMPOTENCY_CONFLICT
+                if conflict is None or conflict.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
+                else conflict.code
+            )
             raise OperationError(
-                (
-                    ERROR_CODE_IDEMPOTENCY_CONFLICT
-                    if conflict.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
-                    else ERROR_CODE_CONFLICT
-                ),
+                code,
                 _MESSAGE_CONFLICT,
-                retry_class=conflict.retry_class,
-                audit_reference=conflict.audit_reference,
+                retry_class=(
+                    "non_retryable" if conflict is None else conflict.retry_class
+                ),
+                audit_reference=(
+                    None if conflict is None else conflict.audit_reference
+                ),
             )
         result = DecisionEvaluateResult.from_wire(outcome.result)
         return AuditedOperationResult(
@@ -517,7 +523,7 @@ class DecisionHandlers:
             return True
 
         conflict: MutationIdempotencyConflict | None = None
-        outcome: Mapping[str, Any] | None = None
+        outcome: MutationOutcome | None = None
         try:
             outcome = execute_mutation(
                 connection,
@@ -533,11 +539,20 @@ class DecisionHandlers:
         except MutationIdempotencyConflict as error:
             conflict = error
         if conflict is not None or outcome is None:
+            code = (
+                ERROR_CODE_CONFLICT
+                if conflict is None or conflict.code == ERROR_CODE_CONFLICT
+                else conflict.code
+            )
             raise OperationError(
-                ERROR_CODE_CONFLICT if conflict.code == ERROR_CODE_CONFLICT else conflict.code,
+                code,
                 _MESSAGE_CONFLICT,
-                retry_class=conflict.retry_class,
-                audit_reference=conflict.audit_reference,
+                retry_class=(
+                    "non_retryable" if conflict is None else conflict.retry_class
+                ),
+                audit_reference=(
+                    None if conflict is None else conflict.audit_reference
+                ),
             )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
@@ -593,7 +608,7 @@ class DecisionHandlers:
             return True
 
         conflict: MutationIdempotencyConflict | None = None
-        outcome: Mapping[str, Any] | None = None
+        outcome: MutationOutcome | None = None
         try:
             outcome = execute_mutation(
                 connection,
@@ -609,7 +624,13 @@ class DecisionHandlers:
         except MutationIdempotencyConflict as error:
             conflict = error
         if conflict is not None or outcome is None:
-            raise OperationError(conflict.code, conflict.message, retry_class=conflict.retry_class)
+            raise OperationError(
+                ERROR_CODE_CONFLICT if conflict is None else conflict.code,
+                _MESSAGE_CONFLICT if conflict is None else conflict.message,
+                retry_class=(
+                    "non_retryable" if conflict is None else conflict.retry_class
+                ),
+            )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- outcomes --------------------------------------------------------------
@@ -694,7 +715,7 @@ class DecisionHandlers:
             return True
 
         conflict: MutationIdempotencyConflict | None = None
-        outcome: Mapping[str, Any] | None = None
+        outcome: MutationOutcome | None = None
         try:
             outcome = execute_mutation(
                 connection,
@@ -710,7 +731,13 @@ class DecisionHandlers:
         except MutationIdempotencyConflict as error:
             conflict = error
         if conflict is not None or outcome is None:
-            raise OperationError(conflict.code, conflict.message, retry_class=conflict.retry_class)
+            raise OperationError(
+                ERROR_CODE_CONFLICT if conflict is None else conflict.code,
+                _MESSAGE_CONFLICT if conflict is None else conflict.message,
+                retry_class=(
+                    "non_retryable" if conflict is None else conflict.retry_class
+                ),
+            )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- settings ----------------------------------------------------------------
@@ -736,7 +763,7 @@ class DecisionHandlers:
             ).fetchone()
         finally:
             connection.execute("ROLLBACK")
-        wire = {
+        wire: dict[str, Any] = {
             "settings": {
                 "schema_version": SCHEMA_VERSION,
                 "processing": processing,
@@ -781,7 +808,9 @@ class DecisionHandlers:
                     fenced,
                     settlement,
                     workspace_id=context.workspace_id,
-                    processing=request.processing,
+                    processing=(
+                    "off" if request.processing is None else request.processing
+                ),
                     subscription_enabled=False,
                     expected_revision=request.revision,
                 )
@@ -812,7 +841,7 @@ class DecisionHandlers:
             return True
 
         conflict: MutationIdempotencyConflict | None = None
-        outcome: Mapping[str, Any] | None = None
+        outcome: MutationOutcome | None = None
         try:
             outcome = execute_mutation(
                 connection,
@@ -833,14 +862,20 @@ class DecisionHandlers:
         except MutationIdempotencyConflict as error:
             conflict = error
         if conflict is not None or outcome is None:
-            raise OperationError(conflict.code, conflict.message, retry_class=conflict.retry_class)
+            raise OperationError(
+                ERROR_CODE_CONFLICT if conflict is None else conflict.code,
+                _MESSAGE_CONFLICT if conflict is None else conflict.message,
+                retry_class=(
+                    "non_retryable" if conflict is None else conflict.retry_class
+                ),
+            )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- models -------------------------------------------------------------------
 
     def decision_model_list(self, context: OperationContext) -> Mapping[str, Any]:
         """Approved model profiles. None exist until the runtime slice lands."""
-        wire = {"profiles": []}
+        wire: dict[str, Any] = {"profiles": []}
         result = DecisionModelListResult.from_wire(wire)
         validate_wire(result)
         return wire
@@ -879,8 +914,16 @@ def _evaluate_transaction(
     try:
         policy = compose_policy(
             processing_state=processing,
-            caller_deadline_ms=request.execution.deadline_ms,
-            caller_attempts=request.execution.maximum_provider_attempts,
+            caller_deadline_ms=(
+                5000
+                if request.execution.deadline_ms is None
+                else request.execution.deadline_ms
+            ),
+            caller_attempts=(
+                1
+                if request.execution.maximum_provider_attempts is None
+                else request.execution.maximum_provider_attempts
+            ),
             required_sources=0,
         )
     except DecisionPolicyDenied as denied:

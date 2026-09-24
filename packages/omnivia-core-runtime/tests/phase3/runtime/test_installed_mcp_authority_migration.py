@@ -333,7 +333,7 @@ def version_two_with_grants(monkeypatch: pytest.MonkeyPatch, root: Path) -> None
     installation actually held, and leaves the current policy to the tests
     below that run against the upgraded schema.
     """
-    import omnivia_core_runtime.service.installed_mcp as installed_mcp
+    from omnivia_core_runtime.service import installed_mcp
 
     pre_decision = installed_mcp._derive_policy(
         tuple(

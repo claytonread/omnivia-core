@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
@@ -42,7 +42,7 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def canonical_document(value: Mapping[str, Any] | list[Any]) -> str:
+def canonical_document(value: Mapping[str, Any] | Sequence[Any]) -> str:
     """One stable JSON spelling, used for both digests and storage."""
     return json.dumps(_plain(value), sort_keys=True, separators=(",", ":"))
 
@@ -278,7 +278,7 @@ def insert_decision_evaluation(
     definition_version: str,
     definition_digest: str,
     mode: str,
-    subject_refs: list[Mapping[str, Any]],
+    subject_refs: Sequence[Mapping[str, Any]],
     source_snapshot: Mapping[str, Any],
     job_id: str,
 ) -> None:
