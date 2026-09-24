@@ -128,35 +128,39 @@ ARGUMENTS: dict[str, dict[str, Any]] = {
     "decision_status": {},
 }
 
-#: The four decision tools this contracts slice advertises. The runtime still
-#: answers them with its stub refusals -- `not_implemented` for the reads, and
-#: `authorization_denied` for the mutation, whose dispatch grant lands with the
-#: runtime slice (PR-3) -- so the coverage checks below accept exactly those
-#: refusals and nothing else. When the real handlers land, delete this map and
-#: the calls become ordinary success assertions.
-DECISION_STUB_REFUSALS: dict[str, str] = {
-    "decision_evaluate": "authorization_denied",
-    "decision_record_get": "not_implemented",
-    "decision_record_list": "not_implemented",
-    "decision_status": "not_implemented",
+#: The four decision tools, with what a default (capability-off) session must
+#: answer for each: the passive status and record-list projections succeed with
+#: structured content, while an admission against a disabled capability and a
+#: lookup of an absent record are the typed refusals the handlers state. The
+#: schema-driven checks below validate the two successes like every other read.
+DECISION_OUTCOMES: dict[str, str] = {
+    "decision_status": "success",
+    "decision_record_list": "success",
+    "decision_record_get": "refused:not_found",
+    "decision_evaluate": "refused:capability_not_granted",
 }
 
 #: The tools a live session must answer successfully.
 SUCCESSFUL_TOOLS: tuple[str, ...] = tuple(
-    name for name in ARGUMENTS if name not in DECISION_STUB_REFUSALS
+    name for name in ARGUMENTS if name not in DECISION_OUTCOMES
 )
 
 
 def assert_call_outcome(observed: dict[str, Any], name: str) -> None:
-    """One call succeeded, or a decision tool was refused by exactly its stub."""
+    """One call succeeded, or a decision tool answered its stated outcome."""
     called = observed["calls"][name]
-    if name in DECISION_STUB_REFUSALS:
-        assert called["is_error"] is True, called
-        assert f'"code":"{DECISION_STUB_REFUSALS[name]}"' in called["content"][0][
-            "text"
-        ], called
-    else:
+    expected = DECISION_OUTCOMES.get(name)
+    if expected is None:
         assert called["is_error"] is False, called
+        return
+    if expected == "success":
+        assert called["is_error"] is False, called
+        assert isinstance(called.get("structured_content"), dict), called
+        return
+    assert called["is_error"] is True, called
+    assert f'"code":"{expected.split(":", 1)[1]}"' in called["content"][0]["text"], (
+        called
+    )
 
 #: Names that must not resolve to a tool, and the R004-06 boundary each one is on.
 #: Literal on purpose: a future edit that exposes one of these has to delete the

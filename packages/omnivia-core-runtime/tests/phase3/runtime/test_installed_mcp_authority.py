@@ -19,7 +19,10 @@ from omnivia_core_runtime.service.installed_mcp import (
     InstalledMcpSecret,
     profile_policy,
 )
-from omnivia_core_runtime.service.mutation import INSTALLATION_ADMINISTRATOR_ROLE
+from omnivia_core_runtime.service.mutation import (
+    INSTALLATION_ADMINISTRATOR_ROLE,
+    WORKSPACE_CONTRIBUTOR_ROLE,
+)
 from omnivia_core_runtime.storage.installation_store import (
     InstallationAuthority,
     InstallationAuthorityError,
@@ -165,9 +168,9 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         ("decision.read", "1.0"),
         ("decision.invoke", "1.0"),
     }
-    # No role at all. A restricted principal holds no operation a role admits, and
-    # the one this file's authoring profile grants is what lets a mutation through.
-    assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == set()
+    # The one role: `decision.evaluate` is a restricted-manifest mutation the
+    # coordinator serves under the workspace-contributor role, and nothing else.
+    assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
 def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
@@ -176,8 +179,10 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
     # R004 section 9.1's "workspace contributor authority sufficient for
     # `memory:write`", and exactly that: never the reviewer role that admits
     # governed transitions, never the administrator role that administers this
-    # installation.
-    assert kinds(added, McpGrantKind.ROLE) == {"workspace_contributor"}
+    # installation. The role itself is the restricted policy's -- both profiles'
+    # mutations are served under it -- so the additions add operations, scopes
+    # and purposes, and no new role.
+    assert kinds(added, McpGrantKind.ROLE) == set()
     assert kinds(added, McpGrantKind.OPERATION) == {
         "memory.create",
         "evidence.capture",
@@ -550,9 +555,9 @@ def test_a_restricted_principal_reads_but_is_not_admitted_to_authoring(
         principal = authority.authenticate(provisioning.secret.reveal())
         assert "memory.search" in principal.session.operations
         assert "memory.create" not in principal.session.operations
-        # And no role, so the mutation coordinator refuses it a second way: there
-        # is no stored row a contributor grant could be reconstructed from.
-        assert principal.session.roles == frozenset()
+        # The one role, for the decision mutation the restricted manifest admits;
+        # the coordinator refuses every other mutation for lack of a purpose grant.
+        assert principal.session.roles == frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
         assert (
             authority.admits_authoring(provisioning.setup.principal_id, "ws-one")
             is False
@@ -591,7 +596,7 @@ def test_a_role_survives_exactly_as_long_as_the_grant_that_states_it(
         )
         assert narrowed.secret is not None
         assert authority.authenticate(narrowed.secret.reveal()).session.roles == (
-            frozenset()
+            frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
         )
         # The credential the role was issued against no longer resolves at all.
         with pytest.raises(InstalledMcpAuthenticationError):

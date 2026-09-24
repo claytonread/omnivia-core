@@ -120,6 +120,7 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
             governance=memory,
             chat=reads,
             workflow=workflow,
+            decision=reads,
             probe=surface.probe,
         )
 

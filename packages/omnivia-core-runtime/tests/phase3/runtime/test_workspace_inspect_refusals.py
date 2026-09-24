@@ -106,14 +106,12 @@ MUTATING_ENTRY = next(
     and entry.scope.scope_kind == ENTRY.scope.scope_kind
 )
 
-#: The production grant as it stands after the Decision Runtime contracts slice:
-#: the six Lane D reads plus the seven side-effect-free decision reads.
-#: `decision.evaluate` is registered but never granted here -- the wiring filters
-#: the registry to side-effect-free operations, and the catalogue marks it
-#: `update`. Stated here as the filtered read `service.main.serve` produces, not
-#: copied from the registry -- deriving it would make the two agree by
-#: construction and this file's whole job is to notice when the grant and the
-#: build disagree.
+#: The production grant as it stands after the Decision Runtime records slice:
+#: the six Lane D reads. The decision operations are the decision family's own
+#: session and binding, not the local owner's read grant. Stated here as the
+#: filtered read `service.main.serve` produces, not copied from the registry --
+#: deriving it would make the two agree by construction and this file's whole
+#: job is to notice when the grant and the build disagree.
 PRODUCTION_OPERATIONS = frozenset(
     {
         WORKSPACE_INSPECT_OPERATION,
@@ -122,13 +120,6 @@ PRODUCTION_OPERATIONS = frozenset(
         MEMORY_SEARCH_OPERATION,
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
-        "decision.record.get",
-        "decision.record.list",
-        "decision.status",
-        "decision.definition.get",
-        "decision.definition.list",
-        "decision.model.list",
-        "decision.settings.get",
     }
 )
 
@@ -444,14 +435,7 @@ def test_3b_the_allowlist_is_exactly_the_two_accepted_purposes() -> None:
     assert WORKSPACE_INSPECTION_PURPOSE == "workspace_inspection"
     assert KNOWLEDGE_RETRIEVAL_PURPOSE == "knowledge_retrieval"
     assert production_session().purposes == frozenset(
-        {
-            "workspace_inspection",
-            "knowledge_retrieval",
-            "decision_status",
-            "decision_record",
-            "decision_read",
-            "decision_settings",
-        }
+        {"workspace_inspection", "knowledge_retrieval"}
     )
 
 
@@ -538,12 +522,9 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     # entry declares, and `context_pack.build` brings none at all because its own entry
     # requires `memory:read` too. Any other scope appearing here -- or `graph:read` failing
     # to -- would mean the constructor had started transcribing rather than deriving.
-    assert session.scopes == frozenset(
-        {"workspace:read", "memory:read", "graph:read", "decision:read"}
-    )
+    assert session.scopes == frozenset({"workspace:read", "memory:read", "graph:read"})
     assert session.capabilities == (
         CapabilityRef(id="context_pack.build", version="1.0"),
-        CapabilityRef(id="decision.read", version="1.0"),
         CapabilityRef(id="evidence.read", version="1.0"),
         CapabilityRef(id="graph.read", version="1.0"),
         CapabilityRef(id="knowledge.read", version="1.0"),
@@ -728,16 +709,14 @@ def test_5b_a_mutating_operation_is_denied_under_the_production_session() -> Non
     assert MUTATING_ENTRY.scope.required_scopes[0] not in production_session().scopes
 
 
-def test_5c_no_mutating_operation_reaches_the_production_grant() -> None:
-    """The registry covers exactly the handlers this build ships; the grant holds reads only.
+def test_5c_no_mutating_operation_is_registered_at_all() -> None:
+    """The widened exact set again -- §22.1's second carve-out, at the registry side.
 
-    The Decision Runtime contracts slice registers the decision handlers --
-    stubs that answer `not_implemented` until the runtime slice replaces them --
-    so the registry is no longer the read-only set. The registry-side fact this
-    test pins is that registration covers nothing outside the frozen catalogue;
-    the read-only guarantee is the wiring's side-effect filter, pinned by
-    `test_the_production_grant_is_the_grant_main_actually_wires` and `test_5a`
-    above. A mutating operation reaches a caller only if the filter passes it.
+    The registry holds the six reads this build's local-owner path serves. The
+    fifteen decision operations are the decision family's own registry
+    (`build_decision_registry`), which the compose step holds to the same
+    exactness, so a mutating operation reaches a caller only through a family
+    that deliberately admits it -- never through this read path.
     """
     registered = build_application_registry().operations
 
@@ -749,23 +728,10 @@ def test_5c_no_mutating_operation_reaches_the_production_grant() -> None:
             MEMORY_SEARCH_OPERATION,
             GRAPH_TRAVERSE_OPERATION,
             CONTEXT_PACK_BUILD_OPERATION,
-            "decision.evaluate",
-            "decision.record.get",
-            "decision.record.list",
-            "decision.status",
-            "decision.definition.list",
-            "decision.definition.get",
-            "decision.definition.publish",
-            "decision.definition.disable",
-            "decision.model.list",
-            "decision.model.install",
-            "decision.model.activate",
-            "decision.model.remove",
-            "decision.outcome.submit",
-            "decision.settings.get",
-            "decision.settings.update",
         }
     )
+    for name in registered:
+        assert get_operation_metadata(name).scope.side_effect == "none"
 
 
 # --- 6. no wildcard workspace access through request fields -------------------

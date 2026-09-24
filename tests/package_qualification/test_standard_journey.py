@@ -1078,8 +1078,9 @@ def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
     """A complete, accepted session observation, before any mutation.
 
     `names` are the six data-bearing reads; the four decision tools are always
-    appended, refused by exactly their stub error codes, because that is what a
-    real restricted session now carries alongside them.
+    appended, answering exactly what a default (capability-off) session answers:
+    the two passive projections succeed with structured content, and the other
+    two refuse with exactly their typed error codes.
     """
     called = {
         name: {
@@ -1088,21 +1089,27 @@ def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
         }
         for name in names
     }
-    for name, code in module._DECISION_STUB_CODES.items():
-        called[name] = {
-            "is_error": True,
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"{name} was refused by the service: "
-                    f'{{"error":{{"code":"{code}"}}}}',
-                }
-            ],
-        }
+    for name, expectation in module._DECISION_EXPECTATIONS.items():
+        if expectation == "success":
+            called[name] = {
+                "is_error": False,
+                "structured_content": {"projection": ["one"]},
+            }
+        else:
+            called[name] = {
+                "is_error": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"{name} was refused by the service: "
+                        f'{{"error":{{"code":"{expectation.split(":", 1)[1]}"}}}}',
+                    }
+                ],
+            }
     observed = {
         "server": "omnivia-core-mcp",
         "tools": [
-            {"name": name} for name in [*names, *module._DECISION_STUB_CODES]
+            {"name": name} for name in [*names, *module._DECISION_EXPECTATIONS]
         ],
         "called": called,
     }
@@ -1403,7 +1410,7 @@ def test_retained_host_evidence_exposes_exactly_the_accepted_fields(
             "session_completed": True,
             "tool_count": 10,
             "tool_calls": 6,
-            "tools": sorted([*names, *module._DECISION_STUB_CODES]),
+            "tools": sorted([*names, *module._DECISION_EXPECTATIONS]),
             "result_counts": dict.fromkeys(names, 1),
             "verdict": "pass",
         }
@@ -1447,7 +1454,7 @@ def test_every_advertised_tool_is_called_from_every_host(
     assert len(called) == 24
     assert {name for _command, name in called} == set(names)
     assert result["tool_count"] == 10
-    assert result["tools"] == sorted([*names, *module._DECISION_STUB_CODES])
+    assert result["tools"] == sorted([*names, *module._DECISION_EXPECTATIONS])
     assert result["knowledge_records"] == 1
     assert result["context_records"] == 1
     assert result["stdio_session_completed"] is True
@@ -1518,7 +1525,7 @@ def test_a_host_manifest_that_differs_from_the_others_fails_closed(
 
     def _per_host(command, arguments, calls, profile):
         seen.append(profile.name)
-        advertised = sorted([*calls, *module._DECISION_STUB_CODES])
+        advertised = sorted([*calls, *module._DECISION_EXPECTATIONS])
         return {
             "client": profile.name,
             "config_format": profile.config_format,
@@ -1552,7 +1559,7 @@ def test_a_manifest_that_is_not_the_accepted_ten_tools_fails_closed(
     names = list(module._RESULT_KEYS)
     renamed = [
         {"name": name}
-        for name in (*names[:-1], "context_pack_write", *module._DECISION_STUB_CODES)
+        for name in (*names[:-1], "context_pack_write", *module._DECISION_EXPECTATIONS)
     ]
     monkeypatch.setattr(
         module, "_mcp_session", _session(_observation(module, names, tools=renamed))

@@ -525,17 +525,9 @@ def test_v06_5_s0_implicit_local_owner_mutation_denied(owned: m1.Owned) -> None:
         issue(owned, context, session=roleless)
     assert denied.value.code == ERROR_CODE_AUTHORIZATION_DENIED
 
-    # And the wiring grant never holds one: `service.main.serve` filters the
-    # registry to side-effect-free operations, so a registered mutation still
-    # reaches no caller through the local owner session.
-    registered = build_application_registry().operations
-    assert registered & MUTATING_OPERATIONS
-    wired_reads = frozenset(
-        name
-        for name in registered
-        if get_operation_metadata(name).scope.side_effect == "none"
-    )
-    assert MUTATING_OPERATIONS.isdisjoint(wired_reads)
+    # And nothing is registered to serve it: the local-owner registry is the six
+    # reads, and the decision family's registry is separate from it.
+    assert MUTATING_OPERATIONS.isdisjoint(build_application_registry().operations)
 
 
 # --- S0-02: the grant is required, and there is no default one ----------------
@@ -1555,25 +1547,21 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "memory.search",
             "graph.traverse",
             "context_pack.build",
-            "decision.evaluate",
-            "decision.record.get",
-            "decision.record.list",
-            "decision.status",
-            "decision.definition.list",
-            "decision.definition.get",
-            "decision.definition.publish",
-            "decision.definition.disable",
-            "decision.model.list",
-            "decision.model.install",
-            "decision.model.activate",
-            "decision.model.remove",
-            "decision.outcome.submit",
-            "decision.settings.get",
-            "decision.settings.update",
         }
     )
-    # Nothing registered outside the frozen catalogue.
-    assert shipped <= APPLICATION_OPERATIONS
+    # The decision family's own registry carries the fifteen decision handlers;
+    # the read registry carries none of them.
+    from omnivia_core_runtime.service.application import build_decision_registry
+
+    assert not (shipped & build_decision_registry(
+        type("H", (), {name: None for name in (
+            "decision_evaluate", "decision_record_get", "decision_record_list",
+            "decision_status", "decision_definition_list", "decision_definition_get",
+            "decision_definition_publish", "decision_definition_disable",
+            "decision_outcome_submit", "decision_model_list",
+            "decision_settings_get", "decision_settings_update",
+            "decision_model_not_implemented")})(),
+    ).operations)
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
