@@ -293,6 +293,39 @@
    "sha256": null,
    "introduced_commit": null,
    "accepted_commit": null
+  },
+  {
+   "number": 44,
+   "filename": "0044_decision_settings.sql",
+   "owner": "Decision Runtime",
+   "repository": "omnivia-core",
+   "state": "candidate",
+   "predecessor": 43,
+   "sha256": "3ee83400e23443760b115e4100e61c3eb697001196245159ab1fc83215c0b9e8",
+   "introduced_commit": "72b84cf62f1ec272cfbb8c5bb1a840d6f612accc",
+   "accepted_commit": null
+  },
+  {
+   "number": 45,
+   "filename": "0045_decision_definitions.sql",
+   "owner": "Decision Runtime",
+   "repository": "omnivia-core",
+   "state": "candidate",
+   "predecessor": 44,
+   "sha256": "d5be71e1f40b4046a8c2bede8f3af5644d634fe84f3befa79b3f611578b73e60",
+   "introduced_commit": "72b84cf62f1ec272cfbb8c5bb1a840d6f612accc",
+   "accepted_commit": null
+  },
+  {
+   "number": 46,
+   "filename": "0046_decision_records.sql",
+   "owner": "Decision Runtime",
+   "repository": "omnivia-core",
+   "state": "candidate",
+   "predecessor": 45,
+   "sha256": "504b667cd0f7bf8ed99dec780218bb0e331d0c754977f9f976554db985ff4674",
+   "introduced_commit": "72b84cf62f1ec272cfbb8c5bb1a840d6f612accc",
+   "accepted_commit": null
   }
  ]
 }
