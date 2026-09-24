@@ -167,6 +167,11 @@ CANDIDATE_INTRODUCED_COMMITS = {
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
     42: "0373e229d2ded9b4c48fdba48fc8e760054f58a6",
+    # 0044-0046 were introduced by 72b84cf6 and repinned to the whitespace
+    # repair b16217f6, which is where their current content lives.
+    44: "b16217f679b304e80daf2af9566e26057d4a9049",
+    45: "b16217f679b304e80daf2af9566e26057d4a9049",
+    46: "b16217f679b304e80daf2af9566e26057d4a9049",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
