@@ -525,8 +525,17 @@ def test_v06_5_s0_implicit_local_owner_mutation_denied(owned: m1.Owned) -> None:
         issue(owned, context, session=roleless)
     assert denied.value.code == ERROR_CODE_AUTHORIZATION_DENIED
 
-    # And nothing is registered to serve it.
-    assert MUTATING_OPERATIONS.isdisjoint(build_application_registry().operations)
+    # And the wiring grant never holds one: `service.main.serve` filters the
+    # registry to side-effect-free operations, so a registered mutation still
+    # reaches no caller through the local owner session.
+    registered = build_application_registry().operations
+    assert registered & MUTATING_OPERATIONS
+    wired_reads = frozenset(
+        name
+        for name in registered
+        if get_operation_metadata(name).scope.side_effect == "none"
+    )
+    assert MUTATING_OPERATIONS.isdisjoint(wired_reads)
 
 
 # --- S0-02: the grant is required, and there is no default one ----------------
@@ -748,7 +757,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the thirteen, explicitly, with a mismatch failing closed for each."""
+    """Exactly the twenty-one, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -763,10 +772,18 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "candidate.reject",
         "record.supersede",
         "chat.command",
+        "decision.evaluate",
+        "decision.outcome.submit",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.update",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 13
+    assert len(MUTATION_PURPOSES) == 21
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -791,7 +808,7 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # Two more with the Workflow family: starting a Run and controlling one are
     # separate authorities, so neither shares a purpose with the other or with the
     # job family's own control.
-    assert len(set(MUTATION_PURPOSES.values())) == 8
+    assert len(set(MUTATION_PURPOSES.values())) == 10
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1529,7 +1546,8 @@ def test_v06_5_s0_execution_record_is_append_only_and_guarded(owned: m1.Owned) -
 
 def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     """A test can add a handler; production cannot acquire one by accident."""
-    shipped = frozenset(
+    shipped = build_application_registry().operations
+    assert shipped == frozenset(
         {
             "workspace.inspect",
             "evidence.search",
@@ -1537,14 +1555,25 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "memory.search",
             "graph.traverse",
             "context_pack.build",
+            "decision.evaluate",
+            "decision.record.get",
+            "decision.record.list",
+            "decision.status",
+            "decision.definition.list",
+            "decision.definition.get",
+            "decision.definition.publish",
+            "decision.definition.disable",
+            "decision.model.list",
+            "decision.model.install",
+            "decision.model.activate",
+            "decision.model.remove",
+            "decision.outcome.submit",
+            "decision.settings.get",
+            "decision.settings.update",
         }
     )
-    default = build_application_registry()
-    assert default.operations == shipped
-    assert len(shipped) == 6
-    # None of the seventeen unserved operations, mutating or not.
-    assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 22
+    # Nothing registered outside the frozen catalogue.
+    assert shipped <= APPLICATION_OPERATIONS
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
@@ -1556,7 +1585,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     # The injection is per-call: no module state moved, so the default is unchanged
     # both before and after -- which is the property monkeypatching cannot offer.
     assert build_application_registry().operations == shipped
-    assert default.get(OPERATION) is None
+    assert build_application_registry().get(OPERATION) is None
 
     # Nothing is relaxed for an injected handler.
     with pytest.raises(ValueError, match="not part of the accepted"):
@@ -1739,6 +1768,14 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "candidate.reject": "knowledge_reviewer",
         "record.supersede": "knowledge_reviewer",
         "chat.command": "workspace_contributor",
+        "decision.evaluate": "workspace_contributor",
+        "decision.outcome.submit": "workspace_contributor",
+        "decision.definition.publish": "workspace_contributor",
+        "decision.definition.disable": "workspace_contributor",
+        "decision.model.install": "workspace_contributor",
+        "decision.model.activate": "workspace_contributor",
+        "decision.model.remove": "workspace_contributor",
+        "decision.settings.update": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

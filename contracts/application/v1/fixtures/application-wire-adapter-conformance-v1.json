@@ -6818,6 +6818,1772 @@
           "request_id": "req-error-internal_non_recoverable"
         }
       }
+    },
+    {
+      "description": "decision.evaluate answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.evaluate/primary-success",
+      "operation": "decision.evaluate",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.evaluate.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.evaluate"
+        },
+        "operation": "decision.evaluate",
+        "input": {
+          "schema_version": "decision.1",
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "subject_refs": [
+            {
+              "id": "document:847",
+              "revision": "4"
+            }
+          ],
+          "input": {
+            "source_refs": [
+              {
+                "id": "evidence:847-text",
+                "revision": "4"
+              }
+            ]
+          },
+          "execution": {
+            "mode": "advisory",
+            "privacy": "local_only",
+            "deadline_ms": 5000,
+            "maximum_provider_attempts": 1
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.evaluate.primary-success",
+          "job": {
+            "job_id": "job-decision-evaluate"
+          },
+          "audit_reference": "audit-decision.evaluate"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "evaluation_id": "decision:conformance-001",
+          "job": {
+            "control": {
+              "cancellation": "cancellable",
+              "recovery": "not_retryable"
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "identity": {
+              "audit_reference": "audit-decision.evaluate",
+              "job_id": "job-decision-evaluate",
+              "job_kind": "decision.evaluate",
+              "originating_operation": "decision.evaluate",
+              "workspace_id": "ws-1"
+            },
+            "latest_attempt": {
+              "attempt_number": 1,
+              "started_at": "2026-09-22T00:00:00Z",
+              "state": "running"
+            },
+            "state": "running",
+            "updated_at": "2026-09-22T00:00:30Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.evaluate repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.evaluate/primary-success"
+      },
+      "id": "decision.evaluate/honest-replay",
+      "operation": "decision.evaluate",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.evaluate.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.evaluate"
+        },
+        "operation": "decision.evaluate",
+        "input": {
+          "schema_version": "decision.1",
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "subject_refs": [
+            {
+              "id": "document:847",
+              "revision": "4"
+            }
+          ],
+          "input": {
+            "source_refs": [
+              {
+                "id": "evidence:847-text",
+                "revision": "4"
+              }
+            ]
+          },
+          "execution": {
+            "mode": "advisory",
+            "privacy": "local_only",
+            "deadline_ms": 5000,
+            "maximum_provider_attempts": 1
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.evaluate.honest-replay",
+          "job": {
+            "job_id": "job-decision-evaluate"
+          },
+          "audit_reference": "audit-decision.evaluate"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "evaluation_id": "decision:conformance-001",
+          "job": {
+            "control": {
+              "cancellation": "cancellable",
+              "recovery": "not_retryable"
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "identity": {
+              "audit_reference": "audit-decision.evaluate",
+              "job_id": "job-decision-evaluate",
+              "job_kind": "decision.evaluate",
+              "originating_operation": "decision.evaluate",
+              "workspace_id": "ws-1"
+            },
+            "latest_attempt": {
+              "attempt_number": 1,
+              "started_at": "2026-09-22T00:00:00Z",
+              "state": "running"
+            },
+            "state": "running",
+            "updated_at": "2026-09-22T00:00:30Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.evaluate reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.evaluate/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.evaluate/idempotency-conflict",
+      "operation": "decision.evaluate",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.evaluate.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.evaluate"
+        },
+        "operation": "decision.evaluate",
+        "input": {
+          "schema_version": "decision.1",
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "subject_refs": [
+            {
+              "id": "document:848",
+              "revision": "1"
+            }
+          ],
+          "input": {
+            "source_refs": [
+              {
+                "id": "evidence:847-text",
+                "revision": "4"
+              }
+            ]
+          },
+          "execution": {
+            "mode": "advisory",
+            "privacy": "local_only",
+            "deadline_ms": 5000,
+            "maximum_provider_attempts": 1
+          }
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.evaluate.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.definition.publish answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.definition.publish/primary-success",
+      "operation": "decision.definition.publish",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.definition.publish.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.definition.publish"
+        },
+        "operation": "decision.definition.publish",
+        "input": {
+          "definition": {
+            "id": "core.document_category",
+            "version": "1.0.0",
+            "title": "Document category",
+            "purpose": "Candidate classification of authorised documents.",
+            "kind": "choice"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.definition.publish.primary-success"
+        },
+        "result": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "digest": "digest-core-document-category-v1-0-0-conformance",
+          "enabled": false
+        }
+      }
+    },
+    {
+      "description": "decision.definition.publish repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.definition.publish/primary-success"
+      },
+      "id": "decision.definition.publish/honest-replay",
+      "operation": "decision.definition.publish",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.definition.publish.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.definition.publish"
+        },
+        "operation": "decision.definition.publish",
+        "input": {
+          "definition": {
+            "id": "core.document_category",
+            "version": "1.0.0",
+            "title": "Document category",
+            "purpose": "Candidate classification of authorised documents.",
+            "kind": "choice"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.definition.publish.honest-replay"
+        },
+        "result": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "digest": "digest-core-document-category-v1-0-0-conformance",
+          "enabled": false
+        }
+      }
+    },
+    {
+      "description": "decision.definition.publish reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.definition.publish/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.definition.publish/idempotency-conflict",
+      "operation": "decision.definition.publish",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.definition.publish.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.definition.publish"
+        },
+        "operation": "decision.definition.publish",
+        "input": {
+          "definition": {
+            "id": "core.document_category",
+            "version": "1.1.0",
+            "title": "Document category",
+            "purpose": "Candidate classification of authorised documents.",
+            "kind": "choice"
+          }
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.definition.publish.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.definition.disable answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.definition.disable/primary-success",
+      "operation": "decision.definition.disable",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.definition.disable.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.definition.disable"
+        },
+        "operation": "decision.definition.disable",
+        "input": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.definition.disable.primary-success"
+        },
+        "result": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "enabled": false
+        }
+      }
+    },
+    {
+      "description": "decision.definition.disable repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.definition.disable/primary-success"
+      },
+      "id": "decision.definition.disable/honest-replay",
+      "operation": "decision.definition.disable",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.definition.disable.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.definition.disable"
+        },
+        "operation": "decision.definition.disable",
+        "input": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.definition.disable.honest-replay"
+        },
+        "result": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          },
+          "enabled": false
+        }
+      }
+    },
+    {
+      "description": "decision.definition.disable reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.definition.disable/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.definition.disable/idempotency-conflict",
+      "operation": "decision.definition.disable",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.definition.disable.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.definition.disable"
+        },
+        "operation": "decision.definition.disable",
+        "input": {
+          "definition_ref": {
+            "id": "core.message_intent",
+            "version": "1.0.0"
+          }
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.definition.disable.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.outcome.submit answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.outcome.submit/primary-success",
+      "operation": "decision.outcome.submit",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.outcome.submit.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.feedback",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:feedback"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.outcome.submit"
+        },
+        "operation": "decision.outcome.submit",
+        "input": {
+          "evaluation_id": "decision:conformance-001",
+          "outcome": "confirmed",
+          "evidence_refs": [
+            {
+              "id": "document:847",
+              "revision": "4"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.outcome.submit.primary-success"
+        },
+        "result": {
+          "outcome_id": "outcome-conformance-001",
+          "evaluation_id": "decision:conformance-001"
+        }
+      }
+    },
+    {
+      "description": "decision.outcome.submit repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.outcome.submit/primary-success"
+      },
+      "id": "decision.outcome.submit/honest-replay",
+      "operation": "decision.outcome.submit",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.outcome.submit.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.feedback",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:feedback"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.outcome.submit"
+        },
+        "operation": "decision.outcome.submit",
+        "input": {
+          "evaluation_id": "decision:conformance-001",
+          "outcome": "confirmed",
+          "evidence_refs": [
+            {
+              "id": "document:847",
+              "revision": "4"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.outcome.submit.honest-replay"
+        },
+        "result": {
+          "outcome_id": "outcome-conformance-001",
+          "evaluation_id": "decision:conformance-001"
+        }
+      }
+    },
+    {
+      "description": "decision.outcome.submit reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.outcome.submit/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.outcome.submit/idempotency-conflict",
+      "operation": "decision.outcome.submit",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.outcome.submit.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.feedback",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:feedback"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.outcome.submit"
+        },
+        "operation": "decision.outcome.submit",
+        "input": {
+          "evaluation_id": "decision:conformance-001",
+          "outcome": "rejected"
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.outcome.submit.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.model.install answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.model.install/primary-success",
+      "operation": "decision.model.install",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.install.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.install"
+        },
+        "operation": "decision.model.install",
+        "input": {
+          "profile_id": "laya.multilingual.general.fp16"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.install.primary-success",
+          "job": {
+            "job_id": "job-decision-model-install"
+          },
+          "audit_reference": "audit-decision.model_install"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "job": {
+            "control": {
+              "cancellation": "cancellable",
+              "recovery": "not_retryable"
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "identity": {
+              "audit_reference": "audit-decision.model_install",
+              "job_id": "job-decision-model-install",
+              "job_kind": "decision.model_install",
+              "originating_operation": "decision.model.install",
+              "workspace_id": "ws-1"
+            },
+            "latest_attempt": {
+              "attempt_number": 1,
+              "started_at": "2026-09-22T00:00:00Z",
+              "state": "running"
+            },
+            "state": "running",
+            "updated_at": "2026-09-22T00:00:30Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.install repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.model.install/primary-success"
+      },
+      "id": "decision.model.install/honest-replay",
+      "operation": "decision.model.install",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.install.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.install"
+        },
+        "operation": "decision.model.install",
+        "input": {
+          "profile_id": "laya.multilingual.general.fp16"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.install.honest-replay",
+          "job": {
+            "job_id": "job-decision-model-install"
+          },
+          "audit_reference": "audit-decision.model_install"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "job": {
+            "control": {
+              "cancellation": "cancellable",
+              "recovery": "not_retryable"
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "identity": {
+              "audit_reference": "audit-decision.model_install",
+              "job_id": "job-decision-model-install",
+              "job_kind": "decision.model_install",
+              "originating_operation": "decision.model.install",
+              "workspace_id": "ws-1"
+            },
+            "latest_attempt": {
+              "attempt_number": 1,
+              "started_at": "2026-09-22T00:00:00Z",
+              "state": "running"
+            },
+            "state": "running",
+            "updated_at": "2026-09-22T00:00:30Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.install reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.model.install/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.model.install/idempotency-conflict",
+      "operation": "decision.model.install",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.install.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.install"
+        },
+        "operation": "decision.model.install",
+        "input": {
+          "profile_id": "laya.multilingual.fast.fp16"
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.model.install.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.model.activate answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.model.activate/primary-success",
+      "operation": "decision.model.activate",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.activate.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.activate"
+        },
+        "operation": "decision.model.activate",
+        "input": {
+          "profile_id": "laya.multilingual.general.fp16"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.activate.primary-success",
+          "job": {
+            "job_id": "job-decision-model-activate"
+          },
+          "audit_reference": "audit-decision.model_activate"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "job": {
+            "control": {
+              "cancellation": "cancellable",
+              "recovery": "not_retryable"
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "identity": {
+              "audit_reference": "audit-decision.model_activate",
+              "job_id": "job-decision-model-activate",
+              "job_kind": "decision.model_activate",
+              "originating_operation": "decision.model.activate",
+              "workspace_id": "ws-1"
+            },
+            "latest_attempt": {
+              "attempt_number": 1,
+              "started_at": "2026-09-22T00:00:00Z",
+              "state": "running"
+            },
+            "state": "running",
+            "updated_at": "2026-09-22T00:00:30Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.activate repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.model.activate/primary-success"
+      },
+      "id": "decision.model.activate/honest-replay",
+      "operation": "decision.model.activate",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.activate.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.activate"
+        },
+        "operation": "decision.model.activate",
+        "input": {
+          "profile_id": "laya.multilingual.general.fp16"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.activate.honest-replay",
+          "job": {
+            "job_id": "job-decision-model-activate"
+          },
+          "audit_reference": "audit-decision.model_activate"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "job": {
+            "control": {
+              "cancellation": "cancellable",
+              "recovery": "not_retryable"
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "identity": {
+              "audit_reference": "audit-decision.model_activate",
+              "job_id": "job-decision-model-activate",
+              "job_kind": "decision.model_activate",
+              "originating_operation": "decision.model.activate",
+              "workspace_id": "ws-1"
+            },
+            "latest_attempt": {
+              "attempt_number": 1,
+              "started_at": "2026-09-22T00:00:00Z",
+              "state": "running"
+            },
+            "state": "running",
+            "updated_at": "2026-09-22T00:00:30Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.activate reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.model.activate/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.model.activate/idempotency-conflict",
+      "operation": "decision.model.activate",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.activate.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.activate"
+        },
+        "operation": "decision.model.activate",
+        "input": {
+          "profile_id": "laya.multilingual.fast.fp16"
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.model.activate.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.model.remove answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.model.remove/primary-success",
+      "operation": "decision.model.remove",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.remove.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.remove"
+        },
+        "operation": "decision.model.remove",
+        "input": {
+          "profile_id": "laya.multilingual.fast.fp16"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.remove.primary-success"
+        },
+        "result": {
+          "profile": {
+            "profile_id": "laya.multilingual.fast.fp16",
+            "name": "Laya multilingual fast (w8 deferred)",
+            "capacity_total_tokens": 96,
+            "maximum_options": 32,
+            "installation": "not_installed",
+            "activation": "disabled",
+            "health": "not_checked",
+            "qualification": "unvalidated",
+            "compute_configuration": "cpu+ne allowed; never claimed verified"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.remove repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.model.remove/primary-success"
+      },
+      "id": "decision.model.remove/honest-replay",
+      "operation": "decision.model.remove",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.remove.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.remove"
+        },
+        "operation": "decision.model.remove",
+        "input": {
+          "profile_id": "laya.multilingual.fast.fp16"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.remove.honest-replay"
+        },
+        "result": {
+          "profile": {
+            "profile_id": "laya.multilingual.fast.fp16",
+            "name": "Laya multilingual fast (w8 deferred)",
+            "capacity_total_tokens": 96,
+            "maximum_options": 32,
+            "installation": "not_installed",
+            "activation": "disabled",
+            "health": "not_checked",
+            "qualification": "unvalidated",
+            "compute_configuration": "cpu+ne allowed; never claimed verified"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.remove reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.model.remove/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.model.remove/idempotency-conflict",
+      "operation": "decision.model.remove",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.model.remove.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.model.remove"
+        },
+        "operation": "decision.model.remove",
+        "input": {
+          "profile_id": "laya.multilingual.general.fp16"
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.model.remove.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.settings.update answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.settings.update/primary-success",
+      "operation": "decision.settings.update",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.settings.update.primary-success",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.settings.update",
+          "mutation_precondition": {
+            "record_version": "decision-settings-v1"
+          }
+        },
+        "operation": "decision.settings.update",
+        "input": {
+          "revision": 1,
+          "processing": "advisory",
+          "subscription_enabled": false,
+          "subscription_daily_budget": 10000
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.settings.update.primary-success"
+        },
+        "result": {
+          "settings": {
+            "schema_version": "decision.1",
+            "processing": "advisory",
+            "subscription_enabled": false,
+            "subscription_daily_budget": 10000,
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.settings.update repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "decision.settings.update/primary-success"
+      },
+      "id": "decision.settings.update/honest-replay",
+      "operation": "decision.settings.update",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.settings.update.honest-replay",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.settings.update",
+          "mutation_precondition": {
+            "record_version": "decision-settings-v1"
+          }
+        },
+        "operation": "decision.settings.update",
+        "input": {
+          "revision": 1,
+          "processing": "advisory",
+          "subscription_enabled": false,
+          "subscription_daily_budget": 10000
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.settings.update.honest-replay"
+        },
+        "result": {
+          "settings": {
+            "schema_version": "decision.1",
+            "processing": "advisory",
+            "subscription_enabled": false,
+            "subscription_daily_budget": 10000,
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.settings.update reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "decision.settings.update/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "decision.settings.update/idempotency-conflict",
+      "operation": "decision.settings.update",
+      "request": {
+        "metadata": {
+          "request_id": "req-decision.settings.update.idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "decision.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-decision.settings.update",
+          "mutation_precondition": {
+            "record_version": "decision-settings-v1"
+          }
+        },
+        "operation": "decision.settings.update",
+        "input": {
+          "revision": 1,
+          "processing": "off"
+        }
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-decision.settings.update.idempotency-conflict"
+        }
+      }
+    },
+    {
+      "description": "decision.record.list first page: the caller's authorised evaluation records, newest first.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.record.list/primary-success",
+      "operation": "decision.record.list",
+      "request": {
+        "input": {
+          "limit": 1
+        },
+        "metadata": {
+          "request_id": "req-decision.record.list-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.record.list"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.record.list-success"
+        },
+        "result": {
+          "page": {
+            "continuation_token": "cursor-decision.record.list-1"
+          },
+          "records": [
+            {
+              "schema_version": "decision.1",
+              "evaluation_id": "decision:conformance-001",
+              "status": "succeeded",
+              "mode": "advisory",
+              "definition_ref": {
+                "id": "core.document_category",
+                "version": "1.0.0"
+              },
+              "subject_refs": [
+                {
+                  "id": "document:847",
+                  "revision": "4"
+                }
+              ],
+              "prediction": {
+                "kind": "choice",
+                "selected_option_id": "invoice",
+                "probabilities": {
+                  "invoice": 0.72,
+                  "receipt": 0.16,
+                  "other": 0.12
+                },
+                "probability_semantics": "model_class_probability",
+                "provider_decimal_precision": 4
+              },
+              "quality": {
+                "calibration_status": "unvalidated_for_task",
+                "input_complete": true
+              },
+              "disposition": {
+                "code": "advisory_only",
+                "reason_codes": [
+                  "TASK_NOT_QUALIFIED_FOR_AUTOMATION"
+                ],
+                "authorises_action": false
+              },
+              "execution": {
+                "provider_id": "laya_coreml",
+                "profile_id": "laya.multilingual.general.fp16",
+                "execution_location": "core_host",
+                "remote_processing_used": false,
+                "provider_forward_passes": 1,
+                "output_tokens": 0
+              },
+              "created_at": "2026-09-22T00:00:00Z",
+              "observed_at": "2026-09-22T00:00:05Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "description": "decision.record.list second page: the request presents exactly the continuation token the first page issued, returns the next record, and issues no further token.",
+      "expect": {
+        "branch": "success",
+        "page_of": "decision.record.list/primary-success"
+      },
+      "id": "decision.record.list/page-2",
+      "operation": "decision.record.list",
+      "request": {
+        "input": {
+          "limit": 1,
+          "page": {
+            "continuation_token": "cursor-decision.record.list-1"
+          }
+        },
+        "metadata": {
+          "request_id": "req-decision.record.list-page2",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.record.list"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.record.list-page2"
+        },
+        "result": {
+          "page": {},
+          "records": [
+            {
+              "schema_version": "decision.1",
+              "evaluation_id": "decision:conformance-002",
+              "status": "succeeded",
+              "mode": "advisory",
+              "definition_ref": {
+                "id": "core.document_category",
+                "version": "1.0.0"
+              },
+              "subject_refs": [
+                {
+                  "id": "document:847",
+                  "revision": "4"
+                }
+              ],
+              "prediction": {
+                "kind": "choice",
+                "selected_option_id": "invoice",
+                "probabilities": {
+                  "invoice": 0.72,
+                  "receipt": 0.16,
+                  "other": 0.12
+                },
+                "probability_semantics": "model_class_probability",
+                "provider_decimal_precision": 4
+              },
+              "quality": {
+                "calibration_status": "unvalidated_for_task",
+                "input_complete": true
+              },
+              "disposition": {
+                "code": "advisory_only",
+                "reason_codes": [
+                  "TASK_NOT_QUALIFIED_FOR_AUTOMATION"
+                ],
+                "authorises_action": false
+              },
+              "execution": {
+                "provider_id": "laya_coreml",
+                "profile_id": "laya.multilingual.general.fp16",
+                "execution_location": "core_host",
+                "remote_processing_used": false,
+                "provider_forward_passes": 1,
+                "output_tokens": 0
+              },
+              "created_at": "2026-09-22T00:00:00Z",
+              "observed_at": "2026-09-22T00:00:05Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "description": "decision.status answers a passive read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.status/primary-success",
+      "operation": "decision.status",
+      "request": {
+        "input": {},
+        "metadata": {
+          "request_id": "req-decision.status-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.status"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.status-success"
+        },
+        "result": {
+          "schema_version": "decision.1",
+          "host_engine_available": true,
+          "enabled": false,
+          "installed_profiles": 0,
+          "active_subscriptions": 0
+        }
+      }
+    },
+    {
+      "description": "decision.record.get answers a passive read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.record.get/primary-success",
+      "operation": "decision.record.get",
+      "request": {
+        "input": {
+          "evaluation_id": "decision:conformance-001"
+        },
+        "metadata": {
+          "request_id": "req-decision.record.get-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.record.get"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.record.get-success"
+        },
+        "result": {
+          "record": {
+            "schema_version": "decision.1",
+            "evaluation_id": "decision:conformance-001",
+            "status": "succeeded",
+            "mode": "advisory",
+            "definition_ref": {
+              "id": "core.document_category",
+              "version": "1.0.0"
+            },
+            "subject_refs": [
+              {
+                "id": "document:847",
+                "revision": "4"
+              }
+            ],
+            "prediction": {
+              "kind": "choice",
+              "selected_option_id": "invoice",
+              "probabilities": {
+                "invoice": 0.72,
+                "receipt": 0.16,
+                "other": 0.12
+              },
+              "probability_semantics": "model_class_probability",
+              "provider_decimal_precision": 4
+            },
+            "quality": {
+              "calibration_status": "unvalidated_for_task",
+              "input_complete": true
+            },
+            "disposition": {
+              "code": "advisory_only",
+              "reason_codes": [
+                "TASK_NOT_QUALIFIED_FOR_AUTOMATION"
+              ],
+              "authorises_action": false
+            },
+            "execution": {
+              "provider_id": "laya_coreml",
+              "profile_id": "laya.multilingual.general.fp16",
+              "execution_location": "core_host",
+              "remote_processing_used": false,
+              "provider_forward_passes": 1,
+              "output_tokens": 0
+            },
+            "created_at": "2026-09-22T00:00:00Z",
+            "observed_at": "2026-09-22T00:00:05Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.definition.list answers a passive read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.definition.list/primary-success",
+      "operation": "decision.definition.list",
+      "request": {
+        "input": {
+          "include_disabled": false
+        },
+        "metadata": {
+          "request_id": "req-decision.definition.list-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.definition.list"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.definition.list-success"
+        },
+        "result": {
+          "definitions": [
+            {
+              "id": "core.document_category",
+              "version": "1.0.0",
+              "title": "Document category",
+              "purpose": "Candidate classification of authorised documents.",
+              "kind": "choice",
+              "option_count": 4,
+              "enabled": true,
+              "digest": "digest-core-document-category-v1-0-0-conformance"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "description": "decision.definition.get answers a passive read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.definition.get/primary-success",
+      "operation": "decision.definition.get",
+      "request": {
+        "input": {
+          "definition_ref": {
+            "id": "core.document_category",
+            "version": "1.0.0"
+          }
+        },
+        "metadata": {
+          "request_id": "req-decision.definition.get-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.definition.get"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.definition.get-success"
+        },
+        "result": {
+          "definition": {
+            "id": "core.document_category",
+            "version": "1.0.0",
+            "title": "Document category",
+            "purpose": "Candidate classification of authorised documents.",
+            "kind": "choice",
+            "option_count": 4,
+            "enabled": true,
+            "digest": "digest-core-document-category-v1-0-0-conformance"
+          }
+        }
+      }
+    },
+    {
+      "description": "decision.model.list answers a passive read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.model.list/primary-success",
+      "operation": "decision.model.list",
+      "request": {
+        "input": {},
+        "metadata": {
+          "request_id": "req-decision.model.list-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.model.list"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.model.list-success"
+        },
+        "result": {
+          "profiles": [
+            {
+              "profile_id": "laya.multilingual.general.fp16",
+              "name": "Laya multilingual general (fp16)",
+              "capacity_total_tokens": 1024,
+              "maximum_options": 32,
+              "installation": "not_installed",
+              "activation": "disabled",
+              "health": "not_checked",
+              "qualification": "unvalidated",
+              "compute_configuration": "cpu+gpu allowed; never claimed ANE-verified"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "description": "decision.settings.get answers a passive read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.settings.get/primary-success",
+      "operation": "decision.settings.get",
+      "request": {
+        "input": {},
+        "metadata": {
+          "request_id": "req-decision.settings.get-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.settings.get"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-decision.settings.get-success"
+        },
+        "result": {
+          "settings": {
+            "schema_version": "decision.1",
+            "processing": "off",
+            "subscription_enabled": false,
+            "subscription_daily_budget": 10000,
+            "revision": 0
+          }
+        }
+      }
     }
   ],
   "contract_version": "1.0",

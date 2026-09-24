@@ -79,6 +79,7 @@ from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers import knowledge as knowledge_handlers
 from omnivia_core_runtime.service.main import LOCAL_PRINCIPAL
+from omnivia_core_runtime.service.mutation import MUTATING_OPERATIONS
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     OperationContext,
@@ -1814,11 +1815,26 @@ SHIPPED_OPERATIONS = frozenset(
         MEMORY_SEARCH_OPERATION,
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
+        "decision.evaluate",
+        "decision.record.get",
+        "decision.record.list",
+        "decision.status",
+        "decision.definition.list",
+        "decision.definition.get",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.model.list",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.outcome.submit",
+        "decision.settings.get",
+        "decision.settings.update",
     }
 )
 
 
-def test_lc_b13_the_shipped_operations_are_exactly_the_six_read_operations() -> None:
+def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> None:
     """The registry, the purposes and the capability snapshot, all at six operations.
 
     `test_workspace_inspect_refusals.py` holds the production *grant* evidence; this is the
@@ -1838,14 +1854,20 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_six_read_operations() -> 
     assert OPERATION_PURPOSES[MEMORY_SEARCH_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[GRAPH_TRAVERSE_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
-    assert set(OPERATION_PURPOSES) == SHIPPED_OPERATIONS
-    for name in SHIPPED_OPERATIONS:
+    # OPERATION_PURPOSES is the local-owner read policy: every registered read,
+    # and no mutation -- the decision stubs' mutations are excluded by design.
+    assert set(OPERATION_PURPOSES) == SHIPPED_OPERATIONS - MUTATING_OPERATIONS
+    for name in SHIPPED_OPERATIONS - MUTATING_OPERATIONS:
         entry = get_operation_metadata(name)
         assert entry.scope.side_effect == "none"
     assert server_capability_snapshot(registry) == tuple(
         CapabilityRef(id=capability, version="1.0")
         for capability in (
             "context_pack.build",
+            "decision.configure",
+            "decision.feedback",
+            "decision.invoke",
+            "decision.read",
             "evidence.read",
             "graph.read",
             "knowledge.read",

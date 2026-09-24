@@ -114,6 +114,37 @@ _RESULT_KEYS: Final = {
 #: or a boolean is a refusal rather than a `TypeError` out of `len`.
 _MAPPING_RESULTS: Final = frozenset({"workspace_inspect"})
 
+#: The four decision tools the restricted profile additionally advertises.  They
+#: are stubs in this build -- the runtime slice replaces them -- so the journey
+#: requires each to refuse with exactly its stub error code rather than to
+#: answer, and counts none of them among the populated reads.  The evaluate call
+#: carries a minimal valid wrapper so the refusal comes from the runtime stub
+#: rather than from the advertised schema's own preflight.
+_DECISION_STUB_CODES: Final = {
+    "decision_evaluate": "authorization_denied",
+    "decision_record_get": "not_implemented",
+    "decision_record_list": "not_implemented",
+    "decision_status": "not_implemented",
+}
+_DECISION_STUB_PAYLOADS: Final = {
+    "decision_evaluate": {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": "standard-journey-subject", "revision": "r1"}],
+            "input": {
+                "source_refs": [{"id": "standard-journey-subject", "revision": "r1"}]
+            },
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": "standard-journey-decision-evaluate-1",
+    },
+    "decision_record_get": {"evaluation_id": "standard-journey-eval-1"},
+    "decision_record_list": {},
+    "decision_status": {},
+}
+_EXPECTED_TOOL_COUNT: Final = 6 + len(_DECISION_STUB_CODES)
+
 #: `whoami /user` reports the SID in this form, mixed into a CSV row.
 _SID_RE: Final = re.compile(r"S-1-[0-9-]+")
 
@@ -712,6 +743,11 @@ async def _mcp_session(
             called[name] = (await session.call_tool(name, dict(payload))).model_dump(
                 mode="json"
             )
+        for name, payload in _DECISION_STUB_PAYLOADS.items():
+            stage[0] = name
+            called[name] = (await session.call_tool(name, dict(payload))).model_dump(
+                mode="json"
+            )
         stage[0] = "shutdown"
     return {
         "server": initialized.server_info.name,
@@ -760,7 +796,7 @@ def _mcp_journey(
     tools = observed.get("tools")
     if (
         not isinstance(tools, list)
-        or len(tools) != 6
+        or len(tools) != _EXPECTED_TOOL_COUNT
         or not all(
             isinstance(tool, Mapping) and isinstance(tool.get("name"), str)
             for tool in tools
@@ -768,16 +804,25 @@ def _mcp_journey(
     ):
         # Checked before the sort: a missing or non-string name would otherwise
         # raise a `TypeError` out of `sorted` rather than fail this journey.
-        raise JourneyError("MCP did not advertise the accepted six-tool manifest")
+        raise JourneyError("MCP did not advertise the accepted ten-tool manifest")
     advertised = sorted(tool["name"] for tool in tools)
-    if advertised != sorted(calls):
-        raise JourneyError(f"the {host} tool manifest was not the accepted six tools")
+    expected_calls = sorted([*calls, *_DECISION_STUB_CODES])
+    if advertised != expected_calls:
+        raise JourneyError(f"the {host} tool manifest was not the accepted ten tools")
     called = observed.get("called")
-    if not isinstance(called, Mapping) or set(called) != set(calls):
-        raise JourneyError(f"the {host} session did not call all six tools")
+    if not isinstance(called, Mapping) or set(called) != set(expected_calls):
+        raise JourneyError(f"the {host} session did not call all ten tools")
     populated: dict[str, int] = {}
     for name in calls:
         result = called[name]
+        if name in _DECISION_STUB_CODES:
+            # The decision tools are stubs in this build: refused, by exactly
+            # their stub error code, never answered.
+            if not isinstance(result, dict) or result.get("is_error") is not True:
+                raise JourneyError(f"MCP {name} did not refuse for {host}")
+            if f'"code":"{_DECISION_STUB_CODES[name]}"' not in json.dumps(result):
+                raise JourneyError(f"MCP {name} refused for the wrong reason for {host}")
+            continue
         if not isinstance(result, dict) or result.get("is_error") is True:
             raise JourneyError(f"MCP {name} did not return a success for {host}")
         structured = result.get("structured_content")

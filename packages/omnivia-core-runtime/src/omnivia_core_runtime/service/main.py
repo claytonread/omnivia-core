@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
+from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
 from omnivia_core_runtime.service.application import (
     LOCAL_TRANSPORT_ADAPTER,
     ApplicationDispatcher,
@@ -278,7 +279,12 @@ def _build_production_application_surface(
             principal_id=LOCAL_PRINCIPAL,
             installation_id=installation_id,
             workspace_id=started.workspace_id,
-            operations=registry.operations,
+            operations=frozenset(
+                op for op in registry.operations
+                if next(
+                    e for e in OPERATION_CATALOGUE if e.name == op
+                ).scope.side_effect == "none"
+            ),
         ),
         binding=ServiceBinding(
             installation_id=installation_id, workspace_id=started.workspace_id

@@ -360,6 +360,10 @@ def test_the_builder_requires_the_same_four_client_families_the_journey_drives()
 
 _TOOLS = [
     "context_pack_build",
+    "decision_evaluate",
+    "decision_record_get",
+    "decision_record_list",
+    "decision_status",
     "evidence_search",
     "graph_traverse",
     "knowledge_search",
@@ -385,10 +389,20 @@ def _accepted_result() -> dict[str, object]:
                     "config_format": config_format,
                     "connected": True,
                     "session_completed": True,
-                    "tool_count": 6,
+                    "tool_count": 10,
                     "tool_calls": 6,
                     "tools": list(_TOOLS),
-                    "result_counts": dict.fromkeys(_TOOLS, 1),
+                    "result_counts": dict.fromkeys(
+                        [
+                            "context_pack_build",
+                            "evidence_search",
+                            "graph_traverse",
+                            "knowledge_search",
+                            "memory_search",
+                            "workspace_inspect",
+                        ],
+                        1,
+                    ),
                     "verdict": "pass",
                 }
                 for family, config_format in _FORMATS.items()
@@ -575,7 +589,7 @@ def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> No
     assert module.HOST_EVIDENCE == {
         "connected": True,
         "session_completed": True,
-        "tool_count": 6,
+        "tool_count": 10,
         "tool_calls": 6,
         "verdict": "pass",
     }
@@ -779,7 +793,7 @@ def test_architecture_gate_clean_install_mcp_without_desktop(
     Claude Code configuration forms included. This test holds the two gates that
     make a pass mean that: the install is refused unless its first-party set is
     exactly the five Standard distributions, and the journey is refused unless
-    every host profile connected and called all six tools.
+    every host profile connected and called all ten tools.
 
     `_offline_qualification` is driven for real, with only process launches
     stubbed, so the ordering is proven rather than read: a freeze carrying a

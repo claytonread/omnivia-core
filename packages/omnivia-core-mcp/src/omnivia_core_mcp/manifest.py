@@ -119,7 +119,12 @@ _ADMITTED_AUDIT_CATEGORY: Final = "read"
 #: are twelve other mutations in the catalogue and none of them is reachable by
 #: an agent through any profile this module defines.
 ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
-    {"memory.create", "evidence.capture", "import.start"}
+    {
+        "memory.create",
+        "evidence.capture",
+        "import.start",
+        "decision.evaluate",
+    }
 )
 
 #: The canonical constraint an MCP mutation wrapper's ``idempotency_key`` carries.
@@ -241,6 +246,54 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
             "token budget. Every selected passage carries its citation, and the "
             "pack requires fresh authorization before reuse: holding one grants "
             "nothing. Persists nothing. Read-only."
+        ),
+    ),
+
+    ExposedOperation(
+        tool_name="decision_evaluate",
+        operation="decision.evaluate",
+        purpose="decision_evaluation",
+        title="Submit a bounded decision evaluation",
+        description=(
+            "Submit one bounded advisory assessment over authorised workspace "
+            "sources and return a durable evaluation record with its typed "
+            "prediction, quality and disposition. This operation has durable "
+            "side effects: it consumes resources and creates evaluation, job "
+            "and audit records, though it never mutates business records or "
+            "executes actions. Processing is advisory; a prediction never "
+            "authorises an action."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_record_get",
+        operation="decision.record.get",
+        purpose="decision_record",
+        title="Inspect one decision evaluation record",
+        description=(
+            "Return the durable record of one decision evaluation: its typed "
+            "prediction, quality, disposition and execution facts. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_record_list",
+        operation="decision.record.list",
+        purpose="decision_record",
+        title="List decision evaluation records",
+        description=(
+            "List the authorised decision evaluation records for the selected "
+            "workspace, newest first. Read-only and paginated."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_status",
+        operation="decision.status",
+        purpose="decision_status",
+        title="Report Decision Runtime status",
+        description=(
+            "Report whether the local decision engine is available on the "
+            "selected Core host, whether processing is enabled, and the "
+            "installed profile count. Passive: this never downloads, warms, "
+            "starts Core or processes records. Read-only."
         ),
     ),
 )

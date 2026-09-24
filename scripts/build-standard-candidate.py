@@ -54,8 +54,22 @@ HOST_CONFIG_FORMATS: Final = {
     "official_python_sdk": "official_python_sdk_stdio",
 }
 HOST_FAMILIES: Final = frozenset(HOST_CONFIG_FORMATS)
-#: The stable six-tool manifest, sorted as the journey retains it.
+#: The stable ten-tool manifest, sorted as the journey retains it.
 HOST_TOOLS: Final = [
+    "context_pack_build",
+    "decision_evaluate",
+    "decision_record_get",
+    "decision_record_list",
+    "decision_status",
+    "evidence_search",
+    "graph_traverse",
+    "knowledge_search",
+    "memory_search",
+    "workspace_inspect",
+]
+#: The reads the journey counts populated results for; the four decision tools
+#: are stubs and are refused, not answered.
+HOST_READ_TOOLS: Final = [
     "context_pack_build",
     "evidence_search",
     "graph_traverse",
@@ -68,7 +82,7 @@ HOST_TOOLS: Final = [
 HOST_EVIDENCE: Final = {
     "connected": True,
     "session_completed": True,
-    "tool_count": 6,
+    "tool_count": 10,
     "tool_calls": 6,
     "verdict": "pass",
 }
@@ -577,7 +591,7 @@ def _require_host_interoperability(result: Mapping[str, Any]) -> None:
         if not isinstance(host["tools"], list) or host["tools"] != HOST_TOOLS:
             raise rejected
         counts = host["result_counts"]
-        if not isinstance(counts, Mapping) or set(counts) != set(HOST_TOOLS):
+        if not isinstance(counts, Mapping) or set(counts) != set(HOST_READ_TOOLS):
             raise rejected
         if any(type(count) is not int or count < 1 for count in counts.values()):
             raise rejected

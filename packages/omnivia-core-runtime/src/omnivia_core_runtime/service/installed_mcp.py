@@ -133,6 +133,10 @@ _RESTRICTED_OPERATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("memory.search", "knowledge_retrieval"),
     ("graph.traverse", "knowledge_retrieval"),
     ("context_pack.build", "knowledge_retrieval"),
+    ("decision.evaluate", "decision_evaluation"),
+    ("decision.record.get", "decision_record"),
+    ("decision.record.list", "decision_record"),
+    ("decision.status", "decision_status"),
 )
 
 _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (

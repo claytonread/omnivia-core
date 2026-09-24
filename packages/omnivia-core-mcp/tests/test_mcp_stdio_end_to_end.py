@@ -111,7 +111,52 @@ ARGUMENTS: dict[str, dict[str, Any]] = {
         "mode": "deterministic_view",
         "token_budget": 4000,
     },
+    "decision_evaluate": {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": fixture.SOURCE_RECORD_ID, "revision": "r1"}],
+            "input": {
+                "source_refs": [{"id": fixture.SOURCE_RECORD_ID, "revision": "r1"}]
+            },
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": "decision-evaluate-e2e-1",
+    },
+    "decision_record_get": {"evaluation_id": "eval-e2e-1"},
+    "decision_record_list": {},
+    "decision_status": {},
 }
+
+#: The four decision tools this contracts slice advertises. The runtime still
+#: answers them with its stub refusals -- `not_implemented` for the reads, and
+#: `authorization_denied` for the mutation, whose dispatch grant lands with the
+#: runtime slice (PR-3) -- so the coverage checks below accept exactly those
+#: refusals and nothing else. When the real handlers land, delete this map and
+#: the calls become ordinary success assertions.
+DECISION_STUB_REFUSALS: dict[str, str] = {
+    "decision_evaluate": "authorization_denied",
+    "decision_record_get": "not_implemented",
+    "decision_record_list": "not_implemented",
+    "decision_status": "not_implemented",
+}
+
+#: The tools a live session must answer successfully.
+SUCCESSFUL_TOOLS: tuple[str, ...] = tuple(
+    name for name in ARGUMENTS if name not in DECISION_STUB_REFUSALS
+)
+
+
+def assert_call_outcome(observed: dict[str, Any], name: str) -> None:
+    """One call succeeded, or a decision tool was refused by exactly its stub."""
+    called = observed["calls"][name]
+    if name in DECISION_STUB_REFUSALS:
+        assert called["is_error"] is True, called
+        assert f'"code":"{DECISION_STUB_REFUSALS[name]}"' in called["content"][0][
+            "text"
+        ], called
+    else:
+        assert called["is_error"] is False, called
 
 #: Names that must not resolve to a tool, and the R004-06 boundary each one is on.
 #: Literal on purpose: a future edit that exposes one of these has to delete the
@@ -130,12 +175,18 @@ NEVER_A_TOOL: tuple[tuple[str, str], ...] = (
 
 
 #: The purposes the exposure manifest claims. A configuration that allow-lists
-#: exactly these is the one under which all six tools are callable; the
+#: exactly these is the one under which all ten tools are callable; the
 #: adversarial suite is where a narrower one refuses.
-ALL_PURPOSES = ("workspace_inspection", "knowledge_retrieval")
+ALL_PURPOSES = (
+    "workspace_inspection",
+    "knowledge_retrieval",
+    "decision_evaluation",
+    "decision_record",
+    "decision_status",
+)
 
 
-#: What an authoring installation allows: the two read purposes plus the three
+#: What an authoring installation allows: the restricted purposes plus the three
 #: the wider profile's tools claim. Every one is the service's own.
 AUTHORING_PURPOSES = (
     *ALL_PURPOSES,
@@ -390,10 +441,14 @@ def test_every_advertised_tool_is_read_only_and_closed(
     host decides whether to let a model call a tool from exactly this document.
     """
     for tool in observed["tools"]:
-        assert tool["annotations"]["read_only_hint"] is True
+        if tool["name"] == "decision_evaluate":
+            assert tool["annotations"]["read_only_hint"] is False
+            assert tool["input_schema"]["additionalProperties"] is False
+        else:
+            assert tool["annotations"]["read_only_hint"] is True
+            assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
-        assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["output_schema"]["type"] == "object"
         assert tool["meta"]["omnivia.manifestVersion"] == "2.0"
 
@@ -406,18 +461,18 @@ def test_every_advertised_tool_is_read_only_and_closed(
 # --- one session calls all six ------------------------------------------------
 
 
-def test_the_session_calls_exactly_the_advertised_six(
+def test_the_session_calls_exactly_the_advertised_ten(
     observed: dict[str, Any],
 ) -> None:
     """The coverage check, and the reason a seventh tool cannot land untested.
 
     Order and membership, against the manifest rather than against a literal, so
-    this file cannot drift into calling five of six and passing.
+    this file cannot drift into calling nine of ten and passing.
     """
     assert list(ARGUMENTS) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
     assert list(observed["calls"]) == list(ARGUMENTS)
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
 
 
 @pytest.mark.parametrize("tool_name", list(ARGUMENTS))
@@ -435,7 +490,7 @@ def test_every_request_validates_against_the_advertised_input_schema(
     )
 
 
-@pytest.mark.parametrize("tool_name", list(ARGUMENTS))
+@pytest.mark.parametrize("tool_name", SUCCESSFUL_TOOLS)
 def test_every_structured_result_validates_against_the_advertised_output_schema(
     observed: dict[str, Any], tool_name: str
 ) -> None:
@@ -449,7 +504,7 @@ def test_every_structured_result_validates_against_the_advertised_output_schema(
     )
 
 
-@pytest.mark.parametrize("tool_name", list(ARGUMENTS))
+@pytest.mark.parametrize("tool_name", SUCCESSFUL_TOOLS)
 def test_every_success_carries_one_json_text_item_equal_to_its_structured_content(
     observed: dict[str, Any], tool_name: str
 ) -> None:
@@ -897,7 +952,7 @@ def service_error(called: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
-    """One admitted stdio session: the listing, the five calls, then the replay."""
+    """One admitted stdio session: the listing, the authoring calls, the replay."""
     wanted = authoring_calls(principal_id)
     async with (
         stdio_client(parameters(config, "--authoring")) as (read_stream, write_stream),
@@ -923,11 +978,11 @@ async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
 def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """`mutation_enabled: true` in the trusted file, and still six read tools.
+    """`mutation_enabled: true` in the trusted file, and still the restricted ten.
 
     This is the upgrade rule and the security property together: the public
     configuration is a ceiling, not a switch, and the probe here is started the
-    way production starts one -- no admission injected. A model sees the same six
+    way production starts one -- no admission injected. A model sees the same ten
     tools it saw before, and `memory_create` is not merely absent from the
     listing but unresolvable at the call.
     """
@@ -941,13 +996,13 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
         entry.tool_name for entry in EXPOSURE_MANIFEST
     ]
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
     refusal = observed["refusals"]["memory_create"]
     assert refusal["is_error"] is True
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
-def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
+def test_an_admitted_authoring_session_lists_fifteen_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
@@ -1394,11 +1449,7 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     contaminated = session(live_config, "--contaminate")
     assert contaminated["tools"] == [tool.model_dump(mode="json") for tool in tools()]
     for name in ARGUMENTS:
-        assert contaminated["calls"][name]["is_error"] is False, (
-            name,
-            contaminated["calls"][name],
-            live_service.diagnosis(),
-        )
+        assert_call_outcome(contaminated, name)
     serialised = json.dumps(contaminated)
     assert "CONTAMINATION-FROM-A-HANDLER" not in serialised
     assert "CONTAMINATION-VIA-PRINT" not in serialised

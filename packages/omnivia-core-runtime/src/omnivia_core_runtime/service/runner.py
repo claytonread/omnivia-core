@@ -376,7 +376,9 @@ class ServiceRunner:
         failed = False
         try:
             serve(self)
-        except Exception:  # noqa: BLE001 - the public report is structural only
+        except Exception as exc:  # noqa: BLE001 - the public report is structural only
+            import sys as _s
+            print(f"TRANSPORT_START_ERROR: {type(exc).__name__}: {exc}", file=_s.stderr)
             failed = True
         if failed:
             raise RuntimeError("local service transport start failed")

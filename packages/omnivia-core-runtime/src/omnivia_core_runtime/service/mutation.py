@@ -107,6 +107,8 @@ WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
 #: canonical Runtime stream, not a scheduler row -- and one purpose covering both would
 #: let a grant issued for either be presented for the other.
 WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
+DECISION_EVALUATION_PURPOSE: Final = "decision_evaluation"
+DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -127,6 +129,14 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "record.supersede": KNOWLEDGE_GOVERNANCE_PURPOSE,
+        "decision.evaluate": DECISION_EVALUATION_PURPOSE,
+        "decision.definition.publish": DECISION_CONFIGURATION_PURPOSE,
+        "decision.definition.disable": DECISION_CONFIGURATION_PURPOSE,
+        "decision.outcome.submit": DECISION_EVALUATION_PURPOSE,
+        "decision.model.install": DECISION_CONFIGURATION_PURPOSE,
+        "decision.model.activate": DECISION_CONFIGURATION_PURPOSE,
+        "decision.model.remove": DECISION_CONFIGURATION_PURPOSE,
+        "decision.settings.update": DECISION_CONFIGURATION_PURPOSE,
     }
 )
 
@@ -165,6 +175,14 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
         "record.supersede": KNOWLEDGE_REVIEWER_ROLE,
+        "decision.evaluate": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.definition.publish": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.definition.disable": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.outcome.submit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.install": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.activate": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.remove": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

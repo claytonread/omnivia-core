@@ -88,12 +88,18 @@ INSTALLED_REFERENCE = "omcp-installed-principal-0001"
 INSTALLED_SECRET = "omcp_live_5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d"
 ROTATED_SECRET = "omcp_live_00112233445566778899aabbccddeeff"
 
-ALL_PURPOSES = ["workspace_inspection", "knowledge_retrieval"]
+ALL_PURPOSES = [
+    "workspace_inspection",
+    "knowledge_retrieval",
+    "decision_evaluation",
+    "decision_record",
+    "decision_status",
+]
 
-#: What an authoring installation additionally allows. Three more purposes, each
-#: the service's own for the operations the wider profile adds, so a refusal
-#: below is about the profile or the payload and never about a purpose nobody
-#: granted.
+#: What an authoring installation additionally allows. The decision purposes the
+#: restricted profile already carries, then three more, each the service's own
+#: for the operations the wider profile adds, so a refusal below is about the
+#: profile or the payload and never about a purpose nobody granted.
 AUTHORING_PURPOSES = [
     *ALL_PURPOSES,
     "memory_authoring",
@@ -152,6 +158,19 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
     },
     "job_get": {"job_id": "job-1"},
     "job_events": {"job_id": "job-1"},
+    "decision_evaluate": {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": "document:847", "revision": "r1"}],
+            "input": {"source_refs": [{"id": "document:847", "revision": "r1"}]},
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": "k-4",
+    },
+    "decision_record_get": {"evaluation_id": "eval-1"},
+    "decision_record_list": {},
+    "decision_status": {},
 }
 
 
@@ -492,8 +511,10 @@ def test_every_request_carries_the_configured_principal_claim() -> None:
     argument could have put anything else there.
     """
     for entry in EXPOSURE_MANIFEST:
+        if entry.operation in ADMITTED_MUTATIONS:
+            continue  # a mutation is exercised with its wrapper in the authoring tests
         transport = RecordingTransport()
-        call(entry.tool_name, {}, connected=session(transport))
+        call(entry.tool_name, AUTHORING_CALLS.get(entry.tool_name, {}), connected=session(transport))
         (request,) = transport.calls
         assert request.metadata.principal_claim is not None
         assert request.metadata.principal_claim.claimed_principal_id == PRINCIPAL
@@ -509,8 +530,10 @@ def test_the_request_states_the_catalogue_entrys_own_authority() -> None:
     from omnivia_core.contracts.v1 import get_operation_metadata
 
     for entry in EXPOSURE_MANIFEST:
+        if entry.operation in ADMITTED_MUTATIONS:
+            continue  # a mutation is exercised with its wrapper in the authoring tests
         transport = RecordingTransport()
-        call(entry.tool_name, {}, connected=session(transport))
+        call(entry.tool_name, AUTHORING_CALLS.get(entry.tool_name, {}), connected=session(transport))
         (request,) = transport.calls
         catalogue = get_operation_metadata(entry.operation)
 
@@ -624,7 +647,7 @@ def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
     a tool that does not exist. The purpose is enforced on call instead.
 
     Asserted over three configurations that differ only in `allowed_purposes`,
-    including one that allows nothing either profile claims: the six names come
+    including one that allows nothing either profile claims: the ten names come
     back unchanged every time, so the listing is the profile's and the purposes
     are a per-call check that never reaches it.
     """
@@ -641,7 +664,7 @@ def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
 
 
 def test_the_default_session_profile_is_restricted() -> None:
-    """A session built without naming a profile advertises the read-only six.
+    """A session built without naming a profile advertises the restricted ten.
 
     The failure mode this default should have: code that predates profiles, or a
     future constructor that forgets to pass one, gets the narrow inventory rather
@@ -806,7 +829,7 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_six_and_eleven() -> None:
+def test_the_two_inventories_are_the_frozen_ten_and_fifteen() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
@@ -814,10 +837,10 @@ def test_the_two_inventories_are_the_frozen_six_and_eleven() -> None:
     at all, which is what makes the refusal below a policy rather than a message.
     """
     restricted, authoring = session(), authoring_session()
-    assert len(listed(restricted)) == 6
-    assert len(listed(authoring)) == 11
-    assert listed(authoring)[:6] == listed(restricted)
-    assert listed(authoring)[6:] == [
+    assert len(listed(restricted)) == 10
+    assert len(listed(authoring)) == 15
+    assert listed(authoring)[:10] == listed(restricted)
+    assert listed(authoring)[10:] == [
         "memory_create",
         "evidence_capture",
         "import_start",
@@ -826,14 +849,18 @@ def test_the_two_inventories_are_the_frozen_six_and_eleven() -> None:
     ]
 
 
-@pytest.mark.parametrize("tool_name", sorted(AUTHORING_CALLS))
+@pytest.mark.parametrize(
+    "tool_name",
+    ["memory_create", "evidence_capture", "import_start", "job_get", "job_events"],
+)
 def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) -> None:
     """Including on one whose configuration says `mutation_enabled: true`.
 
     The refusing transport is the point: the ceiling alone admits nothing, and
     the refusal costs no dial. A restricted server with every authoring purpose
     allowed still cannot reach a tool its profile does not expose -- so the
-    purpose check is not what is holding the line here.
+    purpose check is not what is holding the line here. (The four decision
+    tools sit in *both* profiles, so they are not in this list.)
     """
     permissive = session(
         config=configuration(
@@ -844,7 +871,7 @@ def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) 
     assert result.is_error is True
     assert result.structured_content is None
     assert "is not a tool this server exposes" in result.content[0].text
-    # And the refusal offers what *is* available, which is the six and only six.
+    # And the refusal offers what *is* available, which is the ten and only ten.
     offered = result.content[0].text.split("Available: ", 1)[1]
     available = offered.rstrip(".").split(", ")
     assert available == [entry.tool_name for entry in EXPOSURE_MANIFEST]
@@ -928,7 +955,7 @@ def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability()
     None
 ):
     """Read off the frozen catalogue entry and the manifest, never transcribed --
-    for the five wider tools as much as for the six reads.
+    for the five wider tools as much as for the ten shared reads.
 
     The purposes are the service's own (`memory_authoring`, `content_ingestion`,
     `job_observation`), so a request states the claim the grant is checked

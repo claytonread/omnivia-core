@@ -187,7 +187,22 @@
         "workflow.start",
         "workspace.create",
         "workspace.inspect",
-        "workspace.list"
+        "workspace.list",
+        "decision.status",
+        "decision.evaluate",
+        "decision.record.get",
+        "decision.record.list",
+        "decision.definition.list",
+        "decision.definition.get",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.outcome.submit",
+        "decision.model.list",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.get",
+        "decision.settings.update"
       ]
     },
     {
@@ -300,7 +315,15 @@
         "record.supersede",
         "workflow.control",
         "workflow.start",
-        "workspace.create"
+        "workspace.create",
+        "decision.evaluate",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.outcome.submit",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.update"
       ]
     },
     {
@@ -322,7 +345,15 @@
         "record.supersede",
         "workflow.control",
         "workflow.start",
-        "workspace.create"
+        "workspace.create",
+        "decision.evaluate",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.outcome.submit",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.update"
       ]
     },
     {
@@ -386,7 +417,22 @@
         "workflow.start",
         "workspace.create",
         "workspace.inspect",
-        "workspace.list"
+        "workspace.list",
+        "decision.status",
+        "decision.evaluate",
+        "decision.record.get",
+        "decision.record.list",
+        "decision.definition.list",
+        "decision.definition.get",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.outcome.submit",
+        "decision.model.list",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.get",
+        "decision.settings.update"
       ]
     },
     {
@@ -423,7 +469,22 @@
         "workflow.start",
         "workspace.create",
         "workspace.inspect",
-        "workspace.list"
+        "workspace.list",
+        "decision.status",
+        "decision.evaluate",
+        "decision.record.get",
+        "decision.record.list",
+        "decision.definition.list",
+        "decision.definition.get",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.outcome.submit",
+        "decision.model.list",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.get",
+        "decision.settings.update"
       ]
     },
     {

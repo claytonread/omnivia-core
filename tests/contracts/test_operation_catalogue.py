@@ -138,19 +138,20 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_twenty_eight_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 28
+def test_the_catalogue_holds_exactly_the_frozen_forty_three_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 43
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
-    assert FROZEN_NAMES == sorted(FROZEN_NAMES)
-    assert len(set(FROZEN_NAMES)) == 28
+    # The original twenty-eight are alphabetical; the fifteen Decision Runtime
+    # operations from ADR-042 are appended after them in amendment order.
+    assert len(set(FROZEN_NAMES)) == 43
 
 
-def test_two_operations_are_installation_scoped_and_twenty_six_are_workspace_scoped() -> None:
+def test_two_operations_are_installation_scoped_and_forty_one_are_workspace_scoped() -> None:
     installation = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "installation"]
     workspace = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "workspace"]
     assert installation == ["workspace.create", "workspace.list"]
-    assert len(workspace) == 26
-    assert len(installation) + len(workspace) == 28
+    assert len(workspace) == 41
+    assert len(installation) + len(workspace) == 43
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
@@ -269,20 +270,28 @@ def test_an_unknown_optional_field_decodes_tolerantly() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_exactly_the_two_durable_job_starting_operations_declare_their_job() -> None:
-    """Two operations start durable work, and each says which kind and how it ends.
+def test_exactly_the_five_durable_job_starting_operations_declare_their_job() -> None:
+    """Five operations start durable work, and each says which kind and how it ends.
 
     `import.start` runs the import on the request it was given; `workflow.start` admits a
-    Run for the scheduler to pick up. Both leave the caller holding a job they did not
-    watch finish, which is the whole reason the mode exists -- and neither may declare it
-    without naming the `job_kind` a caller would look the job up under and the schema its
-    terminal success is readable as.
+    Run for the scheduler to pick up. The Decision Runtime (ADR-042) adds three:
+    `decision.evaluate` admits a bounded assessment, and `decision.model.install` /
+    `decision.model.activate` admit model-management work. All leave the caller holding a
+    job they did not watch finish, which is the whole reason the mode exists -- and none
+    may declare it without naming the `job_kind` a caller would look the job up under and
+    the schema its terminal success is readable as.
     """
     asynchronous = {
         e.name: e.job for e in OPERATION_CATALOGUE if e.job.completion_mode != "synchronous"
     }
 
-    assert sorted(asynchronous) == ["import.start", "workflow.start"]
+    assert sorted(asynchronous) == [
+        "decision.evaluate",
+        "decision.model.activate",
+        "decision.model.install",
+        "import.start",
+        "workflow.start",
+    ]
     assert all(job.completion_mode == "always_returns_job" for job in asynchronous.values())
     assert asynchronous["import.start"].job_kind == "ingestion.import"
     assert asynchronous["import.start"].terminal_result_schema_ref == (
@@ -293,6 +302,18 @@ def test_exactly_the_two_durable_job_starting_operations_declare_their_job() -> 
     # `workflow.inspect` publishes exactly this shape for the same Run.
     assert asynchronous["workflow.start"].terminal_result_schema_ref == (
         f"{BASE_URI}runtime.schema.json#/$defs/WorkflowCompletion"
+    )
+    assert asynchronous["decision.evaluate"].job_kind == "decision.evaluate"
+    assert asynchronous["decision.evaluate"].terminal_result_schema_ref == (
+        f"{BASE_URI}decision.schema.json#/$defs/DecisionRecord"
+    )
+    assert asynchronous["decision.model.install"].job_kind == "decision.model_install"
+    assert asynchronous["decision.model.install"].terminal_result_schema_ref == (
+        f"{BASE_URI}decision.schema.json#/$defs/DecisionModelInstallResult"
+    )
+    assert asynchronous["decision.model.activate"].job_kind == "decision.model_activate"
+    assert asynchronous["decision.model.activate"].terminal_result_schema_ref == (
+        f"{BASE_URI}decision.schema.json#/$defs/DecisionModelActivateResult"
     )
 
 
@@ -309,7 +330,7 @@ def test_synchronous_operations_omit_both_optional_job_fields() -> None:
         assert set(entry.to_wire()["job"]) == {"completion_mode"}, entry.name
 
 
-def test_exactly_seven_operations_are_paginated_at_a_maximum_page_size_of_1000() -> None:
+def test_exactly_eight_operations_are_paginated_at_a_maximum_page_size_of_1000() -> None:
     paginated = [e for e in OPERATION_CATALOGUE if e.pagination.paginated]
     assert [e.name for e in paginated] == [
         "evidence.search",
@@ -319,6 +340,7 @@ def test_exactly_seven_operations_are_paginated_at_a_maximum_page_size_of_1000()
         "memory.list",
         "memory.search",
         "workspace.list",
+        "decision.record.list",
     ]
     assert all(e.pagination.max_page_size == 1000 for e in paginated)
     for entry in OPERATION_CATALOGUE:
@@ -344,10 +366,13 @@ def test_idempotency_posture_follows_the_side_effect(name: str, entry: dict[str,
         assert not metadata.idempotency.safe_to_retry
 
 
-def test_exactly_four_governance_transitions_require_a_mutation_precondition() -> None:
+def test_exactly_five_operations_require_a_mutation_precondition() -> None:
     supported = [e.name for e in OPERATION_CATALOGUE if e.precondition.supports_mutation_precondition]
     required = [e.name for e in OPERATION_CATALOGUE if e.precondition.required]
-    expected = ["candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede"]
+    expected = [
+        "candidate.approve", "candidate.reject", "knowledge.propose",
+        "record.supersede", "decision.settings.update",
+    ]
     assert supported == expected
     assert required == expected
 
@@ -896,22 +921,22 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
     it is the one representation nothing else can catch drifting.
     """
     installation = _documented_operations("Two are installation-scoped:")
-    workspace = _documented_operations("Twenty-six are workspace-scoped:")
+    workspace = _documented_operations("Forty-one are workspace-scoped:")
     documented = installation + workspace
 
-    assert sorted(documented) == FROZEN_NAMES
-    assert len(documented) == len(set(documented)) == 28
+    assert sorted(documented) == sorted(FROZEN_NAMES)
+    assert len(documented) == len(set(documented)) == 43
     assert installation == [
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "installation"
     ]
-    assert sorted(workspace) == [
+    assert sorted(workspace) == sorted(
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "workspace"
-    ]
+    )
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
 def test_the_readme_operation_list_names_no_probe_and_no_job_resume(name: str) -> None:
     documented = _documented_operations("Two are installation-scoped:") + _documented_operations(
-        "Twenty-six are workspace-scoped:"
+        "Forty-one are workspace-scoped:"
     )
     assert name not in documented
