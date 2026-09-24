@@ -86,6 +86,10 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatHandlers,
 )
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
+from omnivia_core_runtime.service.handlers.decisions import (
+    DECISION_EVALUATE_OPERATION,
+    DecisionHandlers,
+)
 from omnivia_core_runtime.service.handlers.evidence import (
     EVIDENCE_CAPTURE_OPERATION,
     EvidenceHandlers,
@@ -146,7 +150,6 @@ from omnivia_core_runtime.service.mutation import (
     WORKSPACE_CONTRIBUTOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import (
-    APPLICATION_OPERATIONS,
     ApplicationOperationRegistry,
     AuditedOperationResult,
     OperationContext,
@@ -621,6 +624,172 @@ def build_job_registry(
     return registry
 
 
+#: The S-decision family (ADR-042): the fifteen decision operations, one session
+#: and one binding. Purposes are the local-owner policy table's own, so a request
+#: states a claim the grant is actually checked against.
+DECISION_FAMILY_OPERATIONS: Final[frozenset[str]] = frozenset(
+    name
+    for name in (*OPERATION_PURPOSES, *MUTATION_PURPOSES)
+    if name.startswith("decision.")
+)
+
+DECISION_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        **{
+            name: OPERATION_PURPOSES[name]
+            for name in DECISION_FAMILY_OPERATIONS
+            if name in OPERATION_PURPOSES
+        },
+        **{
+            name: MUTATION_PURPOSES[name]
+            for name in DECISION_FAMILY_OPERATIONS
+            if name in MUTATION_PURPOSES
+        },
+    }
+)
+
+
+def decision_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The S-decision contributor grant for one workspace's decision surface."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(DECISION_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=DECISION_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(DECISION_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_decision_registry(
+    handlers: DecisionHandlers,
+) -> ApplicationOperationRegistry:
+    """The fifteen decision operations: twelve real, three honest refusals.
+
+    The model lifecycle (`decision.model.install/activate/remove`) stays the
+    runtime slice's work; calling one returns a bounded dependency-unavailable
+    refusal rather than a simulated result (§28.4).
+    """
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        DECISION_EVALUATE_OPERATION,
+        cast(OperationHandler, handlers.decision_evaluate),
+    )
+    registry.register(
+        "decision.record.get", cast(OperationHandler, handlers.decision_record_get)
+    )
+    registry.register(
+        "decision.record.list",
+        cast(OperationHandler, handlers.decision_record_list),
+    )
+    registry.register(
+        "decision.status", cast(OperationHandler, handlers.decision_status)
+    )
+    registry.register(
+        "decision.definition.list",
+        cast(OperationHandler, handlers.decision_definition_list),
+    )
+    registry.register(
+        "decision.definition.get",
+        cast(OperationHandler, handlers.decision_definition_get),
+    )
+    registry.register(
+        "decision.definition.publish",
+        cast(OperationHandler, handlers.decision_definition_publish),
+    )
+    registry.register(
+        "decision.definition.disable",
+        cast(OperationHandler, handlers.decision_definition_disable),
+    )
+    registry.register(
+        "decision.outcome.submit",
+        cast(OperationHandler, handlers.decision_outcome_submit),
+    )
+    registry.register(
+        "decision.model.list", cast(OperationHandler, handlers.decision_model_list)
+    )
+    registry.register(
+        "decision.settings.get",
+        cast(OperationHandler, handlers.decision_settings_get),
+    )
+    registry.register(
+        "decision.settings.update",
+        cast(OperationHandler, handlers.decision_settings_update),
+    )
+    registry.register(
+        "decision.model.install",
+        cast(OperationHandler, handlers.decision_model_not_implemented),
+    )
+    registry.register(
+        "decision.model.activate",
+        cast(OperationHandler, handlers.decision_model_not_implemented),
+    )
+    registry.register(
+        "decision.model.remove",
+        cast(OperationHandler, handlers.decision_model_not_implemented),
+    )
+    return registry
+
+
+def build_decision_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the fifteen-operation S-decision family around the existing router."""
+    session = decision_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = DecisionHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_decision_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def governance_family_session(
     *, principal_id: str, installation_id: str, workspace_id: str
 ) -> AuthenticatedSession:
@@ -761,28 +930,14 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
 
 
 
-def _decision_registration_guard(context: OperationContext) -> AuditedOperationResult:
-    """Honest stub for the fifteen ADR-042 decision operations.
-
-    The Decision Runtime handler implementations arrive in Phase 3 of the
-    implementation plan. Calling any decision operation in this build returns
-    a bounded `not_implemented` error rather than a simulated result, per
-    SPEC-CORE-DEC-001 §28.4: an intentionally unavailable state is correct
-    when the backend or authority is absent.
-    """
-    raise OperationError(
-        code="not_implemented",
-        message="Decision Runtime is not yet active in this build.",
-        retry_class="non_retryable",
-    )
-
-
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
-    Six entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
+    Six entries -- the six original reads. The fifteen decision operations are
+    the decision family's own registry (`build_decision_registry`), which is a
+    separate session and binding rather than a stub family living here. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
     fails closed on anything else, so this cannot register a name A2 did not freeze,
     and it registers nothing into the probe registry.
 
@@ -811,20 +966,6 @@ def build_application_registry(
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
-    # Decision Runtime (ADR-042): fifteen operations whose handlers arrive in
-    # Phase 3. Registered as honest stubs so the service starts and the
-    # production surface is complete. Calling any of them returns a bounded
-    # `not_implemented` error per SPEC-CORE-DEC-001 §28.4.
-    def _decision_registration_guard(context: OperationContext) -> AuditedOperationResult:
-        raise OperationError(
-            code="not_implemented",
-            message="Decision Runtime is not yet active in this build.",
-            retry_class="non_retryable",
-        )
-
-    for _op_name in sorted(APPLICATION_OPERATIONS):
-        if _op_name.startswith("decision.") and _op_name not in registry._handlers:
-            registry.register(_op_name, _decision_registration_guard)
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
     return registry
@@ -963,9 +1104,9 @@ class ProductionApplicationSurface:
                 "the production application routes do not exactly match the registry"
             )
         distinct_routes = tuple({id(route): route for route in routes.values()}.values())
-        if len(distinct_routes) != 7:
+        if len(distinct_routes) != 8:
             raise ValueError(
-                "the production surface requires exactly seven authority families"
+                "the production surface requires exactly eight authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError("every production application family must act as one principal")
@@ -1021,11 +1162,21 @@ def compose_production_application_surface(
     governance: ApplicationDispatcher,
     chat: ApplicationDispatcher,
     workflow: ApplicationDispatcher,
+    decision: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
     """Compose all real family handlers into the exact frozen catalogue."""
-    families = (installation, reads, memory, jobs, governance, chat, workflow)
+    families = (
+        installation,
+        reads,
+        memory,
+        jobs,
+        governance,
+        chat,
+        workflow,
+        decision,
+    )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
     for family in families:
@@ -1710,6 +1861,8 @@ __all__ = [
     "ApplicationDispatcher",
     "ProductionApplicationSurface",
     "build_application_registry",
+    "build_decision_application_dispatcher",
+    "build_decision_registry",
     "build_governance_application_dispatcher",
     "build_governance_registry",
     "build_installation_application_dispatcher",

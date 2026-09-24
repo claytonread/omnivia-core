@@ -40,6 +40,7 @@ from omnivia_core_runtime.service.application import (
     ProductionApplicationSurface,
     build_application_registry,
     build_chat_application_dispatcher,
+    build_decision_application_dispatcher,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
@@ -360,6 +361,14 @@ def _build_production_application_surface(
         ),
         wait_policy=workflow_wait_policy,
     )
+    decision = build_decision_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=workflow,
+        clock=started.clock,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -368,6 +377,7 @@ def _build_production_application_surface(
         governance=governance,
         chat=chat,
         workflow=workflow,
+        decision=decision,
         probe=probe,
     )
 

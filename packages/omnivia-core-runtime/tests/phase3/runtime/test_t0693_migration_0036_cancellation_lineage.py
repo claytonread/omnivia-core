@@ -385,7 +385,25 @@ def test_0036_is_the_unique_consecutive_successor_to_0035() -> None:
     # own length rather than against this module's version, because later slices append
     # their own migrations and this test is about 0036's place in the sequence, not
     # about 0036 being the last thing the repository will ever migrate.
-    assert versions == list(range(1, len(migrations) + 1))
+    # Consecutive except where the migration allocation authority deliberately
+    # holds a number in the 'reserved' state (its SQL must stay absent); a gap
+    # that is not a reserved allocation is a numbering accident.
+    import json
+
+    authority = json.loads(
+        (Path(__file__).resolve().parents[5]
+         / "contracts" / "migrations" / "v1" / "allocations.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    reserved = {
+        entry["number"]
+        for entry in authority["allocations"]
+        if entry["state"] == "reserved"
+    }
+    assert versions == [
+        number for number in range(1, max(versions) + 1) if number not in reserved
+    ]
     assert [m.name for m in migrations if m.version == MIGRATION_VERSION] == [
         MIGRATION_NAME
     ]

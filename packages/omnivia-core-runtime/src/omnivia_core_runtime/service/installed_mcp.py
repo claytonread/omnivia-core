@@ -201,15 +201,16 @@ def _derive_policy(entries: tuple[tuple[str, str], ...]) -> tuple[McpGrant, ...]
 #: `INSTALLATION_ADMINISTRATOR_ROLE`, which administers this catalogue.
 _AUTHORING_ROLE: Final = McpGrant(McpGrantKind.ROLE, WORKSPACE_CONTRIBUTOR_ROLE)
 
-#: The read-only grant: exactly the manifest's restricted six and what they need.
-#: No role, because a restricted principal holds no operation a role would admit.
-RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = _derive_policy(_RESTRICTED_OPERATIONS)
+#: The restricted grant: exactly the manifest's restricted ten and what they
+#: need. `decision.evaluate` is a mutation the restricted manifest admits, and
+#: the mutation coordinator serves it under the one workspace-contributor role,
+#: so the restricted principal holds that role -- and nothing else.
+RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
+    sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
+)
 
-#: The authoring grant: the restricted rights, exactly the five additions, and the
-#: one role those additions need. The role is added here rather than inside
-#: `_derive_policy` because it is the one right the frozen operation catalogue does
-#: not state -- deriving it would mean inventing a rule the catalogue has no field
-#: for, and a reviewer would have no line to read it off.
+#: The authoring grant: the restricted rights, exactly the five additions, and
+#: the one role both profiles' mutations need.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(
         set(_derive_policy(_RESTRICTED_OPERATIONS + _AUTHORING_ADDITIONS))
@@ -227,12 +228,14 @@ def _roles(policy: tuple[McpGrant, ...]) -> set[McpGrant]:
     return {grant for grant in policy if grant.kind is McpGrantKind.ROLE}
 
 
-if _roles(RESTRICTED_POLICY) or _roles(AUTHORING_POLICY) != {
+if _roles(RESTRICTED_POLICY) != {
+    _AUTHORING_ROLE
+} or _roles(AUTHORING_POLICY) != {
     _AUTHORING_ROLE
 }:  # pragma: no cover
     raise ValueError(
         "an installed MCP profile grants the one workspace-contributor role to "
-        "authoring and no role at all to restricted; the two have drifted"
+        "both profiles and no other role; the two have drifted"
     )
 
 _POLICIES: Final[dict[McpProfile, tuple[McpGrant, ...]]] = {

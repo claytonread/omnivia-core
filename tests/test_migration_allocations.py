@@ -70,6 +70,10 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # 0043 is reserved to Workflow Runtime for trigger telemetry (C21-A, founder Decision 4A):
 # an allocation, not a file -- its SQL stays absent until founder design review of
 # docs/development/omnivia-core-trigger-telemetry-design-2026-09-23.md and a later change advances it to candidate.
+# 0044-0046 are the Decision Runtime candidates (ADR-042, plan PR-3): settings,
+# immutable definition versions/qualifications, and the evaluation/attempt/
+# result/outcome/subscription/outbox record families, advanced from reservation
+# to candidate in the same change that introduced their SQL.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -117,6 +121,9 @@ EXPECTED_ALLOCATION = (
     (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
     (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "candidate"),
     (43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "reserved"),
+    (44, "0044_decision_settings.sql", "Decision Runtime", "candidate"),
+    (45, "0045_decision_definitions.sql", "Decision Runtime", "candidate"),
+    (46, "0046_decision_records.sql", "Decision Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -160,6 +167,11 @@ CANDIDATE_INTRODUCED_COMMITS = {
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
     42: "0373e229d2ded9b4c48fdba48fc8e760054f58a6",
+    # 0044-0046 were introduced by 72b84cf6 and repinned to the whitespace
+    # repair b16217f6, which is where their current content lives.
+    44: "b16217f679b304e80daf2af9566e26057d4a9049",
+    45: "b16217f679b304e80daf2af9566e26057d4a9049",
+    46: "b16217f679b304e80daf2af9566e26057d4a9049",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

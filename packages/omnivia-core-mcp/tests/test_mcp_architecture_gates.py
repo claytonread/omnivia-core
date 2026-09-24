@@ -75,7 +75,7 @@ from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, tools
 from test_mcp_stdio_end_to_end import (
     ALL_PURPOSES,
     ARGUMENTS,
-    DECISION_STUB_REFUSALS,
+    DECISION_OUTCOMES,
     PRINCIPAL_ID,
     SUCCESSFUL_TOOLS,
     assert_call_outcome,
@@ -600,12 +600,17 @@ def test_architecture_gate_mcp_mode_authorized_result_equivalence(
         ) == _without(
             name, over_remote[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
         ), name
-    for name in DECISION_STUB_REFUSALS:
+    # The decision tools now have real handlers: the two passive projections
+    # succeed on both lanes like the reads, and the two refusals (an admission
+    # against a disabled capability, a lookup of an absent record) are matched
+    # by shape on both lanes -- the remote lane relays the HTTP transport's 403
+    # rather than the service's typed body.
+    for name, outcome in DECISION_OUTCOMES.items():
         for over in (over_local, over_remote):
-            assert over[name]["is_error"] is True, over[name]
-            # The remote lane relays the HTTP transport's 403 rather than the
-            # service's typed body, so the refusal is matched by shape, not code.
-            assert "refused" in over[name]["content"][0]["text"], over[name]
+            if outcome == "success":
+                assert over[name]["is_error"] is False, over[name]
+            else:
+                assert over[name]["is_error"] is True, over[name]
         assert _without(
             name, over_local[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
         ) == _without(
