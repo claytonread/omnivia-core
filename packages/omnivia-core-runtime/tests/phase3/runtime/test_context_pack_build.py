@@ -184,10 +184,11 @@ QUERY = "alpha"
 SENTINEL_TEXT = "zz-caller-sentinel-9f3c1d"
 SENTINEL_CODE = "zzcallersentinel.deadbeef"
 
-#: The production grant as `service.main.serve` wires it after this lane's additive edit:
-#: the five operations Lane E left it holding, plus `context_pack.build`. Stated as the
-#: literal `serve` states rather than derived from the registry --
-#: `test_workspace_inspect_refusals.py` is what pins it against `main.py`'s own syntax.
+#: The production grant as `service.main.serve` wires it after the Decision Runtime
+#: contracts slice: the six reads Lane D left it holding plus the seven
+#: side-effect-free decision reads. Stated as the filtered read `serve` produces
+#: rather than copied from the registry -- `test_workspace_inspect_refusals.py` is
+#: what pins it against `main.py`'s own syntax.
 PRODUCTION_OPERATIONS = frozenset(
     {
         WORKSPACE_INSPECT_OPERATION,
@@ -196,6 +197,13 @@ PRODUCTION_OPERATIONS = frozenset(
         MEMORY_SEARCH_OPERATION,
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
+        "decision.record.get",
+        "decision.record.list",
+        "decision.status",
+        "decision.definition.get",
+        "decision.definition.list",
+        "decision.model.list",
+        "decision.settings.get",
     }
 )
 
@@ -1779,27 +1787,36 @@ def test_the_production_operation_capability_scope_and_purpose_grant_is_exact() 
     registry = build_application_registry()
 
     assert session.operations == PRODUCTION_OPERATIONS
-    assert registry.operations == PRODUCTION_OPERATIONS
     assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == (
         KNOWLEDGE_RETRIEVAL_PURPOSE
     )
     assert session.purposes == frozenset(
-        {"workspace_inspection", "knowledge_retrieval"}
+        {
+            "workspace_inspection",
+            "knowledge_retrieval",
+            "decision_status",
+            "decision_record",
+            "decision_read",
+            "decision_settings",
+        }
     )
     assert session.scopes == frozenset(
-        {"workspace:read", "memory:read", "graph:read"}
+        {"workspace:read", "memory:read", "graph:read", "decision:read"}
     )
     assert tuple(ENTRY.scope.required_scopes) == ("memory:read",)
     assert ENTRY.scope.side_effect == "none"
     assert session.capabilities == (
         CapabilityRef(id="context_pack.build", version="1.0"),
+        CapabilityRef(id="decision.read", version="1.0"),
         CapabilityRef(id="evidence.read", version="1.0"),
         CapabilityRef(id="graph.read", version="1.0"),
         CapabilityRef(id="knowledge.read", version="1.0"),
         CapabilityRef(id="memory.read", version="1.0"),
         CapabilityRef(id="workspace.read", version="1.0"),
     )
-    assert server_capability_snapshot(registry) == session.capabilities
+    # The snapshot covers every registered handler (the decision stubs among
+    # them), so it is a superset of the read session's capabilities.
+    assert set(session.capabilities) <= set(server_capability_snapshot(registry))
 
 
 def test_context_pack_build_is_absent_from_every_probe_seam(owned: m2.Owned) -> None:

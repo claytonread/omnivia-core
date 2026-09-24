@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
+from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
 from omnivia_core_runtime.service.application import (
     LOCAL_TRANSPORT_ADAPTER,
     ApplicationDispatcher,
@@ -82,7 +83,6 @@ from omnivia_core_runtime.service.managed_start import (
 from omnivia_core_runtime.service.mcp_control import (
     AuthenticatedApplicationDispatch,
 )
-from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,

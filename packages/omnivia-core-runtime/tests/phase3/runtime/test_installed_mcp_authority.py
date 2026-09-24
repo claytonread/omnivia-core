@@ -132,15 +132,24 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "memory.search",
         "graph.traverse",
         "context_pack.build",
+        "decision.evaluate",
+        "decision.record.get",
+        "decision.record.list",
+        "decision.status",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.SCOPE) == {
         "workspace:read",
         "memory:read",
         "graph:read",
+        "decision:read",
+        "decision:invoke",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.PURPOSE) == {
         "workspace_inspection",
         "knowledge_retrieval",
+        "decision_evaluation",
+        "decision_record",
+        "decision_status",
     }
     assert {
         (grant.value, grant.version)
@@ -153,6 +162,8 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         ("memory.read", "1.0"),
         ("graph.read", "1.0"),
         ("context_pack.build", "1.0"),
+        ("decision.read", "1.0"),
+        ("decision.invoke", "1.0"),
     }
     # No role at all. A restricted principal holds no operation a role admits, and
     # the one this file's authoring profile grants is what lets a mutation through.

@@ -1319,6 +1319,7 @@ __all__ = [
     "DecisionRecordListInput",
     "DecisionRecordListResult",
     "DecisionRecordStatus",
+    "DecisionSchemaVersion",
     "DecisionSettings",
     "DecisionSettingsGetInput",
     "DecisionSettingsGetResult",

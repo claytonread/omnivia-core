@@ -287,7 +287,7 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
     ExposedOperation(
         tool_name="decision_status",
         operation="decision.status",
-        purpose="decision_read",
+        purpose="decision_status",
         title="Report Decision Runtime status",
         description=(
             "Report whether the local decision engine is available on the "

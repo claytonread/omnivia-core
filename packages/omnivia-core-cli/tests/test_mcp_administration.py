@@ -482,6 +482,9 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
     assert harness.stored() == {
         "allowed_purposes": [
             "content_ingestion",
+            "decision_evaluation",
+            "decision_record",
+            "decision_status",
             "job_observation",
             "knowledge_retrieval",
             "memory_authoring",
@@ -518,6 +521,9 @@ def test_a_restricted_configure_writes_the_restricted_ceiling_and_purposes(
     assert document is not None
     assert document["mutation_enabled"] is False
     assert document["allowed_purposes"] == [
+        "decision_evaluation",
+        "decision_status",
+        "decision_record",
         "knowledge_retrieval",
         "workspace_inspection",
     ]

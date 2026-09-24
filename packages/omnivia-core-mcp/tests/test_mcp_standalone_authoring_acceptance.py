@@ -39,7 +39,7 @@ checksum over its UTF-8 bytes and the byte count both come back -- the session
 keeps calling as the principal the installation minted rather than the `root` the
 body names, every answer is scoped to the minted workspace rather than the
 `ws-elsewhere` the body names, and the advertised surface after the writes is the
-same eleven it was before.
+same fifteen it was before.
 
 **No assertion message carries anything it could leak.** Every message below is a
 fixed sentence: no paths, no bearers, no references, no service envelopes and no
@@ -77,7 +77,7 @@ PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "omnivia-core"
 SERVER_MODULE = "omnivia_core_mcp.server"
 
-#: The eleven tools an authoring installation advertises, in manifest order and
+#: The fifteen tools an authoring installation advertises, in manifest order and
 #: spelled out. The literal is what section 13.B's acceptance asks for; the
 #: cross-check against `exposure_manifest("authoring")` in the test is what keeps
 #: it a claim about the manifest rather than a copy of it that can drift.
@@ -88,6 +88,10 @@ AUTHORING_TOOLS = (
     "memory_search",
     "graph_traverse",
     "context_pack_build",
+    "decision_evaluate",
+    "decision_record_get",
+    "decision_record_list",
+    "decision_status",
     "memory_create",
     "evidence_capture",
     "import_start",
@@ -370,7 +374,7 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
       the minted workspace, and prints a snippet that is a command line and a
       configuration path;
     * a real SDK client completes a pinned 2025-06-18 handshake against the module
-      a host launches, and is advertised exactly the eleven the authoring manifest
+      a host launches, and is advertised exactly the fifteen the authoring manifest
       declares;
     * the three searches it makes before writing anything answer with nothing, so
       the emptiness the rest of this rests on is read rather than assumed;
@@ -391,7 +395,7 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
       conflict;
     * the hostile-looking body changed nothing: the actor is still the minted
       principal, every answer is scoped to the minted workspace, and the surface
-      is still the same eleven;
+      is still the same fifteen;
     * and the service that answered all of it is the same process afterwards and
       still answers its own health probe, both checked after the session closes
       and before the fixture is allowed to tear it down.
@@ -423,10 +427,10 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
 
     assert observed["protocol_version"] == PROTOCOL_VERSION, "another revision"
     assert observed["server_name"] == SERVER_NAME, "another server answered"
-    assert observed["tools"] == list(AUTHORING_TOOLS), "the listing is not the eleven"
+    assert observed["tools"] == list(AUTHORING_TOOLS), "the listing is not the fifteen"
     assert AUTHORING_TOOLS == tuple(
         entry.tool_name for entry in exposure_manifest("authoring")
-    ), "the expected eleven drifted from the manifest"
+    ), "the expected fifteen drifted from the manifest"
 
     # --- the workspace this began on held nothing -----------------------------
 

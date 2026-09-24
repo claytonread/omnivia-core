@@ -88,15 +88,15 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "memory.search",
     "graph.traverse",
     "context_pack.build",
+    "decision.evaluate",
+    "decision.record.get",
+    "decision.record.list",
+    "decision.status",
     "memory.create",
     "evidence.capture",
     "import.start",
     "job.get",
     "job.events",
-    "decision.evaluate",
-    "decision.record.get",
-    "decision.record.list",
-    "decision.status",
 )
 
 #: Advertised schemas that belong to no operation. One entry: the canonical

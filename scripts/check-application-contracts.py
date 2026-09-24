@@ -1235,7 +1235,15 @@ _WORKFLOW_CONTROL: tuple[str, ...] = tuple(
 #: optional worker, deadline and rate for bounded budgets, not_found for an
 #: unknown definition); configuration mutations reuse the governance profile.
 _DECISION_EVALUATE: tuple[str, ...] = tuple(
-    sorted(set((*_CREATE_MUT, "dependency_unavailable", "deadline_exceeded", "not_found", "rate_limited")))
+    sorted(
+        {
+            *_CREATE_MUT,
+            "dependency_unavailable",
+            "deadline_exceeded",
+            "not_found",
+            "rate_limited",
+        }
+    )
 )
 _DECISION_CONFIGURE: tuple[str, ...] = _GOV_MUT
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {

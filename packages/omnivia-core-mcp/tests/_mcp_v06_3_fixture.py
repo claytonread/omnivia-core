@@ -1264,7 +1264,7 @@ def _diagnosis(process: subprocess.Popen[bytes], log: Path) -> str:
     return f"the service is {state}; it wrote {said!r}"
 
 
-#: The read operations the HTTP embedder's session grants: the six the MCP
+#: The read operations the HTTP embedder's session grants: the ten the MCP
 #: exposure manifest allow-lists, stated here rather than imported so this file
 #: stays independent of the package under test.
 _HTTP_GRANTED_OPERATIONS = (
@@ -1274,6 +1274,9 @@ _HTTP_GRANTED_OPERATIONS = (
     "memory.search",
     "graph.traverse",
     "context_pack.build",
+    "decision.record.get",
+    "decision.record.list",
+    "decision.status",
 )
 
 #: A test-only embedder of the service's own `main()`. `omnivia-core-service`

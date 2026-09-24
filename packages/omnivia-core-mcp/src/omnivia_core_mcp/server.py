@@ -153,6 +153,10 @@ from omnivia_core.contracts.v1 import (
     ClientIdentity,
     ContractDecodeError,
     ContractSemanticError,
+    DecisionEvaluateInput,
+    DecisionRecordGetInput,
+    DecisionRecordListInput,
+    DecisionStatusInput,
     EvidenceCaptureSizeLimitError,
     PrincipalClaim,
     RequestEnvelope,
@@ -282,15 +286,22 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 #: call path in the same commit, and one that relaxes one does not leave a stale
 #: copy refusing valid input.
 #:
-#: Only the five the `authoring` profile adds. The restricted six are unchanged
-#: accepted behaviour and are validated where they always were -- at the service,
-#: which answers with its own typed refusal.
+#: Only the five the `authoring` profile adds, plus the four decision tools the
+#: restricted profile grew: those six reads are unchanged accepted behaviour and
+#: are validated where they always were -- at the service, which answers with its
+#: own typed refusal. The decision tools decode through the generated contract
+#: types' own `from_wire` (their semantic validators land with the runtime slice),
+#: which is still the contract's own decode, not a local opinion.
 _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "memory.create": decode_memory_create_input,
     "evidence.capture": decode_evidence_capture_input,
     "import.start": decode_import_start_input,
     "job.get": decode_job_get_input,
     "job.events": decode_job_events_input,
+    "decision.evaluate": DecisionEvaluateInput.from_wire,
+    "decision.record.get": DecisionRecordGetInput.from_wire,
+    "decision.record.list": DecisionRecordListInput.from_wire,
+    "decision.status": DecisionStatusInput.from_wire,
 }
 
 
@@ -1408,8 +1419,8 @@ async def serve(*, session: ConnectedSession) -> None:
 #: are the requirement's own figures, and a build whose manifest has moved fails
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
-    RESTRICTED_PROFILE: 6,
-    AUTHORING_PROFILE: 11,
+    RESTRICTED_PROFILE: 10,
+    AUTHORING_PROFILE: 15,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

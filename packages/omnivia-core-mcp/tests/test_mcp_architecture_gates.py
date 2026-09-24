@@ -75,7 +75,10 @@ from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, tools
 from test_mcp_stdio_end_to_end import (
     ALL_PURPOSES,
     ARGUMENTS,
+    DECISION_STUB_REFUSALS,
     PRINCIPAL_ID,
+    SUCCESSFUL_TOOLS,
+    assert_call_outcome,
     live_configuration,
     parameters,
     session,
@@ -405,7 +408,7 @@ def test_architecture_gate_mcp_desktop_independence(
         entry.tool_name for entry in EXPOSURE_MANIFEST
     ]
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
     assert (
         observed["calls"]["workspace_inspect"]["structured_content"]["workspace"][
             "workspace_id"
@@ -589,9 +592,20 @@ def test_architecture_gate_mcp_mode_authorized_result_equivalence(
         {"knowledge_search": refusal},
     )["knowledge_search"]
 
-    for name in ARGUMENTS:
+    for name in SUCCESSFUL_TOOLS:
         assert over_local[name]["is_error"] is False, over_local[name]
         assert over_remote[name]["is_error"] is False, over_remote[name]
+        assert _without(
+            name, over_local[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
+        ) == _without(
+            name, over_remote[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
+        ), name
+    for name in DECISION_STUB_REFUSALS:
+        for over in (over_local, over_remote):
+            assert over[name]["is_error"] is True, over[name]
+            # The remote lane relays the HTTP transport's 403 rather than the
+            # service's typed body, so the refusal is matched by shape, not code.
+            assert "refused" in over[name]["content"][0]["text"], over[name]
         assert _without(
             name, over_local[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
         ) == _without(
@@ -650,7 +664,7 @@ def test_architecture_gate_clients_never_own_workspace_lease(tmp_path: Path) -> 
         config = live_configuration(tmp_path, service)
         observed = session(config)
         for name in ARGUMENTS:
-            assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+            assert_call_outcome(observed, name)
 
         after = service.descriptor()
         assert service.process.poll() is None, "MCP stopped the service it attached to"

@@ -227,11 +227,9 @@ C0A_OPERATION_NAMES = tuple(
 #: nothing failing to say so. Deriving it makes the drift impossible instead of
 #: merely fixing this instance of it.
 MUTATION_OPERATION_REFS = tuple(
-    sorted(
-        entry["contract"]["name"]
-        for entry in OPERATION_TRACEABILITY["operations"]
-        if entry["contract"]["scope"]["side_effect"] != "none"
-    )
+    entry["contract"]["name"]
+    for entry in OPERATION_TRACEABILITY["operations"]
+    if entry["contract"]["scope"]["side_effect"] != "none"
 )
 EXPECTED_OPERATION_REFS_BY_TEST_ID = {
     "test_architecture_gate_canonical_record_evidence_authority": ("evidence.search", "knowledge.search"),
@@ -255,7 +253,23 @@ EXPECTED_OPERATION_REFS_BY_TEST_ID = {
         "job.get",
         "job.retry",
     ),
-    "test_architecture_gate_persisted_context_pack_inputs": ("context_pack.build"),
+    "test_architecture_gate_persisted_context_pack_inputs": ("context_pack.build",),
+    # Every operation: parity, client-identity and conformance gates are asked
+    # about the whole catalogue, and the fencing and generation-revalidation
+    # gates about every mutation. Derived, so catalogue growth moves them.
+    "test_architecture_gate_local_cloud_contract_parity": C0A_OPERATION_NAMES,
+    "test_architecture_gate_client_identity_cannot_expand_permissions": (
+        C0A_OPERATION_NAMES
+    ),
+    "test_architecture_gate_application_api_contract_conformance": (
+        C0A_OPERATION_NAMES
+    ),
+    "test_architecture_gate_fencing_rejects_old_service_after_takeover": (
+        MUTATION_OPERATION_REFS
+    ),
+    "test_architecture_gate_generation_revalidation_after_suspend": (
+        MUTATION_OPERATION_REFS
+    ),
 }
 
 

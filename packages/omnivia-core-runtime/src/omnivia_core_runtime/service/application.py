@@ -63,8 +63,6 @@ from omnivia_core.contracts.v1 import (
     get_operation_metadata,
 )
 from omnivia_core_runtime.ownership.identity import Clock, SystemClock
-from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
-from omnivia_core_runtime.service.operations import APPLICATION_OPERATIONS
 from omnivia_core_runtime.service.admission import (
     ALLOW_APPLICATION_REQUEST,
     ApplicationAdmissionPolicy,
@@ -148,6 +146,7 @@ from omnivia_core_runtime.service.mutation import (
     WORKSPACE_CONTRIBUTOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import (
+    APPLICATION_OPERATIONS,
     ApplicationOperationRegistry,
     AuditedOperationResult,
     OperationContext,
