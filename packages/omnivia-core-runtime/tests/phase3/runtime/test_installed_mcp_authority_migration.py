@@ -324,6 +324,28 @@ def configure_restricted(store: InstallationStore) -> None:
 
 
 def version_two_with_grants(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """A version-two installation holding the pre-decision restricted policy.
+
+    The restricted profile now carries `decision.evaluate`, whose mutation the
+    coordinator serves under a role -- a right the version-two schema cannot
+    record (that is what 0003 exists to fix). The fixture therefore pins the
+    policy to the pre-decision six-read derivation, which is what a version-two
+    installation actually held, and leaves the current policy to the tests
+    below that run against the upgraded schema.
+    """
+    import omnivia_core_runtime.service.installed_mcp as installed_mcp
+
+    pre_decision = installed_mcp._derive_policy(
+        tuple(
+            entry
+            for entry in installed_mcp._RESTRICTED_OPERATIONS
+            if not entry[0].startswith("decision.")
+        )
+    )
+    monkeypatch.setattr(installed_mcp, "RESTRICTED_POLICY", pre_decision)
+    monkeypatch.setitem(
+        installed_mcp._POLICIES, McpProfile.RESTRICTED, pre_decision
+    )
     materialise_version(monkeypatch, root, 2, "installer-v2", configure_restricted)
 
 

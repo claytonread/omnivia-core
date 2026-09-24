@@ -391,7 +391,7 @@ def test_0036_is_the_unique_consecutive_successor_to_0035() -> None:
     import json
 
     authority = json.loads(
-        (Path(__file__).resolve().parents[4]
+        (Path(__file__).resolve().parents[4].parents[1]
          / "contracts" / "migrations" / "v1" / "allocations.json").read_text(
             encoding="utf-8"
         )
