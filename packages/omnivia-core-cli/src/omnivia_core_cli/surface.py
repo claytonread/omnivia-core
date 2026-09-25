@@ -140,15 +140,18 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("workflow", "review"), "workflow.review", "workflow_observation"
     ),
-    ApplicationCommand(("decisions", "status"), "decision.status", "decision_read"),
+    # Every purpose is the service's own for the operation it names -- the same
+    # rule the MCP exposure manifest follows. A claimed purpose the grant does
+    # not hold is refused at the first call, so these are not free text.
+    ApplicationCommand(("decisions", "status"), "decision.status", "decision_status"),
     ApplicationCommand(
-        ("decisions", "evaluate"), "decision.evaluate", "decision_invoke"
+        ("decisions", "evaluate"), "decision.evaluate", "decision_evaluation"
     ),
     ApplicationCommand(
-        ("decisions", "record"), "decision.record.get", "decision_read"
+        ("decisions", "record"), "decision.record.get", "decision_record"
     ),
     ApplicationCommand(
-        ("decisions", "records"), "decision.record.list", "decision_read"
+        ("decisions", "records"), "decision.record.list", "decision_record"
     ),
     ApplicationCommand(
         ("decisions", "definitions"), "decision.definition.list", "decision_read"
@@ -157,31 +160,37 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         ("decisions", "definition"), "decision.definition.get", "decision_read"
     ),
     ApplicationCommand(
-        ("decisions", "publish"), "decision.definition.publish", "decision_configure"
+        ("decisions", "publish"),
+        "decision.definition.publish",
+        "decision_configuration",
     ),
     ApplicationCommand(
-        ("decisions", "disable"), "decision.definition.disable", "decision_configure"
+        ("decisions", "disable"),
+        "decision.definition.disable",
+        "decision_configuration",
     ),
     ApplicationCommand(
-        ("decisions", "outcome"), "decision.outcome.submit", "decision_feedback"
+        ("decisions", "outcome"), "decision.outcome.submit", "decision_evaluation"
     ),
     ApplicationCommand(
         ("decisions", "models"), "decision.model.list", "decision_read"
     ),
     ApplicationCommand(
-        ("decisions", "install"), "decision.model.install", "decision_configure"
+        ("decisions", "install"), "decision.model.install", "decision_configuration"
     ),
     ApplicationCommand(
-        ("decisions", "activate"), "decision.model.activate", "decision_configure"
+        ("decisions", "activate"), "decision.model.activate", "decision_configuration"
     ),
     ApplicationCommand(
-        ("decisions", "remove"), "decision.model.remove", "decision_configure"
+        ("decisions", "remove"), "decision.model.remove", "decision_configuration"
     ),
     ApplicationCommand(
-        ("decisions", "settings"), "decision.settings.get", "decision_read"
+        ("decisions", "settings"), "decision.settings.get", "decision_settings"
     ),
     ApplicationCommand(
-        ("decisions", "configure"), "decision.settings.update", "decision_configure"
+        ("decisions", "configure"),
+        "decision.settings.update",
+        "decision_configuration",
     ),
 )
 
