@@ -67,9 +67,9 @@ Implements: plan PR-A of `docs/development/omnivia-core-engineering-memory-imple
 
 ## 7. Remaining before merge
 
-1. Full runtime suite rerun on the final tree (in flight when this doc was written; Phase 2 and the earlier full run surfaced only the CLI-surface import error, since fixed).
-2. `./scripts/preflight` (needs `OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT` from repository configuration, as CI reads it).
-3. Commit, push, open PR; hosted checks (`Core acceptance` + three platform jobs) must be green on the merge commit before merge (AGENTS.md).
+1. ~~Full runtime suite rerun on the final tree~~ — done: full runtime suite 8,367 passed with only the pre-existing `test_managed_start.py` socket flake; every surfaced pinned-table failure (mutation purposes/roles counts, integrated-registry completeness/corpus digest, architecture-gate ledger, CLI surface bijection) was fixed and re-verified.
+2. ~~`./scripts/preflight`~~ — done: **27,125 passed / 53 skipped / 4 failed**, the 4 being the pre-existing managed-start/lifecycle socket flake that fails identically on the untouched base checkout (documented in the PR body; rerun those jobs if CI blocks).
+3. ~~Commit, push, open PR~~ — done: branch `codex/core-engineering-memory-contracts`, PR #127. Hosted checks (`Core acceptance` + three platform jobs) must be green on the merge commit before merge (AGENTS.md).
 
 ## 8. Deliberate scope boundaries of this PR
 
