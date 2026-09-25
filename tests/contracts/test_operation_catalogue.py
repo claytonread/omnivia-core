@@ -138,20 +138,21 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_forty_three_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 43
+def test_the_catalogue_holds_exactly_the_frozen_fifty_two_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 52
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
     # The original twenty-eight are alphabetical; the fifteen Decision Runtime
-    # operations from ADR-042 are appended after them in amendment order.
-    assert len(set(FROZEN_NAMES)) == 43
+    # operations from ADR-042 and the nine engineering-memory operations
+    # (SPEC-CORE-ENGMEM-001) are appended after them in amendment order.
+    assert len(set(FROZEN_NAMES)) == 52
 
 
-def test_two_operations_are_installation_scoped_and_forty_one_are_workspace_scoped() -> None:
+def test_two_operations_are_installation_scoped_and_fifty_are_workspace_scoped() -> None:
     installation = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "installation"]
     workspace = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "workspace"]
     assert installation == ["workspace.create", "workspace.list"]
-    assert len(workspace) == 41
-    assert len(installation) + len(workspace) == 43
+    assert len(workspace) == 50
+    assert len(installation) + len(workspace) == 52
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
@@ -330,7 +331,7 @@ def test_synchronous_operations_omit_both_optional_job_fields() -> None:
         assert set(entry.to_wire()["job"]) == {"completion_mode"}, entry.name
 
 
-def test_exactly_eight_operations_are_paginated_at_a_maximum_page_size_of_1000() -> None:
+def test_exactly_nine_operations_are_paginated_at_a_maximum_page_size_of_1000() -> None:
     paginated = [e for e in OPERATION_CATALOGUE if e.pagination.paginated]
     assert [e.name for e in paginated] == [
         "evidence.search",
@@ -341,6 +342,7 @@ def test_exactly_eight_operations_are_paginated_at_a_maximum_page_size_of_1000()
         "memory.search",
         "workspace.list",
         "decision.record.list",
+        "engineering.search",
     ]
     assert all(e.pagination.max_page_size == 1000 for e in paginated)
     for entry in OPERATION_CATALOGUE:
@@ -366,12 +368,13 @@ def test_idempotency_posture_follows_the_side_effect(name: str, entry: dict[str,
         assert not metadata.idempotency.safe_to_retry
 
 
-def test_exactly_five_operations_require_a_mutation_precondition() -> None:
+def test_exactly_seven_operations_require_a_mutation_precondition() -> None:
     supported = [e.name for e in OPERATION_CATALOGUE if e.precondition.supports_mutation_precondition]
     required = [e.name for e in OPERATION_CATALOGUE if e.precondition.required]
     expected = [
         "candidate.approve", "candidate.reject", "knowledge.propose",
         "record.supersede", "decision.settings.update",
+        "continuity.session.close", "engineering.review.record",
     ]
     assert supported == expected
     assert required == expected
@@ -921,11 +924,11 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
     it is the one representation nothing else can catch drifting.
     """
     installation = _documented_operations("Two are installation-scoped:")
-    workspace = _documented_operations("Forty-one are workspace-scoped:")
+    workspace = _documented_operations("Fifty are workspace-scoped:")
     documented = installation + workspace
 
     assert sorted(documented) == sorted(FROZEN_NAMES)
-    assert len(documented) == len(set(documented)) == 43
+    assert len(documented) == len(set(documented)) == 52
     assert installation == [
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "installation"
     ]
@@ -937,6 +940,6 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
 @pytest.mark.parametrize("name", NON_OPERATIONS)
 def test_the_readme_operation_list_names_no_probe_and_no_job_resume(name: str) -> None:
     documented = _documented_operations("Two are installation-scoped:") + _documented_operations(
-        "Forty-one are workspace-scoped:"
+        "Fifty are workspace-scoped:"
     )
     assert name not in documented

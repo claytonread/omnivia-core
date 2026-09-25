@@ -192,6 +192,45 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         "decision.settings.update",
         "decision_configuration",
     ),
+    # Engineering memory (SPEC-CORE-ENGMEM-001). Same generic application-command
+    # shape as every other family; the engineering handlers refuse honestly until
+    # their producers land, and the surface must still state them because the
+    # catalogue, not this build's readiness, decides what the CLI can name.
+    ApplicationCommand(
+        ("continuity", "register"),
+        "continuity.session.register",
+        "continuity_session",
+    ),
+    ApplicationCommand(
+        ("continuity", "checkpoint"),
+        "continuity.checkpoint.append",
+        "continuity_checkpoint",
+    ),
+    ApplicationCommand(
+        ("continuity", "close"), "continuity.session.close", "continuity_session"
+    ),
+    ApplicationCommand(
+        ("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"
+    ),
+    ApplicationCommand(
+        ("engineering", "search"), "engineering.search", "engineering_search"
+    ),
+    ApplicationCommand(
+        ("engineering", "expand"), "engineering.expand", "engineering_expand"
+    ),
+    ApplicationCommand(
+        ("engineering", "context"),
+        "engineering.context.build",
+        "engineering_context",
+    ),
+    ApplicationCommand(
+        ("context", "priority"), "context.priority.set", "context_priority"
+    ),
+    ApplicationCommand(
+        ("engineering", "review"),
+        "engineering.review.record",
+        "engineering_review",
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

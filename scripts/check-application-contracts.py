@@ -104,6 +104,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "runtime",
     "chat",
     "decision",
+    "engineering",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1246,6 +1247,17 @@ _DECISION_EVALUATE: tuple[str, ...] = tuple(
     )
 )
 _DECISION_CONFIGURE: tuple[str, ...] = _GOV_MUT
+
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity mutations append immutable
+#: L0 artefacts to a bound session: a session/checkpoint reference that does not
+#: resolve is `not_found`, and the bounded payload caps make `size_limit_exceeded`
+#: reachable. Priority changes name an exact visible record version, so they can
+#: fail to find it; reviews reuse the governance profile (they carry a mutation
+#: precondition and resolve exact versions).
+_ENG_CONTINUITY_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "not_found", "size_limit_exceeded"))
+)
+_ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
@@ -1279,6 +1291,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "DECISION_MODEL_REMOVE": _DECISION_CONFIGURE,
     "DECISION_SETTINGS_GET": _POINT_READ,
     "DECISION_SETTINGS_UPDATE": _DECISION_CONFIGURE,
+    "ENG_CONTINUITY_MUT": _ENG_CONTINUITY_MUT,
+    "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1492,6 +1506,48 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("decision:configure",), "update", "decision.configure",
         "decision", "DecisionSettingsUpdate", "DECISION_CONFIGURE", False,
     ),
+    # Engineering memory (SPEC-CORE-ENGMEM-001): continuity + engineering retrieval.
+    # Reads: handoff reads authoritative L0 checkpoints (POINT_READ); retrieval goes
+    # through serving projections with bounded results (GRAPH_READ); the pack build
+    # adds token budgets (CONTEXT_READ). Mutations: continuity appends (ENG_CONTINUITY_MUT),
+    # priority is a principal-scoped preference (ENG_PRIORITY_MUT), and review records
+    # a governed attestation with a precondition (GOV_MUT).
+    "continuity.session.register": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuitySessionRegister", "ENG_CONTINUITY_MUT", False,
+    ),
+    "continuity.checkpoint.append": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuityCheckpointAppend", "ENG_CONTINUITY_MUT", False,
+    ),
+    "continuity.session.close": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContinuitySessionClose", "GOV_MUT", False,
+    ),
+    "continuity.handoff.read": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "ContinuityHandoffRead", "POINT_READ", False,
+    ),
+    "engineering.search": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringSearch", "GRAPH_READ", True,
+    ),
+    "engineering.expand": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringExpand", "GRAPH_READ", False,
+    ),
+    "engineering.context.build": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringContextBuild", "CONTEXT_READ", False,
+    ),
+    "context.priority.set": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContextPrioritySet", "ENG_PRIORITY_MUT", False,
+    ),
+    "engineering.review.record": FrozenOperation(
+        "workspace", ("engineering:curate",), "create", "engineering.curate",
+        "engineering", "EngineeringReviewRecord", "GOV_MUT", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
@@ -1500,7 +1556,7 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
 #: re-reads and re-decides against.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
     {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
-     "decision.settings.update"}
+     "decision.settings.update", "continuity.session.close", "engineering.review.record"}
 )
 
 

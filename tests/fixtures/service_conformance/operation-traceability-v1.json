@@ -7,7 +7,7 @@
   "adapter_evidence_corpus": {
     "file": "contracts/application/v1/fixtures/application-wire-adapter-conformance-v1.json",
     "format": "omnivia.adapter-conformance.v1",
-    "case_count": 121
+    "case_count": 141
   },
   "adapter_classes": [
     "in_process",
@@ -195,6 +195,42 @@
         },
         {
           "operation": "decision.settings.update",
+          "reason": "mutation"
+        },
+        {
+          "operation": "continuity.session.register",
+          "reason": "mutation"
+        },
+        {
+          "operation": "continuity.checkpoint.append",
+          "reason": "mutation"
+        },
+        {
+          "operation": "continuity.session.close",
+          "reason": "mutation"
+        },
+        {
+          "operation": "continuity.handoff.read",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "engineering.search",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "engineering.expand",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "engineering.context.build",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "context.priority.set",
+          "reason": "mutation"
+        },
+        {
+          "operation": "engineering.review.record",
           "reason": "mutation"
         }
       ],
@@ -2888,6 +2924,586 @@
         "result_schema_ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateResult",
         "required_capability": {
           "id": "decision.configure",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": true,
+          "required": true,
+          "safe_to_retry": false
+        },
+        "precondition": {
+          "supports_mutation_precondition": true,
+          "required": true
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "mutation"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "conflict",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "idempotency_conflict",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "mutation_precondition_failed",
+          "not_found",
+          "rate_limited",
+          "upgrade_required",
+          "workspace_busy",
+          "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "continuity.session.register",
+        "scope": {
+          "required_scopes": [
+            "engineering:write"
+          ],
+          "side_effect": "create",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterResult",
+        "required_capability": {
+          "id": "engineering.write",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": true,
+          "required": true,
+          "safe_to_retry": false
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "mutation"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "idempotency_conflict",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "rate_limited",
+          "size_limit_exceeded",
+          "upgrade_required",
+          "workspace_busy",
+          "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "continuity.checkpoint.append",
+        "scope": {
+          "required_scopes": [
+            "engineering:write"
+          ],
+          "side_effect": "create",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendResult",
+        "required_capability": {
+          "id": "engineering.write",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": true,
+          "required": true,
+          "safe_to_retry": false
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "mutation"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "idempotency_conflict",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "rate_limited",
+          "size_limit_exceeded",
+          "upgrade_required",
+          "workspace_busy",
+          "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "continuity.session.close",
+        "scope": {
+          "required_scopes": [
+            "engineering:write"
+          ],
+          "side_effect": "update",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseResult",
+        "required_capability": {
+          "id": "engineering.write",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": true,
+          "required": true,
+          "safe_to_retry": false
+        },
+        "precondition": {
+          "supports_mutation_precondition": true,
+          "required": true
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "mutation"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "conflict",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "idempotency_conflict",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "mutation_precondition_failed",
+          "not_found",
+          "rate_limited",
+          "upgrade_required",
+          "workspace_busy",
+          "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "continuity.handoff.read",
+        "scope": {
+          "required_scopes": [
+            "engineering:read"
+          ],
+          "side_effect": "none",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadResult",
+        "required_capability": {
+          "id": "engineering.read",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": false,
+          "required": false,
+          "safe_to_retry": true
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "read"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "rate_limited",
+          "upgrade_required",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "engineering.search",
+        "scope": {
+          "required_scopes": [
+            "engineering:read"
+          ],
+          "side_effect": "none",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchResult",
+        "required_capability": {
+          "id": "engineering.read",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": true,
+          "max_page_size": 1000
+        },
+        "idempotency": {
+          "supports_idempotency_key": false,
+          "required": false,
+          "safe_to_retry": true
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "read"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "projection_unavailable",
+          "rate_limited",
+          "size_limit_exceeded",
+          "stale_projection",
+          "upgrade_required",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "engineering.expand",
+        "scope": {
+          "required_scopes": [
+            "engineering:read"
+          ],
+          "side_effect": "none",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandResult",
+        "required_capability": {
+          "id": "engineering.read",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": false,
+          "required": false,
+          "safe_to_retry": true
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "read"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "projection_unavailable",
+          "rate_limited",
+          "size_limit_exceeded",
+          "stale_projection",
+          "upgrade_required",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "engineering.context.build",
+        "scope": {
+          "required_scopes": [
+            "engineering:read"
+          ],
+          "side_effect": "none",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildResult",
+        "required_capability": {
+          "id": "engineering.read",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": false,
+          "required": false,
+          "safe_to_retry": true
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "read"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "projection_unavailable",
+          "rate_limited",
+          "size_limit_exceeded",
+          "stale_projection",
+          "token_limit_exceeded",
+          "upgrade_required",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "context.priority.set",
+        "scope": {
+          "required_scopes": [
+            "engineering:write"
+          ],
+          "side_effect": "update",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetResult",
+        "required_capability": {
+          "id": "engineering.write",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": true,
+          "required": true,
+          "safe_to_retry": false
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "mutation"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "idempotency_conflict",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "rate_limited",
+          "upgrade_required",
+          "workspace_busy",
+          "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "engineering.review.record",
+        "scope": {
+          "required_scopes": [
+            "engineering:curate"
+          ],
+          "side_effect": "create",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordResult",
+        "required_capability": {
+          "id": "engineering.curate",
           "minimum_version": "1.0",
           "required": true
         },

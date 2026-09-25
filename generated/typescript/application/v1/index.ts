@@ -19,6 +19,7 @@
 //   contracts/application/v1/schemas/runtime.schema.json
 //   contracts/application/v1/schemas/chat.schema.json
 //   contracts/application/v1/schemas/decision.schema.json
+//   contracts/application/v1/schemas/engineering.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -981,6 +982,150 @@ export interface DecisionModelRemoveInput {
    * Structured payload value.
    */
   readonly profile_id: string;
+}
+
+/**
+ * The payload schema version for every engineering-memory payload in this boundary. Independent
+ * of the application envelope and workspace format versions.
+ */
+export type EngineeringSchemaVersion = string;
+
+/**
+ * Open, bounded code naming target-specific applicability of a record version at one snapshot,
+ * such as `matched`, `potentially_stale`, `invalid`, `unknown` or `not_evaluated`. This
+ * dimension is independent of governance state: an accepted record can remain historically
+ * accepted while being unsafe to use at a new snapshot.
+ */
+export type EngineeringApplicabilityStatus = string;
+
+/**
+ * What the serving projections and the applicability barrier actually cover for this response.
+ * `projection` names serving-index coverage; `applicability` names whether target freshness work
+ * has caught up with the registered source head. Neither is a guarantee of global completeness.
+ */
+export interface EngineeringCoverage {
+  /**
+   * Open, bounded code naming projection coverage, such as `current`, `lagging`, `unavailable`
+   * or `incomplete`.
+   */
+  readonly projection: string;
+  /**
+   * Open, bounded code naming applicability-coverage state, such as `current`, `pending` or
+   * `unavailable`.
+   */
+  readonly applicability: string;
+}
+
+/**
+ * One bounded statement that content was omitted from a view and why. An omission must not
+ * identify an inaccessible record: `field` names the omitted position in this view, never a
+ * hidden object's identity or title.
+ */
+export interface EngineeringOmission {
+  /**
+   * The position in this view whose content was omitted, such as a section id or a named
+   * payload region.
+   */
+  readonly field: string;
+  /**
+   * Open, bounded code naming why content was omitted, such as `redacted`, `inaccessible`,
+   * `budget` or `not_applicable`.
+   */
+  readonly reason: string;
+}
+
+/**
+ * Open, bounded code naming the operational state of a continuity session binding, such as
+ * `active`, `closed`, `expired` or `revoked`. Operational bookkeeping only: closing a session
+ * does not mean its external run succeeded, and expiry does not mean the agent died.
+ */
+export type EngineeringSessionState = string;
+
+/**
+ * Open, bounded code naming what an engineering observation claims to be, such as `finding`,
+ * `decision`, `constraint`, `convention`, `bugfix`, `failed_approach`, `hypothesis`, `risk` or
+ * `validation_result`. A hypothesis is never eligible for accepted-facts selection.
+ */
+export type EngineeringObservationKind = string;
+
+/**
+ * One reported external operation and its reported status. `unknown` is preserved as unknown:
+ * reconciling the effect is the owning Runtime's job, and a handoff never retries an unknown
+ * effect automatically.
+ */
+export interface EngineeringExternalEffect {
+  /**
+   * External operation reference as reported by the host Runtime.
+   */
+  readonly effect_ref: string;
+  /**
+   * Open, bounded code naming the reported outcome, such as `confirmed`, `failed` or
+   * `unknown`.
+   */
+  readonly status: string;
+}
+
+/**
+ * Open, bounded code naming which knowledge partition a search reads, such as `accepted` (the
+ * default), `candidates`, `working_context` or `history`. Other views are explicit opt-ins
+ * behind their capabilities; a multi-view response partitions results rather than interleaving
+ * them without labels.
+ */
+export type EngineeringSearchView = string;
+
+/**
+ * Caller-requested bounded budgets for one engineering context build. Byte and token limits are
+ * simultaneous limits, not conversions of one another. Effective budgets are the minimum of the
+ * request, the granted profile and server hard limits; zero, negative, non-finite, oversized or
+ * inconsistent values are rejected.
+ */
+export interface EngineeringBudget {
+  /**
+   * Maximum model-facing tokens for the complete rendering; the proposed default is 4000 and
+   * the hard ceiling 16000.
+   */
+  readonly model_tokens?: number;
+  /**
+   * Maximum model-facing UTF-8 bytes for the complete rendering; the proposed default is 16384
+   * and the hard ceiling 65536.
+   */
+  readonly model_bytes?: number;
+  /**
+   * Maximum full source hydrations for the build; the proposed default is 8 and the hard
+   * ceiling 32.
+   */
+  readonly hydrations?: number;
+  /**
+   * Maximum total evidence bytes read for the build; the proposed default is 262144 and the
+   * hard ceiling 1048576.
+   */
+  readonly evidence_bytes?: number;
+}
+
+/**
+ * The complete model-facing rendering of a pack: one canonical UTF-8 string containing section
+ * labels, content, authority/applicability warnings and compact citations, counted exactly with
+ * the pinned tokenizer. Headers, citation labels, warnings and separators count when they are
+ * sent to the model; transport metadata that is not sent is separately byte-capped and lives
+ * elsewhere.
+ */
+export interface EngineeringRendering {
+  /**
+   * The exact model-facing UTF-8 text.
+   */
+  readonly text: string;
+  /**
+   * Version of the renderer that produced this text.
+   */
+  readonly renderer_version: string;
+  /**
+   * Exact token count of `text` under the pinned supported tokenizer.
+   */
+  readonly token_count: number;
+  /**
+   * Exact UTF-8 byte count of `text`.
+   */
+  readonly byte_count: number;
 }
 
 /**
@@ -3665,6 +3810,334 @@ export interface DecisionModelRemoveResult {
 }
 
 /**
+ * A reference to one immutable captured source state within a registered repository. A working-
+ * tree snapshot is never asserted to be its base commit, and a branch label is advisory
+ * provenance only: it is never a unique identity or an applicability proof.
+ */
+export interface EngineeringSnapshotRef {
+  /**
+   * Identity of the immutable snapshot capture.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Stable logical repository identity, when known to the caller; the server resolves and
+   * validates it against registered bindings.
+   */
+  readonly repository_id?: Identifier;
+  /**
+   * Open, bounded code naming how the snapshot was captured, such as `git_commit`,
+   * `working_tree` or `source_archive`.
+   */
+  readonly snapshot_kind?: string;
+  /**
+   * Advisory display/provenance label; never identity and never applicability authority.
+   */
+  readonly branch_label?: string;
+}
+
+/**
+ * An exact governed record version: record identity plus exact version. Every engineering
+ * relationship, review, priority and citation names endpoints at this granularity; selecting a
+ * latest timestamp is never canonical resolution.
+ */
+export interface EngineeringRecordVersionRef {
+  /**
+   * Governed record identity.
+   */
+  readonly record_id: Identifier;
+  /**
+   * Exact record version identity.
+   */
+  readonly version: Identifier;
+  /**
+   * Optional content checksum of the referenced version, when the caller already holds it.
+   */
+  readonly content_digest?: ContentChecksum;
+}
+
+/**
+ * One exact evidence anchor: the immutable evidence identity the claim rests on, an optional
+ * anchor identity, and an optional source span. A line range alone is not sufficient identity.
+ */
+export interface EngineeringSourceAnchor {
+  /**
+   * Identity of the immutable evidence artefact this anchor points at.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * Optional identity of the anchored span within the evidence.
+   */
+  readonly anchor_id?: Identifier;
+  /**
+   * Optional exact source span within the evidence.
+   */
+  readonly span?: SourceSpan;
+}
+
+/**
+ * A reference to the evolving question or decision an observation belongs to: either an existing
+ * topic entity identity or a proposed namespaced topic key scoped by workspace,
+ * project/repository domain and sensitivity boundary. Equal keys in different scopes do not
+ * merge.
+ */
+export interface EngineeringTopicRef {
+  /**
+   * An existing governed record or semantic entity serving as the topic.
+   */
+  readonly record_id?: Identifier;
+  /**
+   * A proposed namespaced topic key, such as `authentication.session-restoration`. A proposal,
+   * never an asserted merge.
+   */
+  readonly proposed_key?: string;
+}
+
+/**
+ * A reproducibility receipt for the context a checkpoint was produced under: the pack content
+ * checksum and its declared inputs. Not a persisted pack handle, and never a bearer token for
+ * regeneration.
+ */
+export interface EngineeringContextReceipt {
+  /**
+   * Content checksum of the engineering context pack this checkpoint references.
+   */
+  readonly pack_checksum: ContentChecksum;
+}
+
+/**
+ * One bounded working statement inside a checkpoint, with its evidence references and an
+ * explicit support classification. `claimed` means the agent reported it; only `verified`
+ * statements carry validation evidence, and neither classification is accepted knowledge.
+ */
+export interface EngineeringCheckpointObservation {
+  /**
+   * The bounded working statement.
+   */
+  readonly statement: string;
+  /**
+   * Immutable evidence identities supporting the statement, when support exists.
+   */
+  readonly evidence_refs?: readonly Identifier[];
+  /**
+   * Open, bounded code naming how the statement is supported, such as `verified` or `claimed`.
+   */
+  readonly support: string;
+}
+
+/**
+ * The durable receipt a successful checkpoint append returns. Only this receipt proves a
+ * checkpoint exists; host hooks and UI claims are not durability guarantees. Replaying the same
+ * idempotency key with the exact same request returns this same receipt.
+ */
+export interface CheckpointReceipt {
+  /**
+   * Service-issued immutable checkpoint identity.
+   */
+  readonly checkpoint_id: Identifier;
+  /**
+   * The bound continuity session.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Monotonic checkpoint sequence within the session, assigned transactionally.
+   */
+  readonly sequence: number;
+  /**
+   * Content checksum of the stored checkpoint evidence.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * Server-owned immutable recorded time.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Audit reference for the committed append.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * A bounded, authorised view of one checkpoint for a receiving agent. A redacted view is
+ * labelled as a derived view; its own digest identifies the view, never the original artefact.
+ * Omissions are recorded without exposing inaccessible evidence identities. Working context here
+ * is context, not instruction, and confers no authority.
+ */
+export interface HandoffView {
+  /**
+   * The handoff view representation format.
+   */
+  readonly format_version: string;
+  /**
+   * Identity of the checkpoint this view renders.
+   */
+  readonly checkpoint_id: Identifier;
+  /**
+   * Content checksum of this view's own bytes; the original checkpoint's digest remains the
+   * identity of the original artefact.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * Whether this view is a redacted derived view.
+   */
+  readonly redacted: boolean;
+  /**
+   * The checkpoint's bounded objective, as working context.
+   */
+  readonly objective: string;
+  /**
+   * Applicability of the checkpoint's evidence at the requested target snapshot, or
+   * `not_evaluated` when no target was requested.
+   */
+  readonly applicability: EngineeringApplicabilityStatus;
+  /**
+   * Unresolved questions preserved intact from the checkpoint.
+   */
+  readonly unresolved_work?: readonly string[];
+  /**
+   * Suggested next actions. Suggestions only; no permission to execute.
+   */
+  readonly next_actions?: readonly string[];
+  /**
+   * What this view omits and why, without exposing inaccessible identities.
+   */
+  readonly omissions?: readonly EngineeringOmission[];
+}
+
+/**
+ * One bounded preview in an engineering search result: exact record/evidence identity, a
+ * truncated bounded preview, and the server-owned authority/applicability facts a caller needs
+ * before expanding. Carries no full content, no raw local paths, and never identity-bearing
+ * fields for inaccessible objects.
+ */
+export interface EngineeringPreview {
+  /**
+   * Governed record identity of the previewed version.
+   */
+  readonly record_id: Identifier;
+  /**
+   * Exact record version identity.
+   */
+  readonly version: Identifier;
+  /**
+   * Content checksum of the exact record version, when exposed to this caller.
+   */
+  readonly content_digest?: ContentChecksum;
+  /**
+   * The record's bounded title.
+   */
+  readonly title: string;
+  /**
+   * Bounded preview text; never the full body.
+   */
+  readonly preview: string;
+  /**
+   * Whether the preview text was cut before the record's natural end.
+   */
+  readonly truncated: boolean;
+  /**
+   * The observation kind, when the record is an engineering observation.
+   */
+  readonly observation_kind?: EngineeringObservationKind;
+  /**
+   * Server-owned governance state of this exact version, such as `proposed`, `accepted`,
+   * `contested` or `superseded`.
+   */
+  readonly governance_state: string;
+  /**
+   * Open, bounded code naming what the claim rests on, such as `observed`, `derived`,
+   * `reported` or `hypothesis`.
+   */
+  readonly assertion_basis?: string;
+  /**
+   * The scoped topic key, when the record belongs to a topic.
+   */
+  readonly topic_key?: string;
+  /**
+   * Repository the record's applicability claims, when any.
+   */
+  readonly repository_id?: Identifier;
+  /**
+   * Snapshot the record's applicability claims, when any.
+   */
+  readonly snapshot_id?: Identifier;
+  /**
+   * Target-specific applicability of this version, or `not_evaluated` when no target was in
+   * scope.
+   */
+  readonly applicability: EngineeringApplicabilityStatus;
+  /**
+   * Whether the version's review schedule marks it due. A due flag is not proof of falsity.
+   */
+  readonly review_due?: boolean;
+  /**
+   * Whether the record's evidence is available to this caller under current authorisation.
+   */
+  readonly evidence_available: boolean;
+}
+
+/**
+ * One section of an engineering context pack, carrying its exact content, its citations, and one
+ * explicit knowledge partition. The partition is the integrity contract: candidate assertions
+ * never appear under `accepted_knowledge`, and working context is never an instruction or grant.
+ */
+export interface EngineeringPackSection {
+  /**
+   * Unique section identity within this pack.
+   */
+  readonly section_id: Identifier;
+  /**
+   * Open, bounded code naming the section's rendering kind, such as `decision_summary`,
+   * `evidence_excerpt` or `working_context`.
+   */
+  readonly kind: string;
+  /**
+   * Open, bounded code naming the knowledge partition, exactly one of `accepted_knowledge`,
+   * `source_evidence`, `candidate_findings`, `working_context` or `history`.
+   */
+  readonly partition: string;
+  /**
+   * The section's exact content as it enters the model-facing rendering.
+   */
+  readonly content: string;
+  /**
+   * Citations resolving this section's claims; a substantive section has at least one.
+   */
+  readonly citation_ids: readonly Identifier[];
+}
+
+/**
+ * The budget as requested, as effectively applied, and as actually consumed by this build.
+ * Actual source-read bytes and hydration counts are reported, so a pack cannot exceed its caps
+ * invisibly.
+ */
+export interface EngineeringBudgetOutcome {
+  /**
+   * What the caller requested, when the caller stated a budget.
+   */
+  readonly requested?: EngineeringBudget;
+  /**
+   * The minimum of request, granted profile and server hard limits actually applied.
+   */
+  readonly effective: EngineeringBudget;
+  /**
+   * Tokens actually rendered model-facing.
+   */
+  readonly rendered_tokens: number;
+  /**
+   * UTF-8 bytes actually rendered model-facing.
+   */
+  readonly rendered_bytes: number;
+  /**
+   * Total evidence bytes actually read during the build.
+   */
+  readonly source_bytes_read: number;
+  /**
+   * Full source hydrations actually performed.
+   */
+  readonly hydrations: number;
+}
+
+/**
  * A single typed failure. The code and retry class are the contract; the message is not.
  */
 export interface ApiError {
@@ -5825,6 +6298,498 @@ export interface DecisionSettingsUpdateResult {
 }
 
 /**
+ * Input for `continuity.session.register`: a trusted adapter or SDK binding one authenticated
+ * principal to a service-issued continuity session. Not a model-facing tool: the server derives
+ * the principal and effective grants from the authenticated channel, never from these fields. A
+ * host session reference is an opaque external correlation value, never an authentication token.
+ */
+export interface ContinuitySessionRegisterInput {
+  /**
+   * The engineering payload schema version of this request.
+   */
+  readonly schema_version: EngineeringSchemaVersion;
+  /**
+   * Optional registered source context the session is bound to.
+   */
+  readonly repository_target?: EngineeringSnapshotRef;
+  /**
+   * Optional installation-local checkout hint. An unregistered basename is a label suggestion,
+   * never permission to create or write a project.
+   */
+  readonly checkout_hint?: string;
+  /**
+   * Optional opaque host-native session correlation value; never an authentication token and
+   * never authority.
+   */
+  readonly host_session_ref?: string;
+}
+
+/**
+ * The service-issued continuity session binding: operational context, not canonical knowledge.
+ * Lease expiry and binding generation fence stale contributors; the binding generation is
+ * distinct from the authoritative workspace writer generation, and every write checks both.
+ */
+export interface ContinuitySessionBinding {
+  /**
+   * Service-issued continuity session identity.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Authenticated principal the binding is issued to; derived by the server, never supplied by
+   * the caller.
+   */
+  readonly principal_id: Identifier;
+  /**
+   * Workspace the session is bound to.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Monotonic generation fencing stale contributors against rebind, revocation and takeover.
+   */
+  readonly binding_generation: number;
+  /**
+   * When the session lease expires unless refreshed through the trusted adapter.
+   */
+  readonly lease_expires_at: Timestamp;
+  /**
+   * The binding's current operational state.
+   */
+  readonly state: EngineeringSessionState;
+  /**
+   * Registered source context bound at registration, when one was selected.
+   */
+  readonly repository_target?: EngineeringSnapshotRef;
+}
+
+/**
+ * Result of `continuity.session.close`. `checkpoint_recorded` is false when the close carried no
+ * final checkpoint; that is an explicit statement, never a fabricated summary.
+ */
+export interface ContinuitySessionCloseResult {
+  /**
+   * The closed session.
+   */
+  readonly session_id: Identifier;
+  /**
+   * The session's operational state after the close.
+   */
+  readonly state: EngineeringSessionState;
+  /**
+   * Whether a final checkpoint was committed atomically with this close.
+   */
+  readonly checkpoint_recorded: boolean;
+  /**
+   * Durable receipt for the final checkpoint, when one was committed.
+   */
+  readonly receipt?: CheckpointReceipt;
+}
+
+/**
+ * The structured, validated payload of one continuity checkpoint. Preserves working context with
+ * unresolved work and uncertainty intact: completed work distinguishes verified evidence from
+ * claims, failed approaches and unresolved questions are first-class, and suggested next actions
+ * are suggestions only - never permission to execute. The payload is L0 evidence once stored;
+ * Core does not become the owner of any plan or external effect it references.
+ */
+export interface EngineeringCheckpointPayload {
+  /**
+   * Bounded description of the current work, labelled working context.
+   */
+  readonly objective: string;
+  /**
+   * Open, bounded code naming why the checkpoint was taken, such as `periodic`,
+   * `before_compaction`, `after_compaction`, `handoff` or `session_close`.
+   */
+  readonly checkpoint_kind: string;
+  /**
+   * External Runtime/host run reference, when present. A reference, never execution authority.
+   */
+  readonly external_run_ref?: string;
+  /**
+   * Exact snapshots relevant to the work.
+   */
+  readonly repository_snapshots?: readonly EngineeringSnapshotRef[];
+  /**
+   * Accepted exact versions verified by Core at submission.
+   */
+  readonly accepted_record_refs?: readonly EngineeringRecordVersionRef[];
+  /**
+   * Proposed versions, visibly separate from accepted knowledge.
+   */
+  readonly candidate_record_refs?: readonly EngineeringRecordVersionRef[];
+  /**
+   * Bounded working statements with evidence references and support classification.
+   */
+  readonly observations?: readonly EngineeringCheckpointObservation[];
+  /**
+   * Reported accomplishments; validation links distinguish verified evidence from claims.
+   */
+  readonly completed_work?: readonly EngineeringCheckpointObservation[];
+  /**
+   * Prior attempts and their evidence, including uncertainty.
+   */
+  readonly failed_approaches?: readonly EngineeringCheckpointObservation[];
+  /**
+   * Questions, blockers and incomplete investigations, preserved intact.
+   */
+  readonly unresolved_work?: readonly string[];
+  /**
+   * Source/evidence references rather than absolute paths.
+   */
+  readonly relevant_sources?: readonly SourceReference[];
+  /**
+   * Reported external operation ids and their reported status, including `unknown`.
+   */
+  readonly external_effects?: readonly EngineeringExternalEffect[];
+  /**
+   * Suggested next actions. Suggestions only; no permission to execute.
+   */
+  readonly next_actions?: readonly string[];
+  /**
+   * Optional prior pack checksum and reproducibility inputs.
+   */
+  readonly context_receipt?: EngineeringContextReceipt;
+}
+
+/**
+ * Result of `continuity.checkpoint.append`.
+ */
+export interface ContinuityCheckpointAppendResult {
+  /**
+   * The durable receipt proving the checkpoint exists.
+   */
+  readonly receipt: CheckpointReceipt;
+}
+
+/**
+ * Input for `continuity.handoff.read`: reads a bounded, authorised handoff view of one
+ * checkpoint. Select the checkpoint exactly (by id, or by session plus sequence); the optional
+ * target snapshot lets the view state applicability for the snapshot the receiving agent
+ * actually targets. Handoff does not transfer the sender's grants, credentials, leases or
+ * approvals to act.
+ */
+export interface ContinuityHandoffReadInput {
+  /**
+   * Exact checkpoint identity.
+   */
+  readonly checkpoint_id?: Identifier;
+  /**
+   * Session identity, when selecting by session plus sequence.
+   */
+  readonly session_id?: Identifier;
+  /**
+   * Checkpoint sequence within the session, when selecting by session plus sequence.
+   */
+  readonly sequence?: number;
+  /**
+   * The snapshot the receiving agent targets, for applicability framing.
+   */
+  readonly target_snapshot?: EngineeringSnapshotRef;
+}
+
+/**
+ * Result of `continuity.handoff.read`.
+ */
+export interface ContinuityHandoffReadResult {
+  /**
+   * The bounded, authorised handoff view.
+   */
+  readonly handoff: HandoffView;
+}
+
+/**
+ * Input for `engineering.search`: bounded preview retrieval over the authorised engineering
+ * frontier. The view defaults to `accepted`; every other view is an explicit opt-in behind its
+ * capability. The repository target, when given, scopes retrieval to one registered snapshot.
+ * Authorisation, projection freshness and applicability eligibility are applied before scoring;
+ * a bounded response never presents a truncated pre-authorisation top-k as complete.
+ */
+export interface EngineeringSearchInput {
+  /**
+   * The bounded retrieval query.
+   */
+  readonly query: string;
+  /**
+   * Which knowledge partition to read; defaults to `accepted`.
+   */
+  readonly view?: EngineeringSearchView;
+  /**
+   * Optional registered snapshot the search is scoped to.
+   */
+  readonly repository_target?: EngineeringSnapshotRef;
+  /**
+   * Maximum previews to return; the service default is 20 and the hard maximum 100.
+   */
+  readonly limit?: number;
+  /**
+   * Opaque continuation position. A changed authority epoch, projection snapshot or bound
+   * scope invalidates the token with an explicit restart response.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Result of `engineering.search`: one page of bounded previews plus the coverage facts that
+ * qualify them.
+ */
+export interface EngineeringSearchResult {
+  /**
+   * The authorised previews on this page.
+   */
+  readonly previews: readonly EngineeringPreview[];
+  /**
+   * The pagination position this read reached; `{}` means the read is exhausted.
+   */
+  readonly page: PageMetadata;
+  /**
+   * Projection and applicability coverage qualifying this page.
+   */
+  readonly coverage: EngineeringCoverage;
+}
+
+/**
+ * One relationship candidate between two exact record versions. Relation vocabulary is open
+ * (`related`, `compatible`, `scoped_difference`, `conflicts_with`, `supersedes`,
+ * `not_conflict`); state is independent (`pending`, `assessed`, `accepted`, `rejected`,
+ * `obsolete`). A pending or rejected edge is visible as a candidate, never as governed truth,
+ * and a `not_conflict` verdict is not evidence that either endpoint is correct.
+ */
+export interface EngineeringRelationEdge {
+  /**
+   * The edge's source record version.
+   */
+  readonly from_record: EngineeringRecordVersionRef;
+  /**
+   * The edge's target record version.
+   */
+  readonly to_record: EngineeringRecordVersionRef;
+  /**
+   * The proposed relation vocabulary code.
+   */
+  readonly relation: string;
+  /**
+   * The relation's independent state code.
+   */
+  readonly status: string;
+}
+
+/**
+ * Input for `engineering.expand`: bounded expansion from one authorised anchor into surrounding
+ * history, relations and evidence references. Expansion obeys its own depth, node and edge
+ * budgets, and never traverses through a hidden node to reveal another relationship.
+ */
+export interface EngineeringExpandInput {
+  /**
+   * The exact authorised record version to expand from.
+   */
+  readonly anchor: EngineeringRecordVersionRef;
+  /**
+   * Expansion depth; the service default is 1 and the hard engineering cap 3.
+   */
+  readonly depth?: number;
+  /**
+   * Maximum nodes returned; the service default is 30 and the hard engineering cap 200.
+   */
+  readonly node_limit?: number;
+  /**
+   * Maximum edges returned; the service default is 60 and the hard engineering cap 400.
+   */
+  readonly edge_limit?: number;
+}
+
+/**
+ * One deterministic internal citation inside a pack: a resolvable reference to the exact record
+ * version and/or evidence the cited content came from. Citation ids are internal references, not
+ * self-referential pack URLs, and following one always requires fresh authorisation.
+ */
+export interface EngineeringCitation {
+  /**
+   * Deterministic citation identity within this pack.
+   */
+  readonly citation_id: Identifier;
+  /**
+   * The exact record version cited, when the citation names a record.
+   */
+  readonly record_ref?: EngineeringRecordVersionRef;
+  /**
+   * The immutable evidence identity cited, when the citation names evidence.
+   */
+  readonly evidence_id?: Identifier;
+}
+
+/**
+ * A notice that two or more eligible, visible assertions materially conflict. The group is
+ * atomic: the pack never silently chooses the most recent or most repeated claim as truth. When
+ * the conflicting conclusions cannot fit, the notice stands alone and the unsafe conclusion is
+ * omitted.
+ */
+export interface EngineeringConflictNotice {
+  /**
+   * The conflicting record versions, all visible to this caller.
+   */
+  readonly records: readonly EngineeringRecordVersionRef[];
+  /**
+   * Open, bounded code naming the conflict state, such as `unresolved`, `resolved` or
+   * `scoped_difference`.
+   */
+  readonly status: string;
+  /**
+   * Bounded explanatory note permitted for this caller.
+   */
+  readonly note?: string;
+}
+
+/**
+ * One target snapshot's applicability statement inside a pack, so a consumer can see which
+ * target each applicability claim belongs to.
+ */
+export interface EngineeringTargetApplicability {
+  /**
+   * The target snapshot this statement is about.
+   */
+  readonly snapshot: EngineeringSnapshotRef;
+  /**
+   * Applicability of the pack's records at this target, evaluated at the pinned BuildContext.
+   */
+  readonly status: EngineeringApplicabilityStatus;
+}
+
+/**
+ * Input for `engineering.context.build`: builds one non-persisted engineering context pack
+ * against explicit repository snapshot targets. Workspace, principal, purpose and grants remain
+ * in the envelope. The request carries no free-form system prompt, arbitrary model instruction,
+ * raw SQL, server filesystem path, new authority field or synchronous summarisation-provider
+ * setting; historical diagnosis is an explicit separate request type or capability, never an
+ * automatic fallback.
+ */
+export interface EngineeringContextBuildInput {
+  /**
+   * The bounded retrieval intent for this build.
+   */
+  readonly query: string;
+  /**
+   * Explicit repository snapshot targets for this pack.
+   */
+  readonly targets: readonly EngineeringSnapshotRef[];
+  /**
+   * Retrieval profile: one of `investigate`, `implement`, `review` or `resume`. A retrieval
+   * template, not a permission or work instruction.
+   */
+  readonly profile: string;
+  /**
+   * Optional topics to centre the pack on.
+   */
+  readonly topic_refs?: readonly EngineeringTopicRef[];
+  /**
+   * Optional authorised checkpoint identities whose working context may enter the pack.
+   */
+  readonly checkpoint_refs?: readonly Identifier[];
+  /**
+   * Optional caller-requested budgets; effective budgets are also bounded by the granted
+   * profile and server hard limits.
+   */
+  readonly budget?: EngineeringBudget;
+}
+
+/**
+ * Input for `context.priority.set`: one principal's own selection preference for one exact
+ * visible record version. Priority is `normal` or `preferred`; it can influence selection only
+ * after authorisation and applicability checks, never changes governed record versions, approval
+ * state or evidence confidence, and a pin count never becomes an evidence-confidence input.
+ */
+export interface ContextPrioritySetInput {
+  /**
+   * The exact visible record version the preference applies to.
+   */
+  readonly target: EngineeringRecordVersionRef;
+  /**
+   * The preference: `normal` or `preferred`.
+   */
+  readonly priority: string;
+  /**
+   * Optional expiry of the preference.
+   */
+  readonly expires_at?: Timestamp;
+}
+
+/**
+ * Result of `context.priority.set`.
+ */
+export interface ContextPrioritySetResult {
+  /**
+   * The record version the preference now applies to.
+   */
+  readonly target: EngineeringRecordVersionRef;
+  /**
+   * The stored preference.
+   */
+  readonly priority: string;
+  /**
+   * Expiry of the preference, when one was set.
+   */
+  readonly expires_at?: Timestamp;
+  /**
+   * Audit reference for the audited preference change.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.review.record`: records one review or deterministic-validation
+ * attestation for one exact record version at one target snapshot. This cannot accept knowledge,
+ * cannot clear a stale or unknown target applicability without new evidence, and never replaces
+ * the governed review path.
+ */
+export interface EngineeringReviewRecordInput {
+  /**
+   * The exact record version being reviewed.
+   */
+  readonly record_ref: EngineeringRecordVersionRef;
+  /**
+   * The target snapshot the review is recorded against.
+   */
+  readonly target_snapshot: EngineeringSnapshotRef;
+  /**
+   * Open, bounded code naming what the review recorded, such as `acknowledged`,
+   * `evidence_attached` or `revision_proposed`.
+   */
+  readonly review_outcome: string;
+  /**
+   * Immutable evidence identity backing the review, when evidence was attached.
+   */
+  readonly review_evidence_id?: Identifier;
+  /**
+   * Mutation precondition: the applicability assessment version the caller believes is
+   * current.
+   */
+  readonly expected_assessment_version?: Identifier;
+}
+
+/**
+ * Result of `engineering.review.record`. The returned applicability is the target-specific
+ * assessment after this review; acknowledging review without sufficient evidence leaves
+ * `potentially_stale`, `invalid` and `unknown` intact.
+ */
+export interface EngineeringReviewRecordResult {
+  /**
+   * The reviewed record version.
+   */
+  readonly record_ref: EngineeringRecordVersionRef;
+  /**
+   * The target-specific assessment after this review.
+   */
+  readonly applicability: EngineeringApplicabilityStatus;
+  /**
+   * The proposed revision created by this review, when the outcome proposed one.
+   */
+  readonly revision_ref?: EngineeringRecordVersionRef;
+  /**
+   * Audit reference for the recorded attestation.
+   */
+  readonly audit_reference: string;
+}
+
+/**
  * Everything the server needs to route, scope, bound, and audit a request, independent of the
  * operation payload.
  */
@@ -7128,6 +8093,170 @@ export interface DecisionRecordGetResult {
 }
 
 /**
+ * Result of `continuity.session.register`.
+ */
+export interface ContinuitySessionRegisterResult {
+  /**
+   * The service-issued binding.
+   */
+  readonly session: ContinuitySessionBinding;
+}
+
+/**
+ * Input for `continuity.session.close`: closes one bound session, optionally committing a final
+ * checkpoint in the same atomic metadata transaction. A close without a checkpoint explicitly
+ * records that no checkpoint exists; it never fabricates a summary. The expected sequence is a
+ * mutation precondition against the session's last acknowledged checkpoint.
+ */
+export interface ContinuitySessionCloseInput {
+  /**
+   * The bound session to close.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Optional mutation precondition: the checkpoint sequence the caller believes is currently
+   * the last acknowledged one for this session.
+   */
+  readonly expected_sequence?: number;
+  /**
+   * Optional final checkpoint payload committed atomically with the close.
+   */
+  readonly final_checkpoint?: EngineeringCheckpointPayload;
+}
+
+/**
+ * Input for `continuity.checkpoint.append`: appends one immutable checkpoint to a bound session.
+ * The envelope's idempotency key makes a lost-reply retry return the original receipt; reusing
+ * the key with a different payload is an explicit conflict. The expected parent sequence
+ * serialises competing successors: two clients cannot both become the successor of one
+ * checkpoint.
+ */
+export interface ContinuityCheckpointAppendInput {
+  /**
+   * The bound session to append to.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Exact predecessor checkpoint, required for an explicit continuation.
+   */
+  readonly parent_checkpoint_id?: Identifier;
+  /**
+   * The parent sequence the caller expects; a concurrent successor makes this append a
+   * precondition failure rather than a silent replacement.
+   */
+  readonly expected_parent_sequence?: number;
+  /**
+   * The validated checkpoint payload stored as immutable L0 evidence.
+   */
+  readonly payload: EngineeringCheckpointPayload;
+}
+
+/**
+ * Result of `engineering.expand`: bounded nodes and filtered edges around the anchor, with
+ * explicit truncation and coverage.
+ */
+export interface EngineeringExpandResult {
+  /**
+   * Exact record versions reached, including the anchor.
+   */
+  readonly nodes: readonly EngineeringRecordVersionRef[];
+  /**
+   * Relationship candidates whose endpoints are both visible to this caller.
+   */
+  readonly edges: readonly EngineeringRelationEdge[];
+  /**
+   * Whether expansion stopped at a budget rather than exhausting the neighbourhood.
+   */
+  readonly truncated: boolean;
+  /**
+   * Projection and applicability coverage qualifying this expansion.
+   */
+  readonly coverage: EngineeringCoverage;
+}
+
+/**
+ * The engineering context pack representation (`format_version` `engineering_context.v1`): a
+ * non-persisted deterministic view built from a pinned BuildContext and the authorised frontier.
+ * `pack_id` equals the canonical artifact checksum computed after removing exactly the root
+ * `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token:
+ * following any citation requires fresh authorisation, and a previously generated pack may no
+ * longer be deliverable after revocation even when its bytes are reproducible.
+ */
+export interface EngineeringContextPack {
+  /**
+   * The engineering pack representation format. This representation is never decoded as a
+   * legacy application-v1 ContextPackBuildResult.
+   */
+  readonly format_version: string;
+  /**
+   * The pack's content identity: SHA-256 of the canonical result after removing exactly root
+   * `pack_id` and nested `reproducibility.artifact_checksum`.
+   */
+  readonly pack_id: ContentChecksum;
+  /**
+   * The normalized build request the pack answers.
+   */
+  readonly normalized_request: JsonObject;
+  /**
+   * The exact snapshots this pack is about.
+   */
+  readonly targets: readonly EngineeringSnapshotRef[];
+  /**
+   * The retrieval profile used, such as `investigate`, `implement`, `review` or `resume`. A
+   * retrieval template, not a permission or work instruction.
+   */
+  readonly profile: string;
+  /**
+   * The pack's sections, each under exactly one knowledge partition.
+   */
+  readonly sections: readonly EngineeringPackSection[];
+  /**
+   * The pack's citation registry.
+   */
+  readonly citations: readonly EngineeringCitation[];
+  /**
+   * Mandatory conflict notices; reserved before optional content is selected.
+   */
+  readonly conflicts: readonly EngineeringConflictNotice[];
+  /**
+   * Mandatory uncertainty notices, reserved before optional content is selected.
+   */
+  readonly uncertainties: readonly string[];
+  /**
+   * What was omitted and why, without exposing inaccessible identities.
+   */
+  readonly omissions: readonly EngineeringOmission[];
+  /**
+   * The complete model-facing rendering and its exact counts.
+   */
+  readonly rendering: EngineeringRendering;
+  /**
+   * Requested, effective and actually consumed budgets.
+   */
+  readonly budget: EngineeringBudgetOutcome;
+  /**
+   * Per-target applicability, evaluated at the pinned BuildContext.
+   */
+  readonly applicability: readonly EngineeringTargetApplicability[];
+  /**
+   * The authorisation facts (epochs, policy digests) this pack was built under. Historical
+   * authorisation is not permission to disclose today.
+   */
+  readonly authorization_context: JsonObject;
+  /**
+   * Evaluation time, source/record versions, projection versions and watermarks,
+   * renderer/tokenizer versions, ranking profile, frontier checksum, policy/ACL epoch and
+   * resolver version, plus the artifact canonicalisation and checksum. Replay requires all of
+   * these inputs; missing inputs mean a new build gets a new identity.
+   */
+  readonly reproducibility: JsonObject;
+  /**
+   * Always true: consuming this pack always requires a fresh authorisation check.
+   */
+  readonly fresh_authorization_required: boolean;
+}
+
+/**
  * A single application request: what to do, under what conditions, with what payload.
  */
 export interface RequestEnvelope {
@@ -7829,6 +8958,17 @@ export interface DecisionModelActivateResult {
    * The durable job carrying the install/activation.
    */
   readonly job: JobHandle;
+}
+
+/**
+ * Result of `engineering.context.build`. Nothing is persisted: the pack is regenerated or fails
+ * with an explicit replay-inputs error, never silently reissued from absent projections.
+ */
+export interface EngineeringContextBuildResult {
+  /**
+   * The built pack. Non-persisted; regeneration requires its recorded replay inputs.
+   */
+  readonly pack: EngineeringContextPack;
 }
 
 /**
@@ -10391,6 +11531,326 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateResult",
     required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.session.register",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.checkpoint.append",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.session.close",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.handoff.read",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.search",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 1000 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.expand",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.context.build",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "token_limit_exceeded",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "context.priority.set",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.review.record",
+    scope: {
+      required_scopes: ["engineering:curate"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordResult",
+    required_capability: { id: "engineering.curate", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },
     idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
