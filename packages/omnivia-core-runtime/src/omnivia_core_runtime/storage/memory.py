@@ -37,7 +37,11 @@ from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
 IdentifierAllocator = Callable[[str], str]
 
 _PROFILE_TYPE: Final = "memory.fact"
-_ENGINEERING_OBSERVATION_TYPE: Final = "engineering.observation"
+#: The governed record types engineering observations ride (§8.1 via §22.1): the
+#: schema catalogue is frozen to the 0009 vocabulary, so observations use the
+#: catalogue's own finding/risk/decision types under the engineering domain.
+_ENGINEERING_RECORD_TYPES: Final = ("knowledge.finding", "knowledge.risk", "knowledge.decision")
+_ENGINEERING_DOMAIN: Final = "engineering.codebase"
 _ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
 _MESSAGE_INVALID_PROFILE: Final = "the memory claim is outside this supported profile"
 _MESSAGE_EVIDENCE_UNAVAILABLE: Final = (
@@ -214,26 +218,31 @@ def create_memory_record(
     allocate_identifier: IdentifierAllocator = random_identifier,
 ) -> dict[str, object]:
     """Persist one sealed human proposal plus its immutable application lineage."""
-    if claim.record_type == _ENGINEERING_OBSERVATION_TYPE:
-        _validate_engineering_observation_content(claim.content)
-    fact = claim.content.get("fact") if isinstance(claim.content, Mapping) else None
     if (
-        claim.record_type != _PROFILE_TYPE
-        or not isinstance(fact, str)
-        or not fact
-        or claim.extraction is not None
+        claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
     ):
-        code = (
-            ERROR_CODE_DEPENDENCY_UNAVAILABLE
-            if claim.extraction is not None
-            else ERROR_CODE_INVALID_REQUEST
-        )
-        retry = (
-            RETRY_CLASS_RETRYABLE_AFTER_DELAY
-            if claim.extraction is not None
-            else "non_retryable"
-        )
-        raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
+        _validate_engineering_observation_content(claim.content)
+    elif claim.record_type == _PROFILE_TYPE:
+        fact = claim.content.get("fact")
+        if (
+            not isinstance(fact, str)
+            or not fact
+            or claim.extraction is not None
+        ):
+            code = (
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE
+                if claim.extraction is not None
+                else ERROR_CODE_INVALID_REQUEST
+            )
+            retry = (
+                RETRY_CLASS_RETRYABLE_AFTER_DELAY
+                if claim.extraction is not None
+                else "non_retryable"
+            )
+            raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
+    else:
+        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_PROFILE)
 
     evidence_ids = resolve_memory_claim_evidence(
         connection,

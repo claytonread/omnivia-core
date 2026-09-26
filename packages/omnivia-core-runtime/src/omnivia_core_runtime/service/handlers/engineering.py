@@ -76,8 +76,9 @@ _MESSAGE_NO_STORAGE: Final = (
 )
 _MESSAGE_NOT_FOUND: Final = "the requested engineering record was not found"
 
-#: The engineering record type this retrieval serves (§8.1).
-OBSERVATION_RECORD_TYPE: Final = "engineering.observation"
+#: The engineering domain this retrieval serves: observations ride the frozen
+#: catalogue's finding/risk/decision types under this domain (§22.1).
+OBSERVATION_DOMAIN: Final = "engineering.codebase"
 
 #: The view→governed-resolver mapping (§11.2). `working_context` is absent
 #: deliberately: it reads the continuity checkpoint index, not governed records.
@@ -255,7 +256,7 @@ class EngineeringHandlers:
             candidates: list[GovernedCandidate] = []
             for value in values:
                 record = value.record
-                if record.record_type != OBSERVATION_RECORD_TYPE:
+                if record.domain_scope != OBSERVATION_DOMAIN:
                     continue
                 content = record.content
                 if (
@@ -382,19 +383,23 @@ class EngineeringHandlers:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection = self._connection()
         now_us = time.time_ns() // 1000
-        values = read_governed_record_values(
-            connection,
-            workspace_id=context.workspace_id,
-            resolution_instant_us=now_us,
-        )
         anchor_found = False
-        for value in values:
-            identity = value.record.provenance.identity
-            if (
-                identity.record_id == request.anchor.record_id
-                and identity.version == request.anchor.version
-            ):
-                anchor_found = True
+        for governed_view in ("current_canonical", "candidates", "history"):
+            values = read_governed_record_values(
+                connection,
+                workspace_id=context.workspace_id,
+                resolution_instant_us=now_us,
+                view=governed_view,
+            )
+            for value in values:
+                identity = value.record.provenance.identity
+                if (
+                    identity.record_id == request.anchor.record_id
+                    and identity.version == request.anchor.version
+                ):
+                    anchor_found = True
+                    break
+            if anchor_found:
                 break
         if not anchor_found:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
