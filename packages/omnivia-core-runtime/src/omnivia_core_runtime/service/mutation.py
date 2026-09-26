@@ -116,6 +116,9 @@ CONTINUITY_SESSION_PURPOSE: Final = "continuity_session"
 CONTINUITY_CHECKPOINT_PURPOSE: Final = "continuity_checkpoint"
 CONTEXT_PRIORITY_PURPOSE: Final = "context_priority"
 ENGINEERING_REVIEW_PURPOSE: Final = "engineering_review"
+#: A trusted source producer recording source state. Its own purpose, like its own
+#: scope and capability, so a grant to contribute observations never covers it.
+ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -149,6 +152,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "continuity.session.close": CONTINUITY_SESSION_PURPOSE,
         "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
         "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
+        "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
     }
 )
 
@@ -203,6 +207,9 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "continuity.session.close": WORKSPACE_CONTRIBUTOR_ROLE,
         "context.priority.set": WORKSPACE_CONTRIBUTOR_ROLE,
         "engineering.review.record": KNOWLEDGE_REVIEWER_ROLE,
+        # The contributor role, plus the operation's own `engineering:source` scope and
+        # `engineering.source` capability, which only a source producer's grant holds.
+        "engineering.source.record": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

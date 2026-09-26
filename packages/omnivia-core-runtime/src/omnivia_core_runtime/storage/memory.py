@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
@@ -33,6 +33,9 @@ from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
 )
 from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
+
+if TYPE_CHECKING:
+    from omnivia_core_runtime.storage.engineering_source import DependencyManifest
 
 IdentifierAllocator = Callable[[str], str]
 
@@ -168,14 +171,17 @@ def _plain_content(value: Any) -> Any:
     return value
 
 
-def _validate_engineering_observation_content(content: Mapping[str, Any]) -> None:
+def _validate_engineering_observation_content(
+    content: Mapping[str, Any],
+) -> DependencyManifest | None:
     """The `engineering.observation` content profile (SPEC-CORE-ENGMEM-001 §8.1).
 
     Text is validated, never silently truncated on save: a missing or
     wrong-typed required field, an oversized field or an oversized payload is a
     typed refusal, and the caller splits or fixes it explicitly. The 64 KiB cap
     bounds the canonical content bytes excluding separately referenced
-    evidence.
+    evidence. An optional `dependency_manifest` is validated whole and returned
+    for persistence; a malformed one is refused rather than partly kept.
     """
     title = content.get("title")
     summary = content.get("summary")
@@ -215,6 +221,30 @@ def _validate_engineering_observation_content(content: Mapping[str, Any]) -> Non
             ERROR_CODE_INVALID_REQUEST,
             "the engineering observation content exceeds the 65536-byte payload cap",
         )
+    if "dependency_manifest" not in content:
+        return None
+    # Imported at use: engineering_source reaches this module back through decisions.
+    from omnivia_core_runtime.storage import engineering_source
+
+    try:
+        manifest = engineering_source.parse_dependency_manifest(
+            content["dependency_manifest"]
+        )
+    except engineering_source.DependencyManifestInvalid as error:
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "the engineering dependency_manifest is outside its bounded profile",
+        ) from error
+    applicability = content.get("applicability")
+    if isinstance(applicability, Mapping) and any(
+        applicability.get(key) not in (None, getattr(manifest, key))
+        for key in ("repository_id", "snapshot_id")
+    ):
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "the engineering applicability and dependency_manifest name different sources",
+        )
+    return manifest
 
 
 def create_memory_record(
@@ -227,11 +257,12 @@ def create_memory_record(
     allocate_identifier: IdentifierAllocator = random_identifier,
 ) -> dict[str, object]:
     """Persist one sealed human proposal plus its immutable application lineage."""
+    dependency_manifest: DependencyManifest | None = None
     if (
         claim.record_type in _ENGINEERING_RECORD_TYPES
         and claim.domain_scope == _ENGINEERING_DOMAIN
     ):
-        _validate_engineering_observation_content(claim.content)
+        dependency_manifest = _validate_engineering_observation_content(claim.content)
     elif claim.record_type == _PROFILE_TYPE:
         fact = claim.content.get("fact")
         if (
@@ -407,6 +438,28 @@ def create_memory_record(
             settlement.settled_at_us,
         ),
     )
+    if dependency_manifest is not None:
+        # Same fenced transaction as the proposal: the dependency set exists exactly
+        # when this version does. Its digests stay claims until the evaluator checks
+        # them against the recorded baseline manifest.
+        from omnivia_core_runtime.storage import engineering_source
+
+        try:
+            engineering_source.record_dependency_set(
+                connection,
+                settlement,
+                workspace_id=workspace_id,
+                record_id=record_id,
+                version=version_id,
+                manifest=dependency_manifest,
+                allocate_identifier=allocate_identifier,
+            )
+        except engineering_source.DependencyBaselineUnavailable as error:
+            raise OperationError(
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
+                "the dependency manifest's baseline source snapshot is not recorded",
+                retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+            ) from error
 
     at = _timestamp(settlement.settled_at_us)
     temporal = RecordTemporalMetadata(

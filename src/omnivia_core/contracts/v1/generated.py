@@ -286,6 +286,7 @@ __all__ = [
     "EffectOutcome",
     "EffectReceipt",
     "EffectSettlement",
+    "EngineeringApplicabilityMode",
     "EngineeringApplicabilityStatus",
     "EngineeringBudget",
     "EngineeringBudgetOutcome",
@@ -317,6 +318,11 @@ __all__ = [
     "EngineeringSessionState",
     "EngineeringSnapshotRef",
     "EngineeringSourceAnchor",
+    "EngineeringSourceManifestEntry",
+    "EngineeringSourcePredecessor",
+    "EngineeringSourceRecordInput",
+    "EngineeringSourceRecordResult",
+    "EngineeringSourceStreamCoverage",
     "EngineeringTargetApplicability",
     "EngineeringTopicRef",
     "ErrorCode",
@@ -3256,6 +3262,63 @@ class EngineeringRendering:
             renderer_version=field_renderer_version,
             token_count=field_token_count,
             byte_count=field_byte_count,
+        )
+
+
+EngineeringApplicabilityMode: TypeAlias = str
+"""The closed applicability mode of an engineering read: `diagnostic` (the default, conservative and
+never a safety claim) or `current_safe` (only proven `matched` records at fully covered,
+explicitly requested targets). Any other value is refused; there is no automatic downgrade from
+`current_safe`.
+"""
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceStreamCoverage:
+    """The coverage barrier of one source stream after a record: the newest announced sequence
+    and the highest sequence up to which every event is present and chained to its
+    predecessor. A gap keeps the barrier `pending`; `current_safe` reads refuse any target
+    beyond `covered_sequence`.
+    """
+
+    state: str
+    covered_sequence: int
+    announced_sequence: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["state"] = self.state
+        wire["covered_sequence"] = self.covered_sequence
+        wire["announced_sequence"] = self.announced_sequence
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceStreamCoverage"
+    ) -> EngineeringSourceStreamCoverage:
+        """Decode a wire payload into a EngineeringSourceStreamCoverage.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_state = _decode_str(_require_field(mapping, "state", path), f"{path}.state")
+        field_covered_sequence = _decode_int(
+            _require_field(mapping, "covered_sequence", path),
+            f"{path}.covered_sequence",
+        )
+        field_announced_sequence = _decode_int(
+            _require_field(mapping, "announced_sequence", path),
+            f"{path}.announced_sequence",
+        )
+        return cls(
+            state=field_state,
+            covered_sequence=field_covered_sequence,
+            announced_sequence=field_announced_sequence,
         )
 
 
@@ -6820,6 +6883,187 @@ class EngineeringBudgetOutcome:
             rendered_bytes=field_rendered_bytes,
             source_bytes_read=field_source_bytes_read,
             hydrations=field_hydrations,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceManifestEntry:
+    """One file of a source snapshot manifest: a repository-relative path and the SHA-256 digest
+    of the file's bytes. The path is preserved exactly - Unicode and case are never
+    normalized - and an absolute path, a drive prefix, a backslash, an empty, `.` or `..`
+    segment, or a control character is refused. A path is a name, never something the server
+    reads.
+    """
+
+    path: str
+    digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["path"] = self.path
+        wire["digest"] = self.digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceManifestEntry"
+    ) -> EngineeringSourceManifestEntry:
+        """Decode a wire payload into a EngineeringSourceManifestEntry.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_path = _decode_str(_require_field(mapping, "path", path), f"{path}.path")
+        field_digest = _decode_str(_require_field(mapping, "digest", path), f"{path}.digest")
+        return cls(
+            path=field_path,
+            digest=field_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourcePredecessor:
+    """The source event this one directly follows in the same stream: sequence `sequence - 1`
+    and the snapshot it recorded. Coverage advances only along a contiguous chain of these
+    links, never by capture time.
+    """
+
+    sequence: int
+    snapshot_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["sequence"] = self.sequence
+        wire["snapshot_id"] = self.snapshot_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourcePredecessor"
+    ) -> EngineeringSourcePredecessor:
+        """Decode a wire payload into a EngineeringSourcePredecessor.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_sequence = _decode_int(_require_field(mapping, "sequence", path), f"{path}.sequence")
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        return cls(
+            sequence=field_sequence,
+            snapshot_id=field_snapshot_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceRecordResult:
+    """Result of `engineering.source.record`: the stored event's identity and manifest digest,
+    whether this delivery recorded it or found it already recorded, and the stream's coverage
+    barrier as committed with it.
+    """
+
+    repository_id: Identifier
+    stream_id: Identifier
+    sequence: int
+    snapshot_id: Identifier
+    manifest_digest: ContentChecksum
+    capture_status: str
+    disposition: str
+    coverage: EngineeringSourceStreamCoverage
+    recorded_at: Timestamp
+    audit_reference: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["stream_id"] = self.stream_id
+        wire["sequence"] = self.sequence
+        wire["snapshot_id"] = self.snapshot_id
+        wire["manifest_digest"] = self.manifest_digest
+        wire["capture_status"] = self.capture_status
+        wire["disposition"] = self.disposition
+        wire["coverage"] = self.coverage.to_wire()
+        wire["recorded_at"] = self.recorded_at
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceRecordResult"
+    ) -> EngineeringSourceRecordResult:
+        """Decode a wire payload into a EngineeringSourceRecordResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_stream_id = _decode_str(
+            _require_field(mapping, "stream_id", path),
+            f"{path}.stream_id",
+        )
+        field_sequence = _decode_int(_require_field(mapping, "sequence", path), f"{path}.sequence")
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_manifest_digest = _decode_str(
+            _require_field(mapping, "manifest_digest", path),
+            f"{path}.manifest_digest",
+        )
+        field_capture_status = _decode_str(
+            _require_field(mapping, "capture_status", path),
+            f"{path}.capture_status",
+        )
+        field_disposition = _decode_str(
+            _require_field(mapping, "disposition", path),
+            f"{path}.disposition",
+        )
+        field_coverage = EngineeringSourceStreamCoverage.from_wire(
+            _require_field(mapping, "coverage", path),
+            f"{path}.coverage",
+        )
+        field_recorded_at = _decode_str(
+            _require_field(mapping, "recorded_at", path),
+            f"{path}.recorded_at",
+        )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            stream_id=field_stream_id,
+            sequence=field_sequence,
+            snapshot_id=field_snapshot_id,
+            manifest_digest=field_manifest_digest,
+            capture_status=field_capture_status,
+            disposition=field_disposition,
+            coverage=field_coverage,
+            recorded_at=field_recorded_at,
+            audit_reference=field_audit_reference,
         )
 
 
@@ -12277,6 +12521,7 @@ class EngineeringSearchInput:
     repository_target: EngineeringSnapshotRef | None = None
     limit: int | None = None
     page: PageMetadata | None = None
+    applicability_mode: EngineeringApplicabilityMode | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -12294,6 +12539,8 @@ class EngineeringSearchInput:
             wire["limit"] = self.limit
         if self.page is not None:
             wire["page"] = self.page.to_wire()
+        if self.applicability_mode is not None:
+            wire["applicability_mode"] = self.applicability_mode
         return wire
 
     @classmethod
@@ -12342,12 +12589,24 @@ class EngineeringSearchInput:
                     f"{path}.page: null is not a valid value"
                 )
             field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        field_applicability_mode: EngineeringApplicabilityMode | None = None
+        if "applicability_mode" in mapping:
+            raw_applicability_mode = mapping["applicability_mode"]
+            if raw_applicability_mode is None:
+                raise ContractDecodeError(
+                    f"{path}.applicability_mode: null is not a valid value"
+                )
+            field_applicability_mode = _decode_str(
+                raw_applicability_mode,
+                f"{path}.applicability_mode",
+            )
         return cls(
             query=field_query,
             view=field_view,
             repository_target=field_repository_target,
             limit=field_limit,
             page=field_page,
+            applicability_mode=field_applicability_mode,
         )
 
 
@@ -12713,6 +12972,7 @@ class EngineeringContextBuildInput:
     topic_refs: tuple[EngineeringTopicRef, ...] | None = None
     checkpoint_refs: tuple[Identifier, ...] | None = None
     budget: EngineeringBudget | None = None
+    applicability_mode: EngineeringApplicabilityMode | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -12730,6 +12990,8 @@ class EngineeringContextBuildInput:
             wire["checkpoint_refs"] = list(self.checkpoint_refs)
         if self.budget is not None:
             wire["budget"] = self.budget.to_wire()
+        if self.applicability_mode is not None:
+            wire["applicability_mode"] = self.applicability_mode
         return wire
 
     @classmethod
@@ -12787,6 +13049,17 @@ class EngineeringContextBuildInput:
                     f"{path}.budget: null is not a valid value"
                 )
             field_budget = EngineeringBudget.from_wire(raw_budget, f"{path}.budget")
+        field_applicability_mode: EngineeringApplicabilityMode | None = None
+        if "applicability_mode" in mapping:
+            raw_applicability_mode = mapping["applicability_mode"]
+            if raw_applicability_mode is None:
+                raise ContractDecodeError(
+                    f"{path}.applicability_mode: null is not a valid value"
+                )
+            field_applicability_mode = _decode_str(
+                raw_applicability_mode,
+                f"{path}.applicability_mode",
+            )
         return cls(
             query=field_query,
             targets=field_targets,
@@ -12794,6 +13067,7 @@ class EngineeringContextBuildInput:
             topic_refs=field_topic_refs,
             checkpoint_refs=field_checkpoint_refs,
             budget=field_budget,
+            applicability_mode=field_applicability_mode,
         )
 
 
@@ -13058,6 +13332,133 @@ class EngineeringReviewRecordResult:
             applicability=field_applicability,
             revision_ref=field_revision_ref,
             audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceRecordInput:
+    """Input for `engineering.source.record`: a trusted source producer records one immutable
+    snapshot of one logical repository as the next event of its own source stream. Not a
+    model-facing tool, and never reachable through contributed observations: it requires the
+    distinct `engineering:source` scope and `engineering.source` capability. The payload
+    carries identities, the producer's monotonic stream sequence and predecessor, the
+    snapshot kind, capture coverage and a bounded canonical manifest of repository-relative
+    paths and SHA-256 digests - never a path to read, a command, raw file content, a
+    credential, an installation or principal field, or a repository label. The authenticated
+    principal owns the stream; a stream bound to another principal or repository is refused,
+    never replaced. Unknown keys are refused.
+    """
+
+    repository_id: Identifier
+    stream_id: Identifier
+    sequence: int
+    snapshot_id: Identifier
+    snapshot_kind: str
+    capture_status: str
+    manifest: tuple[EngineeringSourceManifestEntry, ...]
+    predecessor: EngineeringSourcePredecessor | None = None
+    base_commit: str | None = None
+    manifest_digest: ContentChecksum | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["stream_id"] = self.stream_id
+        wire["sequence"] = self.sequence
+        if self.predecessor is not None:
+            wire["predecessor"] = self.predecessor.to_wire()
+        wire["snapshot_id"] = self.snapshot_id
+        wire["snapshot_kind"] = self.snapshot_kind
+        if self.base_commit is not None:
+            wire["base_commit"] = self.base_commit
+        wire["capture_status"] = self.capture_status
+        wire["manifest"] = [item.to_wire() for item in self.manifest]
+        if self.manifest_digest is not None:
+            wire["manifest_digest"] = self.manifest_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceRecordInput"
+    ) -> EngineeringSourceRecordInput:
+        """Decode a wire payload into a EngineeringSourceRecordInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_stream_id = _decode_str(
+            _require_field(mapping, "stream_id", path),
+            f"{path}.stream_id",
+        )
+        field_sequence = _decode_int(_require_field(mapping, "sequence", path), f"{path}.sequence")
+        field_predecessor: EngineeringSourcePredecessor | None = None
+        if "predecessor" in mapping:
+            raw_predecessor = mapping["predecessor"]
+            if raw_predecessor is None:
+                raise ContractDecodeError(
+                    f"{path}.predecessor: null is not a valid value"
+                )
+            field_predecessor = EngineeringSourcePredecessor.from_wire(
+                raw_predecessor,
+                f"{path}.predecessor",
+            )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_snapshot_kind = _decode_str(
+            _require_field(mapping, "snapshot_kind", path),
+            f"{path}.snapshot_kind",
+        )
+        field_base_commit: str | None = None
+        if "base_commit" in mapping:
+            raw_base_commit = mapping["base_commit"]
+            if raw_base_commit is None:
+                raise ContractDecodeError(
+                    f"{path}.base_commit: null is not a valid value"
+                )
+            field_base_commit = _decode_str(raw_base_commit, f"{path}.base_commit")
+        field_capture_status = _decode_str(
+            _require_field(mapping, "capture_status", path),
+            f"{path}.capture_status",
+        )
+        field_manifest_items = _decode_sequence(
+            _require_field(mapping, "manifest", path),
+            f"{path}.manifest",
+        )
+        field_manifest = tuple(
+            EngineeringSourceManifestEntry.from_wire(item, f"{path}.manifest[{index}]")
+            for index, item in enumerate(field_manifest_items)
+        )
+        field_manifest_digest: ContentChecksum | None = None
+        if "manifest_digest" in mapping:
+            raw_manifest_digest = mapping["manifest_digest"]
+            if raw_manifest_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.manifest_digest: null is not a valid value"
+                )
+            field_manifest_digest = _decode_str(raw_manifest_digest, f"{path}.manifest_digest")
+        return cls(
+            repository_id=field_repository_id,
+            stream_id=field_stream_id,
+            sequence=field_sequence,
+            predecessor=field_predecessor,
+            snapshot_id=field_snapshot_id,
+            snapshot_kind=field_snapshot_kind,
+            base_commit=field_base_commit,
+            capture_status=field_capture_status,
+            manifest=field_manifest,
+            manifest_digest=field_manifest_digest,
         )
 
 
@@ -22615,6 +23016,61 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "mutation_precondition_failed",
             "not_found",
             "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="engineering.source.record",
+        scope=OperationScope(
+            required_scopes=("engineering:source",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceRecordInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceRecordResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.source",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "size_limit_exceeded",
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",

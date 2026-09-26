@@ -231,6 +231,11 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         "engineering.review.record",
         "engineering_review",
     ),
+    ApplicationCommand(
+        ("engineering", "source"),
+        "engineering.source.record",
+        "engineering_source",
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (
