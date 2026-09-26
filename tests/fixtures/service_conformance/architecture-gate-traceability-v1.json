@@ -202,7 +202,16 @@
         "decision.model.activate",
         "decision.model.remove",
         "decision.settings.get",
-        "decision.settings.update"
+        "decision.settings.update",
+        "continuity.session.register",
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "continuity.handoff.read",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
+        "context.priority.set",
+        "engineering.review.record"
       ]
     },
     {
@@ -323,7 +332,12 @@
         "decision.model.install",
         "decision.model.activate",
         "decision.model.remove",
-        "decision.settings.update"
+        "decision.settings.update",
+        "continuity.session.register",
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "context.priority.set",
+        "engineering.review.record"
       ]
     },
     {
@@ -353,7 +367,12 @@
         "decision.model.install",
         "decision.model.activate",
         "decision.model.remove",
-        "decision.settings.update"
+        "decision.settings.update",
+        "continuity.session.register",
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "context.priority.set",
+        "engineering.review.record"
       ]
     },
     {
@@ -432,7 +451,16 @@
         "decision.model.activate",
         "decision.model.remove",
         "decision.settings.get",
-        "decision.settings.update"
+        "decision.settings.update",
+        "continuity.session.register",
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "continuity.handoff.read",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
+        "context.priority.set",
+        "engineering.review.record"
       ]
     },
     {
@@ -484,7 +512,16 @@
         "decision.model.activate",
         "decision.model.remove",
         "decision.settings.get",
-        "decision.settings.update"
+        "decision.settings.update",
+        "continuity.session.register",
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "continuity.handoff.read",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
+        "context.priority.set",
+        "engineering.review.record"
       ]
     },
     {

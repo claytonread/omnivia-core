@@ -86,10 +86,12 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatHandlers,
 )
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
+from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
 from omnivia_core_runtime.service.handlers.decisions import (
     DECISION_EVALUATE_OPERATION,
     DecisionHandlers,
 )
+from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.handlers.evidence import (
     EVIDENCE_CAPTURE_OPERATION,
     EvidenceHandlers,
@@ -201,6 +203,14 @@ DECISION_STATUS_PURPOSE: Final = "decision_status"
 DECISION_RECORD_PURPOSE: Final = "decision_record"
 DECISION_READ_PURPOSE: Final = "decision_read"
 DECISION_SETTINGS_PURPOSE: Final = "decision_settings"
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Reads carry their own purposes: a
+#: handoff read is a continuity retrieval, and the three engineering retrievals are
+#: a retrieval family of their own rather than restatements of `knowledge_retrieval`,
+#: because their grants are negotiated separately from the legacy knowledge surface.
+CONTINUITY_HANDOFF_PURPOSE: Final = "continuity_handoff"
+ENGINEERING_SEARCH_PURPOSE: Final = "engineering_search"
+ENGINEERING_EXPAND_PURPOSE: Final = "engineering_expand"
+ENGINEERING_CONTEXT_PURPOSE: Final = "engineering_context"
 
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -217,6 +227,10 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "decision.definition.get": DECISION_READ_PURPOSE,
         "decision.model.list": DECISION_READ_PURPOSE,
         "decision.settings.get": DECISION_SETTINGS_PURPOSE,
+        "continuity.handoff.read": CONTINUITY_HANDOFF_PURPOSE,
+        "engineering.search": ENGINEERING_SEARCH_PURPOSE,
+        "engineering.expand": ENGINEERING_EXPAND_PURPOSE,
+        "engineering.context.build": ENGINEERING_CONTEXT_PURPOSE,
     }
 )
 
@@ -790,6 +804,158 @@ def build_decision_application_dispatcher(
     )
 
 
+#: The S-engineering family (SPEC-CORE-ENGMEM-001): the nine engineering-memory
+#: operations — continuity bindings, checkpoints and handoff, engineering preview
+#: retrieval, and the priority/review writes — one session and one binding. Purposes
+#: are the local-owner policy table's own, exactly as the decision family's are.
+ENGINEERING_FAMILY_OPERATIONS: Final[frozenset[str]] = frozenset(
+    name
+    for name in (*OPERATION_PURPOSES, *MUTATION_PURPOSES)
+    if name.startswith(("engineering.", "continuity.", "context.priority."))
+)
+
+ENGINEERING_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        **{
+            name: OPERATION_PURPOSES[name]
+            for name in ENGINEERING_FAMILY_OPERATIONS
+            if name in OPERATION_PURPOSES
+        },
+        **{
+            name: MUTATION_PURPOSES[name]
+            for name in ENGINEERING_FAMILY_OPERATIONS
+            if name in MUTATION_PURPOSES
+        },
+    }
+)
+
+
+def engineering_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The S-engineering contributor grant for one workspace's engineering surface.
+
+    The reviewer role is included because `engineering.review.record` requires it;
+    recording a review attestation governs nothing by itself, but its grant must
+    still be checked against the role the mutation policy declares.
+    """
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(ENGINEERING_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE, KNOWLEDGE_REVIEWER_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=ENGINEERING_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(ENGINEERING_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_engineering_registry(
+    refusals: EngineeringHandlers,
+    continuity: ContinuityHandlers,
+) -> ApplicationOperationRegistry:
+    """The nine engineering-memory operations: four durable, five honest refusals.
+
+    The continuity vertical (session register/append/close, handoff read) is the
+    plan's PR-B producer; the preview/pack/preference/review operations stay the
+    contracts-first `dependency_unavailable` refusals (§28.4) until their
+    producers land. Registering both kinds in one registry is what keeps the
+    production surface exactly catalogue-complete without pretending a
+    capability exists that no producer stands behind.
+    """
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        "continuity.session.register",
+        cast(OperationHandler, continuity.continuity_session_register),
+    )
+    registry.register(
+        "continuity.checkpoint.append",
+        cast(OperationHandler, continuity.continuity_checkpoint_append),
+    )
+    registry.register(
+        "continuity.session.close",
+        cast(OperationHandler, continuity.continuity_session_close),
+    )
+    registry.register(
+        "continuity.handoff.read",
+        cast(OperationHandler, continuity.continuity_handoff_read),
+    )
+    registry.register(
+        "engineering.search", cast(OperationHandler, refusals.engineering_search)
+    )
+    registry.register(
+        "engineering.expand", cast(OperationHandler, refusals.engineering_expand)
+    )
+    registry.register(
+        "engineering.context.build",
+        cast(OperationHandler, refusals.engineering_context_build),
+    )
+    registry.register(
+        "context.priority.set", cast(OperationHandler, refusals.context_priority_set)
+    )
+    registry.register(
+        "engineering.review.record",
+        cast(OperationHandler, refusals.engineering_review_record),
+    )
+    return registry
+
+
+def build_engineering_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the nine-operation S-engineering family around the existing router."""
+    session = engineering_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_engineering_registry(
+        EngineeringHandlers(),
+        ContinuityHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+        ),
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def governance_family_session(
     *, principal_id: str, installation_id: str, workspace_id: str
 ) -> AuthenticatedSession:
@@ -1104,9 +1270,9 @@ class ProductionApplicationSurface:
                 "the production application routes do not exactly match the registry"
             )
         distinct_routes = tuple({id(route): route for route in routes.values()}.values())
-        if len(distinct_routes) != 8:
+        if len(distinct_routes) != 9:
             raise ValueError(
-                "the production surface requires exactly eight authority families"
+                "the production surface requires exactly nine authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError("every production application family must act as one principal")
@@ -1163,6 +1329,7 @@ def compose_production_application_surface(
     chat: ApplicationDispatcher,
     workflow: ApplicationDispatcher,
     decision: ApplicationDispatcher,
+    engineering: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -1176,6 +1343,7 @@ def compose_production_application_surface(
         chat,
         workflow,
         decision,
+        engineering,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -1839,6 +2007,12 @@ def build_workflow_application_dispatcher(
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
+    "CONTINUITY_HANDOFF_PURPOSE",
+    "ENGINEERING_CONTEXT_PURPOSE",
+    "ENGINEERING_EXPAND_PURPOSE",
+    "ENGINEERING_FAMILY_OPERATIONS",
+    "ENGINEERING_FAMILY_PURPOSES",
+    "ENGINEERING_SEARCH_PURPOSE",
     "EVIDENCE_CAPTURE_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GOVERNANCE_FAMILY_PURPOSES",
@@ -1863,6 +2037,8 @@ __all__ = [
     "build_application_registry",
     "build_decision_application_dispatcher",
     "build_decision_registry",
+    "build_engineering_application_dispatcher",
+    "build_engineering_registry",
     "build_governance_application_dispatcher",
     "build_governance_registry",
     "build_installation_application_dispatcher",

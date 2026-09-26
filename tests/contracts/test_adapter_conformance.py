@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 121
+    assert len(corpus) == 141
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "c798ce04eb6e99838418ee3cd22b631d9ba5ed1970eeba4ebf83f3afb9b74ad6"
+        "342b8dd4fa38f7e93ce8037871110dfc9ce7a49ff9f72d1b99173b43adc6f3a7"
     )
 
 
@@ -237,7 +237,7 @@ def test_every_mutation_has_a_replay_and_a_conflict_case(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
     mutations = {n for n, e in CATALOGUE.items() if e.scope.side_effect != "none"}
-    assert len(mutations) == 21
+    assert len(mutations) == 26
     assert {c.operation for c in corpus if c.idempotency == "replay"} == mutations
     assert {c.operation for c in corpus if c.idempotency == "idempotency_conflict"} == mutations
 
@@ -246,7 +246,7 @@ def test_every_paginated_operation_has_a_two_page_scenario(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
     paginated = {n for n, e in CATALOGUE.items() if e.pagination.paginated}
-    assert len(paginated) == 8
+    assert len(paginated) == 9
     assert {case.operation for case in corpus if case.page_of is not None} == paginated
 
 

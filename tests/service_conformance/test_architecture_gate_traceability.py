@@ -436,8 +436,8 @@ def test_operation_traceability_reference_resolves_to_the_existing_c0a_ledger() 
         OPERATION_TRACEABILITY["format"]
         == (TRACEABILITY["operation_traceability"]["format"])
     )
-    assert len(C0A_OPERATION_NAMES) == 43
-    assert len(set(C0A_OPERATION_NAMES)) == 43
+    assert len(C0A_OPERATION_NAMES) == 52
+    assert len(set(C0A_OPERATION_NAMES)) == 52
 
 
 def test_operation_references_are_exact_unique_deterministic_and_valid() -> None:

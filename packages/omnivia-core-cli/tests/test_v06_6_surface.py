@@ -72,6 +72,16 @@ EXPECTED_COMMANDS = (
     (("decisions", "remove"), "decision.model.remove", "decision_configuration"),
     (("decisions", "settings"), "decision.settings.get", "decision_settings"),
     (("decisions", "configure"), "decision.settings.update", "decision_configuration"),
+    # Engineering memory (SPEC-CORE-ENGMEM-001), appended in amendment order.
+    (("continuity", "register"), "continuity.session.register", "continuity_session"),
+    (("continuity", "checkpoint"), "continuity.checkpoint.append", "continuity_checkpoint"),
+    (("continuity", "close"), "continuity.session.close", "continuity_session"),
+    (("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"),
+    (("engineering", "search"), "engineering.search", "engineering_search"),
+    (("engineering", "expand"), "engineering.expand", "engineering_expand"),
+    (("engineering", "context"), "engineering.context.build", "engineering_context"),
+    (("context", "priority"), "context.priority.set", "context_priority"),
+    (("engineering", "review"), "engineering.review.record", "engineering_review"),
 )
 
 EXPECTED_PROBES = (
@@ -116,14 +126,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_forty_three_application_commands_are_declared_in_order() -> None:
+def test_the_fifty_two_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 43
+    assert len(APPLICATION_COMMANDS) == 52
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

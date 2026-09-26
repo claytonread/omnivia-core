@@ -1852,6 +1852,12 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
         "decision.definition.get",
         "decision.model.list",
         "decision.settings.get",
+        # The engineering family's reads live in its own session and derive
+        # their purposes from the same table (SPEC-CORE-ENGMEM-001).
+        "continuity.handoff.read",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
     }
     for name in SHIPPED_OPERATIONS:
         entry = get_operation_metadata(name)

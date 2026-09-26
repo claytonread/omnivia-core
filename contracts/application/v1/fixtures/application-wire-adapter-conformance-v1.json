@@ -8584,6 +8584,1385 @@
           }
         }
       }
+    },
+    {
+      "id": "continuity.session.register/primary-success",
+      "operation": "continuity.session.register",
+      "description": "continuity.session.register binds one authenticated principal to a service-issued continuity session on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.session.register-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.session.register"
+        },
+        "operation": "continuity.session.register",
+        "input": {
+          "schema_version": "engineering.1",
+          "repository_target": {
+            "snapshot_id": "snap-1",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "checkout_hint": "/home/dev/app",
+          "host_session_ref": "host-conv-77"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.session.register-success",
+          "audit_reference": "audit-continuity.session.register"
+        },
+        "result": {
+          "session": {
+            "session_id": "sess-1",
+            "principal_id": "user-42",
+            "workspace_id": "ws-1",
+            "binding_generation": 1,
+            "lease_expires_at": "2026-09-26T01:00:00Z",
+            "state": "active",
+            "repository_target": {
+              "snapshot_id": "snap-1",
+              "repository_id": "repo-1",
+              "snapshot_kind": "git_commit"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.checkpoint.append/primary-success",
+      "operation": "continuity.checkpoint.append",
+      "description": "continuity.checkpoint.append stores one immutable checkpoint and returns a durable receipt on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.checkpoint.append-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.checkpoint.append",
+          "mutation_precondition": {
+            "record_version": "seq-1"
+          }
+        },
+        "operation": "continuity.checkpoint.append",
+        "input": {
+          "session_id": "sess-1",
+          "parent_checkpoint_id": "ck-0",
+          "expected_parent_sequence": 1,
+          "payload": {
+            "objective": "Investigate the session-restoration failure",
+            "checkpoint_kind": "periodic",
+            "repository_snapshots": [
+              {
+                "snapshot_id": "snap-1",
+                "repository_id": "repo-1",
+                "snapshot_kind": "git_commit"
+              }
+            ],
+            "accepted_record_refs": [],
+            "candidate_record_refs": [
+              {
+                "record_id": "rec-e1",
+                "version": "v1"
+              }
+            ],
+            "observations": [
+              {
+                "statement": "Credential retries did not change the failure.",
+                "evidence_refs": [
+                  "ev-1"
+                ],
+                "support": "verified"
+              }
+            ],
+            "completed_work": [
+              {
+                "statement": "Reproduced the failure against snapshot snap-1.",
+                "support": "claimed"
+              }
+            ],
+            "failed_approaches": [
+              {
+                "statement": "Adding credential retries.",
+                "support": "verified",
+                "evidence_refs": [
+                  "ev-1"
+                ]
+              }
+            ],
+            "unresolved_work": [
+              "Why does restore fail after successful credential validation?"
+            ],
+            "relevant_sources": [
+              {
+                "kind": "document",
+                "source_id": "doc-1"
+              }
+            ],
+            "external_effects": [
+              {
+                "effect_ref": "run-9-stage",
+                "status": "unknown"
+              }
+            ],
+            "next_actions": [
+              "Inspect the session-invalidation path"
+            ]
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.checkpoint.append-success",
+          "audit_reference": "audit-continuity.checkpoint.append"
+        },
+        "result": {
+          "receipt": {
+            "checkpoint_id": "ck-1",
+            "session_id": "sess-1",
+            "sequence": 2,
+            "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "recorded_at": "2026-09-26T00:00:00Z",
+            "audit_reference": "audit-continuity.checkpoint.append"
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.checkpoint.append/honest-replay",
+      "operation": "continuity.checkpoint.append",
+      "description": "continuity.checkpoint.append repeated with the same idempotency key and the same payload: the original receipt is returned and nothing is appended twice.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "continuity.checkpoint.append/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.checkpoint.append-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.checkpoint.append",
+          "mutation_precondition": {
+            "record_version": "seq-1"
+          }
+        },
+        "operation": "continuity.checkpoint.append",
+        "input": {
+          "session_id": "sess-1",
+          "parent_checkpoint_id": "ck-0",
+          "expected_parent_sequence": 1,
+          "payload": {
+            "objective": "Investigate the session-restoration failure",
+            "checkpoint_kind": "periodic",
+            "repository_snapshots": [
+              {
+                "snapshot_id": "snap-1",
+                "repository_id": "repo-1",
+                "snapshot_kind": "git_commit"
+              }
+            ],
+            "accepted_record_refs": [],
+            "candidate_record_refs": [
+              {
+                "record_id": "rec-e1",
+                "version": "v1"
+              }
+            ],
+            "observations": [
+              {
+                "statement": "Credential retries did not change the failure.",
+                "evidence_refs": [
+                  "ev-1"
+                ],
+                "support": "verified"
+              }
+            ],
+            "completed_work": [
+              {
+                "statement": "Reproduced the failure against snapshot snap-1.",
+                "support": "claimed"
+              }
+            ],
+            "failed_approaches": [
+              {
+                "statement": "Adding credential retries.",
+                "support": "verified",
+                "evidence_refs": [
+                  "ev-1"
+                ]
+              }
+            ],
+            "unresolved_work": [
+              "Why does restore fail after successful credential validation?"
+            ],
+            "relevant_sources": [
+              {
+                "kind": "document",
+                "source_id": "doc-1"
+              }
+            ],
+            "external_effects": [
+              {
+                "effect_ref": "run-9-stage",
+                "status": "unknown"
+              }
+            ],
+            "next_actions": [
+              "Inspect the session-invalidation path"
+            ]
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.checkpoint.append-replay",
+          "audit_reference": "audit-continuity.checkpoint.append"
+        },
+        "result": {
+          "receipt": {
+            "checkpoint_id": "ck-1",
+            "session_id": "sess-1",
+            "sequence": 2,
+            "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "recorded_at": "2026-09-26T00:00:00Z",
+            "audit_reference": "audit-continuity.checkpoint.append"
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.checkpoint.append/idempotency-conflict",
+      "operation": "continuity.checkpoint.append",
+      "description": "continuity.checkpoint.append reusing one idempotency key for a different payload: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "continuity.checkpoint.append/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.checkpoint.append-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.checkpoint.append",
+          "mutation_precondition": {
+            "record_version": "seq-1"
+          }
+        },
+        "operation": "continuity.checkpoint.append",
+        "input": {
+          "session_id": "sess-1",
+          "parent_checkpoint_id": "ck-0",
+          "expected_parent_sequence": 1,
+          "payload": {
+            "objective": "A different investigation",
+            "checkpoint_kind": "periodic",
+            "repository_snapshots": [
+              {
+                "snapshot_id": "snap-1",
+                "repository_id": "repo-1",
+                "snapshot_kind": "git_commit"
+              }
+            ],
+            "accepted_record_refs": [],
+            "candidate_record_refs": [
+              {
+                "record_id": "rec-e1",
+                "version": "v1"
+              }
+            ],
+            "observations": [
+              {
+                "statement": "Credential retries did not change the failure.",
+                "evidence_refs": [
+                  "ev-1"
+                ],
+                "support": "verified"
+              }
+            ],
+            "completed_work": [
+              {
+                "statement": "Reproduced the failure against snapshot snap-1.",
+                "support": "claimed"
+              }
+            ],
+            "failed_approaches": [
+              {
+                "statement": "Adding credential retries.",
+                "support": "verified",
+                "evidence_refs": [
+                  "ev-1"
+                ]
+              }
+            ],
+            "unresolved_work": [
+              "Why does restore fail after successful credential validation?"
+            ],
+            "relevant_sources": [
+              {
+                "kind": "document",
+                "source_id": "doc-1"
+              }
+            ],
+            "external_effects": [
+              {
+                "effect_ref": "run-9-stage",
+                "status": "unknown"
+              }
+            ],
+            "next_actions": [
+              "Inspect the session-invalidation path"
+            ]
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.checkpoint.append-conflict",
+          "audit_reference": "audit-continuity.checkpoint.append"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "continuity.session.close/primary-success",
+      "operation": "continuity.session.close",
+      "description": "continuity.session.close commits the final checkpoint and the closed state in one atomic metadata transaction.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.session.close-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.session.close",
+          "mutation_precondition": {
+            "record_version": "seq-2"
+          }
+        },
+        "operation": "continuity.session.close",
+        "input": {
+          "session_id": "sess-1",
+          "expected_sequence": 2,
+          "final_checkpoint": {
+            "objective": "Wrap up the investigation",
+            "checkpoint_kind": "session_close",
+            "unresolved_work": [
+              "Root cause still unconfirmed"
+            ]
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.session.close-success",
+          "audit_reference": "audit-continuity.session.close"
+        },
+        "result": {
+          "session_id": "sess-1",
+          "state": "closed",
+          "checkpoint_recorded": true,
+          "receipt": {
+            "checkpoint_id": "ck-2",
+            "session_id": "sess-1",
+            "sequence": 3,
+            "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "recorded_at": "2026-09-26T00:00:00Z",
+            "audit_reference": "audit-continuity.session.close"
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.session.close/honest-replay",
+      "operation": "continuity.session.close",
+      "description": "continuity.session.close repeated with the same idempotency key and the same input: the recorded close is returned without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "continuity.session.close/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.session.close-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.session.close",
+          "mutation_precondition": {
+            "record_version": "seq-2"
+          }
+        },
+        "operation": "continuity.session.close",
+        "input": {
+          "session_id": "sess-1",
+          "expected_sequence": 2,
+          "final_checkpoint": {
+            "objective": "Wrap up the investigation",
+            "checkpoint_kind": "session_close",
+            "unresolved_work": [
+              "Root cause still unconfirmed"
+            ]
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.session.close-replay",
+          "audit_reference": "audit-continuity.session.close"
+        },
+        "result": {
+          "session_id": "sess-1",
+          "state": "closed",
+          "checkpoint_recorded": true,
+          "receipt": {
+            "checkpoint_id": "ck-2",
+            "session_id": "sess-1",
+            "sequence": 3,
+            "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "recorded_at": "2026-09-26T00:00:00Z",
+            "audit_reference": "audit-continuity.session.close"
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.session.close/idempotency-conflict",
+      "operation": "continuity.session.close",
+      "description": "continuity.session.close reusing one idempotency key for a different expected sequence: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "continuity.session.close/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.session.close-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.session.close",
+          "mutation_precondition": {
+            "record_version": "seq-2"
+          }
+        },
+        "operation": "continuity.session.close",
+        "input": {
+          "session_id": "sess-1",
+          "expected_sequence": 1,
+          "final_checkpoint": {
+            "objective": "Wrap up the investigation",
+            "checkpoint_kind": "session_close",
+            "unresolved_work": [
+              "Root cause still unconfirmed"
+            ]
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.session.close-conflict",
+          "audit_reference": "audit-continuity.session.close"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "continuity.handoff.read/primary-success",
+      "operation": "continuity.handoff.read",
+      "description": "continuity.handoff.read renders a bounded authorised handoff view of one checkpoint for a receiving agent.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.read-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "continuity.handoff.read",
+        "input": {
+          "checkpoint_id": "ck-1",
+          "target_snapshot": {
+            "snapshot_id": "snap-2",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.read-success",
+          "audit_reference": "audit-continuity.handoff.read"
+        },
+        "result": {
+          "handoff": {
+            "format_version": "continuity_handoff.v1",
+            "checkpoint_id": "ck-1",
+            "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "redacted": false,
+            "objective": "Investigate the session-restoration failure",
+            "applicability": "matched",
+            "unresolved_work": [
+              "Why does restore fail after successful credential validation?"
+            ],
+            "next_actions": [
+              "Inspect the session-invalidation path"
+            ],
+            "omissions": []
+          }
+        }
+      }
+    },
+    {
+      "id": "engineering.search/primary-success",
+      "operation": "engineering.search",
+      "description": "engineering.search returns one bounded, authorised preview page on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.search-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.search",
+        "input": {
+          "query": "session restoration failure",
+          "view": "accepted",
+          "limit": 1,
+          "repository_target": {
+            "snapshot_id": "snap-2",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.search-success",
+          "audit_reference": "audit-engineering.search"
+        },
+        "result": {
+          "previews": [
+            {
+              "record_id": "rec-e1",
+              "version": "v1",
+              "title": "Credential retries do not resolve stale session restoration",
+              "preview": "The diagnostic fixture authenticates successfully but fails when cached session state is restored.",
+              "truncated": false,
+              "observation_kind": "failed_approach",
+              "governance_state": "accepted",
+              "assertion_basis": "derived",
+              "topic_key": "authentication.session-restoration",
+              "repository_id": "repo-1",
+              "snapshot_id": "snap-1",
+              "applicability": "matched",
+              "review_due": false,
+              "evidence_available": true
+            }
+          ],
+          "page": {
+            "continuation_token": "cursor-engineering.search-1"
+          },
+          "coverage": {
+            "projection": "current",
+            "applicability": "current"
+          }
+        }
+      }
+    },
+    {
+      "id": "engineering.search/page-2",
+      "operation": "engineering.search",
+      "description": "engineering.search second page: the request presents exactly the continuation token the first page issued, returns the next previews, and issues no further token.",
+      "expect": {
+        "branch": "success",
+        "page_of": "engineering.search/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.search-page2",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.search",
+        "input": {
+          "query": "session restoration failure",
+          "view": "accepted",
+          "limit": 1,
+          "repository_target": {
+            "snapshot_id": "snap-2",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "page": {
+            "continuation_token": "cursor-engineering.search-1"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.search-page2"
+        },
+        "result": {
+          "previews": [
+            {
+              "record_id": "rec-e2",
+              "version": "v1",
+              "title": "Session tokens are invalidated on password change",
+              "preview": "The diagnostic fixture authenticates successfully but fails when cached session state is restored.",
+              "truncated": false,
+              "observation_kind": "failed_approach",
+              "governance_state": "accepted",
+              "assertion_basis": "derived",
+              "topic_key": "authentication.session-restoration",
+              "repository_id": "repo-1",
+              "snapshot_id": "snap-1",
+              "applicability": "matched",
+              "review_due": false,
+              "evidence_available": true
+            }
+          ],
+          "page": {},
+          "coverage": {
+            "projection": "current",
+            "applicability": "current"
+          }
+        }
+      }
+    },
+    {
+      "id": "engineering.expand/primary-success",
+      "operation": "engineering.expand",
+      "description": "engineering.expand returns the bounded authorised neighbourhood of one anchor.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.expand-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.expand",
+        "input": {
+          "anchor": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "depth": 1,
+          "node_limit": 30,
+          "edge_limit": 60
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.expand-success",
+          "audit_reference": "audit-engineering.expand"
+        },
+        "result": {
+          "nodes": [
+            {
+              "record_id": "rec-e1",
+              "version": "v1"
+            },
+            {
+              "record_id": "rec-e2",
+              "version": "v1"
+            }
+          ],
+          "edges": [
+            {
+              "from_record": {
+                "record_id": "rec-e1",
+                "version": "v1"
+              },
+              "to_record": {
+                "record_id": "rec-e2",
+                "version": "v1"
+              },
+              "relation": "conflicts_with",
+              "status": "pending"
+            }
+          ],
+          "truncated": false,
+          "coverage": {
+            "projection": "current",
+            "applicability": "current"
+          }
+        }
+      }
+    },
+    {
+      "id": "engineering.context.build/primary-success",
+      "operation": "engineering.context.build",
+      "description": "engineering.context.build answers with one non-persisted engineering context pack on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.context.build-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.context.build",
+        "input": {
+          "query": "resume the session-restoration investigation",
+          "targets": [
+            {
+              "snapshot_id": "snap-2",
+              "repository_id": "repo-1",
+              "snapshot_kind": "git_commit"
+            }
+          ],
+          "profile": "resume",
+          "budget": {
+            "model_tokens": 4000,
+            "model_bytes": 16384
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.context.build-success",
+          "audit_reference": "audit-engineering.context.build"
+        },
+        "result": {
+          "pack": {
+            "format_version": "engineering_context.v1",
+            "pack_id": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "normalized_request": {
+              "query": "resume the session-restoration investigation",
+              "profile": "resume"
+            },
+            "targets": [
+              {
+                "snapshot_id": "snap-2",
+                "repository_id": "repo-1",
+                "snapshot_kind": "git_commit"
+              }
+            ],
+            "profile": "resume",
+            "sections": [
+              {
+                "section_id": "sec-1",
+                "kind": "decision_summary",
+                "partition": "accepted_knowledge",
+                "content": "Session tokens are invalidated on password change.",
+                "citation_ids": [
+                  "cite-1"
+                ]
+              }
+            ],
+            "citations": [
+              {
+                "citation_id": "cite-1",
+                "record_ref": {
+                  "record_id": "rec-e2",
+                  "version": "v1"
+                }
+              }
+            ],
+            "conflicts": [],
+            "uncertainties": [],
+            "omissions": [],
+            "rendering": {
+              "text": "[accepted_knowledge] Session tokens are invalidated on password change. [cite-1]",
+              "renderer_version": "eng-render-1",
+              "token_count": 12,
+              "byte_count": 78
+            },
+            "budget": {
+              "requested": {
+                "model_tokens": 4000,
+                "model_bytes": 16384
+              },
+              "effective": {
+                "model_tokens": 4000,
+                "model_bytes": 16384
+              },
+              "rendered_tokens": 12,
+              "rendered_bytes": 78,
+              "source_bytes_read": 2048,
+              "hydrations": 1
+            },
+            "applicability": [
+              {
+                "snapshot": {
+                  "snapshot_id": "snap-2",
+                  "repository_id": "repo-1",
+                  "snapshot_kind": "git_commit"
+                },
+                "status": "matched"
+              }
+            ],
+            "authorization_context": {
+              "policy_epoch": "policy-1"
+            },
+            "reproducibility": {
+              "artifact_canonicalization": "rfc8785"
+            },
+            "fresh_authorization_required": true
+          }
+        }
+      }
+    },
+    {
+      "id": "context.priority.set/primary-success",
+      "operation": "context.priority.set",
+      "description": "context.priority.set records one principal-scoped preference on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-context.priority.set-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-context.priority.set"
+        },
+        "operation": "context.priority.set",
+        "input": {
+          "target": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "priority": "preferred"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-context.priority.set-success",
+          "audit_reference": "audit-context.priority.set"
+        },
+        "result": {
+          "target": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "priority": "preferred",
+          "audit_reference": "audit-context.priority.set"
+        }
+      }
+    },
+    {
+      "id": "context.priority.set/honest-replay",
+      "operation": "context.priority.set",
+      "description": "context.priority.set repeated with the same idempotency key and the same input: the recorded preference is returned without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "context.priority.set/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-context.priority.set-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-context.priority.set"
+        },
+        "operation": "context.priority.set",
+        "input": {
+          "target": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "priority": "preferred"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-context.priority.set-replay",
+          "audit_reference": "audit-context.priority.set"
+        },
+        "result": {
+          "target": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "priority": "preferred",
+          "audit_reference": "audit-context.priority.set"
+        }
+      }
+    },
+    {
+      "id": "context.priority.set/idempotency-conflict",
+      "operation": "context.priority.set",
+      "description": "context.priority.set reusing one idempotency key for a different priority: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "context.priority.set/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-context.priority.set-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-context.priority.set"
+        },
+        "operation": "context.priority.set",
+        "input": {
+          "target": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "priority": "normal"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-context.priority.set-conflict",
+          "audit_reference": "audit-context.priority.set"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "engineering.review.record/primary-success",
+      "operation": "engineering.review.record",
+      "description": "engineering.review.record records one target-specific review attestation on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.review.record-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.review.record",
+          "mutation_precondition": {
+            "record_version": "assess-1"
+          }
+        },
+        "operation": "engineering.review.record",
+        "input": {
+          "record_ref": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "target_snapshot": {
+            "snapshot_id": "snap-2",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "review_outcome": "evidence_attached",
+          "review_evidence_id": "ev-9",
+          "expected_assessment_version": "assess-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.review.record-success",
+          "audit_reference": "audit-engineering.review.record"
+        },
+        "result": {
+          "record_ref": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "applicability": "matched",
+          "audit_reference": "audit-engineering.review.record"
+        }
+      }
+    },
+    {
+      "id": "engineering.review.record/honest-replay",
+      "operation": "engineering.review.record",
+      "description": "engineering.review.record repeated with the same idempotency key and the same input: the recorded attestation is returned without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "engineering.review.record/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.review.record-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.review.record",
+          "mutation_precondition": {
+            "record_version": "assess-1"
+          }
+        },
+        "operation": "engineering.review.record",
+        "input": {
+          "record_ref": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "target_snapshot": {
+            "snapshot_id": "snap-2",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "review_outcome": "evidence_attached",
+          "review_evidence_id": "ev-9",
+          "expected_assessment_version": "assess-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.review.record-replay",
+          "audit_reference": "audit-engineering.review.record"
+        },
+        "result": {
+          "record_ref": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "applicability": "matched",
+          "audit_reference": "audit-engineering.review.record"
+        }
+      }
+    },
+    {
+      "id": "engineering.review.record/idempotency-conflict",
+      "operation": "engineering.review.record",
+      "description": "engineering.review.record reusing one idempotency key for a different outcome: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "engineering.review.record/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.review.record-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.review.record",
+          "mutation_precondition": {
+            "record_version": "assess-1"
+          }
+        },
+        "operation": "engineering.review.record",
+        "input": {
+          "record_ref": {
+            "record_id": "rec-e1",
+            "version": "v1"
+          },
+          "target_snapshot": {
+            "snapshot_id": "snap-2",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "review_outcome": "acknowledged",
+          "review_evidence_id": "ev-9",
+          "expected_assessment_version": "assess-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.review.record-conflict",
+          "audit_reference": "audit-engineering.review.record"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "continuity.session.register/honest-replay",
+      "operation": "continuity.session.register",
+      "description": "continuity.session.register repeated with the same idempotency key and the same input: the same service-issued binding is returned and no second session is created.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "continuity.session.register/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.session.register-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.session.register"
+        },
+        "operation": "continuity.session.register",
+        "input": {
+          "schema_version": "engineering.1",
+          "repository_target": {
+            "snapshot_id": "snap-1",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "checkout_hint": "/home/dev/app",
+          "host_session_ref": "host-conv-77"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.session.register-replay",
+          "audit_reference": "audit-continuity.session.register"
+        },
+        "result": {
+          "session": {
+            "session_id": "sess-1",
+            "principal_id": "user-42",
+            "workspace_id": "ws-1",
+            "binding_generation": 1,
+            "lease_expires_at": "2026-09-26T01:00:00Z",
+            "state": "active",
+            "repository_target": {
+              "snapshot_id": "snap-1",
+              "repository_id": "repo-1",
+              "snapshot_kind": "git_commit"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.session.register/idempotency-conflict",
+      "operation": "continuity.session.register",
+      "description": "continuity.session.register reusing one idempotency key for a different checkout hint: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "continuity.session.register/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.session.register-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.session.register"
+        },
+        "operation": "continuity.session.register",
+        "input": {
+          "schema_version": "engineering.1",
+          "repository_target": {
+            "snapshot_id": "snap-1",
+            "repository_id": "repo-1",
+            "snapshot_kind": "git_commit"
+          },
+          "checkout_hint": "/home/dev/other-app",
+          "host_session_ref": "host-conv-77"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.session.register-conflict",
+          "audit_reference": "audit-continuity.session.register"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

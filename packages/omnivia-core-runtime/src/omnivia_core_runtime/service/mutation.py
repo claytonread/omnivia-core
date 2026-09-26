@@ -109,6 +109,13 @@ WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
 WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
 DECISION_EVALUATION_PURPOSE: Final = "decision_evaluation"
 DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity bindings and their final
+#: close are one session-level act; checkpoint appends are their own purpose because
+#: they write durable L0 evidence, not session bookkeeping.
+CONTINUITY_SESSION_PURPOSE: Final = "continuity_session"
+CONTINUITY_CHECKPOINT_PURPOSE: Final = "continuity_checkpoint"
+CONTEXT_PRIORITY_PURPOSE: Final = "context_priority"
+ENGINEERING_REVIEW_PURPOSE: Final = "engineering_review"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -137,6 +144,11 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "decision.model.activate": DECISION_CONFIGURATION_PURPOSE,
         "decision.model.remove": DECISION_CONFIGURATION_PURPOSE,
         "decision.settings.update": DECISION_CONFIGURATION_PURPOSE,
+        "continuity.session.register": CONTINUITY_SESSION_PURPOSE,
+        "continuity.checkpoint.append": CONTINUITY_CHECKPOINT_PURPOSE,
+        "continuity.session.close": CONTINUITY_SESSION_PURPOSE,
+        "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
+        "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
     }
 )
 
@@ -183,6 +195,14 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "decision.model.activate": WORKSPACE_CONTRIBUTOR_ROLE,
         "decision.model.remove": WORKSPACE_CONTRIBUTOR_ROLE,
         "decision.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Engineering memory (SPEC-CORE-ENGMEM-001): continuity and priority writes
+        # are contributor acts; recording a review attestation is a reviewer act and
+        # accepts no knowledge by itself.
+        "continuity.session.register": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.checkpoint.append": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.session.close": WORKSPACE_CONTRIBUTOR_ROLE,
+        "context.priority.set": WORKSPACE_CONTRIBUTOR_ROLE,
+        "engineering.review.record": KNOWLEDGE_REVIEWER_ROLE,
     }
 )
 
