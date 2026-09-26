@@ -73,6 +73,7 @@ from omnivia_core_runtime.storage.continuity import (
     SessionNotActive,
     SessionNotFound,
 )
+from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
 from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 
 _MESSAGE_INVALID: Final = "the request payload is not valid for this continuity operation"
@@ -399,8 +400,8 @@ class ContinuityHandlers:
         view: dict[str, Any] = {
             "format_version": "continuity_handoff.v1",
             "checkpoint_id": record["checkpoint_id"],
-            "content_digest": storage.content_digest(
-                storage.canonical_document(
+            "content_digest": content_digest(
+                canonical_document(
                     {
                         "checkpoint_id": record["checkpoint_id"],
                         "sequence": record["sequence"],
