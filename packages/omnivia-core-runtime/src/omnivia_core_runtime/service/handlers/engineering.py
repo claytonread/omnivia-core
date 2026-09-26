@@ -36,19 +36,39 @@ Retrieval security shape, inherited from the knowledge family and the plan:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from collections.abc import Mapping
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
+    DEFAULT_RETRY_CLASSIFICATION,
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INVALID_REQUEST,
+    ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
+    ContextPrioritySetInput,
+    ContextPrioritySetResult,
     ContractDecodeError,
     ContractSemanticError,
     EngineeringExpandInput,
+    EngineeringReviewRecordInput,
+    EngineeringReviewRecordResult,
     EngineeringSearchInput,
+    idempotency_equivalence,
+)
+from omnivia_core_runtime.ownership.identity import Clock, SystemClock
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ServiceBinding,
+)
+from omnivia_core_runtime.service.mutation import (
+    MutationIdempotencyConflict,
+    MutationPreconditionFailed,
+    MutationSettlementContext,
+    execute_mutation,
+    issue_mutation_grant,
 )
 from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
@@ -59,10 +79,12 @@ from omnivia_core_runtime.service.pagination import (
     PROCESS_CONTINUATION_TOKENS,
     token_digest,
 )
+from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage.governed import (
     read_governed_record_values,
     read_governed_supersessions,
 )
+from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 from omnivia_core_runtime.storage.retrieval import (
     GOVERNED_FRONTIER_FILTERS,
     GovernedCandidate,
@@ -75,6 +97,9 @@ _MESSAGE_NO_STORAGE: Final = (
     "this service instance is not serving authoritative storage"
 )
 _MESSAGE_NOT_FOUND: Final = "the requested engineering record was not found"
+_MESSAGE_PRECONDITION: Final = (
+    "the engineering target moved under this request; re-read and re-decide"
+)
 
 #: The engineering domain this retrieval serves: observations ride the frozen
 #: catalogue's finding/risk/decision types under this domain (§22.1).
@@ -114,11 +139,31 @@ _MESSAGE_REVIEW: Final = (
 )
 
 
+def _as_result(outcome: Any) -> Mapping[str, Any] | AuditedOperationResult:
+    if isinstance(outcome, Mapping):
+        return outcome
+    if isinstance(outcome, AuditedOperationResult):
+        return outcome
+    # A MutationOutcome from the coordinator: its `.result` is the answer.
+    from typing import cast
+
+    return cast(Mapping[str, Any], outcome.result)
+
+
 def _bounded(value: str, limit: int = PREVIEW_MAX_CODEPOINTS) -> tuple[str, bool]:
     """One preview rendering: bounded text plus its honest truncation flag."""
     if len(value) <= limit:
         return value, False
     return value[:limit], True
+
+
+def _plain(value: Any) -> Any:
+    """Decode the contract's immutable containers into JSON-serialisable ones."""
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
 
 
 def _observation_preview(record: Any) -> dict[str, Any] | None:
@@ -178,14 +223,135 @@ def _observation_preview(record: Any) -> dict[str, Any] | None:
 class EngineeringHandlers:
     """The engineering retrieval reads, plus the three still-honest refusals."""
 
-    def __init__(self, service: Any) -> None:
+    def __init__(
+        self,
+        service: Any,
+        session: AuthenticatedSession | None = None,
+        binding: ServiceBinding | None = None,
+        clock: Clock | None = None,
+        allocate_identifier: IdentifierAllocator = random_identifier,
+    ) -> None:
         self.service = service
+        self._issued_session = session
+        self._issued_binding = binding
+        self.clock = SystemClock() if clock is None else clock
+        self.allocate_identifier = allocate_identifier
+
+    def _session(self) -> AuthenticatedSession:
+        if self._issued_session is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        return self._issued_session
+
+    def _binding(self) -> ServiceBinding:
+        if self._issued_binding is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        return self._issued_binding
 
     def _connection(self) -> Any:
         connection = getattr(self.service, "connection", None)
         if connection is None:
             raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
         return connection
+
+    def _timestamp_us(self, value: str) -> int:
+        import datetime as _dt
+
+        parsed = _dt.datetime.fromisoformat(value)
+        return int(parsed.timestamp() * 1_000_000)
+
+    def _require_visible_version(
+        self,
+        fenced: Any,
+        *,
+        workspace_id: str,
+        record_id: str,
+        version: str,
+    ) -> str | None:
+        """The exact record version must exist; returns its claimed repository.
+
+        A priority or a review names an exact visible target: a reference that
+        resolves under no governed view is `not_found`, never silently accepted.
+        The claimed repository comes from the record's own applicability, so a
+        review can be assessed against the registry without trusting the caller.
+        """
+        now_us = time.time_ns() // 1000
+        for governed_view in ("current_canonical", "candidates", "history"):
+            for value in read_governed_record_values(
+                fenced,
+                workspace_id=workspace_id,
+                resolution_instant_us=now_us,
+                view=governed_view,
+            ):
+                identity = value.record.provenance.identity
+                if identity.record_id == record_id and identity.version == version:
+                    content = value.record.content
+                    if isinstance(content, Mapping):
+                        applicability = content.get("applicability")
+                        if isinstance(applicability, Mapping):
+                            claimed = applicability.get("repository_id")
+                            if isinstance(claimed, str) and claimed:
+                                return claimed
+                    return None
+        raise app_storage.RecordVersionNotFound(record_id)
+
+    def _execute(
+        self,
+        context: OperationContext,
+        connection: Any,
+        identity: Any,
+        guard: Any,
+        equivalence: Any,
+        mutate: Any,
+        valid_result: Any,
+        precondition: Any = None,
+    ) -> Any:
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self._session(),
+            binding=self._binding(),
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+        try:
+            return execute_mutation(
+                connection,
+                identity,
+                grant=grant,
+                context=context.authorization,
+                equivalence=equivalence,
+                precondition=precondition,
+                mutate=mutate,
+                validate_result=valid_result,
+                clock=self.clock,
+                allocate_identifier=self.allocate_identifier,
+            )
+        except MutationIdempotencyConflict as error:
+            raise OperationError(
+                error.code, error.message, retry_class=error.retry_class
+            ) from error
+        except (
+            app_storage.RecordVersionNotFound,
+            app_storage.AssessmentPreconditionFailed,
+        ) as error:
+            code = (
+                ERROR_CODE_NOT_FOUND
+                if isinstance(error, app_storage.RecordVersionNotFound)
+                else ERROR_CODE_MUTATION_PRECONDITION_FAILED
+            )
+            raise OperationError(
+                code,
+                _MESSAGE_INVALID if code == ERROR_CODE_NOT_FOUND else _MESSAGE_PRECONDITION,
+                retry_class=DEFAULT_RETRY_CLASSIFICATION[code],
+            ) from error
+        except MutationPreconditionFailed as error:
+            raise OperationError(
+                ERROR_CODE_MUTATION_PRECONDITION_FAILED,
+                _MESSAGE_PRECONDITION,
+                retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                    ERROR_CODE_MUTATION_PRECONDITION_FAILED
+                ],
+            ) from error
 
     # --- engineering.search ------------------------------------------------------
 
@@ -280,7 +446,10 @@ class EngineeringHandlers:
                         continue
                 candidates.append(
                     GovernedCandidate(
-                        recorded_at_us=value.recorded_at_us, record=record
+                        recorded_at_us=value.recorded_at_us,
+                        record=dataclasses.replace(
+                            record, content=_plain(record.content)
+                        ),
                     )
                 )
             frontier = GovernedFrontier(
@@ -291,6 +460,27 @@ class EngineeringHandlers:
             ordered = rank_governed(
                 frontier, request.query, order=None, limit=len(frontier.candidates)
             )
+            preferred = app_storage.preferred_targets(
+                connection,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                now_us=resolved_at_us,
+            )
+            if preferred:
+                ordered = tuple(
+                    sorted(
+                        ordered,
+                        key=lambda record: (
+                            0
+                            if (
+                                record.provenance.identity.record_id,
+                                record.provenance.identity.version,
+                            )
+                            in preferred
+                            else 1,
+                        ),
+                    )
+                )
             snapshot_digest = token_digest([record.to_wire() for record in ordered])
             start = 0
             if supplied is not None:
@@ -303,8 +493,19 @@ class EngineeringHandlers:
             previews = []
             for record in ordered[start : start + limit]:
                 rendered = _observation_preview(record)
-                if rendered is not None:
-                    previews.append(rendered)
+                if rendered is None:
+                    continue
+                if request.repository_target is not None:
+                    latest = app_storage.latest_assessment(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        record_id=rendered["record_id"],
+                        version=rendered["version"],
+                        target_snapshot_id=request.repository_target.snapshot_id,
+                    )
+                    if latest is not None:
+                        rendered["applicability"] = latest["status"]
+                previews.append(rendered)
             total = len(ordered)
 
         continuation = None
@@ -458,19 +659,203 @@ class EngineeringHandlers:
             "coverage": {"projection": "current", "applicability": "unavailable"},
         }
 
-    # --- honest refusals -----------------------------------------------------------
+    # --- context.priority.set ------------------------------------------------------
+
+    def context_priority_set(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        try:
+            request = ContextPrioritySetInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import (
+            read_guard as _read_guard,
+        )
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        assert identity is not None and guard is not None
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        self._require_visible_version(
+            connection,
+            workspace_id=context.workspace_id,
+            record_id=request.target.record_id,
+            version=request.target.version,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            app_storage.set_priority(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                target_record_id=request.target.record_id,
+                target_version=request.target.version,
+                priority=request.priority,
+                expires_at_us=(
+                    None if request.expires_at is None
+                    else self._timestamp_us(request.expires_at)
+                ),
+                updated_at_us=settlement.settled_at_us,
+            )
+            result: dict[str, Any] = {
+                "target": request.target.to_wire(),
+                "priority": request.priority,
+                "audit_reference": settlement.audit_ref,
+            }
+            if request.expires_at is not None:
+                result["expires_at"] = request.expires_at
+            return result
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                ContextPrioritySetResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        return _as_result(
+            self._execute(
+                context, connection, identity, guard, equivalence, mutate, valid_result
+            )
+        )
+
+    # --- engineering.review.record -------------------------------------------------
+
+    def engineering_review_record(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        try:
+            request = EngineeringReviewRecordInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import (
+            read_guard as _read_guard,
+        )
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        assert identity is not None and guard is not None
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        claimed_repository = self._require_visible_version(
+            connection,
+            workspace_id=context.workspace_id,
+            record_id=request.record_ref.record_id,
+            version=request.record_ref.version,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            latest = app_storage.latest_assessment(
+                fenced,
+                workspace_id=context.workspace_id,
+                record_id=request.record_ref.record_id,
+                version=request.record_ref.version,
+                target_snapshot_id=request.target_snapshot.snapshot_id,
+            )
+            if (
+                request.expected_assessment_version is not None
+                and (latest is None or latest["assessment_id"] != request.expected_assessment_version)
+            ):
+                raise app_storage.AssessmentPreconditionFailed(
+                    "the target's current assessment is not the version this review expects"
+                )
+            # §15.5: the assessment follows the registry, so an acknowledgement
+            # can never *fabricate* a clearing — it recomputes, and a stale
+            # target stays stale under the newest registered head.
+            status = app_storage.assess_against_registered_head(
+                fenced,
+                workspace_id=context.workspace_id,
+                record_id=request.record_ref.record_id,
+                version=request.record_ref.version,
+                claimed_repository_id=claimed_repository,
+                target_snapshot_id=request.target_snapshot.snapshot_id,
+            )
+            app_storage.record_assessment(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                assessment_id=self.allocate_identifier("eas"),
+                record_id=request.record_ref.record_id,
+                version=request.record_ref.version,
+                target_snapshot_id=request.target_snapshot.snapshot_id,
+                status=status,
+                basis="review",
+                assessed_at_us=settlement.settled_at_us,
+            )
+            app_storage.record_attestation(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                attestation_id=self.allocate_identifier("eat"),
+                record_id=request.record_ref.record_id,
+                version=request.record_ref.version,
+                target_snapshot_id=request.target_snapshot.snapshot_id,
+                outcome=request.review_outcome,
+                review_evidence_id=request.review_evidence_id,
+                recorded_at_us=settlement.settled_at_us,
+            )
+            return {
+                "record_ref": request.record_ref.to_wire(),
+                "applicability": status,
+                "audit_reference": settlement.audit_ref,
+            }
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringReviewRecordResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        def precondition(fenced: Any) -> str:
+            count = fenced.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_assessments "
+                "WHERE workspace_id = ? AND record_id = ? AND version = ? "
+                "AND target_snapshot_id = ?",
+                (
+                    context.workspace_id,
+                    request.record_ref.record_id,
+                    request.record_ref.version,
+                    request.target_snapshot.snapshot_id,
+                ),
+            ).fetchone()[0]
+            return f"assessment-{count}"
+
+        outcome = self._execute(
+            context,
+            connection,
+            identity,
+            guard,
+            equivalence,
+            mutate,
+            valid_result,
+            precondition=precondition,
+        )
+        return _as_result(outcome)
+
+    # --- honest refusal -------------------------------------------------------------
 
     def engineering_context_build(
         self, context: OperationContext
     ) -> Mapping[str, Any] | AuditedOperationResult:
         raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_CONTEXT_BUILD)
-
-    def context_priority_set(
-        self, context: OperationContext
-    ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_PRIORITY)
-
-    def engineering_review_record(
-        self, context: OperationContext
-    ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_REVIEW)

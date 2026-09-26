@@ -159,6 +159,15 @@ def resolve_memory_claim_evidence(
     return tuple(resolved[_source_key(source)] for source in claim.sources)
 
 
+def _plain_content(value: Any) -> Any:
+    """Decode the contract's immutable containers into JSON-serialisable ones."""
+    if isinstance(value, Mapping):
+        return {key: _plain_content(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_content(item) for item in value]
+    return value
+
+
 def _validate_engineering_observation_content(content: Mapping[str, Any]) -> None:
     """The `engineering.observation` content profile (SPEC-CORE-ENGMEM-001 §8.1).
 
@@ -200,7 +209,7 @@ def _validate_engineering_observation_content(content: Mapping[str, Any]) -> Non
             ERROR_CODE_INVALID_REQUEST,
             "assertion_basis must be one of observed, derived, reported, hypothesis",
         )
-    encoded = to_canonical_json(dict(content))
+    encoded = to_canonical_json(_plain_content(content))
     if len(encoded.encode("utf-8")) > _ENGINEERING_CONTENT_CAP_BYTES:
         raise OperationError(
             ERROR_CODE_INVALID_REQUEST,
@@ -275,8 +284,8 @@ def create_memory_record(
     assembly_id = allocate_identifier("asm")
     event_id = allocate_identifier("pev")
     seal_id = allocate_identifier("seal")
-    content_json = to_canonical_json(dict(claim.content))
-    claim_json = to_canonical_json(claim.to_wire())
+    content_json = to_canonical_json(_plain_content(dict(claim.content)))
+    claim_json = to_canonical_json(_plain_content(claim.to_wire()))
     reason = (
         None if claim.evidence_disposition == "available" else "evidence.unavailable"
     )
