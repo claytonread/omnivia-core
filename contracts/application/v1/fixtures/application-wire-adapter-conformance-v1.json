@@ -8663,7 +8663,10 @@
             "engineering:write"
           ],
           "workspace_id": "ws-1",
-          "idempotency_key": "idem-continuity.checkpoint.append"
+          "idempotency_key": "idem-continuity.checkpoint.append",
+          "mutation_precondition": {
+            "record_version": "seq-1"
+          }
         },
         "operation": "continuity.checkpoint.append",
         "input": {
@@ -8772,7 +8775,10 @@
             "engineering:write"
           ],
           "workspace_id": "ws-1",
-          "idempotency_key": "idem-continuity.checkpoint.append"
+          "idempotency_key": "idem-continuity.checkpoint.append",
+          "mutation_precondition": {
+            "record_version": "seq-1"
+          }
         },
         "operation": "continuity.checkpoint.append",
         "input": {
@@ -8883,7 +8889,10 @@
             "engineering:write"
           ],
           "workspace_id": "ws-1",
-          "idempotency_key": "idem-continuity.checkpoint.append"
+          "idempotency_key": "idem-continuity.checkpoint.append",
+          "mutation_precondition": {
+            "record_version": "seq-1"
+          }
         },
         "operation": "continuity.checkpoint.append",
         "input": {

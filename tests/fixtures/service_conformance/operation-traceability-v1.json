@@ -3070,8 +3070,8 @@
           "safe_to_retry": false
         },
         "precondition": {
-          "supports_mutation_precondition": false,
-          "required": false
+          "supports_mutation_precondition": true,
+          "required": true
         },
         "audit": {
           "audited": true,
@@ -3082,6 +3082,7 @@
           "authorization_denied",
           "cancelled",
           "capability_not_granted",
+          "conflict",
           "deadline_exceeded",
           "dependency_unavailable",
           "idempotency_conflict",
@@ -3090,6 +3091,7 @@
           "internal_recoverable",
           "invalid_purpose",
           "invalid_request",
+          "mutation_precondition_failed",
           "not_found",
           "rate_limited",
           "size_limit_exceeded",

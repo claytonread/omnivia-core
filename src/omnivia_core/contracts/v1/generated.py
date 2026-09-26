@@ -22214,8 +22214,8 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             safe_to_retry=False,
         ),
         precondition=OperationPreconditionMetadata(
-            supports_mutation_precondition=False,
-            required=False,
+            supports_mutation_precondition=True,
+            required=True,
         ),
         audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
         allowed_errors=(
@@ -22223,6 +22223,7 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "authorization_denied",
             "cancelled",
             "capability_not_granted",
+            "conflict",
             "deadline_exceeded",
             "dependency_unavailable",
             "idempotency_conflict",
@@ -22231,6 +22232,7 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "internal_recoverable",
             "invalid_purpose",
             "invalid_request",
+            "mutation_precondition_failed",
             "not_found",
             "rate_limited",
             "size_limit_exceeded",

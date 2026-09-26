@@ -368,13 +368,14 @@ def test_idempotency_posture_follows_the_side_effect(name: str, entry: dict[str,
         assert not metadata.idempotency.safe_to_retry
 
 
-def test_exactly_seven_operations_require_a_mutation_precondition() -> None:
+def test_exactly_eight_operations_require_a_mutation_precondition() -> None:
     supported = [e.name for e in OPERATION_CATALOGUE if e.precondition.supports_mutation_precondition]
     required = [e.name for e in OPERATION_CATALOGUE if e.precondition.required]
     expected = [
         "candidate.approve", "candidate.reject", "knowledge.propose",
         "record.supersede", "decision.settings.update",
-        "continuity.session.close", "engineering.review.record",
+        "continuity.checkpoint.append", "continuity.session.close",
+        "engineering.review.record",
     ]
     assert supported == expected
     assert required == expected

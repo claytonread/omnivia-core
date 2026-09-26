@@ -1257,6 +1257,13 @@ _DECISION_CONFIGURE: tuple[str, ...] = _GOV_MUT
 _ENG_CONTINUITY_MUT: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "not_found", "size_limit_exceeded"))
 )
+#: `continuity.checkpoint.append` states its expected predecessor as a real
+#: mutation precondition (SPEC-CORE-ENGMEM-001 §9.2): two concurrent successors
+#: of one checkpoint must resolve as a precondition failure, not a silent
+#: replacement, and a session that moved under the caller is a `conflict`.
+_ENG_CONTINUITY_APPEND: tuple[str, ...] = tuple(
+    sorted({*_GOV_MUT, "not_found", "size_limit_exceeded"})
+)
 _ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1292,6 +1299,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "DECISION_SETTINGS_GET": _POINT_READ,
     "DECISION_SETTINGS_UPDATE": _DECISION_CONFIGURE,
     "ENG_CONTINUITY_MUT": _ENG_CONTINUITY_MUT,
+    "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
     "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
 }
 
@@ -1518,7 +1526,7 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     ),
     "continuity.checkpoint.append": FrozenOperation(
         "workspace", ("engineering:write",), "create", "engineering.write",
-        "engineering", "ContinuityCheckpointAppend", "ENG_CONTINUITY_MUT", False,
+        "engineering", "ContinuityCheckpointAppend", "ENG_CONTINUITY_APPEND", False,
     ),
     "continuity.session.close": FrozenOperation(
         "workspace", ("engineering:write",), "update", "engineering.write",
@@ -1556,7 +1564,8 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
 #: re-reads and re-decides against.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
     {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
-     "decision.settings.update", "continuity.session.close", "engineering.review.record"}
+     "decision.settings.update", "continuity.session.close", "continuity.checkpoint.append",
+     "engineering.review.record"}
 )
 
 

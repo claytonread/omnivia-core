@@ -86,6 +86,7 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatHandlers,
 )
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
+from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
 from omnivia_core_runtime.service.handlers.decisions import (
     DECISION_EVALUATE_OPERATION,
     DecisionHandlers,
@@ -867,49 +868,51 @@ def engineering_family_session(
 
 
 def build_engineering_registry(
-    handlers: EngineeringHandlers,
+    refusals: EngineeringHandlers,
+    continuity: ContinuityHandlers,
 ) -> ApplicationOperationRegistry:
-    """The nine engineering-memory operations.
+    """The nine engineering-memory operations: four durable, five honest refusals.
 
-    Every handler is the contracts-first honest refusal: the durable producers
-    land in later packages of the engineering-memory plan, and an intentionally
-    unavailable state is correct until then (§28.4). Registering the refusals is
-    what keeps the production surface exactly catalogue-complete without
-    pretending a capability exists that no producer stands behind.
+    The continuity vertical (session register/append/close, handoff read) is the
+    plan's PR-B producer; the preview/pack/preference/review operations stay the
+    contracts-first `dependency_unavailable` refusals (§28.4) until their
+    producers land. Registering both kinds in one registry is what keeps the
+    production surface exactly catalogue-complete without pretending a
+    capability exists that no producer stands behind.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
         "continuity.session.register",
-        cast(OperationHandler, handlers.continuity_session_register),
+        cast(OperationHandler, continuity.continuity_session_register),
     )
     registry.register(
         "continuity.checkpoint.append",
-        cast(OperationHandler, handlers.continuity_checkpoint_append),
+        cast(OperationHandler, continuity.continuity_checkpoint_append),
     )
     registry.register(
         "continuity.session.close",
-        cast(OperationHandler, handlers.continuity_session_close),
+        cast(OperationHandler, continuity.continuity_session_close),
     )
     registry.register(
         "continuity.handoff.read",
-        cast(OperationHandler, handlers.continuity_handoff_read),
+        cast(OperationHandler, continuity.continuity_handoff_read),
     )
     registry.register(
-        "engineering.search", cast(OperationHandler, handlers.engineering_search)
+        "engineering.search", cast(OperationHandler, refusals.engineering_search)
     )
     registry.register(
-        "engineering.expand", cast(OperationHandler, handlers.engineering_expand)
+        "engineering.expand", cast(OperationHandler, refusals.engineering_expand)
     )
     registry.register(
         "engineering.context.build",
-        cast(OperationHandler, handlers.engineering_context_build),
+        cast(OperationHandler, refusals.engineering_context_build),
     )
     registry.register(
-        "context.priority.set", cast(OperationHandler, handlers.context_priority_set)
+        "context.priority.set", cast(OperationHandler, refusals.context_priority_set)
     )
     registry.register(
         "engineering.review.record",
-        cast(OperationHandler, handlers.engineering_review_record),
+        cast(OperationHandler, refusals.engineering_review_record),
     )
     return registry
 
@@ -921,6 +924,7 @@ def build_engineering_application_dispatcher(
     installation_id: str,
     workspace_id: str,
     fallback: ApplicationFallback,
+    clock: Clock | None = None,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
@@ -931,7 +935,15 @@ def build_engineering_application_dispatcher(
         workspace_id=workspace_id,
     )
     binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
-    registry = build_engineering_registry(EngineeringHandlers())
+    registry = build_engineering_registry(
+        EngineeringHandlers(),
+        ContinuityHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+        ),
+    )
     return ApplicationDispatcher(
         registry=registry,
         session=session,

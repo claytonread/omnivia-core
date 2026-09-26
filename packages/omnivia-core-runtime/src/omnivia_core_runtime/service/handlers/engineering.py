@@ -1,12 +1,12 @@
-"""The `engineering.*` / `continuity.*` / `context.priority.*` handlers
-(SPEC-CORE-ENGMEM-001, implementation plan PR-A).
+"""The `engineering.*` / `context.priority.*` refusals
+(SPEC-CORE-ENGMEM-001, plan PR-B).
 
-This slice ships the **contracts**: the nine engineering-memory operations are
-registered so the production surface stays exactly catalogue-complete, and every
-handler answers with one honest refusal. The durable producers — repository
-identity, session bindings, checkpoint persistence, preview projections, the
-applicability barrier and the engineering pack builder — are later P0 packages of
-the implementation plan and land behind this registration one vertical at a time.
+Four of the nine engineering-memory operations are durable in
+`handlers.continuity` (session register/append/close, handoff read). The five
+here remain the honest `dependency_unavailable` refusals: the preview
+projections, the pack builder, the preference store and the review-attestation
+path are later P0 packages of the implementation plan and land behind this
+registration one vertical at a time.
 
 The refusal is `dependency_unavailable`, the same posture the decision family's
 model lifecycle holds until its backend exists (§28.4): an intentionally
@@ -27,22 +27,6 @@ from omnivia_core_runtime.service.operations import (
     OperationError,
 )
 
-_MESSAGE_CONTINUITY_REGISTER: Final = (
-    "continuity session registration ships contracts first; the binding producer "
-    "lands in a later engineering-memory package"
-)
-_MESSAGE_CONTINUITY_APPEND: Final = (
-    "continuity checkpoint persistence ships contracts first; the checkpoint "
-    "producer lands in a later engineering-memory package"
-)
-_MESSAGE_CONTINUITY_CLOSE: Final = (
-    "continuity session close ships contracts first; the close producer lands in "
-    "a later engineering-memory package"
-)
-_MESSAGE_HANDOFF: Final = (
-    "continuity handoff reads ship contracts first; the handoff producer lands "
-    "in a later engineering-memory package"
-)
 _MESSAGE_SEARCH: Final = (
     "engineering search ships contracts first; the preview projection lands in a "
     "later engineering-memory package"
@@ -66,27 +50,7 @@ _MESSAGE_REVIEW: Final = (
 
 
 class EngineeringHandlers:
-    """The nine engineering-memory operations, each an honest refusal for now."""
-
-    def continuity_session_register(
-        self, context: OperationContext
-    ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_CONTINUITY_REGISTER)
-
-    def continuity_checkpoint_append(
-        self, context: OperationContext
-    ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_CONTINUITY_APPEND)
-
-    def continuity_session_close(
-        self, context: OperationContext
-    ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_CONTINUITY_CLOSE)
-
-    def continuity_handoff_read(
-        self, context: OperationContext
-    ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_HANDOFF)
+    """The five not-yet-durable engineering-memory operations."""
 
     def engineering_search(
         self, context: OperationContext
