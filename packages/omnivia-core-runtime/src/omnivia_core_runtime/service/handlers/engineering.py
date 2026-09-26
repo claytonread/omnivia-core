@@ -40,13 +40,12 @@ Retrieval security shape, inherited from the knowledge family and the plan:
    coverage first: a target that is not a recorded snapshot inside its
    stream's contiguous validated coverage is refused with
    `dependency_unavailable` / `applicability_pending` before any frontier read
-   or ranking, never downgraded. The frontier is read through
+   or ranking, never downgraded. For covered targets the shared evaluator in
+   `storage.engineering_source` then checks each admitted candidate's exact
+   dependency set directly, before scoring, and only proven `matched` records
+   are served. In both modes the governed frontier is read through
    `storage.memory.read_authorized_memory_snapshot` under the effective caller's
-   evidence-label grant, so a denied version is never hydrated. For covered
-   targets the shared evaluator in `storage.engineering_source` then checks each
-   admitted candidate's exact dependency set directly, before scoring, and only
-   proven `matched` records are served. The `diagnostic` read keeps its existing
-   unauthorized frontier for compatibility (a deferred limitation);
+   evidence-label grant, so a denied version is never hydrated;
 8. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
    knowledge (§12.3).
@@ -377,7 +376,7 @@ class EngineeringHandlers:
         resolution_instant_us: int,
         view: str,
     ) -> tuple[Any, ...]:
-        """The `current_safe` frontier: identities and evidence-label grants are
+        """The governed frontier: identities and evidence-label grants are
         resolved first and only admitted versions are hydrated, so a denied version
         never reaches applicability, scoring, the candidate cap or omissions.
 
@@ -587,22 +586,15 @@ class EngineeringHandlers:
                 offset=supplied.get("o") if supplied else None,
             )
         else:
-            if target is not None:
-                values = self._authorized_values(
-                    connection,
-                    context,
-                    resolution_instant_us=resolved_at_us,
-                    view=_GOVERNED_VIEWS[view],
-                )
-            else:
-                # Diagnostic keeps its existing read for compatibility; its
-                # evidence-label authorization is a deferred limitation.
-                values = read_governed_record_values(
-                    connection,
-                    workspace_id=context.workspace_id,
-                    resolution_instant_us=resolved_at_us,
-                    view=_GOVERNED_VIEWS[view],
-                )
+            # Both modes hydrate only versions the effective caller's evidence
+            # grant admits: a denied version never reaches scoring, previews,
+            # totals or the continuation's snapshot digest.
+            values = self._authorized_values(
+                connection,
+                context,
+                resolution_instant_us=resolved_at_us,
+                view=_GOVERNED_VIEWS[view],
+            )
             candidates: list[GovernedCandidate] = []
             evaluated = 0
             for value in values:
@@ -1201,22 +1193,14 @@ class EngineeringHandlers:
         )
         values: tuple[Any, ...] = ()
         for governed_view in views:
-            # current_safe hydrates only versions the effective caller's evidence
-            # grant admits; diagnostic keeps its existing read (a deferred limitation).
-            values += (
-                self._authorized_values(
-                    connection,
-                    context,
-                    resolution_instant_us=resolved_at_us,
-                    view=governed_view,
-                )
-                if mode == "current_safe"
-                else read_governed_record_values(
-                    connection,
-                    workspace_id=context.workspace_id,
-                    resolution_instant_us=resolved_at_us,
-                    view=governed_view,
-                )
+            # Both modes hydrate only versions the effective caller's evidence
+            # grant admits, so a denied version is never selected, cited or
+            # counted as an omission.
+            values += self._authorized_values(
+                connection,
+                context,
+                resolution_instant_us=resolved_at_us,
+                view=governed_view,
             )
         # Each record keeps its own partition: a candidate never renders under
         # `accepted_knowledge`, whatever else the frontier holds.

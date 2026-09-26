@@ -871,6 +871,130 @@ def test_current_safe_never_reveals_label_denied_records_to_another_reader(
     assert denied_ids <= set(evaluated)
 
 
+def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default `diagnostic` search and pack build read through the same
+    evidence-label grant as `current_safe`. A denied, high-relevance sentinel in
+    both the accepted and candidate partitions never reaches the scorer, previews,
+    citations, omissions, page totals or continuations, and the permitted records
+    keep the order the owner sees. Labelling the open evidence withdraws access at
+    once: a pinned continuation restarts and fresh reads are empty."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+
+    m2.write(workspace.holder, m2.EVIDENCE, evidence_id="evd-open", source_native_id="doc-open")
+    open_source = {**EVIDENCE_SOURCE, "source_id": "doc-open"}
+
+    def accept(record: dict[str, str]) -> dict[str, str]:
+        version = record["version"]
+        for operation in ("knowledge.propose", "candidate.approve"):
+            transitioned = workspace.ok(
+                operation,
+                {"record_id": record["record_id"], "rationale": {"reason_code": "review"}},
+                mutation_precondition=MutationPrecondition(record_version=version),
+            )
+            version = transitioned["updated_record"]["provenance"]["identity"]["version"]
+        return {"record_id": record["record_id"], "version": version}
+
+    sentinel = "XYZZY provider provider provider provider"
+    hidden_candidate = workspace.observe(_observation(None, title=sentinel))
+    hidden_accepted = accept(workspace.observe(_observation(None, title=sentinel + " accepted")))
+    open_a = workspace.observe(_observation(None, title="Open alpha", source=open_source))
+    open_b = workspace.observe(_observation(None, title="Open provider beta", source=open_source))
+    open_accepted = accept(
+        workspace.observe(_observation(None, title="Open accepted", source=open_source))
+    )
+    denied_ids = {hidden_candidate["record_id"], hidden_accepted["record_id"]}
+
+    ranked: list[str] = []
+    rank = handlers.rank_governed
+
+    def spy_rank(frontier: Any, *args: Any, **kwargs: Any) -> Any:
+        ranked.extend(c.record.provenance.identity.record_id for c in frontier.candidates)
+        return rank(frontier, *args, **kwargs)
+
+    monkeypatch.setattr(handlers, "rank_governed", spy_rank)
+    reader = engineering_family_session(
+        principal_id="reader",
+        installation_id=s0.INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+    )
+    build = {
+        "query": "provider",
+        "targets": [{"repository_id": REPOSITORY, "snapshot_id": "esnap-a"}],
+        "profile": "investigate",
+    }
+
+    def search(view: str, **extra: Any) -> dict[str, Any]:
+        return workspace.ok(
+            "engineering.search", {"query": "provider", "view": view, **extra}, **extra_session
+        )
+
+    def ids(result: dict[str, Any]) -> list[str]:
+        return [preview["record_id"] for preview in result["previews"]]
+
+    # The owner holds the label: the sentinel outranks every permitted record.
+    extra_session: dict[str, Any] = {}
+    owner_candidates = ids(search("candidates"))
+    assert owner_candidates[0] == hidden_candidate["record_id"]
+    assert ids(search("accepted"))[0] == hidden_accepted["record_id"]
+    owner_pack = workspace.ok("engineering.context.build", build)["pack"]
+    assert {c["record_ref"]["record_id"] for c in owner_pack["citations"]} >= denied_ids
+
+    ranked.clear()
+    extra_session = {"session": reader}
+    first = search("candidates", limit=1)
+    token = first["page"]["continuation_token"]
+    second = search("candidates", limit=1, page={"continuation_token": token})
+    assert second["page"] == {}
+    accepted = search("accepted")
+    pack = workspace.ok("engineering.context.build", build, session=reader)["pack"]
+    for result in (first, second, accepted, pack):
+        wire = json.dumps(result)
+        assert "XYZZY" not in wire
+        assert not any(record_id in wire for record_id in denied_ids)
+    # Two permitted candidates, two pages, in the owner's order minus the sentinel.
+    assert ids(first) + ids(second) == [
+        record_id for record_id in owner_candidates if record_id not in denied_ids
+    ]
+    assert set(ids(first) + ids(second)) == {open_a["record_id"], open_b["record_id"]}
+    assert ids(accepted) == [open_accepted["record_id"]] and accepted["page"] == {}
+    partitions = {
+        c["record_ref"]["record_id"]: s["partition"]
+        for s, c in zip(pack["sections"], pack["citations"], strict=True)
+    }
+    assert set(partitions) == {
+        open_accepted["record_id"],
+        open_a["record_id"],
+        open_b["record_id"],
+    }
+    # A candidate never renders as accepted knowledge.
+    assert partitions[open_a["record_id"]] == partitions[open_b["record_id"]] == (
+        "candidate_findings"
+    )
+    assert pack["omissions"] == []
+    assert ranked and denied_ids.isdisjoint(ranked)
+
+    # Access revocation: the open evidence gains the restricted label.
+    pinned = search("candidates", limit=1)["page"]["continuation_token"]
+    m2.write(
+        workspace.holder,
+        m2.LABELS,
+        label_event_id="lbl-open",
+        evidence_id="evd-open",
+        label_sequence=1,
+    )
+    assert workspace.refused(
+        "engineering.search",
+        {"query": "provider", "view": "candidates", "limit": 1,
+         "page": {"continuation_token": pinned}},
+        session=reader,
+    )[0] == "invalid_request"
+    assert search("candidates")["previews"] == search("accepted")["previews"] == []
+    revoked = workspace.ok("engineering.context.build", build, session=reader)["pack"]
+    assert revoked["citations"] == [] and revoked["omissions"] == []
+
+
 # --- bounds ------------------------------------------------------------------------------
 
 

@@ -221,7 +221,13 @@ covered target. It reads only and writes nothing.
 `EngineeringSearchInput` and `EngineeringContextBuildInput`. Other values are
 `invalid_request`.
 
-- **`diagnostic`:** the default, with existing behaviour unchanged.
+- **`diagnostic`:** the default. Applicability behaviour is unchanged; its
+  frontier is now read under the same evidence-label authorization as
+  `current_safe` (below). One visible consequence: the `candidates` view no
+  longer lists proposal or candidate versions of a record that a governance
+  transition has since moved on (for example, approved), matching the
+  authorized reader's view policy that `current_safe` and memory reads already
+  use.
 - **Coverage first:** `current_safe` checks authoritative coverage before any
   frontier read or ranking. The target is refused when:
   - it was never recorded;
@@ -233,7 +239,8 @@ covered target. It reads only and writes nothing.
   `applicability_pending` and the frozen retry class `retryable_after_delay`.
   This is the compatibility-preserving refusal signal, not a newly ratified
   error code, and a read is never downgraded to `diagnostic`.
-- **Authorization before evaluation:** the frontier is read through the
+- **Authorization before evaluation:** in both modes, the frontier of search
+  (`accepted`, `candidates`, `history`) and pack build is read through the
   existing `storage.memory.read_authorized_memory_snapshot`. It resolves
   identities and evidence-label grants first and hydrates only admitted
   versions. The grant is computed with `local_owner_label_grant` for the
@@ -242,7 +249,9 @@ covered target. It reads only and writes nothing.
   because a session dispatch runs this owner-composed handler as another
   principal. A denied version is never hydrated, evaluated, scored, counted
   toward the candidate cap or reported as an omission, and no preview, section,
-  citation or text from it reaches the caller.
+  citation or text from it reaches the caller. Search page totals and the
+  continuation's snapshot digest are computed from admitted versions only, so a
+  label change between pages restarts the continuation as `invalid_request`.
 - **Search:**
   - It requires `repository_target`, with view `accepted` or `candidates`.
   - Each candidate is evaluated directly before scoring, and only proven
@@ -328,9 +337,10 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
 - **No lineage reasoning:** there is no cross-stream equivalence, ancestry or
   merge-base reasoning. Equal digests in another stream prove nothing here.
 - **Unchanged shortcomings:** these are not worsened and not solved here:
-  - `diagnostic` search and pack build (the default) still read the governed
-    frontier without evidence-label authorization, exactly as before. Only
-    `current_safe` uses the authorized reader; fixing `diagnostic` is deferred;
+  - `working_context` (search view and the `resume` pack section) reads the
+    continuity checkpoint index, which carries no evidence labels;
+  - `engineering.expand` resolves its anchor without evidence-label
+    authorization;
   - known-conflict warnings are not produced.
 - **Search omissions:** `current_safe` search omissions are not counted in the
   result, because the contract has no field for them.
