@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
@@ -37,6 +37,12 @@ from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
 IdentifierAllocator = Callable[[str], str]
 
 _PROFILE_TYPE: Final = "memory.fact"
+#: The governed record types engineering observations ride (§8.1 via §22.1): the
+#: schema catalogue is frozen to the 0009 vocabulary, so observations use the
+#: catalogue's own finding/risk/decision types under the engineering domain.
+_ENGINEERING_RECORD_TYPES: Final = ("knowledge.finding", "knowledge.risk", "knowledge.decision")
+_ENGINEERING_DOMAIN: Final = "engineering.codebase"
+_ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
 _MESSAGE_INVALID_PROFILE: Final = "the memory claim is outside this supported profile"
 _MESSAGE_EVIDENCE_UNAVAILABLE: Final = (
     "the memory claim's evidence is not currently available"
@@ -153,6 +159,64 @@ def resolve_memory_claim_evidence(
     return tuple(resolved[_source_key(source)] for source in claim.sources)
 
 
+def _plain_content(value: Any) -> Any:
+    """Decode the contract's immutable containers into JSON-serialisable ones."""
+    if isinstance(value, Mapping):
+        return {key: _plain_content(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_content(item) for item in value]
+    return value
+
+
+def _validate_engineering_observation_content(content: Mapping[str, Any]) -> None:
+    """The `engineering.observation` content profile (SPEC-CORE-ENGMEM-001 §8.1).
+
+    Text is validated, never silently truncated on save: a missing or
+    wrong-typed required field, an oversized field or an oversized payload is a
+    typed refusal, and the caller splits or fixes it explicitly. The 64 KiB cap
+    bounds the canonical content bytes excluding separately referenced
+    evidence.
+    """
+    title = content.get("title")
+    summary = content.get("summary")
+    what = content.get("what")
+    kind = content.get("kind")
+    if (
+        not isinstance(title, str)
+        or not 1 <= len(title) <= 200
+        or not isinstance(summary, str)
+        or not 1 <= len(summary) <= 2000
+        or not isinstance(what, str)
+        or not 1 <= len(what) <= 2000
+    ):
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "an engineering observation requires title (<=200), summary (<=2000) "
+            "and what (<=2000) as bounded strings",
+        )
+    if not isinstance(kind, str) or not 1 <= len(kind) <= 64:
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "an engineering observation requires a bounded kind",
+        )
+    basis = content.get("assertion_basis")
+    if basis is not None and (
+        not isinstance(basis, str)
+        or basis
+        not in ("observed", "derived", "reported", "hypothesis")
+    ):
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "assertion_basis must be one of observed, derived, reported, hypothesis",
+        )
+    encoded = to_canonical_json(_plain_content(content))
+    if len(encoded.encode("utf-8")) > _ENGINEERING_CONTENT_CAP_BYTES:
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "the engineering observation content exceeds the 65536-byte payload cap",
+        )
+
+
 def create_memory_record(
     connection: sqlite3.Connection,
     settlement: MutationSettlementContext,
@@ -163,24 +227,31 @@ def create_memory_record(
     allocate_identifier: IdentifierAllocator = random_identifier,
 ) -> dict[str, object]:
     """Persist one sealed human proposal plus its immutable application lineage."""
-    fact = claim.content.get("fact")
     if (
-        claim.record_type != _PROFILE_TYPE
-        or not isinstance(fact, str)
-        or not fact
-        or claim.extraction is not None
+        claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
     ):
-        code = (
-            ERROR_CODE_DEPENDENCY_UNAVAILABLE
-            if claim.extraction is not None
-            else ERROR_CODE_INVALID_REQUEST
-        )
-        retry = (
-            RETRY_CLASS_RETRYABLE_AFTER_DELAY
-            if claim.extraction is not None
-            else "non_retryable"
-        )
-        raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
+        _validate_engineering_observation_content(claim.content)
+    elif claim.record_type == _PROFILE_TYPE:
+        fact = claim.content.get("fact")
+        if (
+            not isinstance(fact, str)
+            or not fact
+            or claim.extraction is not None
+        ):
+            code = (
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE
+                if claim.extraction is not None
+                else ERROR_CODE_INVALID_REQUEST
+            )
+            retry = (
+                RETRY_CLASS_RETRYABLE_AFTER_DELAY
+                if claim.extraction is not None
+                else "non_retryable"
+            )
+            raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
+    else:
+        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_PROFILE)
 
     evidence_ids = resolve_memory_claim_evidence(
         connection,
@@ -213,8 +284,8 @@ def create_memory_record(
     assembly_id = allocate_identifier("asm")
     event_id = allocate_identifier("pev")
     seal_id = allocate_identifier("seal")
-    content_json = to_canonical_json(dict(claim.content))
-    claim_json = to_canonical_json(claim.to_wire())
+    content_json = to_canonical_json(_plain_content(dict(claim.content)))
+    claim_json = to_canonical_json(_plain_content(claim.to_wire()))
     reason = (
         None if claim.evidence_disposition == "available" else "evidence.unavailable"
     )
