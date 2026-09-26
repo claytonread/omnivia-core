@@ -241,6 +241,10 @@ BEGIN
               AND a.operation = 'engineering.source.record');
 END;
 
+-- The coverage barrier check: the old barrier was validated when it was
+-- written and never decreases, so only the newly covered range (OLD, NEW] is
+-- counted: one primary-key range scan of at most one pending window, however
+-- long the stream's history.
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_omnivia_engineering_source_streams_update
 BEFORE UPDATE ON omnivia_engineering_source_streams
 BEGIN
@@ -267,9 +271,6 @@ BEGIN
        OR NEW.announced_sequence < OLD.announced_sequence
        OR NEW.covered_sequence < OLD.covered_sequence
        OR NEW.updated_at_us < OLD.updated_at_us;
-    -- The old barrier was validated when it was written and never decreases, so
-    -- only the newly covered range (OLD, NEW] is counted: one primary-key range
-    -- scan of at most one pending window, however long the stream's history.
     SELECT RAISE(ABORT, 'omnivia: the source coverage barrier may not cross a missing event or advance past one pending window')
     WHERE NEW.covered_sequence > OLD.covered_sequence
       AND (NEW.covered_sequence - OLD.covered_sequence > 64
