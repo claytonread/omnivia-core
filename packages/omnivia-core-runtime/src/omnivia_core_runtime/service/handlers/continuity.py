@@ -66,6 +66,7 @@ from omnivia_core_runtime.service.operations import (
     OperationError,
 )
 from omnivia_core_runtime.storage import continuity as storage
+from omnivia_core_runtime.storage import repository_identity as repo_identity
 from omnivia_core_runtime.storage.continuity import (
     ParentCheckpointMismatch,
     PayloadTooLarge,
@@ -112,6 +113,21 @@ _ERROR_FOR_STORAGE: Final[tuple[tuple[type[BaseException], str, str], ...]] = (
         PayloadTooLarge,
         ERROR_CODE_SIZE_LIMIT_EXCEEDED,
         "the checkpoint payload exceeds this workspace's size limit",
+    ),
+    (
+        repo_identity.SnapshotNotFound,
+        ERROR_CODE_NOT_FOUND,
+        _MESSAGE_NOT_FOUND,
+    ),
+    (
+        repo_identity.RepositoryNotFound,
+        ERROR_CODE_NOT_FOUND,
+        _MESSAGE_NOT_FOUND,
+    ),
+    (
+        repo_identity.RepositoryAmbiguous,
+        ERROR_CODE_CONFLICT,
+        "the repository label matches more than one registration; resolve by id",
     ),
 )
 
@@ -179,6 +195,13 @@ class ContinuityHandlers:
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
         ) -> Mapping[str, Any]:
+            if request.repository_target is not None:
+                repo_identity.validate_snapshot_ref(
+                    fenced,
+                    workspace_id=context.workspace_id,
+                    repository_id=request.repository_target.repository_id,
+                    snapshot_id=request.repository_target.snapshot_id,
+                )
             session_id = self.allocate_identifier("esess")
             now_us = settlement.settled_at_us
             storage.register_session(
@@ -248,6 +271,13 @@ class ContinuityHandlers:
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
         ) -> Mapping[str, Any]:
+            for snapshot in request.payload.repository_snapshots or ():
+                repo_identity.validate_snapshot_ref(
+                    fenced,
+                    workspace_id=context.workspace_id,
+                    repository_id=snapshot.repository_id,
+                    snapshot_id=snapshot.snapshot_id,
+                )
             receipt = storage.append_checkpoint(
                 fenced,
                 settlement,
@@ -469,7 +499,10 @@ class ContinuityHandlers:
                 error.code, error.message, retry_class=error.retry_class
             ) from error
         except (SessionNotFound, SessionNotActive, ParentCheckpointMismatch,
-                SequencePreconditionFailed, PayloadTooLarge) as error:
+                SequencePreconditionFailed, PayloadTooLarge,
+                repo_identity.RepositoryNotFound,
+                repo_identity.RepositoryAmbiguous,
+                repo_identity.SnapshotNotFound) as error:
             raise _as_operation_error(error) from error
         except MutationPreconditionFailed as error:
             raise OperationError(
