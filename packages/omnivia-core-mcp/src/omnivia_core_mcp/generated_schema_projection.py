@@ -3003,6 +3003,1733 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ContinuityCheckpointAppendInput",
+        "description": "Input for `continuity.checkpoint.append`: appends one immutable checkpoint to a bound session. The envelope's idempotency key makes a lost-reply retry return the original receipt; reusing the key with a different payload is an explicit conflict. The expected parent sequence serialises competing successors: two clients cannot both become the successor of one checkpoint.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "session_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The bound session to append to.",
+            },
+            "parent_checkpoint_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Exact predecessor checkpoint, required for an explicit continuation.",
+            },
+            "expected_parent_sequence": {
+                "type": "integer",
+                "description": "The parent sequence the caller expects; a concurrent successor makes this append a precondition failure rather than a silent replacement.",
+                "minimum": 1,
+            },
+            "payload": {
+                "$ref": "#/$defs/engineering__EngineeringCheckpointPayload",
+                "description": "The validated checkpoint payload stored as immutable L0 evidence.",
+            },
+        },
+        "required": [
+            "session_id",
+            "payload",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "engineering__EngineeringCheckpointObservation": {
+                "title": "EngineeringCheckpointObservation",
+                "description": "One bounded working statement inside a checkpoint, with its evidence references and an explicit support classification. `claimed` means the agent reported it; only `verified` statements carry validation evidence, and neither classification is accepted knowledge.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "statement": {
+                        "type": "string",
+                        "description": "The bounded working statement.",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "Immutable evidence identities supporting the statement, when support exists.",
+                    },
+                    "support": {
+                        "type": "string",
+                        "description": "Open, bounded code naming how the statement is supported, such as `verified` or `claimed`.",
+                        "minLength": 1,
+                        "maxLength": 32,
+                    },
+                },
+                "required": [
+                    "statement",
+                    "support",
+                ],
+            },
+            "engineering__EngineeringCheckpointPayload": {
+                "title": "EngineeringCheckpointPayload",
+                "description": "The structured, validated payload of one continuity checkpoint. Preserves working context with unresolved work and uncertainty intact: completed work distinguishes verified evidence from claims, failed approaches and unresolved questions are first-class, and suggested next actions are suggestions only - never permission to execute. The payload is L0 evidence once stored; Core does not become the owner of any plan or external effect it references.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "objective": {
+                        "type": "string",
+                        "description": "Bounded description of the current work, labelled working context.",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    },
+                    "checkpoint_kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming why the checkpoint was taken, such as `periodic`, `before_compaction`, `after_compaction`, `handoff` or `session_close`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "external_run_ref": {
+                        "type": "string",
+                        "description": "External Runtime/host run reference, when present. A reference, never execution authority.",
+                        "maxLength": 256,
+                    },
+                    "repository_snapshots": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
+                        },
+                        "description": "Exact snapshots relevant to the work.",
+                    },
+                    "accepted_record_refs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                        },
+                        "description": "Accepted exact versions verified by Core at submission.",
+                    },
+                    "candidate_record_refs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                        },
+                        "description": "Proposed versions, visibly separate from accepted knowledge.",
+                    },
+                    "observations": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringCheckpointObservation",
+                        },
+                        "description": "Bounded working statements with evidence references and support classification.",
+                    },
+                    "completed_work": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringCheckpointObservation",
+                        },
+                        "description": "Reported accomplishments; validation links distinguish verified evidence from claims.",
+                    },
+                    "failed_approaches": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringCheckpointObservation",
+                        },
+                        "description": "Prior attempts and their evidence, including uncertainty.",
+                    },
+                    "unresolved_work": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2000,
+                        },
+                        "description": "Questions, blockers and incomplete investigations, preserved intact.",
+                    },
+                    "relevant_sources": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/records__SourceReference",
+                        },
+                        "description": "Source/evidence references rather than absolute paths.",
+                    },
+                    "external_effects": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringExternalEffect",
+                        },
+                        "description": "Reported external operation ids and their reported status, including `unknown`.",
+                    },
+                    "next_actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2000,
+                        },
+                        "description": "Suggested next actions. Suggestions only; no permission to execute.",
+                    },
+                    "context_receipt": {
+                        "$ref": "#/$defs/engineering__EngineeringContextReceipt",
+                        "description": "Optional prior pack checksum and reproducibility inputs.",
+                    },
+                },
+                "required": [
+                    "objective",
+                    "checkpoint_kind",
+                ],
+            },
+            "engineering__EngineeringContextReceipt": {
+                "title": "EngineeringContextReceipt",
+                "description": "A reproducibility receipt for the context a checkpoint was produced under: the pack content checksum and its declared inputs. Not a persisted pack handle, and never a bearer token for regeneration.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "pack_checksum": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Content checksum of the engineering context pack this checkpoint references.",
+                    },
+                },
+                "required": [
+                    "pack_checksum",
+                ],
+            },
+            "engineering__EngineeringExternalEffect": {
+                "title": "EngineeringExternalEffect",
+                "description": "One reported external operation and its reported status. `unknown` is preserved as unknown: reconciling the effect is the owning Runtime's job, and a handoff never retries an unknown effect automatically.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "effect_ref": {
+                        "type": "string",
+                        "description": "External operation reference as reported by the host Runtime.",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Open, bounded code naming the reported outcome, such as `confirmed`, `failed` or `unknown`.",
+                        "minLength": 1,
+                        "maxLength": 32,
+                    },
+                },
+                "required": [
+                    "effect_ref",
+                    "status",
+                ],
+            },
+            "engineering__EngineeringRecordVersionRef": {
+                "title": "EngineeringRecordVersionRef",
+                "description": "An exact governed record version: record identity plus exact version. Every engineering relationship, review, priority and citation names endpoints at this granularity; selecting a latest timestamp is never canonical resolution.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Governed record identity.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact record version identity.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Optional content checksum of the referenced version, when the caller already holds it.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                    "version",
+                ],
+            },
+            "engineering__EngineeringSnapshotRef": {
+                "title": "EngineeringSnapshotRef",
+                "description": "A reference to one immutable captured source state within a registered repository. A working-tree snapshot is never asserted to be its base commit, and a branch label is advisory provenance only: it is never a unique identity or an applicability proof.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "snapshot_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identity of the immutable snapshot capture.",
+                    },
+                    "repository_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable logical repository identity, when known to the caller; the server resolves and validates it against registered bindings.",
+                    },
+                    "snapshot_kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming how the snapshot was captured, such as `git_commit`, `working_tree` or `source_archive`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "branch_label": {
+                        "type": "string",
+                        "description": "Advisory display/provenance label; never identity and never applicability authority.",
+                        "maxLength": 256,
+                    },
+                },
+                "required": [
+                    "snapshot_id",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "records__SourceKind": {
+                "title": "SourceKind",
+                "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__SourceReference": {
+                "title": "SourceReference",
+                "description": "A pointer to the external or internal thing a record's claim came from.",
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "$ref": "#/$defs/records__SourceKind",
+                        "description": "What kind of thing this reference points at.",
+                    },
+                    "source_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identifier of the source within its own system of record.",
+                    },
+                    "locator": {
+                        "type": "string",
+                        "description": "Optional locator within the source, such as a path, offset, or message id.",
+                        "maxLength": 2048,
+                    },
+                    "retrieved_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the source was read to produce the record it supports.",
+                    },
+                },
+                "required": [
+                    "kind",
+                    "source_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ContinuityCheckpointAppendResult",
+        "description": "Result of `continuity.checkpoint.append`.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "receipt": {
+                "$ref": "#/$defs/engineering__CheckpointReceipt",
+                "description": "The durable receipt proving the checkpoint exists.",
+            },
+        },
+        "required": [
+            "receipt",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "engineering__CheckpointReceipt": {
+                "title": "CheckpointReceipt",
+                "description": "The durable receipt a successful checkpoint append returns. Only this receipt proves a checkpoint exists; host hooks and UI claims are not durability guarantees. Replaying the same idempotency key with the exact same request returns this same receipt.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "checkpoint_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Service-issued immutable checkpoint identity.",
+                    },
+                    "session_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The bound continuity session.",
+                    },
+                    "sequence": {
+                        "type": "integer",
+                        "description": "Monotonic checkpoint sequence within the session, assigned transactionally.",
+                        "minimum": 1,
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Content checksum of the stored checkpoint evidence.",
+                    },
+                    "recorded_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "Server-owned immutable recorded time.",
+                    },
+                    "audit_reference": {
+                        "type": "string",
+                        "description": "Audit reference for the committed append.",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                },
+                "required": [
+                    "checkpoint_id",
+                    "session_id",
+                    "sequence",
+                    "content_digest",
+                    "recorded_at",
+                    "audit_reference",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ContinuityHandoffReadInput",
+        "description": "Input for `continuity.handoff.read`: reads a bounded, authorised handoff view of one checkpoint. Select the checkpoint exactly (by id, or by session plus sequence); the optional target snapshot lets the view state applicability for the snapshot the receiving agent actually targets. Handoff does not transfer the sender's grants, credentials, leases or approvals to act.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "checkpoint_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Exact checkpoint identity.",
+            },
+            "session_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "Session identity, when selecting by session plus sequence.",
+            },
+            "sequence": {
+                "type": "integer",
+                "description": "Checkpoint sequence within the session, when selecting by session plus sequence.",
+                "minimum": 1,
+            },
+            "target_snapshot": {
+                "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
+                "description": "The snapshot the receiving agent targets, for applicability framing.",
+            },
+        },
+        "required": [],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "engineering__EngineeringSnapshotRef": {
+                "title": "EngineeringSnapshotRef",
+                "description": "A reference to one immutable captured source state within a registered repository. A working-tree snapshot is never asserted to be its base commit, and a branch label is advisory provenance only: it is never a unique identity or an applicability proof.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "snapshot_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identity of the immutable snapshot capture.",
+                    },
+                    "repository_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable logical repository identity, when known to the caller; the server resolves and validates it against registered bindings.",
+                    },
+                    "snapshot_kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming how the snapshot was captured, such as `git_commit`, `working_tree` or `source_archive`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "branch_label": {
+                        "type": "string",
+                        "description": "Advisory display/provenance label; never identity and never applicability authority.",
+                        "maxLength": 256,
+                    },
+                },
+                "required": [
+                    "snapshot_id",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ContinuityHandoffReadResult",
+        "description": "Result of `continuity.handoff.read`.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "handoff": {
+                "$ref": "#/$defs/engineering__HandoffView",
+                "description": "The bounded, authorised handoff view.",
+            },
+        },
+        "required": [
+            "handoff",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "engineering__EngineeringApplicabilityStatus": {
+                "title": "EngineeringApplicabilityStatus",
+                "description": "Open, bounded code naming target-specific applicability of a record version at one snapshot, such as `matched`, `potentially_stale`, `invalid`, `unknown` or `not_evaluated`. This dimension is independent of governance state: an accepted record can remain historically accepted while being unsafe to use at a new snapshot.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "engineering__EngineeringOmission": {
+                "title": "EngineeringOmission",
+                "description": "One bounded statement that content was omitted from a view and why. An omission must not identify an inaccessible record: `field` names the omitted position in this view, never a hidden object's identity or title.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "description": "The position in this view whose content was omitted, such as a section id or a named payload region.",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Open, bounded code naming why content was omitted, such as `redacted`, `inaccessible`, `budget` or `not_applicable`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                },
+                "required": [
+                    "field",
+                    "reason",
+                ],
+            },
+            "engineering__HandoffView": {
+                "title": "HandoffView",
+                "description": "A bounded, authorised view of one checkpoint for a receiving agent. A redacted view is labelled as a derived view; its own digest identifies the view, never the original artefact. Omissions are recorded without exposing inaccessible evidence identities. Working context here is context, not instruction, and confers no authority.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "format_version": {
+                        "type": "string",
+                        "const": "continuity_handoff.v1",
+                        "description": "The handoff view representation format.",
+                    },
+                    "checkpoint_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identity of the checkpoint this view renders.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Content checksum of this view's own bytes; the original checkpoint's digest remains the identity of the original artefact.",
+                    },
+                    "redacted": {
+                        "type": "boolean",
+                        "description": "Whether this view is a redacted derived view.",
+                    },
+                    "objective": {
+                        "type": "string",
+                        "description": "The checkpoint's bounded objective, as working context.",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    },
+                    "applicability": {
+                        "$ref": "#/$defs/engineering__EngineeringApplicabilityStatus",
+                        "description": "Applicability of the checkpoint's evidence at the requested target snapshot, or `not_evaluated` when no target was requested.",
+                    },
+                    "unresolved_work": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2000,
+                        },
+                        "description": "Unresolved questions preserved intact from the checkpoint.",
+                    },
+                    "next_actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2000,
+                        },
+                        "description": "Suggested next actions. Suggestions only; no permission to execute.",
+                    },
+                    "omissions": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringOmission",
+                        },
+                        "description": "What this view omits and why, without exposing inaccessible identities.",
+                    },
+                },
+                "required": [
+                    "format_version",
+                    "checkpoint_id",
+                    "content_digest",
+                    "redacted",
+                    "objective",
+                    "applicability",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EngineeringContextBuildInput",
+        "description": "Input for `engineering.context.build`: builds one non-persisted engineering context pack against explicit repository snapshot targets. Workspace, principal, purpose and grants remain in the envelope. The request carries no free-form system prompt, arbitrary model instruction, raw SQL, server filesystem path, new authority field or synchronous summarisation-provider setting; historical diagnosis is an explicit separate request type or capability, never an automatic fallback.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The bounded retrieval intent for this build.",
+                "minLength": 1,
+                "maxLength": 512,
+            },
+            "targets": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
+                },
+                "description": "Explicit repository snapshot targets for this pack.",
+                "minItems": 1,
+            },
+            "profile": {
+                "type": "string",
+                "description": "Retrieval profile: one of `investigate`, `implement`, `review` or `resume`. A retrieval template, not a permission or work instruction.",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "topic_refs": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/engineering__EngineeringTopicRef",
+                },
+                "description": "Optional topics to centre the pack on.",
+            },
+            "checkpoint_refs": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/common__Identifier",
+                },
+                "description": "Optional authorised checkpoint identities whose working context may enter the pack.",
+            },
+            "budget": {
+                "$ref": "#/$defs/engineering__EngineeringBudget",
+                "description": "Optional caller-requested budgets; effective budgets are also bounded by the granted profile and server hard limits.",
+            },
+        },
+        "required": [
+            "query",
+            "targets",
+            "profile",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "engineering__EngineeringBudget": {
+                "title": "EngineeringBudget",
+                "description": "Caller-requested bounded budgets for one engineering context build. Byte and token limits are simultaneous limits, not conversions of one another. Effective budgets are the minimum of the request, the granted profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "model_tokens": {
+                        "type": "integer",
+                        "description": "Maximum model-facing tokens for the complete rendering; the proposed default is 4000 and the hard ceiling 16000.",
+                        "minimum": 1,
+                        "maximum": 16000,
+                    },
+                    "model_bytes": {
+                        "type": "integer",
+                        "description": "Maximum model-facing UTF-8 bytes for the complete rendering; the proposed default is 16384 and the hard ceiling 65536.",
+                        "minimum": 1,
+                        "maximum": 65536,
+                    },
+                    "hydrations": {
+                        "type": "integer",
+                        "description": "Maximum full source hydrations for the build; the proposed default is 8 and the hard ceiling 32.",
+                        "minimum": 1,
+                        "maximum": 32,
+                    },
+                    "evidence_bytes": {
+                        "type": "integer",
+                        "description": "Maximum total evidence bytes read for the build; the proposed default is 262144 and the hard ceiling 1048576.",
+                        "minimum": 1,
+                        "maximum": 1048576,
+                    },
+                },
+                "required": [],
+            },
+            "engineering__EngineeringSnapshotRef": {
+                "title": "EngineeringSnapshotRef",
+                "description": "A reference to one immutable captured source state within a registered repository. A working-tree snapshot is never asserted to be its base commit, and a branch label is advisory provenance only: it is never a unique identity or an applicability proof.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "snapshot_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identity of the immutable snapshot capture.",
+                    },
+                    "repository_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable logical repository identity, when known to the caller; the server resolves and validates it against registered bindings.",
+                    },
+                    "snapshot_kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming how the snapshot was captured, such as `git_commit`, `working_tree` or `source_archive`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "branch_label": {
+                        "type": "string",
+                        "description": "Advisory display/provenance label; never identity and never applicability authority.",
+                        "maxLength": 256,
+                    },
+                },
+                "required": [
+                    "snapshot_id",
+                ],
+            },
+            "engineering__EngineeringTopicRef": {
+                "title": "EngineeringTopicRef",
+                "description": "A reference to the evolving question or decision an observation belongs to: either an existing topic entity identity or a proposed namespaced topic key scoped by workspace, project/repository domain and sensitivity boundary. Equal keys in different scopes do not merge.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "An existing governed record or semantic entity serving as the topic.",
+                    },
+                    "proposed_key": {
+                        "type": "string",
+                        "description": "A proposed namespaced topic key, such as `authentication.session-restoration`. A proposal, never an asserted merge.",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EngineeringContextBuildResult",
+        "description": "Result of `engineering.context.build`. Nothing is persisted: the pack is regenerated or fails with an explicit replay-inputs error, never silently reissued from absent projections.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "pack": {
+                "$ref": "#/$defs/engineering__EngineeringContextPack",
+                "description": "The built pack. Non-persisted; regeneration requires its recorded replay inputs.",
+            },
+        },
+        "required": [
+            "pack",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "engineering__EngineeringApplicabilityStatus": {
+                "title": "EngineeringApplicabilityStatus",
+                "description": "Open, bounded code naming target-specific applicability of a record version at one snapshot, such as `matched`, `potentially_stale`, `invalid`, `unknown` or `not_evaluated`. This dimension is independent of governance state: an accepted record can remain historically accepted while being unsafe to use at a new snapshot.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "engineering__EngineeringBudget": {
+                "title": "EngineeringBudget",
+                "description": "Caller-requested bounded budgets for one engineering context build. Byte and token limits are simultaneous limits, not conversions of one another. Effective budgets are the minimum of the request, the granted profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "model_tokens": {
+                        "type": "integer",
+                        "description": "Maximum model-facing tokens for the complete rendering; the proposed default is 4000 and the hard ceiling 16000.",
+                        "minimum": 1,
+                        "maximum": 16000,
+                    },
+                    "model_bytes": {
+                        "type": "integer",
+                        "description": "Maximum model-facing UTF-8 bytes for the complete rendering; the proposed default is 16384 and the hard ceiling 65536.",
+                        "minimum": 1,
+                        "maximum": 65536,
+                    },
+                    "hydrations": {
+                        "type": "integer",
+                        "description": "Maximum full source hydrations for the build; the proposed default is 8 and the hard ceiling 32.",
+                        "minimum": 1,
+                        "maximum": 32,
+                    },
+                    "evidence_bytes": {
+                        "type": "integer",
+                        "description": "Maximum total evidence bytes read for the build; the proposed default is 262144 and the hard ceiling 1048576.",
+                        "minimum": 1,
+                        "maximum": 1048576,
+                    },
+                },
+                "required": [],
+            },
+            "engineering__EngineeringBudgetOutcome": {
+                "title": "EngineeringBudgetOutcome",
+                "description": "The budget as requested, as effectively applied, and as actually consumed by this build. Actual source-read bytes and hydration counts are reported, so a pack cannot exceed its caps invisibly.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "requested": {
+                        "$ref": "#/$defs/engineering__EngineeringBudget",
+                        "description": "What the caller requested, when the caller stated a budget.",
+                    },
+                    "effective": {
+                        "$ref": "#/$defs/engineering__EngineeringBudget",
+                        "description": "The minimum of request, granted profile and server hard limits actually applied.",
+                    },
+                    "rendered_tokens": {
+                        "type": "integer",
+                        "description": "Tokens actually rendered model-facing.",
+                        "minimum": 0,
+                    },
+                    "rendered_bytes": {
+                        "type": "integer",
+                        "description": "UTF-8 bytes actually rendered model-facing.",
+                        "minimum": 1,
+                    },
+                    "source_bytes_read": {
+                        "type": "integer",
+                        "description": "Total evidence bytes actually read during the build.",
+                        "minimum": 0,
+                    },
+                    "hydrations": {
+                        "type": "integer",
+                        "description": "Full source hydrations actually performed.",
+                        "minimum": 0,
+                    },
+                },
+                "required": [
+                    "effective",
+                    "rendered_tokens",
+                    "rendered_bytes",
+                    "source_bytes_read",
+                    "hydrations",
+                ],
+            },
+            "engineering__EngineeringCitation": {
+                "title": "EngineeringCitation",
+                "description": "One deterministic internal citation inside a pack: a resolvable reference to the exact record version and/or evidence the cited content came from. Citation ids are internal references, not self-referential pack URLs, and following one always requires fresh authorisation.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "citation_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Deterministic citation identity within this pack.",
+                    },
+                    "record_ref": {
+                        "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                        "description": "The exact record version cited, when the citation names a record.",
+                    },
+                    "evidence_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The immutable evidence identity cited, when the citation names evidence.",
+                    },
+                },
+                "required": [
+                    "citation_id",
+                ],
+            },
+            "engineering__EngineeringConflictNotice": {
+                "title": "EngineeringConflictNotice",
+                "description": "A notice that two or more eligible, visible assertions materially conflict. The group is atomic: the pack never silently chooses the most recent or most repeated claim as truth. When the conflicting conclusions cannot fit, the notice stands alone and the unsafe conclusion is omitted.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "records": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                        },
+                        "description": "The conflicting record versions, all visible to this caller.",
+                        "minItems": 2,
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Open, bounded code naming the conflict state, such as `unresolved`, `resolved` or `scoped_difference`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Bounded explanatory note permitted for this caller.",
+                        "maxLength": 1000,
+                    },
+                },
+                "required": [
+                    "records",
+                    "status",
+                ],
+            },
+            "engineering__EngineeringContextPack": {
+                "title": "EngineeringContextPack",
+                "description": "The engineering context pack representation (`format_version` `engineering_context.v1`): a non-persisted deterministic view built from a pinned BuildContext and the authorised frontier. `pack_id` equals the canonical artifact checksum computed after removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token: following any citation requires fresh authorisation, and a previously generated pack may no longer be deliverable after revocation even when its bytes are reproducible.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "format_version": {
+                        "type": "string",
+                        "const": "engineering_context.v1",
+                        "description": "The engineering pack representation format. This representation is never decoded as a legacy application-v1 ContextPackBuildResult.",
+                    },
+                    "pack_id": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The pack's content identity: SHA-256 of the canonical result after removing exactly root `pack_id` and nested `reproducibility.artifact_checksum`.",
+                    },
+                    "normalized_request": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "The normalized build request the pack answers.",
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
+                        },
+                        "description": "The exact snapshots this pack is about.",
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "The retrieval profile used, such as `investigate`, `implement`, `review` or `resume`. A retrieval template, not a permission or work instruction.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringPackSection",
+                        },
+                        "description": "The pack's sections, each under exactly one knowledge partition.",
+                    },
+                    "citations": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringCitation",
+                        },
+                        "description": "The pack's citation registry.",
+                    },
+                    "conflicts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringConflictNotice",
+                        },
+                        "description": "Mandatory conflict notices; reserved before optional content is selected.",
+                    },
+                    "uncertainties": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 1000,
+                        },
+                        "description": "Mandatory uncertainty notices, reserved before optional content is selected.",
+                    },
+                    "omissions": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringOmission",
+                        },
+                        "description": "What was omitted and why, without exposing inaccessible identities.",
+                    },
+                    "rendering": {
+                        "$ref": "#/$defs/engineering__EngineeringRendering",
+                        "description": "The complete model-facing rendering and its exact counts.",
+                    },
+                    "budget": {
+                        "$ref": "#/$defs/engineering__EngineeringBudgetOutcome",
+                        "description": "Requested, effective and actually consumed budgets.",
+                    },
+                    "applicability": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/engineering__EngineeringTargetApplicability",
+                        },
+                        "description": "Per-target applicability, evaluated at the pinned BuildContext.",
+                    },
+                    "authorization_context": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "The authorisation facts (epochs, policy digests) this pack was built under. Historical authorisation is not permission to disclose today.",
+                    },
+                    "reproducibility": {
+                        "$ref": "#/$defs/common__JsonObject",
+                        "description": "Evaluation time, source/record versions, projection versions and watermarks, renderer/tokenizer versions, ranking profile, frontier checksum, policy/ACL epoch and resolver version, plus the artifact canonicalisation and checksum. Replay requires all of these inputs; missing inputs mean a new build gets a new identity.",
+                    },
+                    "fresh_authorization_required": {
+                        "type": "boolean",
+                        "const": True,
+                        "description": "Always true: consuming this pack always requires a fresh authorisation check.",
+                    },
+                },
+                "required": [
+                    "format_version",
+                    "pack_id",
+                    "normalized_request",
+                    "targets",
+                    "profile",
+                    "sections",
+                    "citations",
+                    "conflicts",
+                    "uncertainties",
+                    "omissions",
+                    "rendering",
+                    "budget",
+                    "applicability",
+                    "authorization_context",
+                    "reproducibility",
+                    "fresh_authorization_required",
+                ],
+            },
+            "engineering__EngineeringOmission": {
+                "title": "EngineeringOmission",
+                "description": "One bounded statement that content was omitted from a view and why. An omission must not identify an inaccessible record: `field` names the omitted position in this view, never a hidden object's identity or title.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "description": "The position in this view whose content was omitted, such as a section id or a named payload region.",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Open, bounded code naming why content was omitted, such as `redacted`, `inaccessible`, `budget` or `not_applicable`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                },
+                "required": [
+                    "field",
+                    "reason",
+                ],
+            },
+            "engineering__EngineeringPackSection": {
+                "title": "EngineeringPackSection",
+                "description": "One section of an engineering context pack, carrying its exact content, its citations, and one explicit knowledge partition. The partition is the integrity contract: candidate assertions never appear under `accepted_knowledge`, and working context is never an instruction or grant.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "section_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Unique section identity within this pack.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming the section's rendering kind, such as `decision_summary`, `evidence_excerpt` or `working_context`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "partition": {
+                        "type": "string",
+                        "description": "Open, bounded code naming the knowledge partition, exactly one of `accepted_knowledge`, `source_evidence`, `candidate_findings`, `working_context` or `history`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The section's exact content as it enters the model-facing rendering.",
+                        "minLength": 1,
+                    },
+                    "citation_ids": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "Citations resolving this section's claims; a substantive section has at least one.",
+                    },
+                },
+                "required": [
+                    "section_id",
+                    "kind",
+                    "partition",
+                    "content",
+                    "citation_ids",
+                ],
+            },
+            "engineering__EngineeringRecordVersionRef": {
+                "title": "EngineeringRecordVersionRef",
+                "description": "An exact governed record version: record identity plus exact version. Every engineering relationship, review, priority and citation names endpoints at this granularity; selecting a latest timestamp is never canonical resolution.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Governed record identity.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact record version identity.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Optional content checksum of the referenced version, when the caller already holds it.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                    "version",
+                ],
+            },
+            "engineering__EngineeringRendering": {
+                "title": "EngineeringRendering",
+                "description": "The complete model-facing rendering of a pack: one canonical UTF-8 string containing section labels, content, authority/applicability warnings and compact citations, counted exactly with the pinned tokenizer. Headers, citation labels, warnings and separators count when they are sent to the model; transport metadata that is not sent is separately byte-capped and lives elsewhere.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The exact model-facing UTF-8 text.",
+                    },
+                    "renderer_version": {
+                        "type": "string",
+                        "description": "Version of the renderer that produced this text.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "token_count": {
+                        "type": "integer",
+                        "description": "Exact token count of `text` under the pinned supported tokenizer.",
+                        "minimum": 0,
+                    },
+                    "byte_count": {
+                        "type": "integer",
+                        "description": "Exact UTF-8 byte count of `text`.",
+                        "minimum": 1,
+                    },
+                },
+                "required": [
+                    "text",
+                    "renderer_version",
+                    "token_count",
+                    "byte_count",
+                ],
+            },
+            "engineering__EngineeringSnapshotRef": {
+                "title": "EngineeringSnapshotRef",
+                "description": "A reference to one immutable captured source state within a registered repository. A working-tree snapshot is never asserted to be its base commit, and a branch label is advisory provenance only: it is never a unique identity or an applicability proof.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "snapshot_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identity of the immutable snapshot capture.",
+                    },
+                    "repository_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable logical repository identity, when known to the caller; the server resolves and validates it against registered bindings.",
+                    },
+                    "snapshot_kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming how the snapshot was captured, such as `git_commit`, `working_tree` or `source_archive`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "branch_label": {
+                        "type": "string",
+                        "description": "Advisory display/provenance label; never identity and never applicability authority.",
+                        "maxLength": 256,
+                    },
+                },
+                "required": [
+                    "snapshot_id",
+                ],
+            },
+            "engineering__EngineeringTargetApplicability": {
+                "title": "EngineeringTargetApplicability",
+                "description": "One target snapshot's applicability statement inside a pack, so a consumer can see which target each applicability claim belongs to.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "snapshot": {
+                        "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
+                        "description": "The target snapshot this statement is about.",
+                    },
+                    "status": {
+                        "$ref": "#/$defs/engineering__EngineeringApplicabilityStatus",
+                        "description": "Applicability of the pack's records at this target, evaluated at the pinned BuildContext.",
+                    },
+                },
+                "required": [
+                    "snapshot",
+                    "status",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EngineeringExpandInput",
+        "description": "Input for `engineering.expand`: bounded expansion from one authorised anchor into surrounding history, relations and evidence references. Expansion obeys its own depth, node and edge budgets, and never traverses through a hidden node to reveal another relationship.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "anchor": {
+                "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                "description": "The exact authorised record version to expand from.",
+            },
+            "depth": {
+                "type": "integer",
+                "description": "Expansion depth; the service default is 1 and the hard engineering cap 3.",
+                "minimum": 1,
+                "maximum": 3,
+            },
+            "node_limit": {
+                "type": "integer",
+                "description": "Maximum nodes returned; the service default is 30 and the hard engineering cap 200.",
+                "minimum": 1,
+                "maximum": 200,
+            },
+            "edge_limit": {
+                "type": "integer",
+                "description": "Maximum edges returned; the service default is 60 and the hard engineering cap 400.",
+                "minimum": 1,
+                "maximum": 400,
+            },
+        },
+        "required": [
+            "anchor",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "engineering__EngineeringRecordVersionRef": {
+                "title": "EngineeringRecordVersionRef",
+                "description": "An exact governed record version: record identity plus exact version. Every engineering relationship, review, priority and citation names endpoints at this granularity; selecting a latest timestamp is never canonical resolution.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Governed record identity.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact record version identity.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Optional content checksum of the referenced version, when the caller already holds it.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                    "version",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EngineeringExpandResult",
+        "description": "Result of `engineering.expand`: bounded nodes and filtered edges around the anchor, with explicit truncation and coverage.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                },
+                "description": "Exact record versions reached, including the anchor.",
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/engineering__EngineeringRelationEdge",
+                },
+                "description": "Relationship candidates whose endpoints are both visible to this caller.",
+            },
+            "truncated": {
+                "type": "boolean",
+                "description": "Whether expansion stopped at a budget rather than exhausting the neighbourhood.",
+            },
+            "coverage": {
+                "$ref": "#/$defs/engineering__EngineeringCoverage",
+                "description": "Projection and applicability coverage qualifying this expansion.",
+            },
+        },
+        "required": [
+            "nodes",
+            "edges",
+            "truncated",
+            "coverage",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "engineering__EngineeringCoverage": {
+                "title": "EngineeringCoverage",
+                "description": "What the serving projections and the applicability barrier actually cover for this response. `projection` names serving-index coverage; `applicability` names whether target freshness work has caught up with the registered source head. Neither is a guarantee of global completeness.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "projection": {
+                        "type": "string",
+                        "description": "Open, bounded code naming projection coverage, such as `current`, `lagging`, `unavailable` or `incomplete`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "applicability": {
+                        "type": "string",
+                        "description": "Open, bounded code naming applicability-coverage state, such as `current`, `pending` or `unavailable`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                },
+                "required": [
+                    "projection",
+                    "applicability",
+                ],
+            },
+            "engineering__EngineeringRecordVersionRef": {
+                "title": "EngineeringRecordVersionRef",
+                "description": "An exact governed record version: record identity plus exact version. Every engineering relationship, review, priority and citation names endpoints at this granularity; selecting a latest timestamp is never canonical resolution.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Governed record identity.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact record version identity.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Optional content checksum of the referenced version, when the caller already holds it.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                    "version",
+                ],
+            },
+            "engineering__EngineeringRelationEdge": {
+                "title": "EngineeringRelationEdge",
+                "description": "One relationship candidate between two exact record versions. Relation vocabulary is open (`related`, `compatible`, `scoped_difference`, `conflicts_with`, `supersedes`, `not_conflict`); state is independent (`pending`, `assessed`, `accepted`, `rejected`, `obsolete`). A pending or rejected edge is visible as a candidate, never as governed truth, and a `not_conflict` verdict is not evidence that either endpoint is correct.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "from_record": {
+                        "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                        "description": "The edge's source record version.",
+                    },
+                    "to_record": {
+                        "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
+                        "description": "The edge's target record version.",
+                    },
+                    "relation": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "description": "The proposed relation vocabulary code.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 32,
+                        "description": "The relation's independent state code.",
+                    },
+                },
+                "required": [
+                    "from_record",
+                    "to_record",
+                    "relation",
+                    "status",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EngineeringSearchInput",
+        "description": "Input for `engineering.search`: bounded preview retrieval over the authorised engineering frontier. The view defaults to `accepted`; every other view is an explicit opt-in behind its capability. The repository target, when given, scopes retrieval to one registered snapshot. Authorisation, projection freshness and applicability eligibility are applied before scoring; a bounded response never presents a truncated pre-authorisation top-k as complete.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The bounded retrieval query.",
+                "minLength": 1,
+                "maxLength": 512,
+            },
+            "view": {
+                "$ref": "#/$defs/engineering__EngineeringSearchView",
+                "description": "Which knowledge partition to read; defaults to `accepted`.",
+            },
+            "repository_target": {
+                "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
+                "description": "Optional registered snapshot the search is scoped to.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum previews to return; the service default is 20 and the hard maximum 100.",
+                "minimum": 1,
+                "maximum": 100,
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "Opaque continuation position. A changed authority epoch, projection snapshot or bound scope invalidates the token with an explicit restart response.",
+            },
+        },
+        "required": [
+            "query",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+            "engineering__EngineeringSearchView": {
+                "title": "EngineeringSearchView",
+                "description": "Open, bounded code naming which knowledge partition a search reads, such as `accepted` (the default), `candidates`, `working_context` or `history`. Other views are explicit opt-ins behind their capabilities; a multi-view response partitions results rather than interleaving them without labels.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "engineering__EngineeringSnapshotRef": {
+                "title": "EngineeringSnapshotRef",
+                "description": "A reference to one immutable captured source state within a registered repository. A working-tree snapshot is never asserted to be its base commit, and a branch label is advisory provenance only: it is never a unique identity or an applicability proof.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "snapshot_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Identity of the immutable snapshot capture.",
+                    },
+                    "repository_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Stable logical repository identity, when known to the caller; the server resolves and validates it against registered bindings.",
+                    },
+                    "snapshot_kind": {
+                        "type": "string",
+                        "description": "Open, bounded code naming how the snapshot was captured, such as `git_commit`, `working_tree` or `source_archive`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "branch_label": {
+                        "type": "string",
+                        "description": "Advisory display/provenance label; never identity and never applicability authority.",
+                        "maxLength": 256,
+                    },
+                },
+                "required": [
+                    "snapshot_id",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "EngineeringSearchResult",
+        "description": "Result of `engineering.search`: one page of bounded previews plus the coverage facts that qualify them.",
+        "type": "object",
+        "unevaluatedProperties": False,
+        "properties": {
+            "previews": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/engineering__EngineeringPreview",
+                },
+                "description": "The authorised previews on this page.",
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "The pagination position this read reached; `{}` means the read is exhausted.",
+            },
+            "coverage": {
+                "$ref": "#/$defs/engineering__EngineeringCoverage",
+                "description": "Projection and applicability coverage qualifying this page.",
+            },
+        },
+        "required": [
+            "previews",
+            "page",
+            "coverage",
+        ],
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+            "engineering__EngineeringApplicabilityStatus": {
+                "title": "EngineeringApplicabilityStatus",
+                "description": "Open, bounded code naming target-specific applicability of a record version at one snapshot, such as `matched`, `potentially_stale`, `invalid`, `unknown` or `not_evaluated`. This dimension is independent of governance state: an accepted record can remain historically accepted while being unsafe to use at a new snapshot.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "engineering__EngineeringCoverage": {
+                "title": "EngineeringCoverage",
+                "description": "What the serving projections and the applicability barrier actually cover for this response. `projection` names serving-index coverage; `applicability` names whether target freshness work has caught up with the registered source head. Neither is a guarantee of global completeness.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "projection": {
+                        "type": "string",
+                        "description": "Open, bounded code naming projection coverage, such as `current`, `lagging`, `unavailable` or `incomplete`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "applicability": {
+                        "type": "string",
+                        "description": "Open, bounded code naming applicability-coverage state, such as `current`, `pending` or `unavailable`.",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                },
+                "required": [
+                    "projection",
+                    "applicability",
+                ],
+            },
+            "engineering__EngineeringObservationKind": {
+                "title": "EngineeringObservationKind",
+                "description": "Open, bounded code naming what an engineering observation claims to be, such as `finding`, `decision`, `constraint`, `convention`, `bugfix`, `failed_approach`, `hypothesis`, `risk` or `validation_result`. A hypothesis is never eligible for accepted-facts selection.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "engineering__EngineeringPreview": {
+                "title": "EngineeringPreview",
+                "description": "One bounded preview in an engineering search result: exact record/evidence identity, a truncated bounded preview, and the server-owned authority/applicability facts a caller needs before expanding. Carries no full content, no raw local paths, and never identity-bearing fields for inaccessible objects.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "record_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Governed record identity of the previewed version.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact record version identity.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Content checksum of the exact record version, when exposed to this caller.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "The record's bounded title.",
+                        "minLength": 1,
+                        "maxLength": 200,
+                    },
+                    "preview": {
+                        "type": "string",
+                        "description": "Bounded preview text; never the full body.",
+                        "minLength": 1,
+                        "maxLength": 480,
+                    },
+                    "truncated": {
+                        "type": "boolean",
+                        "description": "Whether the preview text was cut before the record's natural end.",
+                    },
+                    "observation_kind": {
+                        "$ref": "#/$defs/engineering__EngineeringObservationKind",
+                        "description": "The observation kind, when the record is an engineering observation.",
+                    },
+                    "governance_state": {
+                        "type": "string",
+                        "description": "Server-owned governance state of this exact version, such as `proposed`, `accepted`, `contested` or `superseded`.",
+                        "minLength": 1,
+                        "maxLength": 32,
+                    },
+                    "assertion_basis": {
+                        "type": "string",
+                        "description": "Open, bounded code naming what the claim rests on, such as `observed`, `derived`, `reported` or `hypothesis`.",
+                        "minLength": 1,
+                        "maxLength": 32,
+                    },
+                    "topic_key": {
+                        "type": "string",
+                        "description": "The scoped topic key, when the record belongs to a topic.",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                    "repository_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Repository the record's applicability claims, when any.",
+                    },
+                    "snapshot_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Snapshot the record's applicability claims, when any.",
+                    },
+                    "applicability": {
+                        "$ref": "#/$defs/engineering__EngineeringApplicabilityStatus",
+                        "description": "Target-specific applicability of this version, or `not_evaluated` when no target was in scope.",
+                    },
+                    "review_due": {
+                        "type": "boolean",
+                        "description": "Whether the version's review schedule marks it due. A due flag is not proof of falsity.",
+                    },
+                    "evidence_available": {
+                        "type": "boolean",
+                        "description": "Whether the record's evidence is available to this caller under current authorisation.",
+                    },
+                },
+                "required": [
+                    "record_id",
+                    "version",
+                    "title",
+                    "preview",
+                    "truncated",
+                    "governance_state",
+                    "applicability",
+                    "evidence_available",
+                ],
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "EvidenceCaptureInput",

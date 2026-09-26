@@ -50,6 +50,10 @@ EXPECTED_RESTRICTED = (
     ("memory_search", "memory.search", "knowledge_retrieval"),
     ("graph_traverse", "graph.traverse", "knowledge_retrieval"),
     ("context_pack_build", "context_pack.build", "knowledge_retrieval"),
+    ("engineering_search", "engineering.search", "engineering_search"),
+    ("engineering_expand", "engineering.expand", "engineering_expand"),
+    ("engineering_context_build", "engineering.context.build", "engineering_context"),
+    ("continuity_handoff_read", "continuity.handoff.read", "continuity_handoff"),
     ("decision_evaluate", "decision.evaluate", "decision_evaluation"),
     ("decision_record_get", "decision.record.get", "decision_record"),
     ("decision_record_list", "decision.record.list", "decision_record"),
@@ -62,6 +66,7 @@ EXPECTED_AUTHORING = EXPECTED_RESTRICTED + (
     ("import_start", "import.start", "content_ingestion"),
     ("job_get", "job.get", "job_observation"),
     ("job_events", "job.events", "job_observation"),
+    ("continuity_checkpoint_append", "continuity.checkpoint.append", "continuity_checkpoint"),
 )
 
 EXPECTED_SURFACES = {
@@ -77,6 +82,7 @@ EXPECTED_MUTATIONS = frozenset(
         "evidence.capture",
         "import.start",
         "decision.evaluate",
+        "continuity.checkpoint.append",
     }
 )
 
@@ -157,23 +163,26 @@ def test_the_exposed_surface_is_exactly_the_reviewed_inventory_in_order(
     )
 
 
-def test_the_two_profiles_are_exactly_ten_and_fifteen_tools() -> None:
+def test_the_two_profiles_are_exactly_fourteen_and_twenty_tools() -> None:
     """The counts the requirements fix, asserted as counts as well as names: a
     listing that gained a tool and lost one would satisfy neither line."""
-    assert len(manifest.exposure_manifest("restricted")) == 10
-    assert len(manifest.exposure_manifest("authoring")) == 15
-    assert len(manifest.tools("restricted")) == 10
-    assert len(manifest.tools("authoring")) == 15
+    assert len(manifest.exposure_manifest("restricted")) == 14
+    assert len(manifest.exposure_manifest("authoring")) == 20
+    assert len(manifest.tools("restricted")) == 14
+    assert len(manifest.tools("authoring")) == 20
 
 
-def test_the_authoring_profile_is_the_restricted_ten_plus_five() -> None:
+def test_the_authoring_profile_is_the_restricted_fourteen_plus_six() -> None:
     """Concatenation, not a second listing of the shared ten: the profiles cannot
     drift in a tool name, a title or a description they both advertise."""
     restricted = manifest.exposure_manifest("restricted")
-    assert manifest.exposure_manifest("authoring")[:10] == restricted
+    assert manifest.exposure_manifest("authoring")[:14] == restricted
     assert [
-        entry.tool_name for entry in manifest.exposure_manifest("authoring")[10:]
-    ] == ["memory_create", "evidence_capture", "import_start", "job_get", "job_events"]
+        entry.tool_name for entry in manifest.exposure_manifest("authoring")[14:]
+    ] == [
+        "memory_create", "evidence_capture", "import_start", "job_get",
+        "job_events", "continuity_checkpoint_append",
+    ]
 
 
 def test_restricted_is_the_safe_default_for_a_caller_that_names_no_profile() -> None:
@@ -227,8 +236,8 @@ def test_the_operation_traceability_mcp_mapping_is_this_manifest() -> None:
     )
     assert [
         (entry["operation"], entry["tool"]) for entry in mapping["exposed"]
-    ] == [(entry.operation, entry.tool_name) for entry in manifest.EXPOSURE_MANIFEST]
-    exposed = {entry.operation for entry in manifest.EXPOSURE_MANIFEST}
+    ] == [(entry.operation, entry.tool_name) for entry in manifest.AUTHORING_MANIFEST]
+    exposed = {entry.operation for entry in manifest.AUTHORING_MANIFEST}
     assert [entry["operation"] for entry in mapping["omitted"]] == [
         entry.name for entry in OPERATION_CATALOGUE if entry.name not in exposed
     ]
@@ -245,14 +254,14 @@ def test_the_manifest_version_names_this_surface() -> None:
     minor one: a cached `1.1` listing is not a subset of what this advertises,
     it is the whole of one of two answers.
     """
-    assert manifest.MANIFEST_VERSION == "2.0"
+    assert manifest.MANIFEST_VERSION == "2.1"
 
 
 def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
     """The purpose is a claim the request states and the service checks against
     its own grant, so the claim has to be the one the grant allows -- a purpose
     invented here would be refused at the first call rather than caught by
-    review. Eight purposes across fifteen tools, not one per operation."""
+    review. Twelve purposes across twenty tools, not one per operation."""
     purposes = {
         entry.operation: entry.purpose
         for entry in manifest.exposure_manifest("authoring")
@@ -264,6 +273,10 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
         "memory.search": "knowledge_retrieval",
         "graph.traverse": "knowledge_retrieval",
         "context_pack.build": "knowledge_retrieval",
+        "engineering.search": "engineering_search",
+        "engineering.expand": "engineering_expand",
+        "engineering.context.build": "engineering_context",
+        "continuity.handoff.read": "continuity_handoff",
         "decision.evaluate": "decision_evaluation",
         "decision.record.get": "decision_record",
         "decision.record.list": "decision_record",
@@ -271,6 +284,7 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
         "memory.create": "memory_authoring",
         "evidence.capture": "content_ingestion",
         "import.start": "content_ingestion",
+        "continuity.checkpoint.append": "continuity_checkpoint",
         "job.get": "job_observation",
         "job.events": "job_observation",
     }
@@ -294,11 +308,11 @@ def test_the_restricted_profile_admits_only_reads_and_the_decision_mutation() ->
             assert catalogue.audit.audit_category == "read", entry.operation
 
 
-def test_the_authoring_profile_adds_exactly_four_mutations_and_one_read() -> None:
+def test_the_authoring_profile_adds_exactly_five_mutations_and_one_read() -> None:
     """The exit criterion, read off the catalogue rather than off the tool names.
 
-    Eleven of the fifteen declare no side effect and audit as reads; the other
-    four are exactly the named mutations, each of which the catalogue agrees is
+    Fifteen of the twenty declare no side effect and audit as reads; the other
+    five are exactly the named mutations, each of which the catalogue agrees is
     audited as a `mutation` (`decision.evaluate` updates, the rest create).
     """
     mutations, reads = set(), set()
@@ -312,7 +326,7 @@ def test_the_authoring_profile_adds_exactly_four_mutations_and_one_read() -> Non
             assert catalogue.audit.audit_category == "mutation", entry.operation
             mutations.add(entry.operation)
     assert mutations == EXPECTED_MUTATIONS
-    assert len(reads) == 11
+    assert len(reads) == 15
     assert manifest.ADMITTED_MUTATIONS == EXPECTED_MUTATIONS
 
 
@@ -437,7 +451,7 @@ def test_the_two_listings_agree_byte_for_byte_on_the_tools_they_share() -> None:
     ten shared tools a host has already cached."""
     restricted = [tool.model_dump(mode="json") for tool in manifest.tools()]
     authoring = [tool.model_dump(mode="json") for tool in manifest.tools("authoring")]
-    assert authoring[:10] == restricted
+    assert authoring[:14] == restricted
 
 
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
@@ -765,8 +779,11 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         for tool in manifest.tools("authoring")
         if tool.annotations is not None
     }
-    assert len(hints) == 15
-    mutations = {"memory_create", "evidence_capture", "import_start", "decision_evaluate"}
+    assert len(hints) == 20
+    mutations = {
+        "memory_create", "evidence_capture", "import_start",
+        "decision_evaluate", "continuity_checkpoint_append",
+    }
     for mutation in mutations:
         assert hints[mutation] == (False, False, False), mutation
     for read in set(hints) - mutations:

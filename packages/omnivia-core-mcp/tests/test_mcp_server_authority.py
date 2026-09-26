@@ -171,6 +171,17 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
     "decision_record_get": {"evaluation_id": "eval-1"},
     "decision_record_list": {},
     "decision_status": {},
+    "continuity_checkpoint_append": {
+        "input": {
+            "schema_version": "engineering.1",
+            "session_id": "eng-session-1",
+            "payload": {
+                "objective": "Investigate the auth fixture failure",
+                "checkpoint_kind": "periodic",
+            },
+        },
+        "idempotency_key": "k-5",
+    },
 }
 
 

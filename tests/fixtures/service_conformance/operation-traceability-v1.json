@@ -20,7 +20,7 @@
       "mapping_source": {
         "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
         "symbol": "EXPOSURE_MANIFEST",
-        "manifest_version": "2.0"
+        "manifest_version": "2.1"
       },
       "exposed": [
         {
@@ -48,6 +48,22 @@
           "tool": "context_pack_build"
         },
         {
+          "operation": "engineering.search",
+          "tool": "engineering_search"
+        },
+        {
+          "operation": "engineering.expand",
+          "tool": "engineering_expand"
+        },
+        {
+          "operation": "engineering.context.build",
+          "tool": "engineering_context_build"
+        },
+        {
+          "operation": "continuity.handoff.read",
+          "tool": "continuity_handoff_read"
+        },
+        {
           "operation": "decision.evaluate",
           "tool": "decision_evaluate"
         },
@@ -62,6 +78,30 @@
         {
           "operation": "decision.status",
           "tool": "decision_status"
+        },
+        {
+          "operation": "memory.create",
+          "tool": "memory_create"
+        },
+        {
+          "operation": "evidence.capture",
+          "tool": "evidence_capture"
+        },
+        {
+          "operation": "import.start",
+          "tool": "import_start"
+        },
+        {
+          "operation": "job.get",
+          "tool": "job_get"
+        },
+        {
+          "operation": "job.events",
+          "tool": "job_events"
+        },
+        {
+          "operation": "continuity.checkpoint.append",
+          "tool": "continuity_checkpoint_append"
         }
       ],
       "omitted": [
@@ -86,24 +126,8 @@
           "reason": "read_not_allow_listed"
         },
         {
-          "operation": "evidence.capture",
-          "reason": "mutation"
-        },
-        {
-          "operation": "import.start",
-          "reason": "mutation"
-        },
-        {
           "operation": "job.cancel",
           "reason": "mutation"
-        },
-        {
-          "operation": "job.events",
-          "reason": "read_not_allow_listed"
-        },
-        {
-          "operation": "job.get",
-          "reason": "read_not_allow_listed"
         },
         {
           "operation": "job.retry",
@@ -111,10 +135,6 @@
         },
         {
           "operation": "knowledge.propose",
-          "reason": "mutation"
-        },
-        {
-          "operation": "memory.create",
           "reason": "mutation"
         },
         {
@@ -202,28 +222,8 @@
           "reason": "mutation"
         },
         {
-          "operation": "continuity.checkpoint.append",
-          "reason": "mutation"
-        },
-        {
           "operation": "continuity.session.close",
           "reason": "mutation"
-        },
-        {
-          "operation": "continuity.handoff.read",
-          "reason": "read_not_allow_listed"
-        },
-        {
-          "operation": "engineering.search",
-          "reason": "read_not_allow_listed"
-        },
-        {
-          "operation": "engineering.expand",
-          "reason": "read_not_allow_listed"
-        },
-        {
-          "operation": "engineering.context.build",
-          "reason": "read_not_allow_listed"
         },
         {
           "operation": "context.priority.set",
