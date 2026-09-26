@@ -126,7 +126,7 @@ EXPECTED_ALLOCATION = (
     (46, "0046_decision_records.sql", "Decision Runtime", "candidate"),
     (47, "0047_engineering_repository_identity.sql", "Engineering Memory", "candidate"),
     (48, "0048_engineering_continuity.sql", "Engineering Memory", "candidate"),
-    (49, "0049_engineering_applicability.sql", "Engineering Memory", "reserved"),
+    (49, "0049_engineering_applicability.sql", "Engineering Memory", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")

@@ -354,10 +354,10 @@
       "filename": "0049_engineering_applicability.sql",
       "owner": "Engineering Memory",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 48,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "2ef7b757363aa3674f967ecf19be94e8805430e25ba8980dfd60bed225c9ada8",
+      "introduced_commit": "752ce7a5d768b4d5a585502d8db9c10abd209c40",
       "accepted_commit": null
     }
   ]
