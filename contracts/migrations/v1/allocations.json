@@ -343,10 +343,10 @@
       "filename": "0048_engineering_continuity.sql",
       "owner": "Engineering Memory",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 47,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "1d416dfd46edb48332001dc3f45d32ee459e43419faa87db69fa71f6dbd3c7b4",
+      "introduced_commit": "0fe2b2a42963f1f49fa3530305d3e5e116c894c5",
       "accepted_commit": null
     },
     {
