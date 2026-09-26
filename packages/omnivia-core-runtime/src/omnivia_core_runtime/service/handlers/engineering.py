@@ -46,6 +46,9 @@ Retrieval security shape, inherited from the knowledge family and the plan:
    are served. In both modes the governed frontier is read through
    `storage.memory.read_authorized_memory_snapshot` under the effective caller's
    evidence-label grant, so a denied version is never hydrated;
+   exact references (the expand anchor and its supersession endpoints, the
+   priority and review targets) resolve under that same grant, so a hidden
+   version is indistinguishable from a nonexistent one;
 8. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
    knowledge (§12.3).
@@ -73,6 +76,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+    GOVERNANCE_STATE_ACCEPTED,
     ContextPrioritySetInput,
     ContextPrioritySetResult,
     ContractDecodeError,
@@ -111,10 +115,7 @@ from omnivia_core_runtime.service.pagination import (
 )
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import engineering_source as source_storage
-from omnivia_core_runtime.storage.governed import (
-    read_governed_record_values,
-    read_governed_supersessions,
-)
+from omnivia_core_runtime.storage.governed import read_governed_supersessions
 from omnivia_core_runtime.storage.memory import (
     IdentifierAllocator,
     random_identifier,
@@ -405,40 +406,56 @@ class EngineeringHandlers:
         parsed = _dt.datetime.fromisoformat(value)
         return int(parsed.timestamp() * 1_000_000)
 
-    def _require_visible_version(
+    def _visible_records(
         self,
-        fenced: Any,
+        connection: Any,
+        context: OperationContext,
         *,
-        workspace_id: str,
-        record_id: str,
-        version: str,
-    ) -> str | None:
-        """The exact record version must exist; returns its claimed repository.
-
-        A priority or a review names an exact visible target: a reference that
-        resolves under no governed view is `not_found`, never silently accepted.
-        The claimed repository comes from the record's own applicability, so a
-        review can be assessed against the registry without trusting the caller.
-        """
-        now_us = time.time_ns() // 1000
+        resolution_instant_us: int,
+    ) -> dict[tuple[str, str], Any]:
+        """Every governed version the effective caller's grant admits under any
+        governed view, keyed by exact (record id, version)."""
+        visible: dict[tuple[str, str], Any] = {}
         for governed_view in ("current_canonical", "candidates", "history"):
-            for value in read_governed_record_values(
-                fenced,
-                workspace_id=workspace_id,
-                resolution_instant_us=now_us,
+            for value in self._authorized_values(
+                connection,
+                context,
+                resolution_instant_us=resolution_instant_us,
                 view=governed_view,
             ):
                 identity = value.record.provenance.identity
-                if identity.record_id == record_id and identity.version == version:
-                    content = value.record.content
-                    if isinstance(content, Mapping):
-                        applicability = content.get("applicability")
-                        if isinstance(applicability, Mapping):
-                            claimed = applicability.get("repository_id")
-                            if isinstance(claimed, str) and claimed:
-                                return claimed
-                    return None
-        raise app_storage.RecordVersionNotFound(record_id)
+                visible[(identity.record_id, identity.version)] = value.record
+        return visible
+
+    def _require_visible_version(
+        self,
+        connection: Any,
+        context: OperationContext,
+        *,
+        record_id: str,
+        version: str,
+    ) -> str | None:
+        """The exact record version must be visible; returns its claimed repository.
+
+        A priority or a review names an exact visible target: a reference that
+        resolves under no governed view for the effective caller's evidence grant
+        is `not_found` -- hidden and nonexistent alike, naming neither. The claimed
+        repository comes from the record's own applicability, so a review can be
+        assessed against the registry without trusting the caller.
+        """
+        record = self._visible_records(
+            connection, context, resolution_instant_us=time.time_ns() // 1000
+        ).get((record_id, version))
+        if record is None:
+            raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+        content = record.content
+        if isinstance(content, Mapping):
+            applicability = content.get("applicability")
+            if isinstance(applicability, Mapping):
+                claimed = applicability.get("repository_id")
+                if isinstance(claimed, str) and claimed:
+                    return claimed
+        return None
 
     def _execute(
         self,
@@ -790,25 +807,14 @@ class EngineeringHandlers:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection = self._connection()
         now_us = time.time_ns() // 1000
-        anchor_found = False
-        for governed_view in ("current_canonical", "candidates", "history"):
-            values = read_governed_record_values(
-                connection,
-                workspace_id=context.workspace_id,
-                resolution_instant_us=now_us,
-                view=governed_view,
-            )
-            for value in values:
-                identity = value.record.provenance.identity
-                if (
-                    identity.record_id == request.anchor.record_id
-                    and identity.version == request.anchor.version
-                ):
-                    anchor_found = True
-                    break
-            if anchor_found:
-                break
-        if not anchor_found:
+        # The anchor and every endpoint resolve under the effective caller's
+        # evidence grant: a hidden anchor is `not_found`, exactly as a missing
+        # one, and a hidden neighbour is never an edge, a node or a count.
+        visible = self._visible_records(
+            connection, context, resolution_instant_us=now_us
+        )
+        anchor = (request.anchor.record_id, request.anchor.version)
+        if anchor not in visible:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
 
         depth = 1 if request.depth is None else request.depth
@@ -827,9 +833,10 @@ class EngineeringHandlers:
         for edge in supersessions:
             if len(edges) >= edge_limit:
                 break
-            if (
-                edge.source_version_id != request.anchor.version
-                and edge.target_version_id != request.anchor.version
+            source = (edge.governed_record_id, edge.source_version_id)
+            target = (edge.governed_record_id, edge.target_version_id)
+            if anchor not in (source, target) or not (
+                source in visible and target in visible
             ):
                 continue
             edges.append(
@@ -846,12 +853,8 @@ class EngineeringHandlers:
                     "status": "accepted",
                 }
             )
-            other = (
-                edge.target_version_id
-                if edge.source_version_id == request.anchor.version
-                else edge.source_version_id
-            )
-            node = {"record_id": edge.governed_record_id, "version": other}
+            other = target if source == anchor else source
+            node = {"record_id": other[0], "version": other[1]}
             if node not in nodes and len(nodes) < node_limit:
                 nodes.append(node)
         # `depth` is declared by the contract and bounded by it (1..3); this
@@ -892,7 +895,7 @@ class EngineeringHandlers:
 
         self._require_visible_version(
             connection,
-            workspace_id=context.workspace_id,
+            context,
             record_id=request.target.record_id,
             version=request.target.version,
         )
@@ -900,6 +903,14 @@ class EngineeringHandlers:
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
         ) -> Mapping[str, Any]:
+            # Rechecked under the fence: a revocation since the check above
+            # writes no priority and rolls the audit back with it.
+            self._require_visible_version(
+                fenced,
+                context,
+                record_id=request.target.record_id,
+                version=request.target.version,
+            )
             app_storage.set_priority(
                 fenced,
                 settlement,
@@ -1027,12 +1038,14 @@ class EngineeringHandlers:
             workspace_id=context.workspace_id,
         )
 
-        claimed_repository = self._require_visible_version(
+        self._require_visible_version(
             connection,
-            workspace_id=context.workspace_id,
+            context,
             record_id=request.record_ref.record_id,
             version=request.record_ref.version,
         )
+        # Set under the fence by `precondition`, which always runs before `mutate`.
+        claimed: list[str | None] = []
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -1058,7 +1071,7 @@ class EngineeringHandlers:
             status = app_storage.assess_against_registered_head(
                 fenced,
                 workspace_id=context.workspace_id,
-                claimed_repository_id=claimed_repository,
+                claimed_repository_id=claimed[-1],
                 target_snapshot_id=request.target_snapshot.snapshot_id,
                 prior_status=None if latest is None else latest["status"],
             )
@@ -1100,6 +1113,17 @@ class EngineeringHandlers:
             return True
 
         def precondition(fenced: Any) -> str:
+            # Rechecked under the fence and before the stated version is compared:
+            # a revocation since the check above neither writes a review nor
+            # discloses the hidden target's assessment count.
+            claimed.append(
+                self._require_visible_version(
+                    fenced,
+                    context,
+                    record_id=request.record_ref.record_id,
+                    version=request.record_ref.version,
+                )
+            )
             count = fenced.execute(
                 "SELECT COUNT(*) FROM omnivia_engineering_assessments "
                 "WHERE workspace_id = ? AND record_id = ? AND version = ? "
@@ -1210,14 +1234,18 @@ class EngineeringHandlers:
             record = value.record
             if record.domain_scope != OBSERVATION_DOMAIN:
                 continue
-            partition = (
-                "accepted_knowledge"
-                if value.record.provenance.identity.governance_state == "canonical"
-                else "candidate_findings"
-            )
             content = record.content
             if not isinstance(content, Mapping):
                 continue
+            # Only a governance-accepted version is accepted knowledge; a
+            # hypothesis stays a finding even after acceptance (§8.2).
+            partition = (
+                "accepted_knowledge"
+                if record.provenance.identity.governance_state
+                == GOVERNANCE_STATE_ACCEPTED
+                and content.get("assertion_basis") != "hypothesis"
+                else "candidate_findings"
+            )
             text = " ".join(
                 str(content.get(key, "")) for key in ("title", "summary", "what")
             ).lower()

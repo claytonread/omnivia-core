@@ -252,6 +252,15 @@ covered target. It reads only and writes nothing.
   citation or text from it reaches the caller. Search page totals and the
   continuation's snapshot digest are computed from admitted versions only, so a
   label change between pages restarts the continuation as `invalid_request`.
+- **Exact references:** `engineering.expand`, `context.priority.set` and
+  `engineering.review.record` resolve their exact version under the same grant,
+  across the `accepted`, `candidates` and `history` views. A hidden version is
+  `not_found` with the same message as a nonexistent one. Expand emits only
+  supersession edges whose both endpoints are visible, so hidden neighbours add
+  no node, edge or cap usage. The priority and review writes recheck visibility
+  inside the fenced mutation (review before its stated assessment version is
+  compared), so a revocation after the preliminary check writes nothing and
+  rolls back the audit.
 - **Search:**
   - It requires `repository_target`, with view `accepted` or `candidates`.
   - Each candidate is evaluated directly before scoring, and only proven
@@ -278,7 +287,13 @@ covered target. It reads only and writes nothing.
   - `context_pack.build` v1 is unchanged.
 - **Partition fix:** pack sections now keep each record's own partition. The
   builder previously reused the last frontier value's partition for every
-  section.
+  section. A version whose `governance_state` is `accepted` renders under
+  `accepted_knowledge` (unless its `assertion_basis` is `hypothesis`); every
+  other version, such as a `candidate`, renders under `candidate_findings`. The
+  builder previously compared against `canonical`, which is an authority level,
+  not a governance state, so accepted knowledge rendered as candidate findings.
+  Accepted knowledge is never dropped to fit a budget: when it cannot fit, the
+  build refuses with `token_limit_exceeded`.
 - **No writes:** reads persist no pack, no assessment and no source history.
 
 ## Migration 0050 (`0050_engineering_source_coverage.sql`)
@@ -339,8 +354,6 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
 - **Unchanged shortcomings:** these are not worsened and not solved here:
   - `working_context` (search view and the `resume` pack section) reads the
     continuity checkpoint index, which carries no evidence labels;
-  - `engineering.expand` resolves its anchor without evidence-label
-    authorization;
   - known-conflict warnings are not produced.
 - **Search omissions:** `current_safe` search omissions are not counted in the
   result, because the contract has no field for them.
