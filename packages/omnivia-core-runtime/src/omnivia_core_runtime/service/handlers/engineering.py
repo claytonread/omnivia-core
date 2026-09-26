@@ -1,12 +1,17 @@
-"""The `engineering.*` retrieval handlers (SPEC-CORE-ENGMEM-001, plan PR-D).
+"""The `engineering.*` handlers (SPEC-CORE-ENGMEM-001, plans PR-D/PR-F).
 
-Seven of the nine engineering-memory operations are durable here and in
-`handlers.continuity`: the continuity vertical (register/append/close/handoff)
-plus the two retrieval reads this module adds — `engineering.search` and
-`engineering.expand`, served from the governed record store, the supersession
-edge table and the continuity checkpoint index. Three remain the honest
-`dependency_unavailable` refusals (the pack builder, the preference store and
-the review-attestation path are later packages).
+All nine engineering-memory operations are durable here and in
+`handlers.continuity`: the continuity vertical (register/append/close/handoff),
+the retrieval reads (search/expand) served from the governed record store, the
+supersession edge table and the continuity checkpoint index, the non-persisted
+context pack builder, the priority writes and the review attestations.
+
+The pack builder (§12) is a non-persisting read: one frozen frontier, one
+resolution instant, exact budget reconciliation with mandatory notices rendered
+first and optional sections dropped lowest-priority first, and a self-verifying
+`pack_id` — the canonical SHA-256 of the result after removing exactly the root
+`pack_id` and the nested `reproducibility.artifact_checksum`. The v1 renderer's
+pinned token counting is a whitespace split, recomputable from the rendering.
 
 Retrieval security shape, inherited from the knowledge family and the plan:
 
@@ -44,19 +49,22 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
-    ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
+    ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
     ContextPrioritySetInput,
     ContextPrioritySetResult,
     ContractDecodeError,
     ContractSemanticError,
+    EngineeringContextBuildInput,
     EngineeringExpandInput,
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
     idempotency_equivalence,
+    to_canonical_json,
 )
 from omnivia_core_runtime.ownership.identity import Clock, SystemClock
 from omnivia_core_runtime.service.authorization import (
@@ -125,9 +133,29 @@ SEARCH_MAX_LIMIT: Final = 100
 #: The complete rendered preview cap: 480 code points (§11.1).
 PREVIEW_MAX_CODEPOINTS: Final = 480
 
-_MESSAGE_CONTEXT_BUILD: Final = (
-    "the engineering context pack ships contracts first; the pack builder lands "
-    "in a later engineering-memory package"
+_MESSAGE_BUDGET: Final = (
+    "the minimum safe engineering context does not fit the effective budget"
+)
+#: The pack renderer and its pinned, deterministic token counting method. A
+#: whitespace split is the v1 pinned tokenizer: recomputable by hand from the
+#: rendering, and never reported as anything smarter than it is.
+RENDERER_VERSION: Final = "eng-render-1"
+BUILDER_VERSION: Final = "eng-build-1"
+
+#: Server hard budget ceilings (§12.4). Effective budgets are the minimum of the
+#: caller request and these ceilings; both token and byte caps are simultaneous.
+BUDGET_CEILING_TOKENS: Final = 16000
+BUDGET_CEILING_BYTES: Final = 65536
+BUDGET_DEFAULT_TOKENS: Final = 4000
+BUDGET_DEFAULT_BYTES: Final = 16384
+
+#: Section drop order when the rendering exceeds the effective budget: optional
+#: working-context material first, then history. Mandatory notices and accepted
+#: knowledge are never dropped to fit (§12.5).
+_SECTION_DROP_ORDER: Final[tuple[str, ...]] = (
+    "working_context",
+    "history",
+    "candidate_findings",
 )
 _MESSAGE_PRIORITY: Final = (
     "context priority ships contracts first; the preference store lands in a "
@@ -853,9 +881,251 @@ class EngineeringHandlers:
         )
         return _as_result(outcome)
 
-    # --- honest refusal -------------------------------------------------------------
+    # --- engineering.context.build ------------------------------------------------
 
     def engineering_context_build(
         self, context: OperationContext
     ) -> Mapping[str, Any] | AuditedOperationResult:
-        raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_CONTEXT_BUILD)
+        """One non-persisted pack from a frozen frontier, under exact budgets.
+
+        The builder never reads a clock and never opens a connection of its own:
+        the resolution instant is captured once, the frontier is the same frozen
+        authorised candidate set the search path freezes, and the rendering,
+        citation ids and applicability statements are all derived from it under
+        the effective budget. `pack_id` is the canonical SHA-256 of the result
+        with exactly the root `pack_id` and the nested
+        `reproducibility.artifact_checksum` removed (§12.3a).
+        """
+        try:
+            request = EngineeringContextBuildInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        connection = self._connection()
+        resolved_at_us = time.time_ns() // 1000
+
+        effective_tokens = (
+            BUDGET_DEFAULT_TOKENS
+            if request.budget is None or request.budget.model_tokens is None
+            else min(request.budget.model_tokens, BUDGET_CEILING_TOKENS)
+        )
+        effective_bytes = (
+            BUDGET_DEFAULT_BYTES
+            if request.budget is None or request.budget.model_bytes is None
+            else min(request.budget.model_bytes, BUDGET_CEILING_BYTES)
+        )
+
+        normalized = " ".join(request.query.lower().split())
+
+        # The authorised frontier: accepted observations matching the query,
+        # plus (for the investigate profile, which explicitly requests them)
+        # proposed candidates under the candidate_findings partition.
+        values = read_governed_record_values(
+            connection,
+            workspace_id=context.workspace_id,
+            resolution_instant_us=resolved_at_us,
+            view="current_canonical",
+        )
+        if request.profile == "investigate":
+            values = values + read_governed_record_values(
+                connection,
+                workspace_id=context.workspace_id,
+                resolution_instant_us=resolved_at_us,
+                view="candidates",
+            )
+        accepted_records = []
+        for value in values:
+            record = value.record
+            if record.domain_scope != OBSERVATION_DOMAIN:
+                continue
+            partition = (
+                "accepted_knowledge"
+                if value.record.provenance.identity.governance_state == "canonical"
+                else "candidate_findings"
+            )
+            content = record.content
+            if not isinstance(content, Mapping):
+                continue
+            text = " ".join(
+                str(content.get(key, "")) for key in ("title", "summary", "what")
+            ).lower()
+            if normalized and normalized not in text:
+                continue
+            accepted_records.append(record)
+
+        # Working context (resume profile only, explicitly requested material).
+        working: list[dict[str, Any]] = []
+        if request.profile == "resume":
+            rows = connection.execute(
+                "SELECT checkpoint_id, sequence, payload_json FROM "
+                "omnivia_engineering_checkpoints WHERE workspace_id = ? "
+                "ORDER BY recorded_at_us DESC, sequence DESC LIMIT 5",
+                (context.workspace_id,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row[2])
+                except ValueError:
+                    continue
+                working.append(
+                    {
+                        "checkpoint_id": row[0],
+                        "sequence": row[1],
+                        "objective": str(payload.get("objective", "")),
+                        "unresolved": payload.get("unresolved_work", []),
+                    }
+                )
+
+        sections: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        for ordinal, record in enumerate(accepted_records, 1):
+            content = record.content if isinstance(record.content, Mapping) else {}
+            title = str(content.get("title") or record.provenance.identity.record_id)
+            body = str(content.get("summary") or content.get("what") or "")
+            citation_id = f"cite-{ordinal}"
+            sections.append(
+                {
+                    "section_id": f"sec-{ordinal}",
+                    "kind": "decision_summary",
+                    "partition": partition,
+                    "content": f"{title}. {body}".strip(),
+                    "citation_ids": [citation_id],
+                }
+            )
+            citations.append(
+                {
+                    "citation_id": citation_id,
+                    "record_ref": {
+                        "record_id": record.provenance.identity.record_id,
+                        "version": record.provenance.identity.version,
+                    },
+                }
+            )
+        for ordinal, item in enumerate(working, len(sections) + 1):
+            sections.append(
+                {
+                    "section_id": f"sec-{ordinal}",
+                    "kind": "working_context",
+                    "partition": "working_context",
+                    "content": (
+                        f"{item['objective']} Unresolved: "
+                        + "; ".join(str(u) for u in item["unresolved"])
+                    ).strip(),
+                    "citation_ids": [],
+                }
+            )
+
+        uncertainties = [
+            "Target applicability is not evaluated in this build; every applicability statement is `not_evaluated`.",
+        ]
+        omissions: list[dict[str, Any]] = []
+
+        def render(
+            pack_sections: list[dict[str, Any]],
+            pack_citations: list[dict[str, Any]],
+        ) -> str:
+            # The uncertainty notice is mandatory: it is rendered before any
+            # optional content and is never dropped to fit a budget (§12.5).
+            notice = "[uncertainty] " + uncertainties[0]
+            parts = [notice]
+            for section in pack_sections:
+                label = f"[{section['partition']}]"
+                cites = " ".join(f"[{c}]" for c in section["citation_ids"])
+                parts.append(f"{label} {section['content']} {cites}".strip())
+            return "\n\n".join(parts)
+
+        # Budget reconciliation: drop optional sections lowest-priority first,
+        # bounded by the section count; mandatory notices are never dropped.
+        while True:
+            text = render(sections, citations)
+            token_count = len(text.split())
+            byte_count = len(text.encode("utf-8"))
+            if token_count <= effective_tokens and byte_count <= effective_bytes:
+                break
+            droppable = [
+                index
+                for index, section in enumerate(sections)
+                if section["partition"] in _SECTION_DROP_ORDER
+            ]
+            if not droppable or len(sections) <= 1:
+                raise OperationError(
+                    ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+                    _MESSAGE_BUDGET,
+                    retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                        ERROR_CODE_TOKEN_LIMIT_EXCEEDED
+                    ],
+                )
+            drop = droppable[-1]
+            dropped = sections.pop(drop)
+            omissions.append(
+                {"field": dropped["section_id"], "reason": "budget"}
+            )
+            if len(omissions) > len(_SECTION_DROP_ORDER) * 64:
+                raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_BUDGET)
+
+        rendering = {
+            "text": text,
+            "renderer_version": RENDERER_VERSION,
+            "token_count": token_count,
+            "byte_count": byte_count,
+        }
+        budget = {
+            "requested": (
+                None
+                if request.budget is None
+                else {
+                    key: value
+                    for key, value in {
+                        "model_tokens": request.budget.model_tokens,
+                        "model_bytes": request.budget.model_bytes,
+                        "hydrations": request.budget.hydrations,
+                        "evidence_bytes": request.budget.evidence_bytes,
+                    }.items()
+                    if value is not None
+                }
+            ),
+            "effective": {"model_tokens": effective_tokens, "model_bytes": effective_bytes},
+            "rendered_tokens": token_count,
+            "rendered_bytes": byte_count,
+            "source_bytes_read": 0,
+            "hydrations": 0,
+        }
+        applicability = [
+            {"snapshot": target.to_wire(), "status": "not_evaluated"}
+            for target in request.targets
+        ]
+
+        pack: dict[str, Any] = {
+            "format_version": "engineering_context.v1",
+            "normalized_request": {
+                "query": request.query,
+                "profile": request.profile,
+            },
+            "targets": [target.to_wire() for target in request.targets],
+            "profile": request.profile,
+            "sections": sections,
+            "citations": citations,
+            "conflicts": [],
+            "uncertainties": uncertainties,
+            "omissions": omissions,
+            "rendering": rendering,
+            "budget": budget,
+            "applicability": applicability,
+            "authorization_context": {
+                "workspace_id": context.workspace_id,
+                "principal_id": context.principal,
+            },
+            "reproducibility": {
+                "builder_version": BUILDER_VERSION,
+                "renderer_version": RENDERER_VERSION,
+                "artifact_canonicalization": "rfc8785",
+                "resolution_instant_us": resolved_at_us,
+            },
+            "fresh_authorization_required": True,
+        }
+        canonical = to_canonical_json(pack)
+        pack_id = "sha256:" + __import__("hashlib").sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+        pack["pack_id"] = pack_id
+        pack["reproducibility"]["artifact_checksum"] = pack_id
+        return {"pack": pack}
