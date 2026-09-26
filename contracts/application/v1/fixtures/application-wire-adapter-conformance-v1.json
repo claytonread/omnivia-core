@@ -9963,6 +9963,202 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "id": "engineering.source.record/primary-success",
+      "operation": "engineering.source.record",
+      "description": "engineering.source.record records one trusted source snapshot as the first event of its stream on the success branch, with the stream's coverage barrier.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.record-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.source.record"
+        },
+        "operation": "engineering.source.record",
+        "input": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-1",
+          "snapshot_kind": "git_commit",
+          "base_commit": "c0ffee01",
+          "capture_status": "complete",
+          "manifest": [
+            {
+              "path": "README.md",
+              "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            {
+              "path": "src/auth.py",
+              "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.record-success",
+          "audit_reference": "audit-engineering.source.record"
+        },
+        "result": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-1",
+          "manifest_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "capture_status": "complete",
+          "disposition": "recorded",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "recorded_at": "2026-09-26T00:00:00.000000Z",
+          "audit_reference": "audit-engineering.source.record"
+        }
+      }
+    },
+    {
+      "id": "engineering.source.record/honest-replay",
+      "operation": "engineering.source.record",
+      "description": "engineering.source.record repeated with the same idempotency key and the same input: the recorded event receipt is returned without recording again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "engineering.source.record/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.record-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.source.record"
+        },
+        "operation": "engineering.source.record",
+        "input": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-1",
+          "snapshot_kind": "git_commit",
+          "base_commit": "c0ffee01",
+          "capture_status": "complete",
+          "manifest": [
+            {
+              "path": "README.md",
+              "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            {
+              "path": "src/auth.py",
+              "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.record-replay",
+          "audit_reference": "audit-engineering.source.record"
+        },
+        "result": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-1",
+          "manifest_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "capture_status": "complete",
+          "disposition": "recorded",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "recorded_at": "2026-09-26T00:00:00.000000Z",
+          "audit_reference": "audit-engineering.source.record"
+        }
+      }
+    },
+    {
+      "id": "engineering.source.record/idempotency-conflict",
+      "operation": "engineering.source.record",
+      "description": "engineering.source.record reusing one idempotency key for a different manifest: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "engineering.source.record/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.record-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.source.record"
+        },
+        "operation": "engineering.source.record",
+        "input": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-1",
+          "snapshot_kind": "git_commit",
+          "base_commit": "c0ffee01",
+          "capture_status": "complete",
+          "manifest": [
+            {
+              "path": "README.md",
+              "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            {
+              "path": "src/auth.py",
+              "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.record-conflict",
+          "audit_reference": "audit-engineering.source.record"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

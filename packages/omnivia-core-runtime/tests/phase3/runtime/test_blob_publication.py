@@ -18,6 +18,7 @@ import hashlib
 import inspect
 import os
 import stat
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, Lock
@@ -126,6 +127,153 @@ def test_concurrent_first_publications_share_the_fanout_directory(
     assert address(root).read_bytes() == CONTENT
     assert temporaries(root) == []
     assert synced.count(root) == 2
+
+
+def _swap_on_fstat(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Path,
+    make: Callable[[Path], object],
+    *,
+    before: bool = True,
+    times: int = 1,
+) -> list[int]:
+    """Rename a fresh object over `target` inside verification's `fstat`.
+
+    That is exactly where a concurrent publisher's `os.replace` lands in the observed
+    race: after this publisher opened the name, before it checked the name again.
+    `before` swaps ahead of the real `fstat` (the opened object then has no link),
+    otherwise after it (the opened object still reports its one link).
+    """
+    real_fstat = os.fstat
+    calls: list[int] = []
+
+    def swap() -> None:
+        staged = target.with_name(".staged")
+        make(staged)
+        os.replace(staged, target)
+
+    def racing_fstat(descriptor: int) -> os.stat_result:
+        calls.append(descriptor)
+        if len(calls) <= times and before:
+            swap()
+        status = real_fstat(descriptor)
+        if len(calls) <= times and not before:
+            swap()
+        return status
+
+    monkeypatch.setattr(os, "fstat", racing_fstat)
+    return calls
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="an open blob cannot be renamed over on Windows"
+)
+@pytest.mark.parametrize("before", [True, False])
+def test_verification_rereads_an_identical_object_renamed_over_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: bool
+) -> None:
+    """The losing first publisher reopens the winner's object and verifies it in full."""
+    root = blobs_root(tmp_path)
+    target = address(root)
+    calls = _swap_on_fstat(
+        monkeypatch, target, lambda path: path.write_bytes(CONTENT), before=before
+    )
+
+    assert publish_blob(root, DIGEST, CONTENT) == target
+
+    assert len(calls) == 2
+    assert target.read_bytes() == CONTENT
+    assert target.stat().st_nlink == 1
+    assert temporaries(root) == []
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="an open blob cannot be renamed over on Windows"
+)
+def test_a_renamed_over_object_is_still_refused_unless_it_is_safe_and_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a regular single-linked replacement is reopened, and its bytes must verify."""
+    root = blobs_root(tmp_path)
+    target = address(root)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_bytes(CONTENT)
+    publish_blob(root, DIGEST, CONTENT)
+
+    # Wrong bytes: reopened once, then refused on the bytes.
+    calls = _swap_on_fstat(
+        monkeypatch, target, lambda path: path.write_bytes(OTHER_CONTENT)
+    )
+    with pytest.raises(BlobPublicationRefused, match="does not verify"):
+        publish_blob(root, DIGEST, CONTENT)
+    assert len(calls) == 2
+
+    # A hard link or a symlink is not a replacement to reopen: refused on the first look.
+    for make in (
+        lambda path: os.link(elsewhere, path),
+        lambda path: path.symlink_to(elsewhere),
+    ):
+        target.unlink()
+        publish_blob(root, DIGEST, CONTENT)
+        calls = _swap_on_fstat(monkeypatch, target, make, before=False)
+        with pytest.raises(BlobPublicationRefused, match="not one regular file"):
+            publish_blob(root, DIGEST, CONTENT)
+        assert len(calls) == 1
+    assert elsewhere.read_bytes() == CONTENT
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="an open blob cannot be renamed over on Windows"
+)
+def test_reopening_a_renamed_over_object_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name that keeps moving is refused after a fixed number of reopenings."""
+    root = blobs_root(tmp_path)
+    target = address(root)
+    publish_blob(root, DIGEST, CONTENT)
+    calls = _swap_on_fstat(
+        monkeypatch, target, lambda path: path.write_bytes(CONTENT), times=100
+    )
+
+    with pytest.raises(BlobPublicationRefused, match="not one regular file"):
+        publish_blob(root, DIGEST, CONTENT)
+
+    assert len(calls) == blob_publication._VERIFY_ATTEMPTS == 4
+    assert target.read_bytes() == CONTENT
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="an open blob cannot be renamed over on Windows"
+)
+def test_verification_rereads_when_the_named_object_is_unlinked_during_lstat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename can unlink the object `lstat` resolved before its links are read."""
+    root = blobs_root(tmp_path)
+    target = address(root)
+    publish_blob(root, DIGEST, CONTENT)
+    real_lstat = os.lstat
+    raced: list[Path] = []
+
+    def racing_lstat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        status = real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+        if Path(str(path)) == target and not raced:
+            raced.append(target)
+            staged = target.with_name(".staged")
+            staged.write_bytes(CONTENT)
+            os.replace(staged, target)
+            # The same inode the name resolved to, now with no link, as the kernel
+            # reports it when the rename lands between lookup and attribute read.
+            fields = list(status)
+            fields[stat.ST_NLINK] = 0
+            return os.stat_result(fields)
+        return status
+
+    monkeypatch.setattr(os, "lstat", racing_lstat)
+    assert publish_blob(root, DIGEST, CONTENT) == target
+    assert raced == [target]
+    assert target.read_bytes() == CONTENT
 
 
 def test_refuses_an_object_whose_bytes_are_not_the_ones_published(

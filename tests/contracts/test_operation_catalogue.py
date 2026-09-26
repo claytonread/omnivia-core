@@ -138,21 +138,21 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_fifty_two_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 52
+def test_the_catalogue_holds_exactly_the_frozen_fifty_three_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 53
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
     # The original twenty-eight are alphabetical; the fifteen Decision Runtime
-    # operations from ADR-042 and the nine engineering-memory operations
+    # operations from ADR-042 and the ten engineering-memory operations
     # (SPEC-CORE-ENGMEM-001) are appended after them in amendment order.
-    assert len(set(FROZEN_NAMES)) == 52
+    assert len(set(FROZEN_NAMES)) == 53
 
 
-def test_two_operations_are_installation_scoped_and_fifty_are_workspace_scoped() -> None:
+def test_two_operations_are_installation_scoped_and_fifty_one_are_workspace_scoped() -> None:
     installation = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "installation"]
     workspace = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "workspace"]
     assert installation == ["workspace.create", "workspace.list"]
-    assert len(workspace) == 50
-    assert len(installation) + len(workspace) == 52
+    assert len(workspace) == 51
+    assert len(installation) + len(workspace) == 53
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
@@ -925,11 +925,11 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
     it is the one representation nothing else can catch drifting.
     """
     installation = _documented_operations("Two are installation-scoped:")
-    workspace = _documented_operations("Fifty are workspace-scoped:")
+    workspace = _documented_operations("Fifty-one are workspace-scoped:")
     documented = installation + workspace
 
     assert sorted(documented) == sorted(FROZEN_NAMES)
-    assert len(documented) == len(set(documented)) == 52
+    assert len(documented) == len(set(documented)) == 53
     assert installation == [
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "installation"
     ]
@@ -941,6 +941,6 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
 @pytest.mark.parametrize("name", NON_OPERATIONS)
 def test_the_readme_operation_list_names_no_probe_and_no_job_resume(name: str) -> None:
     documented = _documented_operations("Two are installation-scoped:") + _documented_operations(
-        "Fifty are workspace-scoped:"
+        "Fifty-one are workspace-scoped:"
     )
     assert name not in documented

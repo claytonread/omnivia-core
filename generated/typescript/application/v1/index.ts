@@ -1129,6 +1129,55 @@ export interface EngineeringRendering {
 }
 
 /**
+ * The closed applicability mode of an engineering read: `diagnostic` (the default, conservative
+ * and never a safety claim) or `current_safe` (only proven `matched` records at fully covered,
+ * explicitly requested targets). Any other value is refused; there is no automatic downgrade
+ * from `current_safe`.
+ */
+export type EngineeringApplicabilityMode = string;
+
+/**
+ * The closed `EngineeringApplicabilityMode` vocabulary, emitted from the schema's `enum`.
+ */
+export const ENGINEERING_APPLICABILITY_MODE_VALUES = [
+  "diagnostic",
+  "current_safe",
+] as const;
+
+/**
+ * Return whether a value is a declared `EngineeringApplicabilityMode`. The generated decoders do
+ * not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isEngineeringApplicabilityMode(value: unknown): value is EngineeringApplicabilityMode {
+  return (
+    typeof value === "string" &&
+    (ENGINEERING_APPLICABILITY_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The coverage barrier of one source stream after a record: the newest announced sequence and
+ * the highest sequence up to which every event is present and chained to its predecessor. A gap
+ * keeps the barrier `pending`; `current_safe` reads refuse any target beyond `covered_sequence`.
+ */
+export interface EngineeringSourceStreamCoverage {
+  /**
+   * Open, bounded code: `current` when coverage reaches the newest announced event, `pending`
+   * while a gap remains.
+   */
+  readonly state: string;
+  /**
+   * Highest sequence of the contiguous validated chain; 0 when none.
+   */
+  readonly covered_sequence: number;
+  /**
+   * Newest sequence recorded for the stream, contiguous or not.
+   */
+  readonly announced_sequence: number;
+}
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states;
  * what each name binds to -- its input and result schemas, and its scope, capability,
  * completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture --
@@ -4138,6 +4187,88 @@ export interface EngineeringBudgetOutcome {
 }
 
 /**
+ * One file of a source snapshot manifest: a repository-relative path and the SHA-256 digest of
+ * the file's bytes. The path is preserved exactly - Unicode and case are never normalized - and
+ * an absolute path, a drive prefix, a backslash, an empty, `.` or `..` segment, or a control
+ * character is refused. A path is a name, never something the server reads.
+ */
+export interface EngineeringSourceManifestEntry {
+  /**
+   * Repository-relative path with `/` separators.
+   */
+  readonly path: string;
+  /**
+   * SHA-256 of the file's bytes at this snapshot.
+   */
+  readonly digest: ContentChecksum;
+}
+
+/**
+ * The source event this one directly follows in the same stream: sequence `sequence - 1` and the
+ * snapshot it recorded. Coverage advances only along a contiguous chain of these links, never by
+ * capture time.
+ */
+export interface EngineeringSourcePredecessor {
+  /**
+   * The predecessor's sequence; exactly one less than this event's.
+   */
+  readonly sequence: number;
+  /**
+   * The snapshot the predecessor event recorded.
+   */
+  readonly snapshot_id: Identifier;
+}
+
+/**
+ * Result of `engineering.source.record`: the stored event's identity and manifest digest,
+ * whether this delivery recorded it or found it already recorded, and the stream's coverage
+ * barrier as committed with it.
+ */
+export interface EngineeringSourceRecordResult {
+  /**
+   * The repository the stream is bound to.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The source stream.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The event's sequence within the stream.
+   */
+  readonly sequence: number;
+  /**
+   * The recorded snapshot.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * The server-computed digest of the canonical manifest.
+   */
+  readonly manifest_digest: ContentChecksum;
+  /**
+   * The recorded capture coverage.
+   */
+  readonly capture_status: string;
+  /**
+   * Open, bounded code: `recorded` for a new event, `already_recorded` when an identical event
+   * was already stored; a duplicate delivery never creates a second event.
+   */
+  readonly disposition: string;
+  /**
+   * The stream's coverage barrier, committed with this record.
+   */
+  readonly coverage: EngineeringSourceStreamCoverage;
+  /**
+   * Server-owned time the event was first recorded.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Audit reference for this delivery.
+   */
+  readonly audit_reference: string;
+}
+
+/**
  * A single typed failure. The code and retry class are the contract; the message is not.
  */
 export interface ApiError {
@@ -6526,6 +6657,16 @@ export interface EngineeringSearchInput {
    * scope invalidates the token with an explicit restart response.
    */
   readonly page?: PageMetadata;
+  /**
+   * How applicability qualifies this read. `diagnostic` (the default) is the pre-existing
+   * behaviour: previews carry conservative, never-certified applicability. `current_safe`
+   * requires `repository_target`: the target must be a recorded snapshot inside its source
+   * stream's contiguous validated coverage, checked before any ranking, or the read is refused
+   * with `dependency_unavailable` and the fixed message `applicability_pending` - never
+   * downgraded to `diagnostic`. Only records whose whole-file dependencies are proven
+   * `matched` at that target are returned.
+   */
+  readonly applicability_mode?: EngineeringApplicabilityMode;
 }
 
 /**
@@ -6689,6 +6830,15 @@ export interface EngineeringContextBuildInput {
    * profile and server hard limits.
    */
   readonly budget?: EngineeringBudget;
+  /**
+   * How applicability qualifies this pack. `diagnostic` (the default) is the pre-existing
+   * behaviour: every target statement is `not_evaluated`. `current_safe` requires every target
+   * to be a recorded snapshot inside its source stream's contiguous validated coverage,
+   * checked before any selection, or the build is refused with `dependency_unavailable` and
+   * the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records
+   * proven `matched` at every target enter the pack.
+   */
+  readonly applicability_mode?: EngineeringApplicabilityMode;
 }
 
 /**
@@ -6787,6 +6937,68 @@ export interface EngineeringReviewRecordResult {
    * Audit reference for the recorded attestation.
    */
   readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.source.record`: a trusted source producer records one immutable
+ * snapshot of one logical repository as the next event of its own source stream. Not a model-
+ * facing tool, and never reachable through contributed observations: it requires the distinct
+ * `engineering:source` scope and `engineering.source` capability. The payload carries
+ * identities, the producer's monotonic stream sequence and predecessor, the snapshot kind,
+ * capture coverage and a bounded canonical manifest of repository-relative paths and SHA-256
+ * digests - never a path to read, a command, raw file content, a credential, an installation or
+ * principal field, or a repository label. The authenticated principal owns the stream; a stream
+ * bound to another principal or repository is refused, never replaced. Unknown keys are refused.
+ */
+export interface EngineeringSourceRecordInput {
+  /**
+   * Stable logical repository identity; registered on first use and never derived from a path
+   * or label.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The producer's source stream: one ordered history such as one worktree or checkout.
+   * Streams never share coverage.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The producer's monotonic sequence within the stream, from 1.
+   */
+  readonly sequence: number;
+  /**
+   * Required exactly when `sequence` is greater than 1.
+   */
+  readonly predecessor?: EngineeringSourcePredecessor;
+  /**
+   * Identity of the immutable snapshot this event records; never reused for different content
+   * or position.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * `git_commit` (a clean commit, stating `base_commit`), `working_tree` (a dirty or
+   * uncommitted tree, which never asserts a base commit) or `source_archive`. Other values are
+   * refused.
+   */
+  readonly snapshot_kind: string;
+  /**
+   * The commit a `git_commit` snapshot records. Provenance only: a shared base commit or
+   * branch never makes two snapshots equivalent.
+   */
+  readonly base_commit?: string;
+  /**
+   * `complete` when the manifest lists every file of the snapshot, otherwise `incomplete`. An
+   * incomplete manifest is recorded but never qualifies `matched`.
+   */
+  readonly capture_status: string;
+  /**
+   * The bounded manifest: at most 256 entries and 65536 canonical bytes, each path unique.
+   */
+  readonly manifest: readonly EngineeringSourceManifestEntry[];
+  /**
+   * Optional digest the producer computed over the canonical manifest; when present it must
+   * equal the server's own computation.
+   */
+  readonly manifest_digest?: ContentChecksum;
 }
 
 /**
@@ -11875,6 +12087,44 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "mutation_precondition_failed",
       "not_found",
       "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.source.record",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "size_limit_exceeded",
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
