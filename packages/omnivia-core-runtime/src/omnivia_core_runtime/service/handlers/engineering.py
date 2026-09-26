@@ -49,7 +49,6 @@ from omnivia_core.contracts.v1 import (
     ContractSemanticError,
     EngineeringExpandInput,
     EngineeringSearchInput,
-    PageMetadata,
 )
 from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
@@ -134,7 +133,7 @@ def _observation_preview(record: Any) -> dict[str, Any] | None:
     title, title_truncated = _bounded(
         str(content.get("title") or identity.record_id), 200
     )
-    body = ""
+    body: str = ""
     for key in ("summary", "what", "learned"):
         value = content.get(key)
         if isinstance(value, str) and value:
@@ -161,9 +160,9 @@ def _observation_preview(record: Any) -> dict[str, Any] | None:
         preview["assertion_basis"] = basis
     topic = content.get("topic_ref")
     if isinstance(topic, Mapping):
-        key = topic.get("proposed_key")
-        if isinstance(key, str) and key:
-            preview["topic_key"] = key
+        proposed_key = topic.get("proposed_key")
+        if isinstance(proposed_key, str) and proposed_key:
+            preview["topic_key"] = proposed_key
     applicability = content.get("applicability")
     if isinstance(applicability, Mapping):
         repository_id = applicability.get("repository_id")

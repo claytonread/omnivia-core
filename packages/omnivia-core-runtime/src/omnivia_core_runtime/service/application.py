@@ -936,7 +936,7 @@ def build_engineering_application_dispatcher(
     )
     binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
     registry = build_engineering_registry(
-        EngineeringHandlers(),
+        EngineeringHandlers(service=service),
         ContinuityHandlers(
             service=service,
             session=session,
