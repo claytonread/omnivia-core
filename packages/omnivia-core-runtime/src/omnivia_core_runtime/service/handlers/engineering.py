@@ -30,10 +30,11 @@ Retrieval security shape, inherited from the knowledge family and the plan:
 5. continuations are the established MAC'd tokens, bound to the request
    digest, the frozen snapshot and the resolution instant; a changed binding,
    snapshot or epoch is an explicit restart (§11.4);
-6. `applicability` states what is actually known: nothing evaluates target
-   freshness yet, so record-level applicability is `not_evaluated` and the
-   coverage block reports `unavailable` rather than implying freshness
-   (§15.1);
+6. `applicability` reports only what is known. With no assessment for the
+   exact (record version, target snapshot), it is `not_evaluated`. With one,
+   the stored status is re-assessed conservatively and never reported as
+   `matched`, because nothing validates dependency equivalence yet. The
+   coverage block stays `unavailable` rather than implying freshness (§15.1);
 7. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
    knowledge (§12.3).
@@ -532,7 +533,19 @@ class EngineeringHandlers:
                         target_snapshot_id=request.repository_target.snapshot_id,
                     )
                     if latest is not None:
-                        rendered["applicability"] = latest["status"]
+                        # The stored status goes back through the conservative
+                        # assessment rather than being replayed, so a legacy
+                        # `matched` row is not certified by recency. This is
+                        # a read and writes nothing to the history.
+                        rendered["applicability"] = (
+                            app_storage.assess_against_registered_head(
+                                connection,
+                                workspace_id=context.workspace_id,
+                                claimed_repository_id=rendered.get("repository_id"),
+                                target_snapshot_id=request.repository_target.snapshot_id,
+                                prior_status=latest["status"],
+                            )
+                        )
                 previews.append(rendered)
             total = len(ordered)
 
@@ -807,16 +820,16 @@ class EngineeringHandlers:
                 raise app_storage.AssessmentPreconditionFailed(
                     "the target's current assessment is not the version this review expects"
                 )
-            # §15.5: the assessment follows the registry, so an acknowledgement
-            # can never *fabricate* a clearing — it recomputes, and a stale
-            # target stays stale under the newest registered head.
+            # §15.5: no qualified dependency validation exists yet, so no review
+            # outcome or evidence id can mint `matched` or clear a prior
+            # `invalid` / `potentially_stale`. The review is recorded and the
+            # assessment stays conservative.
             status = app_storage.assess_against_registered_head(
                 fenced,
                 workspace_id=context.workspace_id,
-                record_id=request.record_ref.record_id,
-                version=request.record_ref.version,
                 claimed_repository_id=claimed_repository,
                 target_snapshot_id=request.target_snapshot.snapshot_id,
+                prior_status=None if latest is None else latest["status"],
             )
             app_storage.record_assessment(
                 fenced,
