@@ -1265,6 +1265,13 @@ _ENG_CONTINUITY_APPEND: tuple[str, ...] = tuple(
     sorted({*_GOV_MUT, "not_found", "size_limit_exceeded"})
 )
 _ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: `engineering.source.record` appends one immutable event to a source stream the
+#: caller owns: reusing a sequence or snapshot identity for different content, or
+#: naming a stream bound to another repository, is a `conflict`, and the bounded
+#: manifest and pending window make `size_limit_exceeded` reachable.
+_ENG_SOURCE_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
+)
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
@@ -1301,6 +1308,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENG_CONTINUITY_MUT": _ENG_CONTINUITY_MUT,
     "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
     "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
+    "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1555,6 +1563,12 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "engineering.review.record": FrozenOperation(
         "workspace", ("engineering:curate",), "create", "engineering.curate",
         "engineering", "EngineeringReviewRecord", "GOV_MUT", False,
+    ),
+    # A trusted source producer's own grant: distinct from `engineering:write`, so
+    # contributed observations never carry the authority to attest source state.
+    "engineering.source.record": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "engineering", "EngineeringSourceRecord", "ENG_SOURCE_MUT", False,
     ),
 }
 

@@ -1096,6 +1096,24 @@
     },
     "EngineeringReviewRecordResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordResult"
+    },
+    "EngineeringApplicabilityMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringApplicabilityMode"
+    },
+    "EngineeringSourceManifestEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceManifestEntry"
+    },
+    "EngineeringSourcePredecessor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourcePredecessor"
+    },
+    "EngineeringSourceStreamCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceStreamCoverage"
+    },
+    "EngineeringSourceRecordInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordInput"
+    },
+    "EngineeringSourceRecordResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordResult"
     }
   }
 }

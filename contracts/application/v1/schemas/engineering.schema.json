@@ -810,6 +810,10 @@
         "page": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
           "description": "Opaque continuation position. A changed authority epoch, projection snapshot or bound scope invalidates the token with an explicit restart response."
+        },
+        "applicability_mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringApplicabilityMode",
+          "description": "How applicability qualifies this read. `diagnostic` (the default) is the pre-existing behaviour: previews carry conservative, never-certified applicability. `current_safe` requires `repository_target`: the target must be a recorded snapshot inside its source stream's contiguous validated coverage, checked before any ranking, or the read is refused with `dependency_unavailable` and the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records whose whole-file dependencies are proven `matched` at that target are returned."
         }
       },
       "required": [
@@ -1333,6 +1337,10 @@
         "budget": {
           "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringBudget",
           "description": "Optional caller-requested budgets; effective budgets are also bounded by the granted profile and server hard limits."
+        },
+        "applicability_mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringApplicabilityMode",
+          "description": "How applicability qualifies this pack. `diagnostic` (the default) is the pre-existing behaviour: every target statement is `not_evaluated`. `current_safe` requires every target to be a recorded snapshot inside its source stream's contiguous validated coverage, checked before any selection, or the build is refused with `dependency_unavailable` and the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records proven `matched` at every target enter the pack."
         }
       },
       "required": [
@@ -1478,6 +1486,223 @@
       "required": [
         "record_ref",
         "applicability",
+        "audit_reference"
+      ]
+    },
+    "EngineeringApplicabilityMode": {
+      "title": "EngineeringApplicabilityMode",
+      "description": "The closed applicability mode of an engineering read: `diagnostic` (the default, conservative and never a safety claim) or `current_safe` (only proven `matched` records at fully covered, explicitly requested targets). Any other value is refused; there is no automatic downgrade from `current_safe`.",
+      "type": "string",
+      "enum": [
+        "diagnostic",
+        "current_safe"
+      ]
+    },
+    "EngineeringSourceManifestEntry": {
+      "title": "EngineeringSourceManifestEntry",
+      "description": "One file of a source snapshot manifest: a repository-relative path and the SHA-256 digest of the file's bytes. The path is preserved exactly - Unicode and case are never normalized - and an absolute path, a drive prefix, a backslash, an empty, `.` or `..` segment, or a control character is refused. A path is a name, never something the server reads.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Repository-relative path with `/` separators.",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "SHA-256 of the file's bytes at this snapshot."
+        }
+      },
+      "required": [
+        "path",
+        "digest"
+      ]
+    },
+    "EngineeringSourcePredecessor": {
+      "title": "EngineeringSourcePredecessor",
+      "description": "The source event this one directly follows in the same stream: sequence `sequence - 1` and the snapshot it recorded. Coverage advances only along a contiguous chain of these links, never by capture time.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "description": "The predecessor's sequence; exactly one less than this event's.",
+          "minimum": 1
+        },
+        "snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The snapshot the predecessor event recorded."
+        }
+      },
+      "required": [
+        "sequence",
+        "snapshot_id"
+      ]
+    },
+    "EngineeringSourceStreamCoverage": {
+      "title": "EngineeringSourceStreamCoverage",
+      "description": "The coverage barrier of one source stream after a record: the newest announced sequence and the highest sequence up to which every event is present and chained to its predecessor. A gap keeps the barrier `pending`; `current_safe` reads refuse any target beyond `covered_sequence`.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "Open, bounded code: `current` when coverage reaches the newest announced event, `pending` while a gap remains.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "covered_sequence": {
+          "type": "integer",
+          "description": "Highest sequence of the contiguous validated chain; 0 when none.",
+          "minimum": 0
+        },
+        "announced_sequence": {
+          "type": "integer",
+          "description": "Newest sequence recorded for the stream, contiguous or not.",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "state",
+        "covered_sequence",
+        "announced_sequence"
+      ]
+    },
+    "EngineeringSourceRecordInput": {
+      "title": "EngineeringSourceRecordInput",
+      "description": "Input for `engineering.source.record`: a trusted source producer records one immutable snapshot of one logical repository as the next event of its own source stream. Not a model-facing tool, and never reachable through contributed observations: it requires the distinct `engineering:source` scope and `engineering.source` capability. The payload carries identities, the producer's monotonic stream sequence and predecessor, the snapshot kind, capture coverage and a bounded canonical manifest of repository-relative paths and SHA-256 digests - never a path to read, a command, raw file content, a credential, an installation or principal field, or a repository label. The authenticated principal owns the stream; a stream bound to another principal or repository is refused, never replaced. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable logical repository identity; registered on first use and never derived from a path or label."
+        },
+        "stream_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The producer's source stream: one ordered history such as one worktree or checkout. Streams never share coverage."
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "The producer's monotonic sequence within the stream, from 1.",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "predecessor": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourcePredecessor",
+          "description": "Required exactly when `sequence` is greater than 1."
+        },
+        "snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identity of the immutable snapshot this event records; never reused for different content or position."
+        },
+        "snapshot_kind": {
+          "type": "string",
+          "description": "`git_commit` (a clean commit, stating `base_commit`), `working_tree` (a dirty or uncommitted tree, which never asserts a base commit) or `source_archive`. Other values are refused.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "base_commit": {
+          "type": "string",
+          "description": "The commit a `git_commit` snapshot records. Provenance only: a shared base commit or branch never makes two snapshots equivalent.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "capture_status": {
+          "type": "string",
+          "description": "`complete` when the manifest lists every file of the snapshot, otherwise `incomplete`. An incomplete manifest is recorded but never qualifies `matched`.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "manifest": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceManifestEntry"
+          },
+          "description": "The bounded manifest: at most 256 entries and 65536 canonical bytes, each path unique.",
+          "maxItems": 256
+        },
+        "manifest_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Optional digest the producer computed over the canonical manifest; when present it must equal the server's own computation."
+        }
+      },
+      "required": [
+        "repository_id",
+        "stream_id",
+        "sequence",
+        "snapshot_id",
+        "snapshot_kind",
+        "capture_status",
+        "manifest"
+      ]
+    },
+    "EngineeringSourceRecordResult": {
+      "title": "EngineeringSourceRecordResult",
+      "description": "Result of `engineering.source.record`: the stored event's identity and manifest digest, whether this delivery recorded it or found it already recorded, and the stream's coverage barrier as committed with it.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The repository the stream is bound to."
+        },
+        "stream_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The source stream."
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "The event's sequence within the stream.",
+          "minimum": 1
+        },
+        "snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The recorded snapshot."
+        },
+        "manifest_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The server-computed digest of the canonical manifest."
+        },
+        "capture_status": {
+          "type": "string",
+          "description": "The recorded capture coverage.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "disposition": {
+          "type": "string",
+          "description": "Open, bounded code: `recorded` for a new event, `already_recorded` when an identical event was already stored; a duplicate delivery never creates a second event.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "coverage": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceStreamCoverage",
+          "description": "The stream's coverage barrier, committed with this record."
+        },
+        "recorded_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Server-owned time the event was first recorded."
+        },
+        "audit_reference": {
+          "type": "string",
+          "description": "Audit reference for this delivery.",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "repository_id",
+        "stream_id",
+        "sequence",
+        "snapshot_id",
+        "manifest_digest",
+        "capture_status",
+        "disposition",
+        "coverage",
+        "recorded_at",
         "audit_reference"
       ]
     }

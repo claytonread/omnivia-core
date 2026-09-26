@@ -67,6 +67,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "chat",
     "runtime",
     "decision",
+    "engineering",
 )
 
 
