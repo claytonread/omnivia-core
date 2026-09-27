@@ -345,10 +345,22 @@ class ContinuityHandlers:
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection, identity, guard = self._authority()
+        association = context.authorization.continuity_association
+        equivalence_input: Mapping[str, Any] = request.to_wire()
+        if association is not None:
+            # Idempotency keys are principal/workspace scoped by the public
+            # contract.  The trusted adapter association is narrower authority:
+            # including its one-way server key in the fingerprint prevents two
+            # same-principal clients that happen to reuse a key from replaying
+            # one another's registration result.
+            equivalence_input = {
+                "request": equivalence_input,
+                "trusted_adapter_association": association.storage_key,
+            }
         equivalence = idempotency_equivalence(
             context.request.operation,
             context.request.metadata,
-            request.to_wire(),
+            equivalence_input,
             principal_id=context.principal,
             workspace_id=context.workspace_id,
         )
@@ -373,13 +385,27 @@ class ContinuityHandlers:
                 )
             session_id = self.allocate_identifier("esess")
             now_us = settlement.settled_at_us
+            binding_generation = 1
+            host_session_ref = request.host_session_ref
+            if association is not None:
+                binding_generation = storage.next_association_binding_generation(
+                    fenced,
+                    workspace_id=context.workspace_id,
+                    principal_id=context.principal,
+                    association_key=association.storage_key,
+                )
+                host_session_ref = storage.associated_host_session_ref(
+                    association.storage_key,
+                    request.host_session_ref,
+                )
             storage.register_session(
                 fenced,
                 settlement,
                 workspace_id=context.workspace_id,
                 session_id=session_id,
                 principal_id=context.principal,
-                host_session_ref=request.host_session_ref,
+                binding_generation=binding_generation,
+                host_session_ref=host_session_ref,
                 checkout_hint=request.checkout_hint,
                 repository_target=(
                     None if request.repository_target is None
@@ -391,7 +417,7 @@ class ContinuityHandlers:
                 "session_id": session_id,
                 "principal_id": context.principal,
                 "workspace_id": context.workspace_id,
-                "binding_generation": 1,
+                "binding_generation": binding_generation,
                 "lease_expires_at": _timestamp(
                     now_us + storage.SESSION_LEASE_SECONDS * 1_000_000
                 ),

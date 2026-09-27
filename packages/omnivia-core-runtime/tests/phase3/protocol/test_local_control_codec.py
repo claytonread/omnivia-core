@@ -99,7 +99,7 @@ def test_a_control_request_never_renders_its_bearer() -> None:
     [
         pytest.param({"kind": "application.call"}, id="no version member"),
         pytest.param(
-            application_call(**{LOCAL_CONTROL_FIELD: "omnivia.local-control.v2"}),
+            application_call(**{LOCAL_CONTROL_FIELD: "omnivia.local-control.v3"}),
             id="a version this build does not speak",
         ),
         pytest.param(
@@ -153,6 +153,15 @@ def test_a_control_request_never_renders_its_bearer() -> None:
     ],
 )
 def test_every_inadmissible_control_is_refused(document: dict[str, object]) -> None:
+    with pytest.raises(LocalControlRefusal) as refused:
+        decode_local_control(document)
+    assert refused.value.code is LocalControlError.MALFORMED
+
+
+def test_a_v1_follower_request_is_refused_by_the_v2_owner() -> None:
+    document = application_call(
+        **{LOCAL_CONTROL_FIELD: "omnivia.local-control.v1"}
+    )
     with pytest.raises(LocalControlRefusal) as refused:
         decode_local_control(document)
     assert refused.value.code is LocalControlError.MALFORMED

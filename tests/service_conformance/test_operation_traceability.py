@@ -10,7 +10,7 @@ claiming a result.
 
 MCP and CLI are not service adapters here. Each is a single top-level
 client-surface decision, never a per-operation applicability claim. Format
-``v1.1`` records the accepted MCP mapping: the nineteen operations the curated
+``v1.1`` records the accepted MCP mapping: the eighteen operations the curated
 MCP exposure manifest allow-lists, each with its tool name, and every other
 catalogue operation as an intentional omission with its reason. The CLI
 mapping is still not decided, and neither surface's evidence is evaluated
@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.2",
+    "manifest_version": "2.3",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -86,7 +86,6 @@ MCP_EXPOSED = (
     ("engineering.search", "engineering_search"),
     ("engineering.expand", "engineering_expand"),
     ("engineering.context.build", "engineering_context_build"),
-    ("continuity.handoff.read", "continuity_handoff_read"),
     ("decision.evaluate", "decision_evaluate"),
     ("decision.record.get", "decision_record_get"),
     ("decision.record.list", "decision_record_list"),
@@ -282,8 +281,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 19
-    assert len(omitted) == 35
+    assert len(exposed) == 18
+    assert len(omitted) == 36
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -320,6 +319,7 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
     assert reads_omitted == {
         "chat.events",
         "chat.snapshot",
+        "continuity.handoff.read",
         "decision.definition.get",
         "decision.definition.list",
         "decision.model.list",

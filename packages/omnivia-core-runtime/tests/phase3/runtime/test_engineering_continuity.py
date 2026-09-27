@@ -16,6 +16,7 @@ the `resume` pack. Another principal's are indistinguishable from missing ones.
 from __future__ import annotations
 
 import dataclasses
+import http.client
 import json
 import socket
 import sqlite3
@@ -39,15 +40,28 @@ from omnivia_core_runtime.service.application import (
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    ContinuityAssociationProvenance,
     ContinuityBindingProvenance,
+    TrustedContinuityAssociation,
     TrustedContinuityBinding,
 )
 from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
+from omnivia_core_runtime.service.http_transport import (
+    APPLICATION_PATH,
+    CONTENT_TYPE,
+    HttpBind,
+    HttpListener,
+)
 from omnivia_core_runtime.service.operations import (
     OperationContext,
     OperationError,
 )
-from omnivia_core_runtime.service.ovc1 import HEADER_BYTES, decode_frame, encode_frame
+from omnivia_core_runtime.service.ovc1 import (
+    HEADER_BYTES,
+    canonical_json_bytes,
+    decode_frame,
+    encode_frame,
+)
 from omnivia_core_runtime.service.pagination import PROCESS_CONTINUATION_TOKENS
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -613,12 +627,481 @@ def _stated(version: str) -> dict[str, Any]:
     return {"mutation_precondition": MutationPrecondition(record_version=version)}
 
 
+def _production_envelope(
+    sequence: int,
+    operation: str,
+    payload: dict[str, Any],
+    *,
+    key: str | None = None,
+    version: str | None = None,
+) -> Any:
+    entry = get_operation_metadata(operation)
+    metadata: dict[str, Any] = {
+        "request_id": f"req-associated-{sequence}",
+        "correlation_id": f"cor-associated-{sequence}",
+        "trace_id": f"trc-associated-{sequence}",
+        "purpose": ENGINEERING_FAMILY_PURPOSES[operation],
+        "workspace_id": sc.WORKSPACE_ID,
+    }
+    if key is not None:
+        metadata["idempotency_key"] = key
+    if version is not None:
+        metadata["mutation_precondition"] = MutationPrecondition(
+            record_version=version
+        )
+    return s0.envelope_for(entry, operation_input=payload, **metadata)
+
+
+def _associated_session(name: str) -> AuthenticatedSession:
+    return dataclasses.replace(
+        OWNER,
+        continuity_association=TrustedContinuityAssociation(
+            association_id=name,
+            principal_id=OWNER.principal_id,
+            workspace_id=sc.WORKSPACE_ID,
+            provenance=ContinuityAssociationProvenance.AUTHENTICATED_HTTP_CONNECTION,
+        ),
+    )
+
+
 def _settled(workspace: Any) -> list[list[Any]]:
     connection = workspace.holder.connection
     return [
         connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
         for table in _SETTLED_TABLES
     ]
+
+
+def test_production_local_association_survives_processes_and_restart(
+    workspace: Any,
+) -> None:
+    """The real local dispatch path retains no caller object between calls."""
+    registered = workspace.surface.dispatch(
+        _production_envelope(
+            1,
+            "continuity.session.register",
+            _register_input(host_session_ref="caller-correlation-only"),
+            key="idem-associated-register",
+        )
+    )
+    assert isinstance(registered, SuccessResponseEnvelope), registered
+    binding = registered.to_wire()["result"]["session"]
+    assert binding["binding_generation"] == 2
+    session_id = binding["session_id"]
+    stored_ref = workspace.holder.connection.execute(
+        "SELECT host_session_ref FROM omnivia_engineering_sessions "
+        "WHERE workspace_id = ? AND session_id = ?",
+        (sc.WORKSPACE_ID, session_id),
+    ).fetchone()[0]
+    assert stored_ref.startswith("core-association.v1:sha256:")
+    assert "caller-correlation-only" not in stored_ref
+
+    append = workspace.surface.dispatch(
+        _production_envelope(
+            2,
+            "continuity.checkpoint.append",
+            _append_input(
+                session_id,
+                binding_generation=999,
+                principal_id="payload-substitution",
+                workspace_id="payload-substitution",
+            ),
+            key="idem-associated-append",
+            version="seq-0",
+        )
+    )
+    assert isinstance(append, SuccessResponseEnvelope), append
+    checkpoint_id = append.to_wire()["result"]["receipt"]["checkpoint_id"]
+
+    workspace.restart()
+    handoff = workspace.surface.dispatch(
+        _production_envelope(
+            3,
+            "continuity.handoff.read",
+            {"checkpoint_id": checkpoint_id},
+        )
+    )
+    assert isinstance(handoff, SuccessResponseEnvelope), handoff
+    assert handoff.to_wire()["result"]["handoff"]["checkpoint_id"] == checkpoint_id
+
+
+def test_legacy_caller_host_reference_cannot_become_a_trusted_association(
+    workspace: Any,
+) -> None:
+    associated = _associated_session("http-upgrade-association")
+    assert associated.continuity_association is not None
+    forged_reference = continuity_storage.associated_host_session_ref(
+        associated.continuity_association.storage_key,
+        None,
+    )
+    registered = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            1,
+            "continuity.session.register",
+            _register_input(host_session_ref=forged_reference),
+            key="idem-legacy-association-lookalike",
+        ),
+        OWNER,
+    )
+    assert isinstance(registered, SuccessResponseEnvelope), registered
+    binding = registered.to_wire()["result"]["session"]
+    assert binding["binding_generation"] == 1
+
+    before = _settled(workspace)
+    refused = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            2,
+            "continuity.checkpoint.append",
+            _append_input(binding["session_id"]),
+            key="idem-legacy-association-append",
+            version="seq-0",
+        ),
+        associated,
+    )
+    assert isinstance(refused, ErrorResponseEnvelope), refused
+    assert refused.error.code == ERROR_CODE_AUTHORIZATION_DENIED
+    assert _settled(workspace) == before
+
+
+def test_two_same_principal_associations_are_isolated_before_storage(
+    workspace: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_session = _associated_session("http-client-a")
+    second_session = _associated_session("http-client-b")
+    registrations: list[dict[str, Any]] = []
+    for number, session in enumerate((first_session, second_session), start=1):
+        response = workspace.surface.dispatch_for_session(
+            _production_envelope(
+                number,
+                "continuity.session.register",
+                _register_input(),
+                key=f"idem-associated-register-{number}",
+            ),
+            session,
+        )
+        assert isinstance(response, SuccessResponseEnvelope), response
+        registrations.append(response.to_wire()["result"]["session"])
+    first_id, second_id = (entry["session_id"] for entry in registrations)
+    assert first_id != second_id
+
+    before = _settled(workspace)
+
+    def unexpected_storage(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a substituted session reached continuity storage")
+
+    monkeypatch.setattr(continuity_storage, "read_bound_session", unexpected_storage)
+    refused = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            3,
+            "continuity.checkpoint.append",
+            _append_input(first_id),
+            key="idem-associated-substitution",
+            version="seq-0",
+        ),
+        second_session,
+    )
+    assert isinstance(refused, ErrorResponseEnvelope), refused
+    assert refused.error.code == ERROR_CODE_NOT_FOUND
+    assert _settled(workspace) == before
+
+
+def test_same_principal_associations_cannot_replay_each_others_registration(
+    workspace: Any,
+) -> None:
+    first_session = _associated_session("http-replay-a")
+    second_session = _associated_session("http-replay-b")
+    request = _production_envelope(
+        1,
+        "continuity.session.register",
+        _register_input(),
+        key="idem-shared-across-associations",
+    )
+    first = workspace.surface.dispatch_for_session(request, first_session)
+    assert isinstance(first, SuccessResponseEnvelope), first
+
+    refused = workspace.surface.dispatch_for_session(request, second_session)
+    assert isinstance(refused, ErrorResponseEnvelope), refused
+    assert refused.error.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
+
+    second = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            2,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-second-association",
+        ),
+        second_session,
+    )
+    assert isinstance(second, SuccessResponseEnvelope), second
+    assert (
+        second.to_wire()["result"]["session"]["session_id"]
+        != first.to_wire()["result"]["session"]["session_id"]
+    )
+
+
+def test_association_resolution_cannot_bypass_a_configured_binding_ceiling(
+    workspace: Any,
+) -> None:
+    first_session = _associated_session("http-ceiling-a")
+    second_session = _associated_session("http-ceiling-b")
+    registered: list[dict[str, Any]] = []
+    for number, session in enumerate((first_session, second_session), start=1):
+        response = workspace.surface.dispatch_for_session(
+            _production_envelope(
+                number,
+                "continuity.session.register",
+                _register_input(),
+                key=f"idem-ceiling-register-{number}",
+            ),
+            session,
+        )
+        assert isinstance(response, SuccessResponseEnvelope), response
+        registered.append(response.to_wire()["result"])
+
+    configured_binding = _trusted_registration_binding(registered[0])
+    route = workspace.surface._routes["continuity.checkpoint.append"]
+    configured_route = dataclasses.replace(
+        route,
+        session=dataclasses.replace(
+            route.session,
+            continuity_binding=configured_binding,
+        ),
+    )
+    before = _settled(workspace)
+    refused = configured_route.dispatch_for_session(
+        _production_envelope(
+            3,
+            "continuity.checkpoint.append",
+            _append_input(registered[1]["session"]["session_id"]),
+            key="idem-ceiling-append",
+            version="seq-0",
+        ),
+        second_session,
+    )
+    assert isinstance(refused, ErrorResponseEnvelope), refused
+    assert refused.error.code == ERROR_CODE_AUTHORIZATION_DENIED
+    assert _settled(workspace) == before
+
+
+def test_association_resolution_cannot_bypass_a_configured_association_ceiling(
+    workspace: Any,
+) -> None:
+    first_session = _associated_session("http-association-ceiling-a")
+    second_session = _associated_session("http-association-ceiling-b")
+    registered = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            1,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-association-ceiling-register",
+        ),
+        second_session,
+    )
+    assert isinstance(registered, SuccessResponseEnvelope), registered
+    session_id = registered.to_wire()["result"]["session"]["session_id"]
+
+    route = workspace.surface._routes["continuity.checkpoint.append"]
+    configured_route = dataclasses.replace(
+        route,
+        session=dataclasses.replace(
+            route.session,
+            continuity_association=first_session.continuity_association,
+        ),
+    )
+    before = _settled(workspace)
+    refused = configured_route.dispatch_for_session(
+        _production_envelope(
+            2,
+            "continuity.checkpoint.append",
+            _append_input(session_id),
+            key="idem-association-ceiling-append",
+            version="seq-0",
+        ),
+        second_session,
+    )
+    assert isinstance(refused, ErrorResponseEnvelope), refused
+    assert refused.error.code == ERROR_CODE_AUTHORIZATION_DENIED
+    assert _settled(workspace) == before
+
+
+def test_http_resolver_associations_bind_two_same_principal_clients(
+    workspace: Any,
+) -> None:
+    sessions = {
+        "credential-a": _associated_session("http-credential-a"),
+        "credential-b": _associated_session("http-credential-b"),
+        "credential-unbound": dataclasses.replace(
+            OWNER,
+            continuity_binding=None,
+            continuity_association=None,
+        ),
+    }
+    router = DocumentRouter(
+        probes=ProbeRouter(
+            facts=lambda: ServiceFacts(
+                observed_at="2026-09-28T00:00:00Z",
+                health_status="pass",
+                readiness_status="pass",
+                discovery_status="pass",
+            ),
+            capabilities=tuple,
+            clock=lambda: 0,
+        ),
+        dispatch=workspace.surface.dispatch,
+    )
+    listener = HttpListener(
+        router=router,
+        principal=OWNER.principal_id,
+        resolver=lambda credential: sessions.get(credential),
+        authenticated_dispatch=workspace.surface.dispatch_for_session,
+        bind=HttpBind(host="127.0.0.1", port=0),
+        gate=RLock(),
+    )
+
+    def post(request: Any, credential: str) -> Any:
+        port = int(listener.url.rsplit(":", 1)[1])
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            connection.request(
+                "POST",
+                APPLICATION_PATH,
+                body=canonical_json_bytes(request.to_wire()),
+                headers={
+                    "Authorization": f"Bearer {credential}",
+                    "Content-Type": CONTENT_TYPE,
+                },
+            )
+            response = connection.getresponse()
+            body = response.read()
+        finally:
+            connection.close()
+        assert response.status == 200
+        return decode_response(json.loads(body))
+
+    listener.start()
+    try:
+        bindings: dict[str, dict[str, Any]] = {}
+        for number, credential in enumerate(
+            ("credential-a", "credential-b"), start=1
+        ):
+            registered = post(
+                _production_envelope(
+                    number,
+                    "continuity.session.register",
+                    _register_input(),
+                    key=f"idem-http-register-{number}",
+                ),
+                credential,
+            )
+            assert isinstance(registered, SuccessResponseEnvelope), registered
+            bindings[credential] = registered.to_wire()["result"]["session"]
+
+        valid = post(
+            _production_envelope(
+                3,
+                "continuity.checkpoint.append",
+                _append_input(bindings["credential-a"]["session_id"]),
+                key="idem-http-valid",
+                version="seq-0",
+            ),
+            "credential-a",
+        )
+        assert isinstance(valid, SuccessResponseEnvelope), valid
+
+        substituted = post(
+            _production_envelope(
+                4,
+                "continuity.checkpoint.append",
+                _append_input(bindings["credential-a"]["session_id"]),
+                key="idem-http-substituted",
+                version="seq-1",
+            ),
+            "credential-b",
+        )
+        assert isinstance(substituted, ErrorResponseEnvelope), substituted
+        assert substituted.error.code == ERROR_CODE_NOT_FOUND
+
+        missing = post(
+            _production_envelope(
+                5,
+                "continuity.checkpoint.append",
+                _append_input(bindings["credential-a"]["session_id"]),
+                key="idem-http-missing-binding",
+                version="seq-1",
+            ),
+            "credential-unbound",
+        )
+        assert isinstance(missing, ErrorResponseEnvelope), missing
+        assert missing.error.code == ERROR_CODE_AUTHORIZATION_DENIED
+    finally:
+        listener.stop()
+
+
+def test_rebinding_one_association_fences_its_stale_session_before_replay(
+    workspace: Any,
+) -> None:
+    session = _associated_session("http-rebinding-client")
+    first_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            1,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-rebinding-register-1",
+        ),
+        session,
+    )
+    assert isinstance(first_response, SuccessResponseEnvelope), first_response
+    first = first_response.to_wire()["result"]["session"]
+    appended = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            2,
+            "continuity.checkpoint.append",
+            _append_input(first["session_id"]),
+            key="idem-rebinding-append",
+            version="seq-0",
+        ),
+        session,
+    )
+    assert isinstance(appended, SuccessResponseEnvelope), appended
+
+    second_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            3,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-rebinding-register-2",
+        ),
+        session,
+    )
+    assert isinstance(second_response, SuccessResponseEnvelope), second_response
+    second = second_response.to_wire()["result"]["session"]
+    assert [first["binding_generation"], second["binding_generation"]] == [2, 3]
+
+    stale = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            4,
+            "continuity.checkpoint.append",
+            _append_input(first["session_id"]),
+            key="idem-rebinding-append",
+            version="seq-0",
+        ),
+        session,
+    )
+    assert isinstance(stale, ErrorResponseEnvelope), stale
+    assert stale.error.code == ERROR_CODE_NOT_FOUND
+
+    current = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            5,
+            "continuity.checkpoint.append",
+            _append_input(second["session_id"]),
+            key="idem-rebinding-current",
+            version="seq-0",
+        ),
+        session,
+    )
+    assert isinstance(current, SuccessResponseEnvelope), current
 
 
 def test_continuity_operations_require_a_server_established_binding(

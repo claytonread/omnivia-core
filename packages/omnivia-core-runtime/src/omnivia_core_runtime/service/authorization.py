@@ -23,6 +23,7 @@ principle applied one layer up.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -362,6 +363,54 @@ class ContinuityBindingProvenance(str, Enum):
     VALIDATED_REGISTRATION = "validated_registration"
 
 
+class ContinuityAssociationProvenance(str, Enum):
+    """The server boundary that owns one durable continuity association.
+
+    These labels describe only Core-owned transport state.  They are never
+    accepted from an application request and do not claim that a provider
+    conversation identifier was verified.
+    """
+
+    CORE_LOCAL_CONNECTION = "core_local_connection"
+    AUTHENTICATED_HTTP_CONNECTION = "authenticated_http_connection"
+    INSTALLED_MCP_CONNECTION = "installed_mcp_connection"
+
+
+@dataclass(frozen=True)
+class TrustedContinuityAssociation:
+    """A stable authenticated adapter association, before it has a binding.
+
+    Registration persists a one-way key derived from this value.  Later
+    processes carrying the same server-established association can resolve the
+    settled registration without accepting a session or generation from the
+    operation payload.
+    """
+
+    association_id: str
+    principal_id: str
+    workspace_id: str
+    provenance: ContinuityAssociationProvenance
+
+    def __post_init__(self) -> None:
+        if not _IDENTIFIER.admits(self.association_id):
+            raise ValueError("continuity association id is outside the identifier domain")
+        if not _IDENTIFIER.admits(self.principal_id):
+            raise ValueError("continuity association principal is outside the identifier domain")
+        if not _WORKSPACE_ID.admits(self.workspace_id):
+            raise ValueError("continuity association workspace is outside the workspace domain")
+        if not isinstance(self.provenance, ContinuityAssociationProvenance):
+            raise TypeError("continuity association provenance must be trusted and typed")
+
+    @property
+    def storage_key(self) -> str:
+        """Return the bounded non-reversible key persisted with registrations."""
+        material = (
+            f"{self.provenance.value}\n{self.association_id}\n"
+            f"{self.principal_id}\n{self.workspace_id}"
+        ).encode()
+        return "sha256:" + hashlib.sha256(material).hexdigest()
+
+
 @dataclass(frozen=True)
 class TrustedContinuityBinding:
     """One server-established continuity session carried with caller authority.
@@ -533,6 +582,7 @@ class AuthenticatedSession:
     purposes: frozenset[str] = frozenset()
     capabilities: tuple[CapabilityRef, ...] = ()
     continuity_binding: TrustedContinuityBinding | None = None
+    continuity_association: TrustedContinuityAssociation | None = None
 
     def __post_init__(self) -> None:
         """Take an owned, checked copy of every grant before the session can be used.
@@ -557,6 +607,18 @@ class AuthenticatedSession:
             if continuity.workspace_id not in self.workspaces:
                 raise ValueError(
                     "continuity binding workspace must be among the session grants"
+                )
+        association = self.continuity_association
+        if association is not None:
+            if not isinstance(association, TrustedContinuityAssociation):
+                raise TypeError("continuity association must be trusted and typed")
+            if association.principal_id != self.principal_id:
+                raise ValueError(
+                    "continuity association principal must match the authenticated principal"
+                )
+            if association.workspace_id not in self.workspaces:
+                raise ValueError(
+                    "continuity association workspace must be among the session grants"
                 )
 
 
@@ -622,6 +684,7 @@ class AuthorizedApplicationContext:
     idempotency_key: str | None = None
     mutation_precondition: MutationPrecondition | None = None
     continuity_binding: TrustedContinuityBinding | None = None
+    continuity_association: TrustedContinuityAssociation | None = None
 
     @property
     def authority(self) -> GrantedAuthority:
@@ -1127,6 +1190,7 @@ def authorize_application_request(
         idempotency_key=metadata.idempotency_key,
         mutation_precondition=metadata.mutation_precondition,
         continuity_binding=session.continuity_binding,
+        continuity_association=session.continuity_association,
     )
 
 
@@ -1135,9 +1199,11 @@ __all__ = [
     "AuthenticatedSession",
     "AuthorizationDenied",
     "AuthorizedApplicationContext",
+    "ContinuityAssociationProvenance",
     "ContinuityBindingProvenance",
     "Grant",
     "ServiceBinding",
+    "TrustedContinuityAssociation",
     "TrustedContinuityBinding",
     "authorize",
     "authorize_application_request",

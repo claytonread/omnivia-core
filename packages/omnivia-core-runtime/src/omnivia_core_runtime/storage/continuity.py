@@ -26,6 +26,7 @@ serve as accepted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -53,6 +54,9 @@ CHECKPOINT_PAYLOAD_CAP_BYTES: Final = 262144
 #: revocation belong to a later lifecycle slice.
 SESSION_LEASE_SECONDS: Final = 24 * 60 * 60
 
+_ASSOCIATION_REF_PREFIX: Final = "core-association.v1:"
+_ASSOCIATION_GENERATION_FLOOR: Final = 2
+
 
 class SessionNotFound(LookupError):
     """No such continuity session in this workspace for this principal."""
@@ -77,6 +81,113 @@ class ParentCheckpointMismatch(RuntimeError):
 
 class PayloadTooLarge(RuntimeError):
     """The canonical checkpoint payload exceeds the 256 KiB cap."""
+
+
+def _association_prefix(association_key: str) -> str:
+    if (
+        not association_key.startswith("sha256:")
+        or len(association_key) != len("sha256:") + 64
+    ):
+        raise ValueError("continuity association key is not a sha256 digest")
+    return f"{_ASSOCIATION_REF_PREFIX}{association_key}:"
+
+
+def associated_host_session_ref(
+    association_key: str,
+    host_session_ref: str | None,
+) -> str:
+    """Encode trusted association identity plus a safe host-correlation digest.
+
+    The caller's opaque host reference remains correlation only: its digest is
+    retained, while the equality key comes solely from server-established
+    association state.
+    """
+    correlation = (
+        "none"
+        if host_session_ref is None
+        else "sha256:" + hashlib.sha256(host_session_ref.encode("utf-8")).hexdigest()
+    )
+    return _association_prefix(association_key) + correlation
+
+
+def next_association_binding_generation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+) -> int:
+    """Allocate the next generation for one trusted adapter association.
+
+    Generation one is reserved for legacy/unassociated registrations.  This is
+    the no-migration discriminator that prevents a historical caller-chosen host
+    reference from being reinterpreted as authenticated association state.
+    """
+    prefix = _association_prefix(association_key)
+    row = connection.execute(
+        f"SELECT MAX(binding_generation) FROM {_SESSIONS_TABLE} "
+        "WHERE workspace_id = ? AND principal_id = ? "
+        "AND binding_generation >= ? "
+        "AND substr(host_session_ref, 1, ?) = ?",
+        (
+            workspace_id,
+            principal_id,
+            _ASSOCIATION_GENERATION_FLOOR,
+            len(prefix),
+            prefix,
+        ),
+    ).fetchone()
+    latest = None if row is None else row[0]
+    return _ASSOCIATION_GENERATION_FLOOR if latest is None else int(latest) + 1
+
+
+def read_associated_session(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+) -> dict[str, Any] | None:
+    """Resolve the unique newest settled binding for an authenticated adapter.
+
+    No selector from the operation payload participates.  A duplicate newest
+    generation is ambiguous and fails closed.
+    """
+    prefix = _association_prefix(association_key)
+    rows = connection.execute(
+        f"SELECT session_id, principal_id, state, binding_generation, "
+        "lease_expires_at_us, host_session_ref, checkout_hint, "
+        "repository_target_json, registered_at_us, closed_at_us, "
+        "last_checkpoint_sequence, last_checkpoint_id "
+        f"FROM {_SESSIONS_TABLE} WHERE workspace_id = ? AND principal_id = ? "
+        "AND binding_generation >= ? "
+        "AND substr(host_session_ref, 1, ?) = ? "
+        "ORDER BY binding_generation DESC, session_id ASC LIMIT 2",
+        (
+            workspace_id,
+            principal_id,
+            _ASSOCIATION_GENERATION_FLOOR,
+            len(prefix),
+            prefix,
+        ),
+    ).fetchall()
+    if not rows or (len(rows) > 1 and rows[0][3] == rows[1][3]):
+        return None
+    row = rows[0]
+    return {
+        "session_id": row[0],
+        "principal_id": row[1],
+        "state": row[2],
+        "binding_generation": row[3],
+        "lease_expires_at_us": row[4],
+        "host_session_ref": row[5],
+        "checkout_hint": row[6],
+        "repository_target": None if row[7] is None else json.loads(row[7]),
+        "registered_at_us": row[8],
+        "closed_at_us": row[9],
+        "last_checkpoint_sequence": row[10],
+        "last_checkpoint_id": row[11],
+    }
 
 
 def _plain(value: Any) -> Any:

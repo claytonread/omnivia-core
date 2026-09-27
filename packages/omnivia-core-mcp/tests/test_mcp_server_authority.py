@@ -94,7 +94,6 @@ ALL_PURPOSES = [
     "engineering_search",
     "engineering_expand",
     "engineering_context",
-    "continuity_handoff",
     "decision_evaluation",
     "decision_record",
     "decision_status",
@@ -169,7 +168,6 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
         "targets": [{"snapshot_id": "esnap-a", "snapshot_kind": "git_commit"}],
         "profile": "investigate",
     },
-    "continuity_handoff_read": {"checkpoint_id": "eck-1"},
     "decision_evaluate": {
         "input": {
             "schema_version": "decision.1",
@@ -659,7 +657,7 @@ def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
     a tool that does not exist. The purpose is enforced on call instead.
 
     Asserted over three configurations that differ only in `allowed_purposes`,
-    including one that allows nothing either profile claims: the fourteen names come
+    including one that allows nothing either profile claims: the thirteen names come
     back unchanged every time, so the listing is the profile's and the purposes
     are a per-call check that never reaches it.
     """
@@ -676,7 +674,7 @@ def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
 
 
 def test_the_default_session_profile_is_restricted() -> None:
-    """A session built without naming a profile advertises the restricted fourteen.
+    """A session built without naming a profile advertises the restricted thirteen.
 
     The failure mode this default should have: code that predates profiles, or a
     future constructor that forgets to pass one, gets the narrow inventory rather
@@ -841,7 +839,7 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_fourteen_and_nineteen() -> None:
+def test_the_two_inventories_are_the_frozen_thirteen_and_eighteen() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
@@ -849,10 +847,10 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_nineteen() -> None:
     at all, which is what makes the refusal below a policy rather than a message.
     """
     restricted, authoring = session(), authoring_session()
-    assert len(listed(restricted)) == 14
-    assert len(listed(authoring)) == 19
-    assert listed(authoring)[:14] == listed(restricted)
-    assert listed(authoring)[14:] == [
+    assert len(listed(restricted)) == 13
+    assert len(listed(authoring)) == 18
+    assert listed(authoring)[:13] == listed(restricted)
+    assert listed(authoring)[13:] == [
         "memory_create",
         "evidence_capture",
         "import_start",
@@ -883,7 +881,7 @@ def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) 
     assert result.is_error is True
     assert result.structured_content is None
     assert "is not a tool this server exposes" in result.content[0].text
-    # And the refusal offers what *is* available: the fourteen shared tools.
+    # And the refusal offers what *is* available: the thirteen shared tools.
     offered = result.content[0].text.split("Available: ", 1)[1]
     available = offered.rstrip(".").split(", ")
     assert available == [entry.tool_name for entry in EXPOSURE_MANIFEST]
@@ -967,7 +965,7 @@ def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability()
     None
 ):
     """Read off the frozen catalogue entry and the manifest, never transcribed --
-    for the five wider tools as much as for the fourteen shared tools.
+    for the five wider tools as much as for the thirteen shared tools.
 
     The purposes are the service's own (`memory_authoring`, `content_ingestion`,
     `job_observation`), so a request states the claim the grant is checked
@@ -2064,7 +2062,7 @@ def test_an_installed_session_dispatches_every_tool_call_authenticated() -> None
             ),
         )
         return {
-            "local_control_result": "omnivia.local-control.v1",
+            "local_control_result": "omnivia.local-control.v2",
             "kind": "application.call",
             "result": {
                 "response": codec.encode_response(
@@ -2088,7 +2086,7 @@ def test_an_installed_session_dispatches_every_tool_call_authenticated() -> None
     assert result.is_error is not True
     assert len(peer.exchanges) == 1
     written = peer.exchanges[0]
-    assert written["local_control"] == "omnivia.local-control.v1"
+    assert written["local_control"] == "omnivia.local-control.v2"
     assert written["kind"] == "application.call"
     assert written["credential"] == INSTALLED_SECRET
     assert written["request"]["operation"] == "workspace.inspect"

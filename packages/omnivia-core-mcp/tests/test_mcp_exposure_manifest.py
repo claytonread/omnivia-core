@@ -12,9 +12,10 @@ long-standing reads plus the four decision tools, one of which,
 exactly four mutations and one job-observation read. `1.1` was the six reads
 alone and had no notion of a profile; `1.0` advertised `workspace.inspect`
 alone with no output schema. `2.1` added the Engineering Memory reads,
-continuity handoff, and checkpoint append. `2.2` withdraws checkpoint append
-from the `authoring` profile -- the restricted fourteen and the authoring
-nineteen, adding exactly five: three mutations and two job-observation reads.
+continuity handoff, and checkpoint append. `2.2` withdrew checkpoint append;
+`2.3` also withdraws handoff until MCP has a safe session-sharing mechanism --
+the restricted thirteen and the authoring eighteen, adding exactly five: three
+mutations and two job-observation reads.
 Everything below that reads as new coverage rather than as a rewrite is the
 difference between those facts.
 """
@@ -56,7 +57,6 @@ EXPECTED_RESTRICTED = (
     ("engineering_search", "engineering.search", "engineering_search"),
     ("engineering_expand", "engineering.expand", "engineering_expand"),
     ("engineering_context_build", "engineering.context.build", "engineering_context"),
-    ("continuity_handoff_read", "continuity.handoff.read", "continuity_handoff"),
     ("decision_evaluate", "decision.evaluate", "decision_evaluation"),
     ("decision_record_get", "decision.record.get", "decision_record"),
     ("decision_record_list", "decision.record.list", "decision_record"),
@@ -102,6 +102,9 @@ FORBIDDEN = (
     "record.supersede",  # destructive mutation
     "job.cancel",  # job control, not job observation
     "job.retry",  # job control, not job observation
+    "continuity.session.register",  # trusted host/SDK registration only
+    "continuity.checkpoint.append",  # no model-owned binding authority
+    "continuity.handoff.read",  # no MCP session-sharing authority yet
 )
 
 #: The absolute base every canonical Application Contract v1 reference carries,
@@ -164,22 +167,22 @@ def test_the_exposed_surface_is_exactly_the_reviewed_inventory_in_order(
     )
 
 
-def test_the_two_profiles_are_exactly_fourteen_and_nineteen_tools() -> None:
+def test_the_two_profiles_are_exactly_thirteen_and_eighteen_tools() -> None:
     """The counts the requirements fix, asserted as counts as well as names: a
     listing that gained a tool and lost one would satisfy neither line."""
-    assert len(manifest.exposure_manifest("restricted")) == 14
-    assert len(manifest.exposure_manifest("authoring")) == 19
-    assert len(manifest.tools("restricted")) == 14
-    assert len(manifest.tools("authoring")) == 19
+    assert len(manifest.exposure_manifest("restricted")) == 13
+    assert len(manifest.exposure_manifest("authoring")) == 18
+    assert len(manifest.tools("restricted")) == 13
+    assert len(manifest.tools("authoring")) == 18
 
 
-def test_the_authoring_profile_is_the_restricted_fourteen_plus_five() -> None:
-    """Concatenation, not a second listing of the shared fourteen: the profiles cannot
+def test_the_authoring_profile_is_the_restricted_thirteen_plus_five() -> None:
+    """Concatenation, not a second listing of the shared thirteen: the profiles cannot
     drift in a tool name, a title or a description they both advertise."""
     restricted = manifest.exposure_manifest("restricted")
-    assert manifest.exposure_manifest("authoring")[:14] == restricted
+    assert manifest.exposure_manifest("authoring")[:13] == restricted
     assert [
-        entry.tool_name for entry in manifest.exposure_manifest("authoring")[14:]
+        entry.tool_name for entry in manifest.exposure_manifest("authoring")[13:]
     ] == [
         "memory_create", "evidence_capture", "import_start", "job_get",
         "job_events",
@@ -190,7 +193,7 @@ def test_restricted_is_the_safe_default_for_a_caller_that_names_no_profile() -> 
     """`EXPOSURE_MANIFEST`, `tools()` and `exposed_by_tool_name()` all answer with
     the read-only surface when nobody says otherwise. A caller written before
     profiles existed -- the server's `tools/list` handler among them -- advertises
-    fourteen tools rather than nineteen, which is the failure mode this default
+    thirteen tools rather than eighteen, which is the failure mode this default
     should have."""
     assert manifest.EXPOSURE_MANIFEST == manifest.exposure_manifest("restricted")
     assert manifest.tools() is manifest.tools("restricted")
@@ -255,14 +258,14 @@ def test_the_manifest_version_names_this_surface() -> None:
     minor one: a cached `1.1` listing is not a subset of what this advertises,
     it is the whole of one of two answers.
     """
-    assert manifest.MANIFEST_VERSION == "2.2"
+    assert manifest.MANIFEST_VERSION == "2.3"
 
 
 def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
     """The purpose is a claim the request states and the service checks against
     its own grant, so the claim has to be the one the grant allows -- a purpose
     invented here would be refused at the first call rather than caught by
-    review. Twelve purposes across nineteen tools, not one per operation."""
+    review. Eleven purposes across eighteen tools, not one per operation."""
     purposes = {
         entry.operation: entry.purpose
         for entry in manifest.exposure_manifest("authoring")
@@ -277,7 +280,6 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
         "engineering.search": "engineering_search",
         "engineering.expand": "engineering_expand",
         "engineering.context.build": "engineering_context",
-        "continuity.handoff.read": "continuity_handoff",
         "decision.evaluate": "decision_evaluation",
         "decision.record.get": "decision_record",
         "decision.record.list": "decision_record",
@@ -308,10 +310,10 @@ def test_the_restricted_profile_admits_only_reads_and_the_decision_mutation() ->
             assert catalogue.audit.audit_category == "read", entry.operation
 
 
-def test_the_authoring_profile_has_exactly_four_mutations_and_fifteen_reads() -> None:
+def test_the_authoring_profile_has_exactly_four_mutations_and_fourteen_reads() -> None:
     """The exit criterion, read off the catalogue rather than off the tool names.
 
-    Fifteen of the nineteen declare no side effect and audit as reads; the other
+    Fourteen of the eighteen declare no side effect and audit as reads; the other
     four are exactly the named mutations, each of which the catalogue agrees is
     audited as a `mutation` (`decision.evaluate` updates, the rest create).
     """
@@ -326,7 +328,7 @@ def test_the_authoring_profile_has_exactly_four_mutations_and_fifteen_reads() ->
             assert catalogue.audit.audit_category == "mutation", entry.operation
             mutations.add(entry.operation)
     assert mutations == EXPECTED_MUTATIONS
-    assert len(reads) == 15
+    assert len(reads) == 14
     assert manifest.ADMITTED_MUTATIONS == EXPECTED_MUTATIONS
 
 
@@ -390,7 +392,7 @@ def test_an_operation_outside_the_catalogue_cannot_be_admitted() -> None:
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
 def test_the_never_exposed_operations_are_absent(profile: str, operation: str) -> None:
     """Absent from both inventories and unreachable by tool name in either: the
-    widest profile is still a curated nineteen, not "everything but the worst"."""
+    widest profile is still a curated eighteen, not "everything but the worst"."""
     exposed = manifest.exposure_manifest(profile)
     assert operation not in {entry.operation for entry in exposed}
     assert manifest.exposed_by_tool_name(operation.replace(".", "_"), profile) is None
@@ -474,7 +476,7 @@ def test_the_two_listings_agree_byte_for_byte_on_the_tools_they_share() -> None:
     ten shared tools a host has already cached."""
     restricted = [tool.model_dump(mode="json") for tool in manifest.tools()]
     authoring = [tool.model_dump(mode="json") for tool in manifest.tools("authoring")]
-    assert authoring[:14] == restricted
+    assert authoring[:13] == restricted
 
 
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
@@ -769,9 +771,9 @@ def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
 
     `readOnlyHint` is the catalogue's `side_effect == "none"` rather than a
     constant, so the four mutations say so. `destructiveHint` is false for all
-    nineteen, and truthfully: the four mutations create, and supersession and
+    eighteen, and truthfully: the four mutations create, and supersession and
     cancellation are not exposed at all. `idempotentHint` is the catalogue's
-    proven `safe_to_retry` -- true for the fifteen reads, false for the four
+    proven `safe_to_retry` -- true for the fourteen reads, false for the four
     mutations, whose repeat is settled by the idempotency key rather than by the
     call being idempotent. The world is closed because this server is attached to
     exactly one local workspace it cannot be told to leave.
@@ -791,7 +793,7 @@ def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
 def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
     """The same facts as literals, because "derived from the catalogue" is only
     reassuring if the values it derives are the reviewed ones: four mutations
-    marked not read-only and not idempotent, fifteen reads marked read-only and
+    marked not read-only and not idempotent, fourteen reads marked read-only and
     idempotent, and nothing marked destructive."""
     hints = {
         tool.name: (
@@ -802,7 +804,7 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         for tool in manifest.tools("authoring")
         if tool.annotations is not None
     }
-    assert len(hints) == 19
+    assert len(hints) == 18
     mutations = {
         "memory_create", "evidence_capture", "import_start",
         "decision_evaluate",
@@ -856,7 +858,7 @@ def test_the_generator_projects_the_wrapper_key_the_manifest_names() -> None:
 
 
 def test_the_generated_projection_covers_every_advertised_reference() -> None:
-    """Nothing the nineteen tools advertise is missing from the committed module,
+    """Nothing the eighteen tools advertise is missing from the committed module,
     and nothing in it is advertised by no tool: a stale entry is as much a
     review problem as an absent one."""
     advertised = {manifest.IDEMPOTENCY_KEY_SCHEMA_REF}
