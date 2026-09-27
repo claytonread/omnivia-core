@@ -83,6 +83,11 @@ EXPECTED_COMMANDS = (
     (("context", "priority"), "context.priority.set", "context_priority"),
     (("engineering", "review"), "engineering.review.record", "engineering_review"),
     (("engineering", "source"), "engineering.source.record", "engineering_source"),
+    (
+        ("repository", "register"),
+        "engineering.repository.register",
+        "engineering_repository",
+    ),
 )
 
 EXPECTED_PROBES = (
@@ -127,14 +132,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_fifty_three_application_commands_are_declared_in_order() -> None:
+def test_the_fifty_four_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 53
+    assert len(APPLICATION_COMMANDS) == 54
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

@@ -19,10 +19,13 @@ Resolution rules (§6.2), enforced here rather than by callers:
 - a snapshot reference resolves through its repository and never inherits
   applicability from its base commit.
 
-Groundwork boundary (spec §24.4): no catalogue operation registers any of this
-yet — registration is exercised through the storage module and validated
-against continuity references — so this slice is groundwork, not a shipped
-feature, until the registration surface is ratified (spec §16.3).
+Registration surface (spec §16.3): `engineering.repository.register` is the
+ratified production path onto `register_repository`/`register_checkout` --
+an explicitly authorized local operator binding one exact, installation-local
+checkout to one logical repository identity, through the accepted local
+client/CLI (`service.handlers.engineering.EngineeringHandlers`). Nothing here
+accepts a workspace, an installation or a principal from a caller: those are
+always the authenticated context's own.
 """
 
 from __future__ import annotations
@@ -58,6 +61,17 @@ class SnapshotNotFound(LookupError):
     """The named snapshot is not registered for its repository."""
 
 
+class RepositoryIdentityConflict(RuntimeError):
+    """`repository_id` is already registered under different identity metadata."""
+
+    def __init__(self, repository_id: str) -> None:
+        super().__init__(
+            f"repository id {repository_id!r} is already registered with a "
+            "different display name or provider hint"
+        )
+        self.repository_id = repository_id
+
+
 def register_repository(
     connection: sqlite3.Connection,
     settlement: Any,
@@ -68,6 +82,24 @@ def register_repository(
     provider_hint: str | None,
     registered_at_us: int,
 ) -> None:
+    """Register one logical repository identity, idempotently.
+
+    Re-registering the same `repository_id` with the same `display_name` and
+    `provider_hint` is a no-op: the row (and its original `audit_ref`) is left
+    exactly as it was. Re-registering it with different identity metadata is
+    refused (`RepositoryIdentityConflict`) rather than silently overwriting a
+    stable identity -- this table is append-only by the migration's own guard
+    triggers, so there is no update path to fall back to.
+    """
+    existing = connection.execute(
+        f"SELECT display_name, provider_hint FROM {_REPOSITORIES_TABLE} "
+        "WHERE workspace_id = ? AND repository_id = ?",
+        (workspace_id, repository_id),
+    ).fetchone()
+    if existing is not None:
+        if (existing[0], existing[1]) != (display_name, provider_hint):
+            raise RepositoryIdentityConflict(repository_id)
+        return
     connection.execute(
         f"INSERT INTO {_REPOSITORIES_TABLE} "
         "(workspace_id, repository_id, display_name, provider_hint, "
