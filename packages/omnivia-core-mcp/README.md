@@ -105,8 +105,8 @@ command line — drives it with the official SDK's `stdio_client` and
 `ClientSession`, and completes `initialize` and `tools/list` over the transport
 a host would use. The peer must identify itself as `omnivia-core` at this
 package's version; the advertised inventory must be exactly one profile's own
-tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — six or
-eleven; and the document's `allowed_purposes` must be exactly that profile's
+tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — thirteen or
+eighteen; and the document's `allowed_purposes` must be exactly that profile's
 manifest purposes. Which profile is in force is read off the inventory the child
 advertised, never assumed from the document, so a `mutation_enabled: true`
 configuration the protected authority declines to admit is refused here.

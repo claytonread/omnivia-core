@@ -52,7 +52,11 @@ from omnivia_core.contracts.v1 import (
     RequestEnvelope,
     ResponseEnvelope,
 )
-from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ContinuityAssociationProvenance,
+    TrustedContinuityAssociation,
+)
 from omnivia_core_runtime.service.installed_mcp import (
     InstalledMcpAdministrationError,
     InstalledMcpAuthenticationError,
@@ -123,9 +127,13 @@ _SESSION_MEMBERS: Final = frozenset(
         "purposes",
         "capabilities",
         "roles",
+        "continuity_association",
     }
 )
 _CAPABILITY_MEMBERS: Final = frozenset({"id", "version"})
+_ASSOCIATION_MEMBERS: Final = frozenset(
+    {"association_id", "principal_id", "workspace_id", "provenance"}
+)
 
 #: Every role this wire may carry, and there is exactly one. An installed MCP
 #: profile grants `workspace_contributor` to authoring and no role at all to
@@ -400,6 +408,7 @@ def _session_view(session: AuthenticatedSession) -> dict[str, object]:
     that could hold one, which is the property that makes forwarding the
     *resolution* safe even though forwarding the bearer to reach it was necessary.
     """
+    association = session.continuity_association
     return {
         "principal_id": session.principal_id,
         "workspaces": sorted(session.workspaces),
@@ -411,6 +420,16 @@ def _session_view(session: AuthenticatedSession) -> dict[str, object]:
             {"id": capability.id, "version": capability.version}
             for capability in session.capabilities
         ],
+        "continuity_association": (
+            None
+            if association is None
+            else {
+                "association_id": association.association_id,
+                "principal_id": association.principal_id,
+                "workspace_id": association.workspace_id,
+                "provenance": association.provenance.value,
+            }
+        ),
     }
 
 
@@ -445,15 +464,38 @@ def _session_from_view(answer: Mapping[str, object]) -> AuthenticatedSession:
                 id=_text(entry.get("id")), version=_text(entry.get("version"))
             )
         )
-    return AuthenticatedSession(
-        principal_id=_text(answer.get("principal_id")),
-        workspaces=frozenset(_texts(answer.get("workspaces"))),
-        operations=frozenset(_texts(answer.get("operations"))),
-        scopes=frozenset(_texts(answer.get("scopes"))),
-        purposes=frozenset(_texts(answer.get("purposes"))),
-        roles=_roles(answer.get("roles")),
-        capabilities=tuple(capabilities),
-    )
+    association: TrustedContinuityAssociation | None = None
+    raw_association = answer.get("continuity_association")
+    if raw_association is not None:
+        if (
+            not isinstance(raw_association, Mapping)
+            or frozenset(raw_association) != _ASSOCIATION_MEMBERS
+            or raw_association.get("provenance")
+            != ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION.value
+        ):
+            raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
+        try:
+            association = TrustedContinuityAssociation(
+                association_id=_text(raw_association.get("association_id")),
+                principal_id=_text(raw_association.get("principal_id")),
+                workspace_id=_text(raw_association.get("workspace_id")),
+                provenance=ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION,
+            )
+        except (TypeError, ValueError):
+            raise LocalControlRefusal(LocalControlError.UNAVAILABLE) from None
+    try:
+        return AuthenticatedSession(
+            principal_id=_text(answer.get("principal_id")),
+            workspaces=frozenset(_texts(answer.get("workspaces"))),
+            operations=frozenset(_texts(answer.get("operations"))),
+            scopes=frozenset(_texts(answer.get("scopes"))),
+            purposes=frozenset(_texts(answer.get("purposes"))),
+            roles=_roles(answer.get("roles")),
+            capabilities=tuple(capabilities),
+            continuity_association=association,
+        )
+    except (TypeError, ValueError):
+        raise LocalControlRefusal(LocalControlError.UNAVAILABLE) from None
 
 
 def _admitted_answer(

@@ -47,8 +47,9 @@ or Organisation-mode local deployment.
 
 from __future__ import annotations
 
+import datetime as _dt
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Final, Protocol, TypeAlias, cast, runtime_checkable
 
@@ -56,6 +57,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     SCOPE_KIND_INSTALLATION,
     CapabilityRef,
+    ContinuitySessionBinding,
     OperationMetadata,
     RequestEnvelope,
     ResponseEnvelope,
@@ -73,6 +75,8 @@ from omnivia_core_runtime.service.authorization import (
     AuthorizedApplicationContext,
     Grant,
     ServiceBinding,
+    TrustedContinuityAssociation,
+    TrustedContinuityBinding,
     authorize_application_request,
 )
 from omnivia_core_runtime.service.chat_submit import resolve_chat_command
@@ -162,6 +166,7 @@ from omnivia_core_runtime.service.operations import (
     success,
 )
 from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
+from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
@@ -335,6 +340,73 @@ LOCAL_TRANSPORT_ADAPTER: Final = "local-ovc1"
 #: refusal message on this path is.
 _MESSAGE_NO_HANDLER: Final = "this build cannot serve an operation it authorized"
 
+_CONTINUITY_BOUND_OPERATIONS: Final = frozenset(
+    {
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "continuity.handoff.read",
+    }
+)
+
+
+def _continuity_timestamp(us: int) -> str:
+    return (
+        _dt.datetime.fromtimestamp(us / 1_000_000, tz=_dt.UTC)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+
+
+def _resolve_associated_continuity_binding(
+    service: Any,
+    session: AuthenticatedSession,
+) -> AuthenticatedSession:
+    """Resolve one settled registration from trusted adapter state alone.
+
+    The association key comes from the authenticated session, never from the
+    operation payload.  Rows with generation one predate association-backed
+    registration and are deliberately ineligible, so a historical caller-owned
+    ``host_session_ref`` cannot become authority after an upgrade.
+    """
+    association = session.continuity_association
+    if association is None:
+        return session
+    connection = getattr(service, "connection", None)
+    if connection is None:
+        return replace(session, continuity_binding=None)
+    row = continuity_storage.read_associated_session(
+        connection,
+        workspace_id=association.workspace_id,
+        principal_id=association.principal_id,
+        association_key=association.storage_key,
+    )
+    binding: TrustedContinuityBinding | None = None
+    if row is not None:
+        # Association-backed rows are committed only through registration's
+        # validate-result barrier.  Reconstruct the original active registration
+        # result (the row may since have closed) and pass it through the same typed
+        # retention factory a client adapter uses.
+        registered = ContinuitySessionBinding(
+            session_id=row["session_id"],
+            principal_id=row["principal_id"],
+            workspace_id=association.workspace_id,
+            binding_generation=row["binding_generation"],
+            lease_expires_at=_continuity_timestamp(row["lease_expires_at_us"]),
+            state="active",
+        )
+        try:
+            binding = TrustedContinuityBinding.from_registration(registered)
+        except (TypeError, ValueError):
+            binding = None
+    if (
+        session.continuity_binding is not None
+        and session.continuity_binding != binding
+    ):
+        # Two trusted inputs that disagree are a wiring failure, never an
+        # invitation to upgrade a stale explicit binding to the association's
+        # newest generation.
+        binding = None
+    return replace(session, continuity_binding=binding)
+
 
 def _narrow_session(
     configured: AuthenticatedSession,
@@ -375,15 +447,47 @@ def _narrow_session(
         for ref in caller.capabilities
         if ref.id in configured_capabilities
     )
+    workspaces = caller.workspaces & configured.workspaces
+    continuity_binding = caller.continuity_binding
+    if (
+        continuity_binding is not None
+        and continuity_binding.workspace_id not in workspaces
+    ):
+        continuity_binding = None
+    if (
+        configured.continuity_binding is not None
+        and configured.continuity_binding != continuity_binding
+    ):
+        # A configured binding is a ceiling for the fixed ``dispatch`` path,
+        # never an identity that a transport-resolved caller may inherit.  A
+        # caller must arrive with the same trusted binding itself.
+        continuity_binding = None
+    continuity_association = caller.continuity_association
+    if (
+        continuity_association is not None
+        and continuity_association.workspace_id not in workspaces
+    ):
+        continuity_association = None
+    if (
+        configured.continuity_association is not None
+        and configured.continuity_association != continuity_association
+    ):
+        continuity_association = None
+        # A binding resolved from a caller association is part of that same
+        # authority.  Stripping the association ceiling while retaining the
+        # binding would let the narrower configured route execute under it.
+        continuity_binding = None
     return AuthenticatedSession(
         principal_id=caller.principal_id,
         roles=caller.roles & configured.roles,
         installations=caller.installations & configured.installations,
-        workspaces=caller.workspaces & configured.workspaces,
+        workspaces=workspaces,
         operations=caller.operations & configured.operations,
         scopes=caller.scopes & configured.scopes,
         purposes=caller.purposes & configured.purposes,
         capabilities=capabilities,
+        continuity_binding=continuity_binding,
+        continuity_association=continuity_association,
     )
 
 
@@ -939,6 +1043,7 @@ def build_engineering_application_dispatcher(
     clock: Clock | None = None,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
+    local_continuity_association: TrustedContinuityAssociation | None = None,
 ) -> ApplicationDispatcher:
     """Compose the twelve-operation S-engineering family around the existing router."""
     session = engineering_family_session(
@@ -970,6 +1075,7 @@ def build_engineering_application_dispatcher(
         probe=fallback,
         record=record,
         service=service,
+        local_continuity_association=local_continuity_association,
     )
 
 
@@ -1422,6 +1528,7 @@ class ApplicationDispatcher:
     record: ApplicationCallSink | None
     service: Any = None
     admission: ApplicationAdmissionPolicy = ALLOW_APPLICATION_REQUEST
+    local_continuity_association: TrustedContinuityAssociation | None = None
 
     def __post_init__(self) -> None:
         """Refuse a wiring whose two halves act as different principals.
@@ -1440,6 +1547,14 @@ class ApplicationDispatcher:
                 "principals; this service instance acts as one principal, and a "
                 "wiring that states two cannot say which a request ran as"
             )
+        association = self.local_continuity_association
+        if association is not None and (
+            association.principal_id != self.session.principal_id
+            or association.workspace_id not in self.session.workspaces
+        ):
+            raise ValueError(
+                "the local continuity association must match this dispatcher's authority"
+            )
 
     @property
     def grant(self) -> Grant:
@@ -1453,7 +1568,15 @@ class ApplicationDispatcher:
 
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
         """Dispatch with this endpoint's server-issued authenticated session."""
-        return self._dispatch(request, session=self.session)
+        session = self.session
+        if self.local_continuity_association is not None:
+            session = replace(
+                session,
+                continuity_association=self.local_continuity_association,
+            )
+        if request.operation in _CONTINUITY_BOUND_OPERATIONS:
+            session = _resolve_associated_continuity_binding(self.service, session)
+        return self._dispatch(request, session=session)
 
     def dispatch_for_session(
         self,
@@ -1471,10 +1594,9 @@ class ApplicationDispatcher:
             if isinstance(self.probe, SessionApplicationFallback):
                 return self.probe.dispatch_for_session(request, session)
             return self.probe.dispatch(request)
-        return self._dispatch(
-            request,
-            session=_narrow_session(self.session, session),
-        )
+        if request.operation in _CONTINUITY_BOUND_OPERATIONS:
+            session = _resolve_associated_continuity_binding(self.service, session)
+        return self._dispatch(request, session=_narrow_session(self.session, session))
 
     def dispatch_without_session(self, request: RequestEnvelope) -> ResponseEnvelope:
         """Dispatch after a trusted session lookup returned no authenticated caller.

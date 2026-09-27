@@ -20,7 +20,7 @@
       "mapping_source": {
         "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
         "symbol": "EXPOSURE_MANIFEST",
-        "manifest_version": "2.1"
+        "manifest_version": "2.3"
       },
       "exposed": [
         {
@@ -60,10 +60,6 @@
           "tool": "engineering_context_build"
         },
         {
-          "operation": "continuity.handoff.read",
-          "tool": "continuity_handoff_read"
-        },
-        {
           "operation": "decision.evaluate",
           "tool": "decision_evaluate"
         },
@@ -98,10 +94,6 @@
         {
           "operation": "job.events",
           "tool": "job_events"
-        },
-        {
-          "operation": "continuity.checkpoint.append",
-          "tool": "continuity_checkpoint_append"
         }
       ],
       "omitted": [
@@ -222,8 +214,16 @@
           "reason": "mutation"
         },
         {
+          "operation": "continuity.checkpoint.append",
+          "reason": "mutation"
+        },
+        {
           "operation": "continuity.session.close",
           "reason": "mutation"
+        },
+        {
+          "operation": "continuity.handoff.read",
+          "reason": "read_not_allow_listed"
         },
         {
           "operation": "context.priority.set",

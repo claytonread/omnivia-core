@@ -151,7 +151,7 @@ MCP_HOST = "claude-code"
 
 #: The two profiles `mcp.configure` knows, spelled as the service's own
 #: `McpProfile` spells them. `serving()` asks for the restricted one unless a
-#: caller says otherwise: the restricted six are what every read-side test in
+#: caller says otherwise: the restricted thirteen are what every read-side test in
 #: the suite expects, and the wider profile is an explicit act here for the same
 #: reason it is one in production -- authoring intent is recorded, never
 #: inferred.
@@ -1277,7 +1277,6 @@ _HTTP_GRANTED_OPERATIONS = (
     "engineering.search",
     "engineering.expand",
     "engineering.context.build",
-    "continuity.handoff.read",
     "decision.record.get",
     "decision.record.list",
     "decision.status",
@@ -1438,7 +1437,7 @@ def serving(
     issues.
 
     `profile` is what that setup records: `restricted` by default, which is the
-    six every read-side test expects, and `authoring` for the one test that
+    thirteen every read-side test expects, and `authoring` for the one test that
     needs the wider surface.
 
     `seed=False` serves the workspace exactly as the installation bootstrap left

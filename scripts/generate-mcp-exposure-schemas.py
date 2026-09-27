@@ -91,7 +91,6 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "engineering.search",
     "engineering.expand",
     "engineering.context.build",
-    "continuity.handoff.read",
     "decision.evaluate",
     "decision.record.get",
     "decision.record.list",
@@ -101,7 +100,6 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "import.start",
     "job.get",
     "job.events",
-    "continuity.checkpoint.append",
 )
 
 #: Advertised schemas that belong to no operation. One entry: the canonical

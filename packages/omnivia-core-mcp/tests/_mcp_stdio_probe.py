@@ -36,7 +36,7 @@ configuration field on purpose -- the whole point of the seam is that nothing
 readable from the public `omnivia.mcp-config.v1` document can raise the profile,
 so a test that could enable authoring by editing that document would be testing
 the opposite of the rule. Without the flag, the same configuration serves the
-restricted six, which is what production does with it.
+restricted thirteen, which is what production does with it.
 """
 
 from __future__ import annotations

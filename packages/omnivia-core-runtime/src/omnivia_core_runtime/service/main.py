@@ -51,8 +51,10 @@ from omnivia_core_runtime.service.application import (
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    ContinuityAssociationProvenance,
     Grant,
     ServiceBinding,
+    TrustedContinuityAssociation,
 )
 from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
@@ -391,6 +393,12 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=decision,
+        local_continuity_association=TrustedContinuityAssociation(
+            association_id="core-local-application",
+            principal_id=LOCAL_PRINCIPAL,
+            workspace_id=started.workspace_id,
+            provenance=ContinuityAssociationProvenance.CORE_LOCAL_CONNECTION,
+        ),
     )
     return compose_production_application_surface(
         installation=installation,

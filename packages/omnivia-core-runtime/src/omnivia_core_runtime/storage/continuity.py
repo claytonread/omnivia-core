@@ -26,6 +26,7 @@ serve as accepted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -48,9 +49,13 @@ _OWNED_CHECKPOINTS: Final = (
 #: The default checkpoint payload cap: 256 KiB of canonical UTF-8 (spec §9.2).
 CHECKPOINT_PAYLOAD_CAP_BYTES: Final = 262144
 
-#: The default session lease: 24 hours, refreshed by re-registration through the
-#: trusted adapter. Enforcement of expiry lands with the binding-refresh slice.
+#: The default session lease: 24 hours. Append and close refuse once the lease
+#: has expired against the mutation's own settlement instant. Lease refresh and
+#: revocation belong to a later lifecycle slice.
 SESSION_LEASE_SECONDS: Final = 24 * 60 * 60
+
+_ASSOCIATION_REF_PREFIX: Final = "core-association.v1:"
+_ASSOCIATION_GENERATION_FLOOR: Final = 2
 
 
 class SessionNotFound(LookupError):
@@ -58,7 +63,12 @@ class SessionNotFound(LookupError):
 
 
 class SessionNotActive(RuntimeError):
-    """The continuity session exists but is not `active`."""
+    """The continuity session exists but is not writable: not `active`, or its
+    lease expired at or before this mutation's settlement instant."""
+
+
+class SessionBindingMismatch(RuntimeError):
+    """The authenticated continuity generation no longer names this binding."""
 
 
 class SequencePreconditionFailed(RuntimeError):
@@ -71,6 +81,113 @@ class ParentCheckpointMismatch(RuntimeError):
 
 class PayloadTooLarge(RuntimeError):
     """The canonical checkpoint payload exceeds the 256 KiB cap."""
+
+
+def _association_prefix(association_key: str) -> str:
+    if (
+        not association_key.startswith("sha256:")
+        or len(association_key) != len("sha256:") + 64
+    ):
+        raise ValueError("continuity association key is not a sha256 digest")
+    return f"{_ASSOCIATION_REF_PREFIX}{association_key}:"
+
+
+def associated_host_session_ref(
+    association_key: str,
+    host_session_ref: str | None,
+) -> str:
+    """Encode trusted association identity plus a safe host-correlation digest.
+
+    The caller's opaque host reference remains correlation only: its digest is
+    retained, while the equality key comes solely from server-established
+    association state.
+    """
+    correlation = (
+        "none"
+        if host_session_ref is None
+        else "sha256:" + hashlib.sha256(host_session_ref.encode("utf-8")).hexdigest()
+    )
+    return _association_prefix(association_key) + correlation
+
+
+def next_association_binding_generation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+) -> int:
+    """Allocate the next generation for one trusted adapter association.
+
+    Generation one is reserved for legacy/unassociated registrations.  This is
+    the no-migration discriminator that prevents a historical caller-chosen host
+    reference from being reinterpreted as authenticated association state.
+    """
+    prefix = _association_prefix(association_key)
+    row = connection.execute(
+        f"SELECT MAX(binding_generation) FROM {_SESSIONS_TABLE} "
+        "WHERE workspace_id = ? AND principal_id = ? "
+        "AND binding_generation >= ? "
+        "AND substr(host_session_ref, 1, ?) = ?",
+        (
+            workspace_id,
+            principal_id,
+            _ASSOCIATION_GENERATION_FLOOR,
+            len(prefix),
+            prefix,
+        ),
+    ).fetchone()
+    latest = None if row is None else row[0]
+    return _ASSOCIATION_GENERATION_FLOOR if latest is None else int(latest) + 1
+
+
+def read_associated_session(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+) -> dict[str, Any] | None:
+    """Resolve the unique newest settled binding for an authenticated adapter.
+
+    No selector from the operation payload participates.  A duplicate newest
+    generation is ambiguous and fails closed.
+    """
+    prefix = _association_prefix(association_key)
+    rows = connection.execute(
+        f"SELECT session_id, principal_id, state, binding_generation, "
+        "lease_expires_at_us, host_session_ref, checkout_hint, "
+        "repository_target_json, registered_at_us, closed_at_us, "
+        "last_checkpoint_sequence, last_checkpoint_id "
+        f"FROM {_SESSIONS_TABLE} WHERE workspace_id = ? AND principal_id = ? "
+        "AND binding_generation >= ? "
+        "AND substr(host_session_ref, 1, ?) = ? "
+        "ORDER BY binding_generation DESC, session_id ASC LIMIT 2",
+        (
+            workspace_id,
+            principal_id,
+            _ASSOCIATION_GENERATION_FLOOR,
+            len(prefix),
+            prefix,
+        ),
+    ).fetchall()
+    if not rows or (len(rows) > 1 and rows[0][3] == rows[1][3]):
+        return None
+    row = rows[0]
+    return {
+        "session_id": row[0],
+        "principal_id": row[1],
+        "state": row[2],
+        "binding_generation": row[3],
+        "lease_expires_at_us": row[4],
+        "host_session_ref": row[5],
+        "checkout_hint": row[6],
+        "repository_target": None if row[7] is None else json.loads(row[7]),
+        "registered_at_us": row[8],
+        "closed_at_us": row[9],
+        "last_checkpoint_sequence": row[10],
+        "last_checkpoint_id": row[11],
+    }
 
 
 def _plain(value: Any) -> Any:
@@ -153,13 +270,20 @@ def read_session(
     }
 
 
-def _require_active_session(
+def read_bound_session(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     session_id: str,
     principal_id: str,
-) -> dict[str, Any]:
+    binding_generation: int,
+) -> dict[str, Any] | None:
+    """The owned session only when its stored generation matches the binding.
+
+    Ownership stays hidden first: another principal's row is still ``None``.
+    Once ownership is established, a stale generation is a binding conflict,
+    not a missing-record oracle.
+    """
     session = read_session(
         connection,
         workspace_id=workspace_id,
@@ -167,9 +291,42 @@ def _require_active_session(
         principal_id=principal_id,
     )
     if session is None:
+        return None
+    if session["binding_generation"] != binding_generation:
+        raise SessionBindingMismatch("continuity binding generation is stale")
+    return session
+
+
+def _require_writable_session(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    session_id: str,
+    principal_id: str,
+    binding_generation: int,
+) -> dict[str, Any]:
+    """The session, if it is owned, `active`, and its lease has not expired.
+
+    The lease is compared against `settlement.settled_at_us`, the server's own
+    settlement instant for this fenced mutation, never a caller-supplied time.
+    An expired lease is refused the same way an inactive session is -- no new
+    response code, and no `expired` state is persisted here; the row's `state`
+    stays exactly what it was.
+    """
+    session = read_bound_session(
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
+        binding_generation=binding_generation,
+    )
+    if session is None:
         raise SessionNotFound(session_id)
     if session["state"] != "active":
         raise SessionNotActive(session["state"])
+    if session["lease_expires_at_us"] <= settlement.settled_at_us:
+        raise SessionNotActive("expired")
     return session
 
 
@@ -181,6 +338,7 @@ def append_checkpoint(
     principal_id: str,
     checkpoint_id: str,
     session_id: str,
+    binding_generation: int,
     parent_checkpoint_id: str | None,
     expected_parent_sequence: int | None,
     checkpoint_kind: str,
@@ -195,13 +353,17 @@ def append_checkpoint(
     refused and the caller deliberately reconciles. The payload is stored whole
     or not at all: an oversized payload raises before anything is written. A
     session `principal_id` does not own is `SessionNotFound`, checked here under
-    the fence whatever the caller checked before.
+    the fence whatever the caller checked before. A session whose lease expired
+    at or before `settlement.settled_at_us` is `SessionNotActive`, checked before
+    the sequence precondition and before any row is written.
     """
-    session = _require_active_session(
+    session = _require_writable_session(
         connection,
+        settlement,
         workspace_id=workspace_id,
         session_id=session_id,
         principal_id=principal_id,
+        binding_generation=binding_generation,
     )
     last_sequence = session["last_checkpoint_sequence"]
     last_id = session["last_checkpoint_id"]
@@ -240,11 +402,21 @@ def append_checkpoint(
             settlement.audit_ref,
         ),
     )
-    connection.execute(
+    updated = connection.execute(
         f"UPDATE {_SESSIONS_TABLE} SET last_checkpoint_sequence = ?, "
-        "last_checkpoint_id = ? WHERE workspace_id = ? AND session_id = ?",
-        (sequence, checkpoint_id, workspace_id, session_id),
+        "last_checkpoint_id = ? WHERE workspace_id = ? AND session_id = ? "
+        "AND principal_id = ? AND binding_generation = ? AND state = 'active'",
+        (
+            sequence,
+            checkpoint_id,
+            workspace_id,
+            session_id,
+            principal_id,
+            binding_generation,
+        ),
     )
+    if updated.rowcount != 1:
+        raise SessionBindingMismatch("continuity binding changed during append")
     return {
         "checkpoint_id": checkpoint_id,
         "session_id": session_id,
@@ -261,6 +433,7 @@ def close_session(
     workspace_id: str,
     principal_id: str,
     session_id: str,
+    binding_generation: int,
     expected_sequence: int | None,
     final_checkpoint: Mapping[str, Any] | None,
     final_checkpoint_id: str,
@@ -271,13 +444,19 @@ def close_session(
     The expected sequence is a mutation precondition against the session's last
     acknowledged checkpoint: a caller that watched another writer advance the
     session re-reads and re-decides rather than replacing the newer checkpoint.
-    Only `principal_id`'s own session closes; any other is `SessionNotFound`.
+    Only `principal_id`'s own session closes; any other is `SessionNotFound`. A
+    session whose lease expired at or before `settlement.settled_at_us` is
+    `SessionNotActive`, checked before the sequence precondition, before the
+    final checkpoint (if any) and before the session's state is written -- the
+    close is refused whole, exactly as the checkpoint-only path is.
     """
-    session = _require_active_session(
+    session = _require_writable_session(
         connection,
+        settlement,
         workspace_id=workspace_id,
         session_id=session_id,
         principal_id=principal_id,
+        binding_generation=binding_generation,
     )
     last_sequence = session["last_checkpoint_sequence"] or 0
     if expected_sequence is not None and int(expected_sequence) != last_sequence:
@@ -293,17 +472,27 @@ def close_session(
             principal_id=principal_id,
             checkpoint_id=final_checkpoint_id,
             session_id=session_id,
+            binding_generation=binding_generation,
             parent_checkpoint_id=session["last_checkpoint_id"],
             expected_parent_sequence=None,
             checkpoint_kind=str(final_checkpoint.get("checkpoint_kind", "session_close")),
             payload=final_checkpoint,
             recorded_at_us=closed_at_us,
         )
-    connection.execute(
+    updated = connection.execute(
         f"UPDATE {_SESSIONS_TABLE} SET state = 'closed', closed_at_us = ? "
-        "WHERE workspace_id = ? AND session_id = ?",
-        (int(closed_at_us), workspace_id, session_id),
+        "WHERE workspace_id = ? AND session_id = ? AND principal_id = ? "
+        "AND binding_generation = ? AND state = 'active'",
+        (
+            int(closed_at_us),
+            workspace_id,
+            session_id,
+            principal_id,
+            binding_generation,
+        ),
     )
+    if updated.rowcount != 1:
+        raise SessionBindingMismatch("continuity binding changed during close")
     return {
         "session_id": session_id,
         "state": "closed",
@@ -317,13 +506,19 @@ def read_checkpoint(
     *,
     workspace_id: str,
     principal_id: str,
+    bound_session_id: str,
+    binding_generation: int,
     checkpoint_id: str | None = None,
     session_id: str | None = None,
     sequence: int | None = None,
 ) -> dict[str, Any] | None:
-    """One checkpoint by id, or by session and sequence, if `principal_id` owns
-    its session. Ownership is decided by the same SQL that loads the payload, so
-    another principal's checkpoint is never loaded and reads as `None`."""
+    """One checkpoint under the exact authenticated continuity binding.
+
+    Ownership, bound session identity and binding generation are decided by the
+    same SQL that loads the payload.  Another principal's checkpoint, another
+    session owned by the same principal, and a stale generation therefore load
+    no payload and all read as ``None``.
+    """
     values: tuple[Any, ...]
     if checkpoint_id is not None:
         key, values = "c.checkpoint_id = ?", (checkpoint_id,)
@@ -332,8 +527,15 @@ def read_checkpoint(
     row = connection.execute(
         "SELECT c.checkpoint_id, c.session_id, c.sequence, c.parent_checkpoint_id, "
         "c.checkpoint_kind, c.payload_json, c.content_digest, c.recorded_at_us "
-        f"{_OWNED_CHECKPOINTS} AND {key}",
-        (workspace_id, principal_id, *values),
+        f"{_OWNED_CHECKPOINTS} AND s.session_id = ? "
+        "AND s.binding_generation = ? AND " + key,
+        (
+            workspace_id,
+            principal_id,
+            bound_session_id,
+            binding_generation,
+            *values,
+        ),
     ).fetchone()
     if row is None:
         return None

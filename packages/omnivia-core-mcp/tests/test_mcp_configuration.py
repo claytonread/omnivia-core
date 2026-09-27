@@ -262,7 +262,7 @@ def test_mutation_enabled_true_alone_is_still_restricted() -> None:
 
     This is also the production default. `server.main` injects no admission, so a
     legacy or hand-written `mutation_enabled: true` raises a ceiling over an empty
-    room and the installed server advertises the read-only six.
+    room and the installed server advertises the restricted thirteen.
     """
     config = parse_configuration(managed_document(mutation_enabled=True))
     assert config.mutation_enabled is True
