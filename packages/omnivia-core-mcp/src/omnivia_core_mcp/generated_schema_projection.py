@@ -3770,6 +3770,11 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
                 "description": "Caller-requested bounded budgets for one engineering context build. Exact-token mode applies byte and token limits simultaneously, never converting one into the other; byte-only mode omits the token limit entirely. Effective budgets are the minimum of the request, the server-owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "x-omnivia-typescript-v2-view": {
+                    "omit": [
+                        "model_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3884,6 +3889,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "EngineeringContextBuildResult",
         "description": "Result of `engineering.context.build`. Nothing is persisted: the pack is regenerated or fails with an explicit replay-inputs error, never silently reissued from absent projections.",
+        "x-omnivia-typescript-v2-view": {},
         "type": "object",
         "unevaluatedProperties": False,
         "properties": {
@@ -3919,6 +3925,11 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
                 "description": "Caller-requested bounded budgets for one engineering context build. Exact-token mode applies byte and token limits simultaneously, never converting one into the other; byte-only mode omits the token limit entirely. Effective budgets are the minimum of the request, the server-owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "x-omnivia-typescript-v2-view": {
+                    "omit": [
+                        "model_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3952,6 +3963,14 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             "engineering__EngineeringBudgetOutcome": {
                 "title": "EngineeringBudgetOutcome",
                 "description": "The budget as requested, as effectively applied, and as actually consumed by this build. Actual source-read bytes and hydration counts are reported, so a pack cannot exceed its caps invisibly.",
+                "x-omnivia-typescript-v2-view": {
+                    "legacy_required": [
+                        "rendered_tokens",
+                    ],
+                    "omit": [
+                        "rendered_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -4049,6 +4068,11 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             "engineering__EngineeringContextPack": {
                 "title": "EngineeringContextPack",
                 "description": "A non-persisted deterministic engineering context view built from a pinned BuildContext and the authorised frontier. Legacy `engineering_context.v1` retains the pinned pattern-token count. Negotiated `engineering_context.v2` carries exact UTF-8 byte accounting and no token estimate. `pack_id` equals the canonical artifact checksum computed after removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token: following any citation requires fresh authorisation, and a previously generated pack may no longer be deliverable after revocation even when its bytes are reproducible.",
+                "x-omnivia-typescript-v2-view": {
+                    "const": {
+                        "format_version": "engineering_context.v2",
+                    },
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -4300,6 +4324,20 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                                                 ],
                                             },
                                         },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "rendered_tokens",
+                                                ],
+                                            },
+                                        },
                                     ],
                                 },
                                 "reproducibility": {
@@ -4344,6 +4382,20 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                                             "not": {
                                                 "required": [
                                                     "token_count",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "rendered_tokens",
                                                 ],
                                             },
                                         },
@@ -4448,6 +4500,14 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             "engineering__EngineeringRendering": {
                 "title": "EngineeringRendering",
                 "description": "The complete model-facing rendering of a pack: one canonical UTF-8 string containing section labels, content, authority/applicability warnings and compact citations. Legacy v1 reports the pinned pattern-token count and exact UTF-8 byte count; byte-only v2 reports only the exact UTF-8 byte count. Headers, citation labels, warnings and separators are part of the measured string; transport metadata that is not sent lives elsewhere.",
+                "x-omnivia-typescript-v2-view": {
+                    "legacy_required": [
+                        "token_count",
+                    ],
+                    "omit": [
+                        "token_count",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {

@@ -1703,6 +1703,151 @@ def test_nested_composition_cannot_swallow_an_unsupported_keyword(
 
 
 @pytest.mark.parametrize(
+    ("value", "schema"),
+    [
+        (
+            2,
+            {
+                "if": {"const": 1},
+                "then": {"exclusiveMinimum": 1},
+            },
+        ),
+        (
+            {},
+            {
+                "type": "object",
+                "properties": {
+                    "optional": {"exclusiveMinimum": 1},
+                },
+            },
+        ),
+        (
+            [],
+            {
+                "type": "array",
+                "items": {"exclusiveMinimum": 1},
+            },
+        ),
+        (
+            {},
+            {
+                "type": "object",
+                "$defs": {
+                    "FutureConstraint": {"exclusiveMinimum": 1},
+                },
+            },
+        ),
+    ],
+)
+def test_schema_preflight_checks_unselected_and_unvisited_subschemas(
+    value: object, schema: dict[str, object]
+) -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    with pytest.raises(
+        ContractSemanticError,
+        match=r"canonical schema uses unsupported keyword\(s\).*exclusiveMinimum",
+    ):
+        conformance._validate_against_schema(
+            value,
+            schema,
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+@pytest.mark.parametrize(
+    ("subschema", "message"),
+    [
+        ({"type": "mystery"}, "declares unknown type"),
+        ({"format": "mystery"}, "declares unsupported format"),
+        ({"required": "field"}, "required must be an array of unique strings"),
+        ({"pattern": 1}, "pattern must be a string"),
+        ({"minimum": "one"}, "minimum must be a finite number"),
+        ({"minLength": True}, "minLength must be a non-negative integer"),
+        ({"uniqueItems": 1}, "uniqueItems must be a boolean"),
+        ({"enum": []}, "enum must be a non-empty array"),
+        ({"const": {1: "not-json"}}, "literal must be JSON"),
+    ],
+)
+def test_schema_preflight_validates_supported_keyword_values_in_absent_properties(
+    subschema: dict[object, object], message: str
+) -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"optional": subschema},
+    }
+    with pytest.raises(ContractSemanticError, match=message):
+        conformance._validate_against_schema(
+            {},
+            schema,
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+def test_schema_preflight_recognizes_the_pattern_authoritative_uri_annotation() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    assert conformance._validate_against_schema(
+        "https://core.example",
+        {"type": "string", "format": "uri", "pattern": r"^https://[^/]+$"},
+        conformance._CanonicalSchemas(),
+        "x",
+    ) == []
+
+
+def test_schema_preflight_follows_references_before_value_validation() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    ref = (
+        "https://contracts.omnivia.dev/application/v1/"
+        "preflight-test.schema.json#/$defs/Root"
+    )
+    schemas._documents["preflight-test"] = {
+        "$defs": {
+            "Root": {
+                "type": "object",
+                "properties": {
+                    "optional": {"exclusiveMinimum": 1},
+                },
+            }
+        }
+    }
+    with pytest.raises(
+        ContractSemanticError,
+        match=r"canonical schema uses unsupported keyword\(s\).*exclusiveMinimum",
+    ):
+        conformance._validate_against_schema({}, {"$ref": ref}, schemas, "x")
+
+
+def test_schema_preflight_rejects_reference_cycles_before_value_validation() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    prefix = (
+        "https://contracts.omnivia.dev/application/v1/"
+        "preflight-cycle.schema.json#/$defs/"
+    )
+    schemas._documents["preflight-cycle"] = {
+        "$defs": {
+            "A": {"$ref": prefix + "B"},
+            "B": {"$ref": prefix + "A"},
+        }
+    }
+    with pytest.raises(ContractSemanticError, match="reference cycle"):
+        conformance._validate_against_schema(
+            {},
+            {"$ref": prefix + "A"},
+            schemas,
+            "x",
+        )
+
+
+@pytest.mark.parametrize(
     ("schema", "message"),
     [
         ({"oneOf": []}, "oneOf must contain schemas"),

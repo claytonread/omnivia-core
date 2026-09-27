@@ -45,6 +45,8 @@ CLI, Platform, Dev, or a validation framework.
 from __future__ import annotations
 
 import copy
+import json
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -760,6 +762,279 @@ class _CanonicalSchemas:
         return _require_mapping(defs[pointer], ref)
 
 
+def _preflight_schema(
+    schema: Mapping[str, Any], schemas: _CanonicalSchemas, path: str
+) -> None:
+    """Prove the complete reachable schema uses the evaluator's closed subset.
+
+    Value validation is intentionally instance-directed: an absent optional
+    property and a false ``if`` condition do not visit their subschemas. Schema
+    support cannot depend on the instance, though. Walk every schema-bearing
+    keyword and reference first so an unsupported constraint can never hide in
+    an unselected branch. Object identity and reference guards make recursive
+    schema graphs finite without treating a cycle as a successful match.
+    """
+
+    active_nodes: set[int] = set()
+    visited_nodes: set[int] = set()
+    active_refs: set[str] = set()
+    visited_refs: set[str] = set()
+
+    def literal_fingerprint(value: object, literal_path: str, active: set[int]) -> str:
+        """Return one stable JSON fingerprint or refuse a non-JSON schema literal."""
+        if value is None or isinstance(value, (str, bool, int)):
+            normalized: object = value
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                raise _SchemaEvaluationError(
+                    f"{literal_path}: canonical schema literal must be finite JSON"
+                )
+            normalized = int(value) if value.is_integer() else value
+        elif isinstance(value, list):
+            marker = id(value)
+            if marker in active:
+                raise _SchemaEvaluationError(
+                    f"{literal_path}: canonical schema literal contains a cycle"
+                )
+            nested = active | {marker}
+            normalized = [
+                json.loads(literal_fingerprint(item, f"{literal_path}[{index}]", nested))
+                for index, item in enumerate(value)
+            ]
+        elif isinstance(value, Mapping) and all(
+            isinstance(key, str) for key in value
+        ):
+            marker = id(value)
+            if marker in active:
+                raise _SchemaEvaluationError(
+                    f"{literal_path}: canonical schema literal contains a cycle"
+                )
+            nested = active | {marker}
+            normalized = {
+                key: json.loads(
+                    literal_fingerprint(item, f"{literal_path}.{key}", nested)
+                )
+                for key, item in value.items()
+            }
+        else:
+            raise _SchemaEvaluationError(
+                f"{literal_path}: canonical schema literal must be JSON"
+            )
+        return json.dumps(
+            normalized,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def require_non_negative_integer(node: Mapping[str, Any], keyword: str, path: str) -> None:
+        if keyword not in node:
+            return
+        value = node[keyword]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise _SchemaEvaluationError(
+                f"{path}: canonical schema {keyword} must be a non-negative integer"
+            )
+
+    def require_number(node: Mapping[str, Any], keyword: str, path: str) -> None:
+        if keyword not in node:
+            return
+        value = node[keyword]
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or (isinstance(value, float) and not math.isfinite(value))
+        ):
+            raise _SchemaEvaluationError(
+                f"{path}: canonical schema {keyword} must be a finite number"
+            )
+
+    def visit(node: Mapping[str, Any], node_path: str) -> None:
+        marker = id(node)
+        if marker in active_nodes:
+            raise _SchemaEvaluationError(
+                f"{node_path}: canonical schema contains a reference cycle"
+            )
+        if marker in visited_nodes:
+            return
+        active_nodes.add(marker)
+
+        unknown = sorted(set(node) - _SUPPORTED_SCHEMA_KEYWORDS)
+        unknown = [key for key in unknown if not key.startswith("x-")]
+        if unknown:
+            raise _SchemaEvaluationError(
+                f"{node_path}: canonical schema uses unsupported keyword(s) {unknown}"
+            )
+
+        for keyword in ("$schema", "$id", "title", "description"):
+            if keyword in node and not isinstance(node[keyword], str):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema {keyword} must be a string"
+                )
+
+        if "type" in node:
+            declared_type = node["type"]
+            if not isinstance(declared_type, str) or declared_type not in _JSON_TYPES:
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema declares unknown type "
+                    f"{declared_type!r}"
+                )
+
+        if "format" in node:
+            declared_format = node["format"]
+            if not isinstance(declared_format, str) or declared_format not in {
+                "date-time",
+                "uri",
+            }:
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema declares unsupported format "
+                    f"{declared_format!r}"
+                )
+
+        if "pattern" in node:
+            pattern = node["pattern"]
+            if not isinstance(pattern, str):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema pattern must be a string"
+                )
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema pattern is invalid: {error}"
+                ) from error
+
+        required = node.get("required")
+        if "required" in node and (
+            not isinstance(required, list)
+            or not all(isinstance(name, str) for name in required)
+            or len(set(required)) != len(required)
+        ):
+            raise _SchemaEvaluationError(
+                f"{node_path}: canonical schema required must be an array of unique strings"
+            )
+
+        if "uniqueItems" in node and not isinstance(node["uniqueItems"], bool):
+            raise _SchemaEvaluationError(
+                f"{node_path}: canonical schema uniqueItems must be a boolean"
+            )
+
+        for keyword in (
+            "minProperties",
+            "minItems",
+            "maxItems",
+            "minLength",
+            "maxLength",
+        ):
+            require_non_negative_integer(node, keyword, node_path)
+        for keyword in ("minimum", "maximum"):
+            require_number(node, keyword, node_path)
+
+        if "const" in node:
+            literal_fingerprint(node["const"], f"{node_path}.const", set())
+        if "enum" in node:
+            enum = node["enum"]
+            if not isinstance(enum, list) or not enum:
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema enum must be a non-empty array"
+                )
+            fingerprints = [
+                literal_fingerprint(item, f"{node_path}.enum[{index}]", set())
+                for index, item in enumerate(enum)
+            ]
+            if len(set(fingerprints)) != len(fingerprints):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema enum values must be unique"
+                )
+
+        if "$ref" in node:
+            ref = node["$ref"]
+            if not isinstance(ref, str):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema $ref must be a string"
+                )
+            if ref in active_refs:
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema contains a reference cycle"
+                )
+            if ref not in visited_refs:
+                active_refs.add(ref)
+                visit(schemas.resolve(ref), f"{node_path}.$ref")
+                active_refs.remove(ref)
+                visited_refs.add(ref)
+
+        for keyword in ("$defs", "properties"):
+            if keyword not in node:
+                continue
+            children = node[keyword]
+            if not isinstance(children, Mapping):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema {keyword} must contain named schemas"
+                )
+            for name, child in children.items():
+                if not isinstance(name, str) or not isinstance(child, Mapping):
+                    raise _SchemaEvaluationError(
+                        f"{node_path}: canonical schema {keyword} must contain named schemas"
+                    )
+                visit(child, f"{node_path}.{keyword}.{name}")
+
+        for keyword in ("items", "propertyNames"):
+            if keyword not in node:
+                continue
+            child = node[keyword]
+            if not isinstance(child, Mapping):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema {keyword} must contain a schema"
+                )
+            visit(child, f"{node_path}.{keyword}")
+
+        if "additionalProperties" in node:
+            additional = node["additionalProperties"]
+            if isinstance(additional, Mapping):
+                visit(additional, f"{node_path}.additionalProperties")
+            elif not isinstance(additional, bool):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema additionalProperties must be a "
+                    "boolean or schema"
+                )
+
+        if "unevaluatedProperties" in node and not isinstance(
+            node["unevaluatedProperties"], bool
+        ):
+            raise _SchemaEvaluationError(
+                f"{node_path}: canonical schema unevaluatedProperties must be a boolean"
+            )
+
+        for keyword in ("oneOf", "allOf"):
+            if keyword not in node:
+                continue
+            branches = node[keyword]
+            if not isinstance(branches, list) or not branches or not all(
+                isinstance(branch, Mapping) for branch in branches
+            ):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema {keyword} must contain schemas"
+                )
+            for index, branch in enumerate(branches):
+                visit(branch, f"{node_path}.{keyword}[{index}]")
+
+        for keyword in ("if", "then", "not"):
+            if keyword not in node:
+                continue
+            child = node[keyword]
+            if not isinstance(child, Mapping):
+                raise _SchemaEvaluationError(
+                    f"{node_path}: canonical schema {keyword} must contain a schema"
+                )
+            visit(child, f"{node_path}.{keyword}")
+
+        active_nodes.remove(marker)
+        visited_nodes.add(marker)
+
+    visit(schema, path)
+
+
 def _validate_against_schema(
     value: object, schema: Mapping[str, Any], schemas: _CanonicalSchemas, path: str
 ) -> list[str]:
@@ -784,6 +1059,14 @@ def _validate_against_schema(
     fullmatch describe the same language and neither has to be tightened here.
     ``tests/contracts/test_scalar_anchor_parity.py`` holds that agreement.
     """
+    _preflight_schema(schema, schemas, path)
+    return _validate_value_against_schema(value, schema, schemas, path)
+
+
+def _validate_value_against_schema(
+    value: object, schema: Mapping[str, Any], schemas: _CanonicalSchemas, path: str
+) -> list[str]:
+    """Validate a value after the full reachable schema has passed preflight."""
     findings: list[str] = []
 
     unknown = sorted(set(schema) - _SUPPORTED_SCHEMA_KEYWORDS)
@@ -794,7 +1077,9 @@ def _validate_against_schema(
         )
 
     if "$ref" in schema:
-        return _validate_against_schema(value, schemas.resolve(schema["$ref"]), schemas, path)
+        return _validate_value_against_schema(
+            value, schemas.resolve(schema["$ref"]), schemas, path
+        )
 
     declared = schema.get("type")
     if isinstance(declared, str):
@@ -853,7 +1138,7 @@ def _validate_against_schema(
             matched = [
                 branch
                 for branch in branches
-                if not _validate_against_schema(value, branch, schemas, path)
+                if not _validate_value_against_schema(value, branch, schemas, path)
             ]
             if len(matched) != 1:
                 findings.append(
@@ -871,7 +1156,9 @@ def _validate_against_schema(
             )
         else:
             for branch in branches:
-                findings.extend(_validate_against_schema(value, branch, schemas, path))
+                findings.extend(
+                    _validate_value_against_schema(value, branch, schemas, path)
+                )
 
     if "if" in schema:
         condition = schema["if"]
@@ -880,7 +1167,7 @@ def _validate_against_schema(
                 f"{path}: canonical schema if must contain a schema"
             )
         elif (
-            not _validate_against_schema(value, condition, schemas, path)
+            not _validate_value_against_schema(value, condition, schemas, path)
             and "then" in schema
         ):
             consequence = schema["then"]
@@ -890,7 +1177,7 @@ def _validate_against_schema(
                 )
             else:
                 findings.extend(
-                    _validate_against_schema(value, consequence, schemas, path)
+                    _validate_value_against_schema(value, consequence, schemas, path)
                 )
 
     if "not" in schema:
@@ -899,7 +1186,7 @@ def _validate_against_schema(
             raise _SchemaEvaluationError(
                 f"{path}: canonical schema not must contain a schema"
             )
-        elif not _validate_against_schema(value, excluded, schemas, path):
+        elif not _validate_value_against_schema(value, excluded, schemas, path):
             findings.append(f"{path}: must not satisfy the excluded schema")
     return findings
 
@@ -910,10 +1197,13 @@ def _validate_format(value: str, declared: str, path: str) -> list[str]:
     A pattern is not a calendar. ``2024-99-99T99:99:99Z`` satisfies the
     ``Timestamp`` pattern character for character and is not a date, so a
     validator that stops at the pattern accepts an instant that does not exist.
-    An unknown format is refused outright rather than skipped: silently ignoring
-    a declared constraint is how a validator ends up claiming coverage it does
-    not have.
+    ``uri`` is a recognized annotation whose sole canonical definition,
+    ``ServiceEndpointUri``, deliberately names its pattern as the policy authority;
+    applying a second URI parser here would create a competing acceptance language.
+    Any other format is refused before value validation.
     """
+    if declared == "uri":
+        return []
     if declared != "date-time":
         raise _SchemaEvaluationError(
             f"{path}: canonical schema declares unsupported format {declared!r}"
@@ -944,7 +1234,7 @@ def _validate_array(
     if isinstance(items, Mapping):
         for index, item in enumerate(value):
             findings.extend(
-                _validate_against_schema(item, items, schemas, f"{path}[{index}]")
+                _validate_value_against_schema(item, items, schemas, f"{path}[{index}]")
             )
     return findings
 
@@ -970,14 +1260,18 @@ def _validate_object(
         for name, subschema in properties.items():
             if name in value and isinstance(subschema, Mapping):
                 findings.extend(
-                    _validate_against_schema(value[name], subschema, schemas, f"{path}.{name}")
+                    _validate_value_against_schema(
+                        value[name], subschema, schemas, f"{path}.{name}"
+                    )
                 )
 
     property_names = schema.get("propertyNames")
     if isinstance(property_names, Mapping):
         for name in value:
             findings.extend(
-                _validate_against_schema(name, property_names, schemas, f"{path}<key {name!r}>")
+                _validate_value_against_schema(
+                    name, property_names, schemas, f"{path}<key {name!r}>"
+                )
             )
 
     # `unevaluatedProperties: false` is how this contract closes its objects.
@@ -994,7 +1288,9 @@ def _validate_object(
     elif isinstance(additional, Mapping):
         for name in sorted(set(value) - declared_names):
             findings.extend(
-                _validate_against_schema(value[name], additional, schemas, f"{path}.{name}")
+                _validate_value_against_schema(
+                    value[name], additional, schemas, f"{path}.{name}"
+                )
             )
     return findings
 

@@ -245,6 +245,8 @@ _FORBIDDEN_BYTE_ONLY_REPLAY_FIELDS: tuple[tuple[str, object], ...] = (
     ("tokenizer_version", "v1"),
     ("tokenizer_note", "unavailable"),
     ("token_count", 1),
+    ("model_tokens", 1),
+    ("rendered_tokens", 1),
 )
 
 
@@ -313,3 +315,16 @@ def test_generated_typescript_exports_the_counting_contract() -> None:
     assert "export interface EngineeringTokenizerReference" in source
     assert "counting_mode?: EngineeringCountingMode;" in source
     assert "tokenizer?: EngineeringTokenizerReference;" in source
+    assert "readonly token_count: number;" in source
+    assert "readonly rendered_tokens: number;" in source
+    assert (
+        'export type EngineeringRenderingV2 = Omit<EngineeringRendering, "token_count">;'
+        in source
+    )
+    assert "export type EngineeringBudgetOutcomeV2 = Omit<" in source
+    assert "export type EngineeringContextPackV2 = Omit<" in source
+    assert 'readonly format_version: "engineering_context.v2";' in source
+    assert "readonly rendering: EngineeringRenderingV2;" in source
+    assert "readonly budget: EngineeringBudgetOutcomeV2;" in source
+    assert "export type EngineeringContextBuildResultV2 = Omit<" in source
+    assert "readonly pack: EngineeringContextPackV2;" in source

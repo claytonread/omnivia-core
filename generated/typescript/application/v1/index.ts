@@ -1132,6 +1132,13 @@ export interface EngineeringBudget {
 }
 
 /**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringBudgetV2 = Omit<EngineeringBudget, "model_tokens">;
+
+/**
  * The complete model-facing rendering of a pack: one canonical UTF-8 string containing section
  * labels, content, authority/applicability warnings and compact citations. Legacy v1 reports the
  * pinned pattern-token count and exact UTF-8 byte count; byte-only v2 reports only the exact
@@ -1150,12 +1157,19 @@ export interface EngineeringRendering {
   /**
    * Exact token count of `text` under the pinned supported tokenizer.
    */
-  readonly token_count?: number;
+  readonly token_count: number;
   /**
    * Exact UTF-8 byte count of `text`.
    */
   readonly byte_count: number;
 }
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringRenderingV2 = Omit<EngineeringRendering, "token_count">;
 
 /**
  * The closed applicability mode of an engineering read: `diagnostic` (the default, conservative
@@ -4215,7 +4229,7 @@ export interface EngineeringBudgetOutcome {
   /**
    * Tokens actually rendered model-facing.
    */
-  readonly rendered_tokens?: number;
+  readonly rendered_tokens: number;
   /**
    * UTF-8 bytes actually rendered model-facing.
    */
@@ -4229,6 +4243,25 @@ export interface EngineeringBudgetOutcome {
    */
   readonly hydrations: number;
 }
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringBudgetOutcomeV2 = Omit<
+  EngineeringBudgetOutcome,
+  "requested" | "effective" | "rendered_tokens"
+> & {
+  /**
+   * What the caller requested, when the caller stated a budget.
+   */
+  readonly requested?: EngineeringBudgetV2;
+  /**
+   * The minimum of request, granted profile and server hard limits actually applied.
+   */
+  readonly effective: EngineeringBudgetV2;
+};
 
 /**
  * One file of a source snapshot manifest: a repository-relative path and the SHA-256 digest of
@@ -8592,6 +8625,30 @@ export interface EngineeringContextPack {
 }
 
 /**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringContextPackV2 = Omit<
+  EngineeringContextPack,
+  "format_version" | "rendering" | "budget"
+> & {
+  /**
+   * The engineering pack representation format. This representation is never decoded as a
+   * legacy application-v1 ContextPackBuildResult.
+   */
+  readonly format_version: "engineering_context.v2";
+  /**
+   * The complete model-facing rendering and its exact counts.
+   */
+  readonly rendering: EngineeringRenderingV2;
+  /**
+   * Requested, effective and actually consumed budgets.
+   */
+  readonly budget: EngineeringBudgetOutcomeV2;
+};
+
+/**
  * A single application request: what to do, under what conditions, with what payload.
  */
 export interface RequestEnvelope {
@@ -9305,6 +9362,21 @@ export interface EngineeringContextBuildResult {
    */
   readonly pack: EngineeringContextPack;
 }
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringContextBuildResultV2 = Omit<
+  EngineeringContextBuildResult,
+  "pack"
+> & {
+  /**
+   * The built pack. Non-persisted; regeneration requires its recorded replay inputs.
+   */
+  readonly pack: EngineeringContextPackV2;
+};
 
 /**
  * Operation-independent response metadata. Present on both success and error responses so a

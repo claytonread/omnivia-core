@@ -373,6 +373,7 @@ def _definitions_by_name() -> dict[str, Any]:
 BY_NAME = _definitions_by_name()
 CATALOGUE_ANNOTATION = generator.OPERATION_CATALOGUE_ANNOTATION
 PYTHON_INIT_REQUIRED_ANNOTATION = generator.PYTHON_INIT_REQUIRED_ANNOTATION
+TYPESCRIPT_V2_VIEW_ANNOTATION = generator.TYPESCRIPT_V2_VIEW_ANNOTATION
 
 
 def test_python_init_required_annotation_is_parsed_from_the_schema() -> None:
@@ -401,6 +402,68 @@ def test_python_init_required_annotation_is_rejected_when_redundant() -> None:
     )
     node["properties"]["byte_count"][PYTHON_INIT_REQUIRED_ANNOTATION] = True
     with pytest.raises(generator.UnsupportedSchemaError, match="wire-required property"):
+        generator.parse_definition("EngineeringRendering", node, "engineering", 0)
+
+
+def test_typescript_v2_views_are_parsed_from_the_schema() -> None:
+    rendering = BY_NAME["EngineeringRendering"]
+    assert rendering.typescript_v2_view is True
+    assert rendering.typescript_v2_legacy_required == ("token_count",)
+    assert rendering.typescript_v2_omit == ("token_count",)
+
+    pack = BY_NAME["EngineeringContextPack"]
+    assert pack.typescript_v2_view is True
+    assert pack.typescript_v2_consts == (
+        ("format_version", "engineering_context.v2"),
+    )
+
+    result = BY_NAME["EngineeringContextBuildResult"]
+    assert result.typescript_v2_view is True
+    assert result.typescript_v2_omit == ()
+
+
+@pytest.mark.parametrize("value", [None, 1, "v2", []])
+def test_typescript_v2_view_annotation_must_be_an_object(value: object) -> None:
+    node = copy.deepcopy(
+        generator.load_schema("engineering")["$defs"]["EngineeringRendering"]
+    )
+    node[TYPESCRIPT_V2_VIEW_ANNOTATION] = value
+    with pytest.raises(generator.UnsupportedSchemaError, match="must be an object"):
+        generator.parse_definition("EngineeringRendering", node, "engineering", 0)
+
+
+def test_typescript_v2_view_annotation_rejects_unknown_keys() -> None:
+    node = copy.deepcopy(
+        generator.load_schema("engineering")["$defs"]["EngineeringRendering"]
+    )
+    node[TYPESCRIPT_V2_VIEW_ANNOTATION]["future_rule"] = []
+    with pytest.raises(generator.UnsupportedSchemaError, match="only `legacy_required`"):
+        generator.parse_definition("EngineeringRendering", node, "engineering", 0)
+
+
+@pytest.mark.parametrize(
+    ("view", "message"),
+    [
+        ({"omit": ["token_count", "token_count"]}, "unique property names"),
+        ({"omit": ["missing"]}, "undeclared properties"),
+        ({"legacy_required": ["token_count"]}, "subset of omit"),
+        ({"omit": ["byte_count"]}, "wire-required properties"),
+        (
+            {"omit": ["token_count"], "const": {"token_count": 1}},
+            "const and omit overlap",
+        ),
+        ({"const": {"token_count": 1}}, "non-required properties"),
+        ({"const": {"byte_count": "four"}}, "inline scalar property's type"),
+    ],
+)
+def test_typescript_v2_view_annotation_rejects_invalid_rules(
+    view: dict[str, object], message: str
+) -> None:
+    node = copy.deepcopy(
+        generator.load_schema("engineering")["$defs"]["EngineeringRendering"]
+    )
+    node[TYPESCRIPT_V2_VIEW_ANNOTATION] = view
+    with pytest.raises(generator.UnsupportedSchemaError, match=message):
         generator.parse_definition("EngineeringRendering", node, "engineering", 0)
 
 
