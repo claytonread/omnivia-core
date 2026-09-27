@@ -108,7 +108,6 @@ AUTHORING_PURPOSES = [
     *ALL_PURPOSES,
     "memory_authoring",
     "content_ingestion",
-    "continuity_checkpoint",
     "job_observation",
 ]
 
@@ -184,16 +183,6 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
     "decision_record_get": {"evaluation_id": "eval-1"},
     "decision_record_list": {},
     "decision_status": {},
-    "continuity_checkpoint_append": {
-        "input": {
-            "session_id": "eng-session-1",
-            "payload": {
-                "objective": "Investigate the auth fixture failure",
-                "checkpoint_kind": "periodic",
-            },
-        },
-        "idempotency_key": "k-5",
-    },
 }
 
 
@@ -852,7 +841,7 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_fourteen_and_twenty() -> None:
+def test_the_two_inventories_are_the_frozen_fourteen_and_nineteen() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
@@ -861,7 +850,7 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty() -> None:
     """
     restricted, authoring = session(), authoring_session()
     assert len(listed(restricted)) == 14
-    assert len(listed(authoring)) == 20
+    assert len(listed(authoring)) == 19
     assert listed(authoring)[:14] == listed(restricted)
     assert listed(authoring)[14:] == [
         "memory_create",
@@ -869,7 +858,6 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty() -> None:
         "import_start",
         "job_get",
         "job_events",
-        "continuity_checkpoint_append",
     ]
 
 
@@ -979,7 +967,7 @@ def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability()
     None
 ):
     """Read off the frozen catalogue entry and the manifest, never transcribed --
-    for the six wider tools as much as for the fourteen shared reads.
+    for the five wider tools as much as for the fourteen shared tools.
 
     The purposes are the service's own (`memory_authoring`, `content_ingestion`,
     `job_observation`), so a request states the claim the grant is checked
