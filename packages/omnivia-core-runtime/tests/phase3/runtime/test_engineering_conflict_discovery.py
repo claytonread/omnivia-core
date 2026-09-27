@@ -1,12 +1,15 @@
-"""Durable Stage A engineering conflict discovery (migration 0054).
+"""Durable engineering conflict discovery (migrations 0054-0055).
 
-The current slice proves storage, exact provenance, fencing and atomic enqueue.
-It does not claim AC-049's bounded comparison scan or AC-050's checkout scope
-classification; those require contracts that are not yet present.
+The suite covers atomic enqueue, indexed resumable processing, exact provenance,
+authorization-safe structural and lexical matching, restart/replay, production
+execution and expand visibility. Checkout-proven scope classification remains a
+later AC-050 slice.
 """
 
 from __future__ import annotations
 
+import itertools
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,10 @@ import test_engineering_source_coverage as esc
 from omnivia_core_runtime.ownership.fencing import (
     assert_guards_intact,
     fenced_transaction,
+)
+from omnivia_core_runtime.ownership.identity import SystemClock
+from omnivia_core_runtime.service.engineering_conflict_execution import (
+    EngineeringConflictExecutor,
 )
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.storage import engineering_conflicts
@@ -142,6 +149,93 @@ def _seed_candidate(
             recorded_at_us=run.resolution_instant_us,
         )
     return run, candidate
+
+
+def _identifier_allocator() -> Any:
+    sequence = itertools.count(1)
+    return lambda prefix: f"{prefix}-processor-{next(sequence)}"
+
+
+def _discovery_observation(
+    marker: str,
+    *,
+    topic: str | None = None,
+    repository_id: str | None = None,
+    snapshot_id: str | None = None,
+    evidence: bool = False,
+) -> dict[str, Any]:
+    payload = esc._observation(None, title=f"{marker} title", evidence=evidence)
+    payload["content"].update(
+        {
+            "summary": f"{marker} summary",
+            "what": f"{marker} finding",
+        }
+    )
+    if topic is not None:
+        payload["content"]["topic_ref"] = {"proposed_key": topic}
+    if repository_id is not None:
+        applicability: dict[str, str] = {"repository_id": repository_id}
+        if snapshot_id is not None:
+            applicability["snapshot_id"] = snapshot_id
+        payload["content"]["applicability"] = applicability
+    return payload
+
+
+def _finish_before(
+    workspace: esc.Workspace,
+    target: engineering_conflicts.DiscoveryRun,
+    *,
+    allocate_identifier: Any,
+    label_grant: EvidenceLabelGrant | None = None,
+) -> None:
+    grant = _grant() if label_grant is None else label_grant
+    for _ in range(256):
+        queued = engineering_conflicts.read_oldest_queued_run(
+            workspace.holder.connection, workspace_id=WORKSPACE_ID
+        )
+        assert queued is not None
+        if queued.discovery_run_id == target.discovery_run_id:
+            return
+        result = engineering_conflicts.process_oldest_queued_run(
+            workspace.holder.connection,
+            workspace.holder.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=workspace.holder.generation,
+            label_grant=grant,
+            allocate_identifier=allocate_identifier,
+            occurred_at_us=2**62,
+        )
+        assert result is not None
+    raise AssertionError("the target discovery run did not reach the queue head")
+
+
+def _finish_run(
+    workspace: esc.Workspace,
+    target: engineering_conflicts.DiscoveryRun,
+    *,
+    allocate_identifier: Any,
+    scan_record_budget: int = engineering_conflicts.DEFAULT_SCAN_RECORD_BUDGET,
+    label_grant: EvidenceLabelGrant | None = None,
+) -> engineering_conflicts.DiscoveryProcessingResult:
+    grant = _grant() if label_grant is None else label_grant
+    for _ in range(1024):
+        result = engineering_conflicts.process_oldest_queued_run(
+            workspace.holder.connection,
+            workspace.holder.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=workspace.holder.generation,
+            label_grant=grant,
+            allocate_identifier=allocate_identifier,
+            occurred_at_us=2**62,
+            scan_record_budget=scan_record_budget,
+        )
+        assert result is not None
+        if (
+            result.run.discovery_run_id == target.discovery_run_id
+            and result.scan_complete
+        ):
+            return result
+    raise AssertionError("the target discovery run did not complete")
 
 
 def test_0054_is_the_additive_successor_and_creates_guarded_tables(
@@ -774,6 +868,438 @@ def test_discovery_facts_survive_restart(workspace: esc.Workspace) -> None:
         candidate.endpoint_a.content_digest,
         candidate.endpoint_b.content_digest,
     )
+
+
+def test_0055_adds_an_indexed_append_only_scan_watermark(
+    workspace: esc.Workspace,
+) -> None:
+    migration = next(item for item in load_migrations() if item.version == 55)
+    assert migration.name == "0055_engineering_conflict_scan_progress.sql"
+    assert applied_migrations(workspace.holder.connection)[55] == migration.checksum
+    plan = workspace.holder.connection.execute(
+        "EXPLAIN QUERY PLAN SELECT governed_record_id "
+        "FROM omnivia_governed_records "
+        "INDEXED BY omnivia_idx_engineering_discovery_record_scan "
+        "WHERE workspace_id = ? AND domain_scope = ? AND governed_record_id > ? "
+        "AND record_type IN (?, ?, ?) AND recorded_at_us <= ? "
+        "ORDER BY governed_record_id LIMIT ?",
+        (
+            WORKSPACE_ID,
+            "engineering.codebase",
+            "",
+            "knowledge.finding",
+            "knowledge.risk",
+            "knowledge.decision",
+            2**62,
+            129,
+        ),
+    ).fetchall()
+    assert any(
+        "omnivia_idx_engineering_discovery_record_scan" in str(row[3]) for row in plan
+    )
+
+
+def test_frontier_digest_is_independent_of_page_boundaries_and_empty_pages() -> None:
+    first = engineering_conflicts.PreviewCandidate(
+        "asm-a",
+        "rec-a",
+        "ver-a",
+        1,
+        "candidate",
+        "unavailable",
+        False,
+        "sha256:" + "a" * 64,
+        "Alpha",
+        "Alpha preview",
+        False,
+        "decision",
+        "observed",
+        "topic.alpha",
+        None,
+        None,
+    )
+    second = engineering_conflicts.PreviewCandidate(
+        "asm-b",
+        "rec-b",
+        "ver-b",
+        2,
+        "candidate",
+        "unavailable",
+        False,
+        "sha256:" + "b" * 64,
+        "Beta",
+        "Beta preview",
+        False,
+        "decision",
+        "observed",
+        None,
+        None,
+        None,
+    )
+    dependencies = {"asm-a": (), "asm-b": ()}
+    together = engineering_conflicts._frontier_digest(
+        (first, second), dependencies, previous_digest=None
+    )
+    split = engineering_conflicts._frontier_digest(
+        (first,), dependencies, previous_digest=None
+    )
+    split = engineering_conflicts._frontier_digest((), {}, previous_digest=split)
+    split = engineering_conflicts._frontier_digest(
+        (second,), dependencies, previous_digest=split
+    )
+    assert split == together
+
+
+def test_resumable_processor_prefers_structural_then_authorized_lexical_matches(
+    workspace: esc.Workspace,
+) -> None:
+    structural = workspace.observe(
+        _discovery_observation(
+            "cobalt lattice",
+            topic="auth.provider",
+            repository_id="erepo-a",
+            snapshot_id="esnap-a",
+        )
+    )
+    lexical = workspace.observe(_discovery_observation("quasarbridge fallback"))
+    unrelated = workspace.observe(
+        _discovery_observation(
+            "unrelated telemetry",
+            repository_id="erepo-a",
+            snapshot_id="esnap-a",
+        )
+    )
+    disjoint = workspace.observe(
+        _discovery_observation(
+            "quasarbridge remote",
+            repository_id="erepo-b",
+            snapshot_id="esnap-b",
+        )
+    )
+    anchor = workspace.observe(
+        _discovery_observation(
+            "quasarbridge amber",
+            topic="auth.provider",
+            repository_id="erepo-a",
+            snapshot_id="esnap-a",
+        )
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+
+    first_page = engineering_conflicts.process_oldest_queued_run(
+        workspace.holder.connection,
+        workspace.holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=workspace.holder.generation,
+        label_grant=_grant(),
+        allocate_identifier=allocate,
+        occurred_at_us=2**62,
+        scan_record_budget=1,
+    )
+    assert first_page is not None
+    assert first_page.coverage == "partial"
+    assert first_page.scan_complete is False
+    first_cursor = first_page.last_processed_record_id
+
+    workspace.restart()
+    completed = _finish_run(
+        workspace,
+        run,
+        allocate_identifier=allocate,
+        scan_record_budget=1,
+    )
+    assert completed.coverage == "scan_complete_for_snapshot"
+    assert completed.authorized_frontier_size == 5
+    assert completed.structural_considered == 4
+    assert completed.lexical_considered == 2
+    assert completed.last_processed_record_id > first_cursor
+
+    observations = workspace.holder.connection.execute(
+        "SELECT o.channel, o.selected_order, c.endpoint_a_record_id, "
+        "c.endpoint_b_record_id FROM omnivia_engineering_discovery_candidate_observations o "
+        "JOIN omnivia_engineering_relation_candidates c "
+        "ON c.workspace_id = o.workspace_id "
+        "AND c.relation_candidate_id = o.relation_candidate_id "
+        "WHERE o.workspace_id = ? AND o.discovery_run_id = ? "
+        "ORDER BY o.selected_order",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchall()
+    assert [str(row[0]) for row in observations] == ["structural", "lexical"]
+    named = {str(value) for row in observations for value in row[2:]}
+    assert {anchor["record_id"], structural["record_id"], lexical["record_id"]} <= named
+    assert unrelated["record_id"] not in named
+    assert disjoint["record_id"] not in named
+    assert workspace.holder.connection.execute(
+        "SELECT coverage, frontier_digest, authorized_frontier_size, "
+        "structural_considered, lexical_considered, selected_count "
+        "FROM omnivia_engineering_discovery_run_events "
+        "WHERE workspace_id = ? AND discovery_run_id = ? AND event_sequence = 2",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchone() == (
+        "scan_complete_for_snapshot",
+        completed.frontier_digest,
+        5,
+        4,
+        2,
+        2,
+    )
+    progress = workspace.holder.connection.execute(
+        "SELECT batch_sequence, cursor_record_id "
+        "FROM omnivia_engineering_discovery_scan_progress "
+        "WHERE workspace_id = ? AND discovery_run_id = ? ORDER BY batch_sequence",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchall()
+    assert [int(row[0]) for row in progress] == list(range(1, 6))
+    cursors = [str(row[1]) for row in progress]
+    assert cursors == sorted(cursors)
+    with pytest.raises(sqlite3.DatabaseError), _fenced(workspace):
+        workspace.holder.connection.execute(
+            "UPDATE omnivia_engineering_discovery_scan_progress "
+            "SET cursor_record_id = cursor_record_id WHERE workspace_id = ? "
+            "AND discovery_run_id = ?",
+            (WORKSPACE_ID, run.discovery_run_id),
+        )
+
+
+def test_processor_excludes_hidden_rejected_and_off_domain_lexical_inputs(
+    workspace: esc.Workspace,
+) -> None:
+    hidden = workspace.observe(
+        _discovery_observation("nebulaindex hidden", evidence=True)
+    )
+    rejected = workspace.observe(_discovery_observation("nebulaindex rejected"))
+    proposal = workspace.ok(
+        "knowledge.propose",
+        {"record_id": rejected["record_id"], "rationale": {"reason_code": "review"}},
+        mutation_precondition=MutationPrecondition(record_version=rejected["version"]),
+    )
+    workspace.ok(
+        "candidate.reject",
+        {"record_id": rejected["record_id"], "rationale": {"reason_code": "review"}},
+        mutation_precondition=MutationPrecondition(
+            record_version=proposal["updated_record"]["provenance"]["identity"]["version"]
+        ),
+    )
+    off_domain_payload = {
+        **esc._observation(None, evidence=False),
+        "record_type": "memory.fact",
+        "domain_scope": "workspace.notes",
+        "content": {"fact": "nebulaindex off domain"},
+    }
+    off_domain = workspace.observe(off_domain_payload)
+    visible = workspace.observe(_discovery_observation("nebulaindex visible"))
+    anchor = workspace.observe(_discovery_observation("nebulaindex anchor"))
+    run = _run_for(workspace, anchor)
+    grant = _grant(all_labels=False)
+    allocate = _identifier_allocator()
+    _finish_before(
+        workspace,
+        run,
+        allocate_identifier=allocate,
+        label_grant=grant,
+    )
+    completed = _finish_run(
+        workspace,
+        run,
+        allocate_identifier=allocate,
+        label_grant=grant,
+    )
+    assert len(completed.candidates) == 1
+    endpoint_ids = {
+        completed.candidates[0].endpoint_a.record_id,
+        completed.candidates[0].endpoint_b.record_id,
+    }
+    assert endpoint_ids == {visible["record_id"], anchor["record_id"]}
+    serialized = json.dumps(
+        workspace.holder.connection.execute(
+            "SELECT c.endpoint_a_record_id, c.endpoint_b_record_id, o.basis_json "
+            "FROM omnivia_engineering_discovery_candidate_observations o "
+            "JOIN omnivia_engineering_relation_candidates c "
+            "ON c.workspace_id = o.workspace_id "
+            "AND c.relation_candidate_id = o.relation_candidate_id "
+            "WHERE o.workspace_id = ? AND o.discovery_run_id = ?",
+            (WORKSPACE_ID, run.discovery_run_id),
+        ).fetchall()
+    )
+    for denied in (hidden, rejected, off_domain):
+        assert denied["record_id"] not in serialized
+
+
+def test_default_result_budget_caps_global_structural_matches_at_eight(
+    workspace: esc.Workspace,
+) -> None:
+    assert (
+        engineering_conflicts._candidate_budget(
+            engineering_conflicts.MAX_CANDIDATE_BUDGET
+        )
+        == 32
+    )
+    records = [
+        workspace.observe(
+            _discovery_observation(f"unique candidate {index}", topic="budget.topic")
+        )
+        for index in range(9)
+    ]
+    anchor = workspace.observe(
+        _discovery_observation("budget anchor", topic="budget.topic")
+    )
+    run = _run_for(workspace, anchor)
+    assert run.candidate_budget == engineering_conflicts.DEFAULT_CANDIDATE_BUDGET == 8
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert completed.structural_considered == 9
+    assert len(completed.candidates) == 8
+    assert workspace.holder.connection.execute(
+        "SELECT selected_count FROM omnivia_engineering_discovery_run_events "
+        "WHERE workspace_id = ? AND discovery_run_id = ? AND event_sequence = 2",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchone() == (8,)
+    selected_other_ids = {
+        endpoint.record_id
+        for candidate in completed.candidates
+        for endpoint in (candidate.endpoint_a, candidate.endpoint_b)
+        if endpoint.record_id != anchor["record_id"]
+    }
+    assert len(selected_other_ids) == 8
+    assert selected_other_ids < {record["record_id"] for record in records}
+    for candidate in completed.candidates:
+        for endpoint in (candidate.endpoint_a, candidate.endpoint_b):
+            assert workspace.holder.connection.execute(
+                "SELECT governed_record_id, governed_record_version_id, content_digest "
+                "FROM omnivia_governed_version_assemblies "
+                "WHERE workspace_id = ? AND assembly_id = ?",
+                (WORKSPACE_ID, endpoint.assembly_id),
+            ).fetchone() == (
+                endpoint.record_id,
+                endpoint.version,
+                endpoint.content_digest,
+            )
+
+
+def test_terminal_failure_rolls_back_the_page_and_retry_replays_once(
+    workspace: esc.Workspace,
+) -> None:
+    workspace.observe(_discovery_observation("rollback earlier", topic="rollback.topic"))
+    anchor = workspace.observe(
+        _discovery_observation("rollback anchor", topic="rollback.topic")
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+
+    def fail_terminal(prefix: str) -> str:
+        if prefix == "ede":
+            raise RuntimeError("forced terminal interruption")
+        return allocate(prefix)
+
+    with pytest.raises(RuntimeError, match="terminal interruption"):
+        engineering_conflicts.process_oldest_queued_run(
+            workspace.holder.connection,
+            workspace.holder.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=workspace.holder.generation,
+            label_grant=_grant(),
+            allocate_identifier=fail_terminal,
+            occurred_at_us=2**62,
+        )
+    assert workspace.holder.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_engineering_discovery_scan_progress "
+        "WHERE workspace_id = ? AND discovery_run_id = ?",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchone() == (0,)
+    assert workspace.holder.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_engineering_discovery_candidate_observations "
+        "WHERE workspace_id = ? AND discovery_run_id = ?",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchone() == (0,)
+
+    workspace.restart()
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert len(completed.candidates) == 1
+    assert (
+        engineering_conflicts.process_oldest_queued_run(
+            workspace.holder.connection,
+            workspace.holder.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=workspace.holder.generation,
+            label_grant=_grant(),
+            allocate_identifier=allocate,
+            occurred_at_us=2**62,
+        )
+        is None
+    )
+    assert workspace.holder.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_engineering_discovery_candidate_observations "
+        "WHERE workspace_id = ? AND discovery_run_id = ?",
+        (WORKSPACE_ID, run.discovery_run_id),
+    ).fetchone() == (1,)
+
+
+def test_service_executor_reaches_terminal_runs_and_expand_filters_endpoints(
+    workspace: esc.Workspace,
+) -> None:
+    hidden = workspace.observe(
+        _discovery_observation(
+            "hidden wording", topic="executor.topic", evidence=True
+        )
+    )
+    visible = workspace.observe(
+        _discovery_observation("visible wording", topic="executor.topic")
+    )
+    anchor = workspace.observe(
+        _discovery_observation("anchor wording", topic="executor.topic")
+    )
+    workspace.restart()
+    executor = EngineeringConflictExecutor(
+        connection=workspace.holder.connection,
+        identity=workspace.holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=workspace.holder.generation,
+        clock=SystemClock(),
+    )
+    advanced = executor.run_pending(budget=32, scan_record_budget=1)
+    assert advanced
+    assert (
+        engineering_conflicts.read_oldest_queued_run(
+            workspace.holder.connection, workspace_id=WORKSPACE_ID
+        )
+        is None
+    )
+
+    owner = workspace.ok("engineering.expand", {"anchor": anchor})
+    pending = [edge for edge in owner["edges"] if edge["status"] == "pending"]
+    assert len(pending) == 2
+    assert {node["record_id"] for node in owner["nodes"]} == {
+        anchor["record_id"],
+        hidden["record_id"],
+        visible["record_id"],
+    }
+
+    reader = workspace.ok(
+        "engineering.expand", {"anchor": anchor}, session=esc._reader()
+    )
+    assert [edge["status"] for edge in reader["edges"]] == ["pending"]
+    assert hidden["record_id"] not in json.dumps(reader)
+    assert {node["record_id"] for node in reader["nodes"]} == {
+        anchor["record_id"],
+        visible["record_id"],
+    }
+
+    node_capped = workspace.ok(
+        "engineering.expand", {"anchor": anchor, "node_limit": 1}
+    )
+    assert node_capped["nodes"] == [anchor]
+    assert node_capped["edges"] == []
+    assert node_capped["truncated"] is True
+    edge_capped = workspace.ok(
+        "engineering.expand",
+        {"anchor": anchor, "node_limit": 3, "edge_limit": 1},
+    )
+    assert len(edge_capped["edges"]) == 1
+    assert edge_capped["truncated"] is True
 
 
 def test_0054_does_not_backfill_old_versions_and_the_next_write_enqueues(
