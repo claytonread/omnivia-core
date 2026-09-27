@@ -1703,7 +1703,8 @@ def test_authority_workspace_and_reviewer_claims_cannot_escape_the_content_bound
         {
             "workspace_id": "ws-attacker",
             "governance_state": "accepted",
-            "reviewer_id": "reviewer-attacker",
+            "authority_level": "canonical",
+            "reviewer": "reviewer-attacker",
         }
     )
     assert workspace.refused("memory.create", outer)[0] == "invalid_request"
@@ -1714,18 +1715,20 @@ def test_authority_workspace_and_reviewer_claims_cannot_escape_the_content_bound
             "workspace_id": "ws-attacker",
             "governance_state": "accepted",
             "authority_level": "canonical",
-            "reviewer_id": "reviewer-attacker",
+            "reviewer": "reviewer-attacker",
         }
     )
     created = workspace.ok("memory.create", nested)
     identity = created["record"]["provenance"]["identity"]
     row = workspace.holder.connection.execute(
-        "SELECT workspace_id, layer, authority_level, governance_disposition "
+        "SELECT workspace_id, layer, authority_level, governance_disposition, "
+        "decision_source_kind, decision_source_id "
         "FROM omnivia_governed_version_assemblies "
         "WHERE governed_record_id = ? AND governed_record_version_id = ?",
         (identity["record_id"], identity["version"]),
     ).fetchone()
-    assert row == (WORKSPACE_ID, "candidate", "proposed", None)
+    assert row == (WORKSPACE_ID, "candidate", "proposed", None, None, None)
+    assert "reviewer" not in created["record"]
 
 
 @pytest.mark.parametrize("wrong", [[], {}, ["git_commit"], {"complete": 1}])

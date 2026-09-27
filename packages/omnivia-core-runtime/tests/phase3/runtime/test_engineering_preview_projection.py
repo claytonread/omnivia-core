@@ -720,6 +720,59 @@ def test_the_cursor_restarts_when_the_server_authority_changes(
     assert resumed.error.code == "invalid_request"
 
 
+def test_the_cursor_restarts_when_the_acl_epoch_changes_without_changing_visibility(
+    workspace: Workspace,
+) -> None:
+    """An attach/withdraw cycle advances ACL history even when rows end visible."""
+    m2.write(
+        workspace.holder,
+        m2.EVIDENCE,
+        evidence_id="evd-open",
+        source_native_id="doc-open",
+    )
+    open_source = {**esc.EVIDENCE_SOURCE, "source_id": "doc-open"}
+    for index in range(3):
+        workspace.observe(
+            esc._observation(
+                None,
+                title=f"Provider ACL {index}",
+                evidence=True,
+                source=open_source,
+            )
+        )
+    reader = esc._reader()
+    request = {"query": "provider", "view": "candidates", "limit": 1}
+    first = workspace.ok("engineering.search", request, session=reader)
+    token = first["page"]["continuation_token"]
+
+    m2.write(
+        workspace.holder,
+        m2.LABELS,
+        label_event_id="lbl-open-attach",
+        evidence_id="evd-open",
+        label_sequence=1,
+    )
+    m2.write(
+        workspace.holder,
+        m2.LABELS,
+        label_event_id="lbl-open-withdraw",
+        evidence_id="evd-open",
+        label_sequence=2,
+        label_action="withdrawn",
+    )
+    assert len(
+        workspace.ok("engineering.search", request, session=reader)["previews"]
+    ) == 1
+
+    resumed = workspace.call(
+        "engineering.search",
+        {**request, "page": {"continuation_token": token}},
+        session=reader,
+    )
+    assert isinstance(resumed, esc.ErrorResponseEnvelope)
+    assert resumed.error.code == "invalid_request"
+
+
 def test_the_legacy_snapshot_stays_off_the_0053_view_and_the_frontier_stays_on_it(
     workspace: Workspace,
 ) -> None:

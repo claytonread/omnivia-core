@@ -839,6 +839,44 @@ def test_v1_a_deterministic_view_build_over_a_real_authoritative_snapshot(
     assert result.pack_id == result.reproducibility.artifact_checksum
 
 
+def test_ac003_legacy_build_rejects_engineering_controls_and_persists_no_pack(
+    standard: m2.Owned,
+) -> None:
+    """A valid legacy build stays a synchronous read; hybrid target requests fail."""
+    dispatcher = production_path(standard)
+    before = standard.connection.execute(
+        "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+    ).fetchall()
+
+    baseline = pack(dispatcher.dispatch(request_for(build_input())))
+
+    assert baseline.mode == "deterministic_view"
+    assert baseline.fresh_authorization_required is True
+    assert standard.connection.execute(
+        "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+    ).fetchall() == before
+
+    unsupported = (
+        build_input(
+            targets=[{"repository_id": "erepo-1", "snapshot_id": "esnap-1"}]
+        ),
+        build_input(
+            repository_target={
+                "repository_id": "erepo-1",
+                "snapshot_id": "esnap-1",
+            }
+        ),
+        build_input(mode="immutable_snapshot"),
+    )
+    for payload in unsupported:
+        response = refused(dispatcher.dispatch(request_for(payload)))
+        assert response.error.code == ERROR_CODE_INVALID_REQUEST
+
+    assert standard.connection.execute(
+        "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+    ).fetchall() == before
+
+
 def test_v1b_the_judge_is_handed_the_freezes_own_manifest_and_the_snapshots_own_facts(
     standard: m2.Owned, observed: Observed
 ) -> None:

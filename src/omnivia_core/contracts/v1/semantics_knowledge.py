@@ -2800,6 +2800,18 @@ CONTEXT_PACK_REJECTED_INPUT_FIELDS: Final[frozenset[str]] = frozenset(
         "async",
         "job",
         "job_id",
+        # Controls owned by the separately negotiated engineering operations.
+        # A hybrid request must fail rather than receive a legacy pack after these
+        # fields have been silently discarded by the tolerant v1 decoder.
+        "targets",
+        "repository_target",
+        "profile",
+        "topic_refs",
+        "checkpoint_refs",
+        "budget",
+        "applicability_mode",
+        "counting_mode",
+        "tokenizer",
     }
 )
 """Request controls `context_pack.build` deliberately does not have, refused by name.
@@ -2813,12 +2825,11 @@ asked for something else. Silently ignoring a control is the failure mode this s
 to prevent, so :func:`decode_context_pack_build_input` refuses them *before* the tolerant
 decode rather than after it.
 
-Three families, each an operation posture this v1 read does not have: a widened or
-historical selection (`view`, `as_of`), a paginated one (`page`, `limit`,
-`continuation_token`), and a persisted or deferred one (`persist`, `persistence`,
-`expires_at`, `expiry`, `retention_policy`, `snapshot`, `snapshot_id`, `async`, `job`,
-`job_id`). The set is frozen: adding a genuinely new control is a schema change, never a
-name that quietly stops being refused.
+The set includes every operation posture this v1 read does not have: widened or
+historical selection, pagination, persistence/deferred execution, and the target,
+profile and budget controls owned by the separately negotiated engineering search and
+context-build operations. The set is frozen: adding a genuinely new control is a schema
+change, never a name that quietly stops being refused.
 
 Refused as *top-level members of the request*, and only there -- see
 :func:`_reject_context_pack_input_controls` for why going deeper would break the ADR-038

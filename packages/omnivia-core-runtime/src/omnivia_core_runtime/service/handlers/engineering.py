@@ -644,7 +644,7 @@ class EngineeringHandlers:
         *,
         resolution_instant_us: int,
         view: str,
-    ) -> tuple[PreviewCandidate, ...]:
+    ) -> tuple[tuple[PreviewCandidate, ...], str]:
         """The engineering observations the effective caller's grant admits, as
         bounded previews, or the projection refusal that says why none can be served.
 
@@ -877,6 +877,7 @@ class EngineeringHandlers:
                 "principal": context.principal,
                 "workspace": context.workspace_id,
                 "operation": "engineering.search",
+                "api_version": context.request.metadata.api_version,
                 "authority": (
                     None if context.authority is None else context.authority.to_wire()
                 ),
@@ -926,7 +927,7 @@ class EngineeringHandlers:
             # admits, and only their bounded projection rows: a denied version
             # never reaches scoring, previews, totals or the continuation's
             # snapshot digest, and no version's body is read at any point.
-            admitted = self._preview_candidates(
+            admitted, authorization_frontier_digest = self._preview_candidates(
                 connection,
                 context,
                 resolution_instant_us=resolved_at_us,
@@ -990,6 +991,7 @@ class EngineeringHandlers:
             # rendered them. It names the content without reading it.
             snapshot_digest = token_digest(
                 {
+                    "authorization_frontier": authorization_frontier_digest,
                     "projection_version": PROJECTION_VERSION,
                     "ordered": [
                         [candidate.record_id, candidate.version, candidate.content_digest]

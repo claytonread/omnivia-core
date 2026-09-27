@@ -242,7 +242,7 @@ def test_a_pack_is_built_with_exact_counts_and_a_self_verifying_checksum(
 
 
 def test_engineering_context_build_does_not_persist_a_pack_body(tmp_path: Any) -> None:
-    """AC-003/048: the engineering v1 build is a read, including on success."""
+    """AC-048: the engineering v1 build is a read, including on success."""
     holder = _owned(tmp_path)
     try:
         _settle_create(holder, marker="obs-non-persisting", content=dict(_CONTENT))
