@@ -64,13 +64,13 @@ from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
-from omnivia_core_runtime.service.engineering_source_capture_execution import (
-    EngineeringSourceCaptureExecutor,
-)
 from omnivia_core_runtime.service.engineering_relation_assessment import (
     EngineeringRelationAssessmentExecutor,
     RelationAssessmentPolicy,
     RelationAssessmentProvider,
+)
+from omnivia_core_runtime.service.engineering_source_capture_execution import (
+    EngineeringSourceCaptureExecutor,
 )
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.handlers.workflow import WorkflowReleaseResolver
