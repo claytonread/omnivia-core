@@ -4269,6 +4269,75 @@ export interface EngineeringSourceRecordResult {
 }
 
 /**
+ * Input for `engineering.repository.register`: an explicitly authorized local operator binds one
+ * exact, installation-local checkout directory to one logical repository identity. Not a model-
+ * facing tool: it is reachable only through the accepted local client/CLI, under the distinct
+ * `engineering:repository` scope and `engineering.repository` capability, and is refused over
+ * every other route. `repository_id` is the caller's own stable logical identity -- never
+ * inferred from `display_name`, from the checkout's own git remote or configuration, or from any
+ * other repository-supplied hint -- and two registrations may share a `display_name` by design
+ * (label-only lookup stays ambiguous). `checkout_root` is validated server-side as a real,
+ * installation-local directory with no traversal or symlink escape; it is stored only as this
+ * installation's own checkout mapping and never appears in a governed observation, a manifest or
+ * an error message. The workspace and installation are the authenticated caller's own and can
+ * never be supplied by the payload. Unknown keys are refused.
+ */
+export interface EngineeringRepositoryRegisterInput {
+  /**
+   * Stable logical repository identity, chosen by the operator and never derived from a path,
+   * a label or a repository-supplied hint.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * A human-readable label. Two unrelated repositories may share one; label-only resolution
+   * stays ambiguous by design.
+   */
+  readonly display_name: string;
+  /**
+   * Optional free-text note about the repository's hosting provider. Never used to establish
+   * identity or authority.
+   */
+  readonly provider_hint?: string;
+  /**
+   * The exact, absolute, installation-local filesystem path of the trusted checkout to bind.
+   * Validated server-side as a real directory with no traversal or symlink escape; never
+   * echoed back, stored in portable content, or quoted in an error.
+   */
+  readonly checkout_root: string;
+}
+
+/**
+ * Result of `engineering.repository.register`: the repository and checkout identities, and
+ * whether this delivery newly registered the repository, idempotently repeated an identical
+ * registration, or audited a moved checkout. The installation-local path is never echoed back.
+ */
+export interface EngineeringRepositoryRegisterResult {
+  /**
+   * The bound repository.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * This installation's opaque checkout-mapping identity.
+   */
+  readonly checkout_id: Identifier;
+  /**
+   * `registered` for a newly recorded repository identity, `already_registered` when this
+   * exact identity was already recorded.
+   */
+  readonly repository_disposition: string;
+  /**
+   * `bound` for a new checkout mapping, `already_bound` when this exact mapping already
+   * pointed here, `rebound` when this installation's mapping for this exact path moved to this
+   * repository, audited.
+   */
+  readonly checkout_disposition: string;
+  /**
+   * Audit reference for this delivery.
+   */
+  readonly audit_reference: string;
+}
+
+/**
  * A single typed failure. The code and retry class are the contract; the message is not.
  */
 export interface ApiError {
@@ -12125,6 +12194,43 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_request",
       "rate_limited",
       "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.repository.register",
+    scope: {
+      required_scopes: ["engineering:repository"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterResult",
+    required_capability: { id: "engineering.repository", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",

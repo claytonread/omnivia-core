@@ -10159,6 +10159,142 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "id": "engineering.repository.register/primary-success",
+      "operation": "engineering.repository.register",
+      "description": "engineering.repository.register binds a new installation-local checkout to a new logical repository identity on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.repository.register-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.repository",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:repository"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.repository.register"
+        },
+        "operation": "engineering.repository.register",
+        "input": {
+          "repository_id": "erepo-1",
+          "display_name": "Omnivia Core",
+          "checkout_root": "/home/operator/src/omnivia-core"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.repository.register-success",
+          "audit_reference": "audit-engineering.repository.register"
+        },
+        "result": {
+          "repository_id": "erepo-1",
+          "checkout_id": "echeckout-1",
+          "repository_disposition": "registered",
+          "checkout_disposition": "bound",
+          "audit_reference": "audit-engineering.repository.register"
+        }
+      }
+    },
+    {
+      "id": "engineering.repository.register/honest-replay",
+      "operation": "engineering.repository.register",
+      "description": "engineering.repository.register repeated with the same idempotency key and the same input: the recorded registration receipt is returned without registering again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "engineering.repository.register/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.repository.register-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.repository",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:repository"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.repository.register"
+        },
+        "operation": "engineering.repository.register",
+        "input": {
+          "repository_id": "erepo-1",
+          "display_name": "Omnivia Core",
+          "checkout_root": "/home/operator/src/omnivia-core"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.repository.register-replay",
+          "audit_reference": "audit-engineering.repository.register"
+        },
+        "result": {
+          "repository_id": "erepo-1",
+          "checkout_id": "echeckout-1",
+          "repository_disposition": "registered",
+          "checkout_disposition": "bound",
+          "audit_reference": "audit-engineering.repository.register"
+        }
+      }
+    },
+    {
+      "id": "engineering.repository.register/idempotency-conflict",
+      "operation": "engineering.repository.register",
+      "description": "engineering.repository.register reusing one idempotency key for a different checkout: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "engineering.repository.register/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.repository.register-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.repository",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:repository"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.repository.register"
+        },
+        "operation": "engineering.repository.register",
+        "input": {
+          "repository_id": "erepo-1",
+          "display_name": "Omnivia Core",
+          "checkout_root": "/home/operator/src/omnivia-core-2"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.repository.register-conflict",
+          "audit_reference": "audit-engineering.repository.register"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

@@ -1114,6 +1114,12 @@
     },
     "EngineeringSourceRecordResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordResult"
+    },
+    "EngineeringRepositoryRegisterInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterInput"
+    },
+    "EngineeringRepositoryRegisterResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterResult"
     }
   }
 }

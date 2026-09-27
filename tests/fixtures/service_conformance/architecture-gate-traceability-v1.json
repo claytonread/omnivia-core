@@ -212,7 +212,8 @@
         "engineering.context.build",
         "context.priority.set",
         "engineering.review.record",
-        "engineering.source.record"
+        "engineering.source.record",
+        "engineering.repository.register"
       ]
     },
     {
@@ -339,7 +340,8 @@
         "continuity.session.close",
         "context.priority.set",
         "engineering.review.record",
-        "engineering.source.record"
+        "engineering.source.record",
+        "engineering.repository.register"
       ]
     },
     {
@@ -375,7 +377,8 @@
         "continuity.session.close",
         "context.priority.set",
         "engineering.review.record",
-        "engineering.source.record"
+        "engineering.source.record",
+        "engineering.repository.register"
       ]
     },
     {
@@ -464,7 +467,8 @@
         "engineering.context.build",
         "context.priority.set",
         "engineering.review.record",
-        "engineering.source.record"
+        "engineering.source.record",
+        "engineering.repository.register"
       ]
     },
     {
@@ -526,7 +530,8 @@
         "engineering.context.build",
         "context.priority.set",
         "engineering.review.record",
-        "engineering.source.record"
+        "engineering.source.record",
+        "engineering.repository.register"
       ]
     },
     {
