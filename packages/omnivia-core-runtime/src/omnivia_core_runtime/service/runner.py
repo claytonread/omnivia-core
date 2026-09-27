@@ -632,17 +632,25 @@ class ServiceRunner:
         # worker's output, so catching up slowly costs staleness of the
         # `diagnostic`-mode assessment history, never correctness.
         try:
-            # Bounded over stream count, exactly as `drain_pending_invalidation`'s own
-            # per-tick page is: a workspace with more lagging streams than
+            # Bounded over *raw* stream rows scanned, exactly as
+            # `drain_pending_invalidation`'s own per-tick page is
+            # (`engineering_invalidation.select_pending_streams`): `pending_streams`'
+            # own lagging predicate is residual against the streams table's only
+            # applicable index, so using it here would let a caught-up workspace's
+            # stream count -- not `TICK_STREAM_LIMIT` -- decide how many rows this
+            # one-shot pass reads. A workspace with more lagging streams than
             # `TICK_STREAM_LIMIT` leaves the rest to converge over subsequent ticks
-            # rather than making startup itself unbounded in stream count. Unlike the
-            # tick's own page, this one-shot pass needs no fairness cursor -- there is
-            # no "next startup" for one to carry state into.
-            for stream_id in engineering_invalidation.pending_streams(
+            # rather than making startup itself unbounded. Unlike the tick's own
+            # page, this one-shot pass needs no fairness cursor -- there is no "next
+            # startup" for one to carry state into -- so the returned cursor is
+            # discarded.
+            streams, _next_cursor = engineering_invalidation.select_pending_streams(
                 connection,
                 workspace_id=self.workspace_id,
                 limit=engineering_invalidation.TICK_STREAM_LIMIT,
-            ):
+                after=None,
+            )
+            for stream_id in streams:
                 engineering_invalidation.drain_invalidation(
                     connection,
                     self.identity,

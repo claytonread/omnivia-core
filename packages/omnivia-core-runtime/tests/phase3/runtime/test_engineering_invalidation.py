@@ -712,6 +712,63 @@ def test_a_backlog_past_the_per_stream_step_bound_converges_across_startup_and_l
     assert _progress(workspace) == (total_events, total_events, None)
 
 
+def test_bounded_per_tick_stream_selection_scans_caught_up_streams_before_reaching_a_pending_one(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`select_pending_streams` bounds each call by *raw* stream rows scanned,
+    not by how many of them are lagging: `omnivia_engineering_source_streams`'
+    only applicable index is its `(workspace_id, stream_id)` primary key, so a
+    residual lagging filter (`pending_streams`'s own) would force a scan past
+    every caught-up row looking for one that matches, unbounded once a
+    workspace is mostly caught up however small the row cap. Capped here to
+    exactly one raw row per tick: two caught-up, low-sort streams ahead of one
+    pending, high-sort stream must each take their own tick before the
+    pending one is even reached -- neither skipped over to find it sooner --
+    and the keyset must wrap fairly once it runs off the end back around to
+    the pending stream's own next turn."""
+    monkeypatch.setattr(inv, "TICK_STREAM_LIMIT", 1)
+
+    for stream_id in ("estream-a", "estream-b"):
+        workspace.record(esc._source(1, f"{stream_id}-1", FILES_A, stream=stream_id))
+        _drain(workspace, stream_id=stream_id)  # caught up, no backlog
+
+    workspace.record(esc._source(1, "estream-c-1", FILES_A, stream="estream-c"))
+    _drain(workspace, stream_id="estream-c")
+    workspace.record(
+        esc._source(2, "estream-c-2", FILES_A, predecessor="estream-c-1", stream="estream-c")
+    )
+    assert _progress(workspace, stream_id="estream-c") == (2, 1, None)
+
+    runner = _runner(workspace)
+
+    # Tick 1: the only raw row within reach is estream-a, caught up -- no
+    # lagging stream is selected, but the cursor still advances past it
+    # rather than the call scanning onward looking for one that matches.
+    runner.clock.advance_wall(1.0)
+    runner.drain_pending_invalidation()
+    assert runner._invalidation_cursor == "estream-a"
+    assert _progress(workspace, stream_id="estream-c") == (2, 1, None)
+
+    # Tick 2: estream-b, likewise caught up.
+    runner.clock.advance_wall(1.0)
+    runner.drain_pending_invalidation()
+    assert runner._invalidation_cursor == "estream-b"
+    assert _progress(workspace, stream_id="estream-c") == (2, 1, None)
+
+    # Tick 3: estream-c, the one lagging stream, is finally reached and
+    # advanced.
+    runner.clock.advance_wall(1.0)
+    runner.drain_pending_invalidation()
+    assert runner._invalidation_cursor == "estream-c"
+    assert _progress(workspace, stream_id="estream-c") == (2, 2, None)
+
+    # Tick 4: nothing sorts past estream-c, so the raw page is empty and the
+    # keyset wraps back to the start of the sweep within this same tick.
+    runner.clock.advance_wall(1.0)
+    runner.drain_pending_invalidation()
+    assert runner._invalidation_cursor == "estream-a"
+
+
 def test_bounded_per_tick_stream_selection_is_fair_despite_one_stream_repeatedly_failing(
     workspace: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

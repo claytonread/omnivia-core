@@ -294,6 +294,42 @@ def pending_streams(
     return tuple(str(row[0]) for row in rows)
 
 
+def _stream_page(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    limit: int,
+    after: str | None,
+) -> tuple[tuple[str, int, int], ...]:
+    """`limit` raw stream rows in primary-key order, unfiltered.
+
+    `pending_streams`'s `processed_sequence < covered_sequence` predicate is
+    residual against `omnivia_engineering_source_streams`' only applicable
+    index, its `(workspace_id, stream_id)` primary key: a workspace with no
+    lagging stream in the next `limit` rows still forces a scan onward
+    looking for one, unbounded in rows read even though `LIMIT` caps the rows
+    *returned*. This instead reads exactly `limit` raw rows in primary-key
+    order past `after`, unfiltered, and leaves the lagging check to the
+    caller -- so one call's raw-row cost is fixed at `limit` no matter how
+    many of those rows, or how many rows total, are lagging.
+    """
+    keyset = ""
+    params: list[Any] = [workspace_id]
+    if after is not None:
+        keyset = "AND stream_id > ? "
+        params.append(after)
+    params.append(limit)
+    rows = connection.execute(
+        "SELECT stream_id, processed_sequence, covered_sequence "
+        "FROM omnivia_engineering_source_streams "
+        "WHERE workspace_id = ? "
+        f"{keyset}"
+        "ORDER BY stream_id LIMIT ?",
+        params,
+    ).fetchall()
+    return tuple((str(row[0]), int(row[1]), int(row[2])) for row in rows)
+
+
 def select_pending_streams(
     connection: sqlite3.Connection,
     *,
@@ -303,19 +339,36 @@ def select_pending_streams(
 ) -> tuple[tuple[str, ...], str | None]:
     """One fair, bounded page of lagging streams, and where the next page resumes.
 
-    Wraps back to the start of the keyset once `after` is at or past every
-    currently-lagging stream, so a persistently failing low-sort stream
-    occupies at most one page per sweep of the workspace's streams rather than
-    permanently crowding out every stream that sorts after it. The returned
-    cursor is the last stream id this page selected (`None` once a sweep has
-    wrapped with nothing left to select), for a caller to pass back in as
-    `after` on its next call.
+    Bounded by *raw* stream rows scanned, not by how many of them turn out to
+    be lagging (see `_stream_page`): this reads exactly `limit` raw rows in
+    primary-key order past `after` and filters the lagging ones out in
+    Python, rather than asking SQLite to keep seeking past `limit` rows for
+    `limit` *matches* the way `pending_streams`'s own residual predicate
+    would. A workspace with every stream caught up therefore costs the same
+    fixed `limit` rows per call as one with every stream lagging; it simply
+    takes more calls to reach a lagging stream that sorts behind a run of
+    caught-up ones, converging over later ticks exactly as a backlog beyond
+    `TICK_STREAM_LIMIT` streams already does.
+
+    Wraps back to the start of the keyset only when the *raw* page itself
+    comes back empty with `after` already set -- the one condition that
+    means nothing sorts past the cursor at all -- and retries once, from the
+    start, with the same `limit`; a raw page that is merely all caught-up is
+    never grounds to read past `limit` rows in the same call, since that is
+    exactly the unbounded scan this replaces. The wrap keeps one call's total
+    raw-row cost capped at `2 * limit`, and is why a persistently failing
+    low-sort stream occupies at most one page per sweep of the workspace's
+    streams rather than permanently crowding out every stream that sorts
+    after it. The returned cursor is the last stream id this page's raw scan
+    reached, lagging or not (`None` once a sweep has wrapped and found no
+    stream at all), for a caller to pass back in as `after` on its next call.
     """
-    page = pending_streams(connection, workspace_id=workspace_id, limit=limit, after=after)
+    page = _stream_page(connection, workspace_id=workspace_id, limit=limit, after=after)
     if not page and after is not None:
-        page = pending_streams(connection, workspace_id=workspace_id, limit=limit, after=None)
-    next_after = page[-1] if page else None
-    return page, next_after
+        page = _stream_page(connection, workspace_id=workspace_id, limit=limit, after=None)
+    lagging = tuple(stream_id for stream_id, processed, covered in page if processed < covered)
+    next_after = page[-1][0] if page else None
+    return lagging, next_after
 
 
 def advance_invalidation(

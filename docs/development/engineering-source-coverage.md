@@ -441,33 +441,48 @@ had no better answer than `not_evaluated` or a stale legacy row.
   existing monotonic invariant.
 - **Where it runs.** `service.handlers.engineering.engineering_source_record`
   best-effort drains the just-advanced stream after its own mutation commits;
-  `service.runner.ServiceRunner._recover` best-effort drains every stream with
-  outstanding work on startup, up to `DRAIN_STEP_LIMIT` bounded steps; and
+  `service.runner.ServiceRunner._recover` best-effort drains, on startup, up to
+  `TICK_STREAM_LIMIT` streams with outstanding work, each up to
+  `DRAIN_STEP_LIMIT` bounded steps; and
   `service.runner.ServiceRunner.drain_pending_invalidation` takes one further
-  bounded step per pending stream on every tick of the main serve loop's
-  existing 250ms poll (`main._serve_until_stopped`) -- the only scheduler seam
-  this service has. That third seam is what keeps a backlog beyond either of
-  the first two bounds converging in an otherwise idle service: neither the
-  live trigger nor startup recovery runs again on its own, so without it a
-  backlog past one drain budget, or past however many events land while the
-  service is down, would sit forever. All three are deliberately not a
-  readiness precondition: `current_safe` does not depend on this history, so
-  falling behind costs staleness of the `diagnostic`-mode assessment history,
-  never correctness, and a per-tick failure is written to the service's own
-  diagnostic output rather than silently absorbed or folded into any
-  readiness signal.
+  bounded step for up to `TICK_STREAM_LIMIT` pending streams on every tick of
+  the main serve loop's existing 250ms poll (`main._serve_until_stopped`) --
+  the only scheduler seam this service has. Both bounds select streams through
+  `storage.engineering_invalidation.select_pending_streams`, which reads a
+  fixed `TICK_STREAM_LIMIT` *raw* stream rows in primary-key order per call
+  rather than filtering for lagging ones in SQL: `pending_streams`'s own
+  `processed_sequence < covered_sequence` filter is residual against the
+  streams table's only applicable index, so using it to bound this selection
+  would let a caught-up workspace's stream count, not `TICK_STREAM_LIMIT`,
+  decide how many rows one call reads. `select_pending_streams` carries a
+  fair keyset cursor forward tick to tick and wraps once it runs past every
+  stream, so a persistently failing or merely low-sort stream is never
+  starved of its own turn, and a workspace with more lagging streams than
+  either bound leaves the rest to converge over later ticks rather than
+  making one startup pass or one tick unbounded in stream count. The tick is
+  what keeps a backlog beyond either the per-stream step bound or the
+  per-pass stream-count bound converging in an otherwise idle service: neither
+  the live trigger nor startup recovery runs again on its own, so without it a
+  backlog past one drain budget, past `TICK_STREAM_LIMIT` streams, or past
+  however many events land while the service is down, would sit forever. All
+  three are deliberately not a readiness precondition: `current_safe` does not
+  depend on this history, so falling behind costs staleness of the
+  `diagnostic`-mode assessment history, never correctness, and a per-tick or
+  startup failure is written to the service's own diagnostic output -- a
+  fixed, bounded code, never a source identifier or raw exception text --
+  rather than silently absorbed or folded into any readiness signal.
 
 ### Migration pin
 
 Allocation 54 is a candidate owned by Engineering Memory, with predecessor 53.
 Its normalized SHA-256 is
-`81597383d614d95c3c19fba2c1e2dad8b8bf936f6444152f5441dafcd39e2467`. Its
-introducing commit is not yet pinned in `contracts/migrations/v1/allocations.json`:
-the migration file's own content has to exist at a real commit before that
-commit's hash can be recorded, which is why every prior Engineering Memory
-migration (47 through 53) was pinned in a later commit rather than its own --
-see that file's history for the exact two-step pattern this one is expected to
-follow.
+`81597383d614d95c3c19fba2c1e2dad8b8bf936f6444152f5441dafcd39e2467`, pinned in
+`contracts/migrations/v1/allocations.json` at introducing commit
+`f481702094db91779f9052de53ef48d7635560b2` -- the same two-step pattern every
+prior Engineering Memory migration (47 through 53) followed, since the
+migration file's own content has to exist at a real commit before that
+commit's hash can be recorded. `accepted_commit` stays null until the normal
+acceptance process records a landing.
 
 ## Producer → consumer map
 
