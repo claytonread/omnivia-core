@@ -75,7 +75,7 @@ ALLOWED_IMPORTS = frozenset(
 #:
 #: Owner resolution 005 R005-01 placed the concrete local transport in this
 #: package. That admits exactly one socket-opening module, and this pins it to
-#: that module by name rather than letting the ban lapse for all nine: a
+#: that module by name rather than letting the ban lapse for every module: a
 #: ``socket`` import appearing in ``framing.py`` or ``discovery.py`` would still
 #: be a protocol foundation quietly becoming a transport, which is the thing the
 #: original ban was protecting and the thing the resolution did not change.
@@ -165,6 +165,7 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
     assert {path.name for path in MODULES} == {
         "__init__.py",
         "compatibility.py",
+        "continuity.py",
         "credentials.py",
         "deadline.py",
         "discovery.py",
@@ -194,7 +195,7 @@ def test_the_import_surface_is_exactly_the_allowlist() -> None:
 
 
 def test_only_the_local_ipc_module_opens_a_socket() -> None:
-    """One socket-opening module, named. The other eight stay a pure foundation.
+    """One socket-opening module, named. The other modules stay a pure foundation.
 
     Dropping ``socket`` from the allowlist ban to admit the transport would have
     lifted it for every module at once. This keeps the ban everywhere except the
@@ -232,7 +233,7 @@ def test_only_the_windows_pipe_module_reaches_for_ctypes() -> None:
 
 @pytest.mark.parametrize("module_name", HTTP_ONLY_IMPORTS)
 def test_only_the_http_module_reaches_for_http(module_name: str) -> None:
-    """One module speaks HTTP, TLS, URLs and IP addresses. The other eight do not.
+    """One module speaks HTTP, TLS, URLs and IP addresses. The other modules do not.
 
     The same shape as the ``socket`` pin above and for the same reason: admitting
     these four for the whole package would let a TLS stack into ``discovery.py``
@@ -282,6 +283,20 @@ def test_the_high_level_client_only_composes_what_this_package_already_has() -> 
         "omnivia_core",
         "omnivia_core_client",
         "pathlib",
+        "typing",
+    }, sorted(roots)
+
+
+def test_continuity_admission_only_composes_public_contract_and_client_parts() -> None:
+    """Registration validation adds no second transport, store, or adapter surface."""
+    roots = _imported_roots(SOURCE_ROOT / "continuity.py")
+    assert roots <= {
+        "__future__",
+        "dataclasses",
+        "omnivia_core",
+        "omnivia_core_client",
+        "re",
+        "time",
         "typing",
     }, sorted(roots)
 
