@@ -14,6 +14,7 @@ by `test_engineering_source_coverage.py`'s own end-to-end vertical test.
 from __future__ import annotations
 
 import itertools
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -661,13 +662,15 @@ def test_drain_pending_invalidation_converges_a_multi_event_backlog_across_ticks
 def _runner(workspace: Workspace) -> ServiceRunner:
     """The same construction-only harness `drain_pending_invalidation` above
     uses: `__new__` skips the full startup sequence, since this method only
-    ever reads the five attributes `Workspace`'s own harness already holds."""
+    ever reads the six attributes `Workspace`'s own harness supplies, including
+    the gate `drain_pending_invalidation` acquires around the database work."""
     runner = ServiceRunner.__new__(ServiceRunner)
     runner.connection = workspace.holder.connection
     runner.identity = workspace.holder.identity
     runner.generation = workspace.holder.generation
     runner.workspace_id = WORKSPACE_ID
     runner.clock = FakeClock()
+    runner.sqlite_gate = threading.RLock()
     return runner
 
 
@@ -856,3 +859,93 @@ def test_tick_error_output_never_leaks_a_stream_id_or_raw_exception_text(
     assert secret_stream_id not in captured.err
     assert "leaked secret detail" not in captured.err
     assert "INVALIDATION_TICK_ERROR: select_failed" in captured.err
+
+
+# --- the sqlite gate is held for the whole tick, and a busy gate skips it cleanly ------
+
+
+def test_a_gate_held_by_another_thread_skips_the_tick_and_resumes_once_released(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`drain_pending_invalidation` shares `sqlite_gate` with `renew_lease_if_due`
+    (both serialize the same exclusive connection). A tick that finds the gate
+    held by another thread must not block behind it -- it skips at once, before
+    any selection or advance work, and leaves the fairness cursor exactly where
+    it was. Once the other thread releases, the next tick proceeds normally."""
+    workspace.record(esc._source(1, "esnap-a", FILES_A))
+    _drain(workspace)  # catch up through event 1 before anything depends on it
+    workspace.observe(esc._observation(esc._manifest()))
+    workspace.record(
+        esc._source(
+            2,
+            "esnap-b",
+            {**FILES_A, "src/auth.py": esc._sha("auth v2")},
+            predecessor="esnap-a",
+        )
+    )
+    assert _progress(workspace) == (2, 1, None)
+
+    original_select = inv.select_pending_streams
+    original_advance = inv.advance_invalidation
+    select_calls: list[None] = []
+    advance_calls: list[None] = []
+
+    def spy_select(*args: Any, **kwargs: Any) -> Any:
+        select_calls.append(None)
+        return original_select(*args, **kwargs)
+
+    def spy_advance(*args: Any, **kwargs: Any) -> Any:
+        advance_calls.append(None)
+        return original_advance(*args, **kwargs)
+
+    monkeypatch.setattr(inv, "select_pending_streams", spy_select)
+    monkeypatch.setattr(inv, "advance_invalidation", spy_advance)
+
+    runner = _runner(workspace)
+    cursor_before = runner._invalidation_cursor
+
+    holder_ready = threading.Event()
+    release_gate = threading.Event()
+
+    def hold_gate() -> None:
+        with runner.sqlite_gate:
+            holder_ready.set()
+            release_gate.wait()
+
+    holder = threading.Thread(target=hold_gate)
+    holder.start()
+    assert holder_ready.wait(timeout=5.0)
+
+    tick_finished = threading.Event()
+    tick_errors: list[Exception] = []
+
+    def run_tick() -> None:
+        try:
+            runner.drain_pending_invalidation()
+        except Exception as error:  # noqa: BLE001 - captured and asserted below
+            tick_errors.append(error)
+        finally:
+            tick_finished.set()
+
+    tick = threading.Thread(target=run_tick)
+    tick.start()
+    try:
+        finished_while_gate_was_busy = tick_finished.wait(timeout=5.0)
+    finally:
+        release_gate.set()
+        holder.join(timeout=5.0)
+        tick.join(timeout=5.0)
+
+    assert finished_while_gate_was_busy
+    assert not holder.is_alive()
+    assert not tick.is_alive()
+    assert tick_errors == []
+    assert select_calls == []
+    assert advance_calls == []
+    assert runner._invalidation_cursor == cursor_before
+    assert _progress(workspace) == (2, 1, None)
+
+    runner.drain_pending_invalidation()
+    assert select_calls == [None]
+    assert advance_calls == [None]
+    assert _progress(workspace) == (2, 2, None)

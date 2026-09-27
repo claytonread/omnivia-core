@@ -763,6 +763,13 @@ class ServiceRunner:
         stops the whole pass at once, since every remaining stream would refuse
         identically and the loop's own lease check is what decides whether this
         instance keeps serving at all.
+
+        Holds `self.sqlite_gate` for the entire selection-plus-advance pass,
+        the same reentrant gate `renew_lease_if_due` serializes its own
+        connection use behind -- acquired without blocking, since a tick that
+        cannot get it skips cleanly rather than stalling the poll loop behind
+        whichever other tenant holds it, and the cursor is left untouched for
+        the next tick to retry from.
         """
         if self.connection is None or self.identity is None or self.generation is None:
             return
@@ -770,35 +777,44 @@ class ServiceRunner:
             return
         import sys as _s
 
-        now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
-        try:
-            streams, next_cursor = engineering_invalidation.select_pending_streams(
-                self.connection,
-                workspace_id=self.workspace_id,
-                limit=engineering_invalidation.TICK_STREAM_LIMIT,
-                after=self._invalidation_cursor,
-            )
-        except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
-            print(_DIAG_INVALIDATION_SELECT_FAILED, file=_s.stderr)
+        # Non-blocking: `renew_lease_if_due` (the loop's other tenant of this
+        # same connection) can be mid-heartbeat holding this gate, and this
+        # tick is best-effort -- it skips cleanly rather than stalling the
+        # poll loop behind a wait, and the next tick tries again.
+        if not self.sqlite_gate.acquire(blocking=False):
             return
-        self._invalidation_cursor = next_cursor
-        for stream_id in streams:
+        try:
+            now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
             try:
-                engineering_invalidation.advance_invalidation(
+                streams, next_cursor = engineering_invalidation.select_pending_streams(
                     self.connection,
-                    self.identity,
                     workspace_id=self.workspace_id,
-                    stream_id=stream_id,
-                    fencing_generation=self.generation,
-                    now_us=now_us,
+                    limit=engineering_invalidation.TICK_STREAM_LIMIT,
+                    after=self._invalidation_cursor,
                 )
-            except StaleGeneration:
-                # This instance's authority is gone; every remaining stream
-                # would refuse identically, and the poll's own lease check
-                # (run just before this, every tick) is what stops serving.
-                break
             except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
-                print(_DIAG_INVALIDATION_ADVANCE_FAILED, file=_s.stderr)
+                print(_DIAG_INVALIDATION_SELECT_FAILED, file=_s.stderr)
+                return
+            self._invalidation_cursor = next_cursor
+            for stream_id in streams:
+                try:
+                    engineering_invalidation.advance_invalidation(
+                        self.connection,
+                        self.identity,
+                        workspace_id=self.workspace_id,
+                        stream_id=stream_id,
+                        fencing_generation=self.generation,
+                        now_us=now_us,
+                    )
+                except StaleGeneration:
+                    # This instance's authority is gone; every remaining stream
+                    # would refuse identically, and the poll's own lease check
+                    # (run just before this, every tick) is what stops serving.
+                    break
+                except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+                    print(_DIAG_INVALIDATION_ADVANCE_FAILED, file=_s.stderr)
+        finally:
+            self.sqlite_gate.release()
 
     # --- shutdown ------------------------------------------------------------
 
