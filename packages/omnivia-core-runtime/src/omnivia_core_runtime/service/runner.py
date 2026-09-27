@@ -655,12 +655,12 @@ class ServiceRunner:
                 heartbeat(self.connection, self.identity, clock=self.clock)
             except LeaseHeld:
                 raise
-            except Exception:
-                if age < LEASE_RENEWAL_DEADLINE_SECONDS:
-                    # Retried on the next 250ms tick, not swallowed: `age` keeps growing
-                    # from the last heartbeat this instance actually wrote.
+            except Exception:  # noqa: BLE001 -- retry transient heartbeat failures
+                if self.clock.monotonic() < deadline:
+                    # Retry on the next 250ms tick. Read the clock again here:
+                    # heartbeat itself may have consumed the remaining margin.
                     return False
-                raise
+                raise RuntimeError("the lease renewal deadline has passed") from None
             if self.clock.monotonic() >= deadline:
                 raise RuntimeError("the lease renewal deadline has passed")
         finally:

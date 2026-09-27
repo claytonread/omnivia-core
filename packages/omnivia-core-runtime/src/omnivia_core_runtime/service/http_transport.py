@@ -1156,7 +1156,13 @@ class HttpListener:
             target=service.shutdown, name="omnivia-http-shutdown", daemon=True
         )
         self._shutdown_thread = helper
-        helper.start()
+        try:
+            helper.start()
+        except Exception as error:
+            # An active serving thread still owns the listener. Retain every
+            # lower resource for a retry if the helper cannot be started.
+            self._shutdown_thread = None
+            raise ResourceReleaseBlocked("HTTP listener did not stop") from error
 
     def stop(self) -> None:
         self.request_stop()

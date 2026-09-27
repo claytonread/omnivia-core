@@ -1208,6 +1208,29 @@ def test_a_transient_renewal_failure_is_retried_until_the_deadline_then_raises(
         runner.stop()
 
 
+def test_heartbeat_failure_after_deadline_refuses_on_the_same_tick(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    try:
+        def late_failure(*_args: object, **_kwargs: object) -> None:
+            clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS)
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(
+            "omnivia_core_runtime.service.runner.heartbeat", late_failure
+        )
+        clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+        with pytest.raises(RuntimeError, match="renewal deadline"):
+            runner.renew_lease_if_due()
+    finally:
+        runner.stop()
+
+
 def test_lease_renewal_acquisition_is_bounded_by_the_remaining_deadline(
     served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
 ) -> None:

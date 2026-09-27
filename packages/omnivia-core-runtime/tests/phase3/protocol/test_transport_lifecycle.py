@@ -22,6 +22,7 @@ from omnivia_core_runtime.ownership.identity import (
 from omnivia_core_runtime.service.lifecycle import (
     ReadinessRequirements,
     ResourceReleaseBlocked,
+    ResourceStack,
     ServiceState,
 )
 from omnivia_core_runtime.service.main import _router_for
@@ -1091,6 +1092,58 @@ def test_stop_during_gate_wait_does_not_start_a_local_dispatch(
             gate._lock.release()
         server.stop()
         assert dispatcher.seen == []
+    finally:
+        client.close()
+        if server._listener is not None:
+            server.stop()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_channel_close_failure_retains_resources_while_local_thread_is_live(
+    socket_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _ObservedGate()
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=LocalEndpoint(EndpointScheme.UNIX, str(socket_path)),
+        gate=gate,  # type: ignore[arg-type]
+        timeout=5.0,
+    )
+    server.start()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    released: list[str] = []
+    stack = ResourceStack()
+    stack.push("sqlite_connection", lambda: released.append("sqlite_connection"))
+    stack.push("socket_server", server.stop)
+    try:
+        gate._lock.acquire()
+        try:
+            client.connect(str(socket_path))
+            client.sendall(encode_frame(_request_payload()))
+            assert gate.waiting.wait(timeout=5), "the handler never reached the gate"
+            channel = server._active_channel
+            assert channel is not None
+            original_close = channel.close
+            attempts = 0
+
+            def fail_once() -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("channel close failed")
+                original_close()
+
+            monkeypatch.setattr(channel, "close", fail_once)
+            assert stack.unwind() == []
+            assert stack.names == ["sqlite_connection", "socket_server"]
+            assert released == []
+        finally:
+            gate._lock.release()
+        assert stack.unwind() == ["socket_server", "sqlite_connection"]
+        assert released == ["sqlite_connection"]
     finally:
         client.close()
         if server._listener is not None:

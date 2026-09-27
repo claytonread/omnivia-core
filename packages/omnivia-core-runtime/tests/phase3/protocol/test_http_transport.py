@@ -1285,3 +1285,33 @@ def test_a_blocked_http_dispatch_defers_stop_and_requests_both_listeners_to_stop
                 http.stop()
             except ResourceReleaseBlocked:
                 pass
+
+
+def test_shutdown_helper_start_failure_retains_a_live_http_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = HttpListener(
+        router=_router(CountingDispatch()), principal=PRINCIPAL, resolver=_resolver
+    )
+    http.start()
+    released: list[str] = []
+    stack = ResourceStack()
+    stack.push("sqlite_connection", lambda: released.append("sqlite_connection"))
+    stack.push("http_server", http.stop)
+    original_start = threading.Thread.start
+
+    def fail_shutdown_helper(thread: threading.Thread) -> None:
+        if thread.name == "omnivia-http-shutdown":
+            raise RuntimeError("cannot start thread")
+        original_start(thread)
+
+    try:
+        monkeypatch.setattr(threading.Thread, "start", fail_shutdown_helper)
+        assert stack.unwind() == []
+        assert stack.names == ["sqlite_connection", "http_server"]
+        assert released == []
+        assert http._thread is not None and http._thread.is_alive()
+    finally:
+        monkeypatch.setattr(threading.Thread, "start", original_start)
+        assert stack.unwind() == ["http_server", "sqlite_connection"]
+    assert released == ["sqlite_connection"]

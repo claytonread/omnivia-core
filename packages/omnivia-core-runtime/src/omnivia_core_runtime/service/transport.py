@@ -1049,22 +1049,34 @@ class LocalSocketServer:
             self._listener.wake()
 
     def stop(self) -> None:
-        self.request_stop()
+        try:
+            self.request_stop()
+        except Exception as error:
+            if self._thread is not None and self._thread.is_alive():
+                raise ResourceReleaseBlocked(
+                    "local service transport serving thread did not stop"
+                ) from error
         served = self._listener is not None
         if self._thread is not None:
             # Woken in bounded attempts rather than joined once for a long time.  A
             # client can be accepted between `request_stop`'s own wake and this
             # loop, so each attempt rechecks and closes the channel after giving
             # the serving thread a short opportunity to publish it.
-            for _ in range(20):
-                if not self._thread.is_alive():
-                    break
-                if self._listener is not None:
-                    self._listener.wake()
-                self._thread.join(timeout=0.005)
-                if self._active_channel is not None:
-                    self._active_channel.close()
-                self._thread.join(timeout=0.005)
+            try:
+                for _ in range(20):
+                    if not self._thread.is_alive():
+                        break
+                    if self._listener is not None:
+                        self._listener.wake()
+                    self._thread.join(timeout=0.005)
+                    if self._active_channel is not None:
+                        self._active_channel.close()
+                    self._thread.join(timeout=0.005)
+            except Exception as error:
+                if self._thread.is_alive():
+                    raise ResourceReleaseBlocked(
+                        "local service transport serving thread did not stop"
+                    ) from error
             if self._thread.is_alive():
                 # Still genuinely running, and possibly still holding the shared
                 # sqlite gate. Unlinking the endpoint or closing the listener

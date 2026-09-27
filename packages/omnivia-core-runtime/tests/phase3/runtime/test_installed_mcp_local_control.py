@@ -38,6 +38,7 @@ from omnivia_core_runtime.service.installed_mcp import (
     InstalledMcpAuthority,
     InstalledMcpSecret,
 )
+from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked, ResourceStack
 from omnivia_core_runtime.service.local_control import (
     LOCAL_CONTROL_FIELD,
     LOCAL_CONTROL_RESULT_FIELD,
@@ -75,6 +76,7 @@ from omnivia_core_runtime.service.transport import (
 )
 from omnivia_core_runtime.storage.backup import RUNTIME_DIR
 from omnivia_core_runtime.storage.installation_store import (
+    InstallationBusy,
     InstallationStore,
     McpHost,
     McpProfile,
@@ -1315,3 +1317,46 @@ def test_close_after_close_stays_fail_closed_and_elects_nothing(
     assert time.monotonic() - started < AUTHORITY_FAILOVER_TIMEOUT_SECONDS
     assert only._mcp is None
     assert only._store is None
+
+
+def test_blocked_private_server_retains_catalogue_and_lower_resources_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (owner,) = coordinators(tmp_path, "installation-host-a")
+    owner.start()
+    server = owner._server
+    store = owner._store
+    assert server is not None and store is not None
+    original_stop = server.stop
+    attempts = 0
+
+    def blocked_once() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ResourceReleaseBlocked("private server still running")
+        original_stop()
+
+    monkeypatch.setattr(server, "stop", blocked_once)
+    lower_releases: list[str] = []
+    stack = ResourceStack()
+    stack.push("workspace_connection", lambda: lower_releases.append("connection"))
+    stack.push("installation_authority", owner.close)
+    try:
+        assert stack.unwind() == []
+        assert stack.names == ["workspace_connection", "installation_authority"]
+        assert owner._server is server
+        assert owner._store is store and not store.closed
+        assert descriptor_path(tmp_path).exists()
+        assert lower_releases == []
+        with pytest.raises(InstallationBusy):
+            open_installation_store(
+                (tmp_path / "installation").resolve(),
+                owner_instance_id="contender",
+            )
+        assert stack.unwind() == ["installation_authority", "workspace_connection"]
+        assert store.closed and not descriptor_path(tmp_path).exists()
+        assert lower_releases == ["connection"]
+    finally:
+        owner.close()
