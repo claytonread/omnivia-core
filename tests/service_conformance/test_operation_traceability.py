@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.0",
+    "manifest_version": "2.1",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -83,10 +83,20 @@ MCP_EXPOSED = (
     ("memory.search", "memory_search"),
     ("graph.traverse", "graph_traverse"),
     ("context_pack.build", "context_pack_build"),
+    ("engineering.search", "engineering_search"),
+    ("engineering.expand", "engineering_expand"),
+    ("engineering.context.build", "engineering_context_build"),
+    ("continuity.handoff.read", "continuity_handoff_read"),
     ("decision.evaluate", "decision_evaluate"),
     ("decision.record.get", "decision_record_get"),
     ("decision.record.list", "decision_record_list"),
     ("decision.status", "decision_status"),
+    ("memory.create", "memory_create"),
+    ("evidence.capture", "evidence_capture"),
+    ("import.start", "import_start"),
+    ("job.get", "job_get"),
+    ("job.events", "job_events"),
+    ("continuity.checkpoint.append", "continuity_checkpoint_append"),
 )
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
@@ -273,8 +283,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 10
-    assert len(omitted) == 44
+    assert len(exposed) == 20
+    assert len(omitted) == 34
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -290,7 +300,13 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         if op.scope.side_effect != "none":
             # ADR-042: `decision.evaluate` is exposed with durable side effects
             # (audit/evaluation records); the tool description states this.
-            assert entry["operation"] == "decision.evaluate"
+            # SPEC-CORE-ENGMEM-001: `continuity.checkpoint.append` likewise.
+            # The authoring additions (`memory.create`, `evidence.capture`,
+            # `import.start`) were always mutation-bearing.
+            assert entry["operation"] in (
+                "decision.evaluate", "continuity.checkpoint.append",
+                "memory.create", "evidence.capture", "import.start",
+            )
         else:
             assert op.scope.side_effect == "none"
     for entry in decision["omitted"]:
@@ -304,18 +320,12 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         if entry["reason"] == "read_not_allow_listed"
     }
     assert reads_omitted == {
-        "continuity.handoff.read",
-        "engineering.context.build",
-        "engineering.expand",
-        "engineering.search",
         "chat.events",
         "chat.snapshot",
         "decision.definition.get",
         "decision.definition.list",
         "decision.model.list",
         "decision.settings.get",
-        "job.events",
-        "job.get",
         "memory.get",
         "memory.list",
         "workflow.inspect",

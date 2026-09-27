@@ -31,6 +31,7 @@ import re
 import select
 import stat
 import subprocess
+import sys
 import time
 import uuid
 from contextlib import ExitStack
@@ -455,10 +456,11 @@ _FILE_FLAGS: Final = (
 
 
 def _open_component(name: bytes, flags: int, directory: int | None) -> int | None:
-    """Open one name relative to a held directory, or `None`; the OS error is dropped.
+    """Open one component relative to a held directory, or ``None``.
 
-    Dropped, not chained: an ``OSError`` quotes the name, and for the root that is a
-    local absolute path. The caller raises after this returns, outside any handler.
+    Every call site passes one component or the fixed filesystem root anchor, so
+    ancestor symlinks are refused. OS errors are dropped because they may quote a
+    local path; the caller raises a fixed-text refusal afterwards.
     """
     try:
         return os.open(name, flags, dir_fd=directory)
@@ -555,10 +557,17 @@ class _SourceChanged(SourceCaptureRefused):
     """The file moved or changed while it was read (fixed text, like every refusal)."""
 
 
+class _RootIdentityChanged(_SourceChanged):
+    """The checkout root no longer matches the identity pinned for this capture.
+
+    A subclass of `_SourceChanged`: from a capture attempt's point of view, the root
+    itself is a source that changed underneath it, so it is caught wherever a per-file
+    read already treats `_SourceChanged` as instability rather than a hard refusal.
+    """
+
+
 class _SourceOversized(SourceCaptureRefused):
     """The file is larger than `MAX_SOURCE_BYTES`."""
-
-
 def _identity(name: bytes, directory: int | None) -> tuple[int, int] | None:
     """What `name` is right now, relative to a held directory, without following it."""
     try:
@@ -568,14 +577,80 @@ def _identity(name: bytes, directory: int | None) -> tuple[int, int] | None:
     return current.st_dev, current.st_ino
 
 
+def _root_components(checkout_root: Path) -> tuple[bytes, ...]:
+    """Every component from the filesystem root down to `checkout_root`.
+
+    `Path` parsing already collapses a `.` segment, a repeated separator and a
+    trailing separator; a `..` segment survives that parsing only if the caller put
+    one in, and resolving it would mean following whatever an ancestor names right
+    now, exactly the escape this walk exists to refuse. A root that is not
+    absolute, or that names only the filesystem root itself, is refused the same
+    way: neither is a checkout this walk can open.
+    """
+    if not checkout_root.is_absolute():
+        raise SourceCaptureRefused("checkout root is not an accessible directory")
+    parts = checkout_root.parts[1:]
+    if not parts or any(part == ".." for part in parts):
+        raise SourceCaptureRefused("checkout root is not an accessible directory")
+    return tuple(part.encode() for part in parts)
+
+
+def _open_checkout_root(
+    components: tuple[bytes, ...], expected_identity: tuple[int, int] | None = None
+) -> int:
+    """Open `checkout_root`'s descriptor by a no-follow walk from the filesystem root.
+
+    Every component, including every ancestor, is opened relative to the descriptor
+    of the one before it and refused if it is a symlink; nothing is ever opened by a
+    composed path, so an ancestor symlink cannot redirect where this lands. The
+    caller owns the returned descriptor and must close it.
+
+    When `expected_identity` is given, the freshly opened descriptor is refused
+    unless it is exactly that `(st_dev, st_ino)`: one capture attempt pins the root's
+    identity once and every later open in that attempt, enumeration or file read
+    alike, must land on that same object, not merely on whatever the path names by
+    the time this call runs.
+    """
+    directory = _open_component(b"/", _DIRECTORY_FLAGS, None)
+    if directory is None:
+        raise SourceCaptureRefused("checkout root is not an accessible directory")
+    for name in components:
+        next_directory = _open_component(name, _DIRECTORY_FLAGS, directory)
+        os.close(directory)
+        if next_directory is None:
+            raise SourceCaptureRefused("checkout root is not an accessible directory")
+        directory = next_directory
+    if expected_identity is not None:
+        opened = os.fstat(directory)
+        if (opened.st_dev, opened.st_ino) != expected_identity:
+            os.close(directory)
+            raise _RootIdentityChanged("checkout root changed identity during capture")
+    return directory
+
+
+def _root_identity(components: tuple[bytes, ...]) -> tuple[int, int] | None:
+    """What `checkout_root` is right now, by the same no-follow walk, or `None`."""
+    try:
+        directory = _open_checkout_root(components)
+    except SourceCaptureRefused:
+        return None
+    try:
+        status = os.fstat(directory)
+    finally:
+        os.close(directory)
+    return status.st_dev, status.st_ino
+
+
 def read_checkout_file(
     *, checkout_root: Path, relative_path: str, expected_digest: str
 ) -> CheckoutFile:
     """Read one file of a trusted checkout, refusing anything that is not that file.
 
-    `checkout_root` is explicit and trusted, but must itself be a real directory: it is
-    opened without following a link, like every name below it. `relative_path` is not
-    trusted. It must satisfy the Engineering Memory path rules
+    `checkout_root` is explicit and trusted, but must itself be a real directory: every
+    one of its components, from the filesystem root down, is opened relative to the
+    descriptor of the one before it and refused if it is a symlink, exactly like every
+    name below it, so an ancestor symlink cannot redirect the open either.
+    `relative_path` is not trusted. It must satisfy the Engineering Memory path rules
     (`engineering_source.valid_path`), which keep its exact Unicode and case and refuse
     an absolute path, a `..` segment and every other spelling that could leave the
     checkout; it is used exactly as given, never normalised or case-folded.
@@ -600,32 +675,29 @@ def read_checkout_file(
     return _read_checkout(checkout_root, relative_path, expected_digest)
 
 
-def _read_checkout(
-    checkout_root: Path, relative_path: str, expected_digest: str | None
+def _walk_read(
+    root: int, components: tuple[bytes, ...], expected_digest: str | None
 ) -> CheckoutFile:
-    """The walked read; `expected_digest=None` returns the verified-stable bytes."""
-    if not valid_path(relative_path):
-        raise SourceCaptureRefused(
-            "repository path is outside the accepted portable domain"
-        )
-    if not _NO_FOLLOW_WALK:
-        raise SourceCaptureRefused(
-            "this host cannot read a checkout without following links"
-        )
+    """Read one file below an already-opened, no-follow-verified `root` descriptor.
 
-    *parents, leaf = (part.encode() for part in relative_path.split("/"))
+    Every component of the relative path is opened relative to the descriptor of
+    the one before it and held until the read is over; a symlink, whether it is the
+    file or any parent, is refused rather than followed, and no rename can redirect
+    a walk that is already inside a directory. Afterwards every held name is
+    resolved again and must still be the object that was opened. `root` is owned by
+    the caller and is never closed here.
+    """
+    *parents, leaf = components
     with ExitStack() as stack:
         # Each held name as (its directory, the name, the object opened): the second
         # look at the end compares against exactly this.
         held: list[tuple[int | None, bytes, os.stat_result]] = []
-        directory: int | None = None
-        for name in (os.fsencode(checkout_root), *parents):
+        directory: int | None = root
+        for name in parents:
             descriptor = _open_component(name, _DIRECTORY_FLAGS, directory)
             if descriptor is None:
                 raise SourceCaptureRefused(
-                    "checkout root is not an accessible directory"
-                    if directory is None
-                    else "source cannot be opened as a file inside the checkout"
+                    "source cannot be opened as a file inside the checkout"
                 )
             stack.callback(os.close, descriptor)
             held.append((directory, name, os.fstat(descriptor)))
@@ -674,6 +746,38 @@ def _read_checkout(
         digest=digest,
         executable=bool(opened.st_mode & stat.S_IXUSR),
     )
+
+
+def _read_checkout(
+    checkout_root: Path,
+    relative_path: str,
+    expected_digest: str | None,
+    expected_identity: tuple[int, int] | None = None,
+) -> CheckoutFile:
+    """The walked read; `expected_digest=None` returns the verified-stable bytes.
+
+    `checkout_root` is opened by a no-follow walk of every one of its components,
+    from the filesystem root down, not just its last: an ancestor symlink refuses
+    the open exactly like a symlinked leaf does. That root descriptor is held for
+    exactly this one read and closed afterwards. `expected_identity`, when given,
+    pins this open to the root identity a capture attempt already established
+    elsewhere: a root swapped out since then is refused here rather than walked
+    afresh, even if nothing else about the swap is visible from this one read.
+    """
+    if not valid_path(relative_path):
+        raise SourceCaptureRefused(
+            "repository path is outside the accepted portable domain"
+        )
+    if not _NO_FOLLOW_WALK:
+        raise SourceCaptureRefused(
+            "this host cannot read a checkout without following links"
+        )
+    components = tuple(part.encode() for part in relative_path.split("/"))
+    root = _open_checkout_root(_root_components(checkout_root), expected_identity)
+    try:
+        return _walk_read(root, components, expected_digest)
+    finally:
+        os.close(root)
 
 
 WORKING_TREE_MANIFEST_FORMAT: Final = "omnivia.working-tree-manifest.v1"
@@ -776,15 +880,44 @@ class WorkingTreeManifest:
         return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
-def _git(root: Path, *args: str) -> bytes:
-    """Run one bounded, read-only git query; fixed-text refusal on any failure."""
+#: Fixed source for the isolated child that runs one git query. `pass_fds` keeps a
+#: directory descriptor, opened by a no-follow walk, alive across the fork; this
+#: child's only job is `os.fchdir` onto it and `os.execvp` into `git`, so git's
+#: working directory is bound to that descriptor's identity, never to a path that a
+#: rename or symlink swap could redirect after the descriptor was opened. `-I -S`
+#: keep the child free of user site customisation and `PYTHON*` environment
+#: overrides. No `preexec_fn` runs in this multithreaded service: this fixed,
+#: reviewed source is the entire child, and nothing dynamic is interpolated into it,
+#: only the descriptor number and the fixed git arguments are ever passed as argv.
+_GIT_ROOT_EXEC_HELPER: Final = (
+    "import os, sys\n"
+    "os.fchdir(int(sys.argv[1]))\n"
+    "os.execvp('git', ['git', *sys.argv[2:]])\n"
+)
+
+
+def _git(root: int, *args: str) -> bytes:
+    """Run one bounded, read-only git query rooted at an open directory descriptor.
+
+    `root` must already be opened by a no-follow walk (`_open_checkout_root`); a
+    path is never accepted here. Fixed-text refusal on any failure.
+    """
     deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
     unavailable = False
     try:
         process = subprocess.Popen(
-            (*_GIT_ARGS, *args),
-            cwd=root,
+            (
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                _GIT_ROOT_EXEC_HELPER,
+                str(root),
+                *_GIT_ARGS[1:],
+                *args,
+            ),
             env=_GIT_ENV,
+            pass_fds=(root,),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -822,35 +955,70 @@ def _git(root: Path, *args: str) -> bytes:
     return b"".join(chunks)
 
 
-def _enumerate(root: Path) -> tuple[str, dict[bytes, tuple[str, bool]]]:
-    """HEAD identity and `{path bytes: (git mode, tracked)}` for tracked + untracked."""
-    toplevel = _git(root, "rev-parse", "--show-toplevel").rstrip(b"\n")
-    if os.path.realpath(os.fsdecode(toplevel)) != os.path.realpath(root):
-        raise SourceCaptureRefused("checkout root is not a repository top level")
-    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}").strip()
-    algorithm = {40: "sha1", 64: "sha256"}.get(len(head))
-    if algorithm is None or re.fullmatch(rb"[0-9a-f]+", head) is None:
-        raise SourceCaptureRefused("checkout has no verifiable base commit")
-    entries: dict[bytes, tuple[str, bool]] = {}
-    for record in _git(root, "ls-files", "-z", "--stage").split(b"\0"):
-        if not record:
-            continue
-        meta, _, path = record.partition(b"\t")
-        mode, _oid, stage = meta.split(b" ")
-        # An unmerged path (stage != 0) has no single content: recorded as such.
-        entries[path] = (mode.decode() if stage == b"0" else "unmerged", True)
-    others = _git(root, "ls-files", "-z", "--others", "--exclude-standard")
-    for path in others.split(b"\0"):
-        if path:
-            entries[path] = ("100644", False)
-    if len(entries) > MAX_CAPTURE_FILES:
-        raise SourceCaptureRefused("checkout exceeds the capture file limit")
-    return f"{algorithm}:{head.decode()}", entries
+def _enumerate(
+    root: Path, expected_identity: tuple[int, int] | None
+) -> tuple[str, dict[bytes, tuple[str, bool]], tuple[int, int]]:
+    """HEAD identity, `{path bytes: (git mode, tracked)}`, and the root's own identity.
+
+    `root` is opened once by a no-follow walk of every component and that one
+    descriptor is reused for every git query below, so a rename or symlink swap of
+    `root` after the descriptor was opened cannot redirect what git reads. When
+    `expected_identity` is given, the open itself is refused unless it lands on that
+    same `(st_dev, st_ino)`: this closes the window where a root already swapped
+    out during an earlier step of the same capture attempt would otherwise be
+    walked afresh here without anyone noticing it is not the root that attempt
+    pinned. Once enumeration is done, `root`'s identity is checked again by a fresh
+    walk against the descriptor's own identity: a root moved or replaced during
+    enumeration is refused here rather than silently enumerating whatever now sits
+    at that path.
+    """
+    components = _root_components(root)
+    root_fd = _open_checkout_root(components, expected_identity)
+    try:
+        opened = os.fstat(root_fd)
+        opened_identity = (opened.st_dev, opened.st_ino)
+        toplevel = _git(root_fd, "rev-parse", "--show-toplevel").rstrip(b"\n")
+        if os.path.realpath(os.fsdecode(toplevel)) != os.path.realpath(root):
+            raise SourceCaptureRefused("checkout root is not a repository top level")
+        head = _git(
+            root_fd, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"
+        ).strip()
+        algorithm = {40: "sha1", 64: "sha256"}.get(len(head))
+        if algorithm is None or re.fullmatch(rb"[0-9a-f]+", head) is None:
+            raise SourceCaptureRefused("checkout has no verifiable base commit")
+        entries: dict[bytes, tuple[str, bool]] = {}
+        for record in _git(root_fd, "ls-files", "-z", "--stage").split(b"\0"):
+            if not record:
+                continue
+            meta, _, path = record.partition(b"\t")
+            mode, _oid, stage = meta.split(b" ")
+            # An unmerged path (stage != 0) has no single content: recorded as such.
+            entries[path] = (mode.decode() if stage == b"0" else "unmerged", True)
+        others = _git(root_fd, "ls-files", "-z", "--others", "--exclude-standard")
+        for path in others.split(b"\0"):
+            if path:
+                entries[path] = ("100644", False)
+        if len(entries) > MAX_CAPTURE_FILES:
+            raise SourceCaptureRefused("checkout exceeds the capture file limit")
+        if _root_identity(components) != opened_identity:
+            raise _RootIdentityChanged("checkout root changed identity during capture")
+        return f"{algorithm}:{head.decode()}", entries, opened_identity
+    finally:
+        os.close(root_fd)
 
 
 def _capture_pass(
-    root: Path, entries: dict[bytes, tuple[str, bool]]
+    root: Path,
+    entries: dict[bytes, tuple[str, bool]],
+    expected_identity: tuple[int, int],
 ) -> tuple[list[ManifestFile], list[ManifestOmission], bool]:
+    """Read every entry, pinned to the root identity this capture attempt started with.
+
+    Every read below, both the first look and the final re-verification, opens the
+    checkout root through `expected_identity`: a root swapped out partway through
+    this pass is refused at the read that would otherwise have landed on it, not
+    just at whatever enumeration runs before or after this function.
+    """
     files: list[ManifestFile] = []
     omissions: list[ManifestOmission] = []
     stable = True
@@ -869,7 +1037,7 @@ def _capture_pass(
             omissions.append(ManifestOmission(path, reason))
             continue
         try:
-            read = _read_checkout(root, path, None)
+            read = _read_checkout(root, path, None, expected_identity)
         except _SourceChanged:
             stable = False
             omissions.append(ManifestOmission(path, "changed_during_capture"))
@@ -904,7 +1072,7 @@ def _capture_pass(
     kept: list[ManifestFile] = []
     for file in files:
         try:
-            _read_checkout(root, file.path, file.digest)
+            _read_checkout(root, file.path, file.digest, expected_identity)
         except SourceCaptureRefused:
             stable = False
             omissions.append(ManifestOmission(file.path, "changed_during_capture"))
@@ -925,6 +1093,13 @@ def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest
     `complete=False`; a checkout whose listing or HEAD moves across the capture is
     retried up to `MAX_CAPTURE_ATTEMPTS` times and then returned incomplete.
 
+    Each attempt pins one root identity from its first enumeration and every later
+    open in that attempt, the second enumeration and every file read alike, is
+    refused unless it lands on that same object. A root swapped for a different
+    checkout and swapped back before the attempt's final enumeration is therefore
+    still caught: it is the reads in between, not the before-and-after comparison,
+    that refuse it.
+
     Nothing is registered, persisted or published here; `capture_working_tree_snapshot`
     is the service-owned step that does that.
     """
@@ -933,9 +1108,14 @@ def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest
             "this host cannot read a checkout without following links"
         )
     for attempt in range(1, MAX_CAPTURE_ATTEMPTS + 1):
-        head, entries = _enumerate(checkout_root)
-        files, omissions, stable = _capture_pass(checkout_root, entries)
-        stable = stable and _enumerate(checkout_root) == (head, entries)
+        head, entries, root_identity = _enumerate(checkout_root, None)
+        files, omissions, stable = _capture_pass(checkout_root, entries, root_identity)
+        if stable:
+            try:
+                other_head, other_entries, _ = _enumerate(checkout_root, root_identity)
+                stable = (other_head, other_entries) == (head, entries)
+            except _SourceChanged:
+                stable = False
         if stable or attempt == MAX_CAPTURE_ATTEMPTS:
             return WorkingTreeManifest(
                 base_commit_id=head,
