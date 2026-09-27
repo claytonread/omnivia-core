@@ -144,6 +144,12 @@ EXPECTED_ALLOCATION = (
         "Engineering Memory",
         "candidate",
     ),
+    (
+        57,
+        "0057_engineering_relation_assessments.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -202,6 +208,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     54: "1ac651d29c6bc45ab08ab2b404b9568caeffd729",
     55: "25ffae20558536205ed2c1a1291c9fbdc215cae2",
     56: "403c02c706393054110355f0c39b58418d44f7d9",
+    57: "309b7c815d730c885032aae155368413502453fc",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
