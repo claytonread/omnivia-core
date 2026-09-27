@@ -43,7 +43,7 @@ import json
 import sqlite3
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, TypeGuard
 
@@ -63,6 +63,10 @@ MAX_DEPENDENCIES: Final = 64
 PENDING_WINDOW: Final = 64
 
 SNAPSHOT_KINDS: Final = frozenset({"git_commit", "working_tree", "source_archive"})
+#: 0056's closed source-event representation vocabulary. `flat_v1` is 0050's
+#: inline canonical manifest; `captured_v1` is the indexed captured snapshot,
+#: sealed by `omnivia_engineering_snapshot_captures`. Unknown values fail closed.
+MANIFEST_FORMATS: Final = frozenset({"flat_v1", "captured_v1"})
 CAPTURE_STATUSES: Final = frozenset({"complete", "incomplete"})
 #: 0049's selector and meaning vocabularies. Only `whole_file` is evaluated in v1;
 #: every other selector type is recorded and yields `unknown`.
@@ -161,7 +165,12 @@ class SourceRecord:
 
 @dataclass(frozen=True)
 class CoveredSnapshot:
-    """A recorded snapshot inside its stream's contiguous validated coverage."""
+    """A recorded snapshot inside its stream's contiguous validated coverage.
+
+    `manifest` is the full inline map for a `flat_v1` representation; for
+    `captured_v1` it starts empty (the rich manifest is never hydrated here) and
+    is filled with only the bounded, requested paths by `evaluate_applicability`.
+    """
 
     repository_id: str
     stream_id: str
@@ -170,6 +179,7 @@ class CoveredSnapshot:
     capture_status: str
     manifest_digest: str
     manifest: Mapping[str, str]
+    representation: str = "flat_v1"
 
 
 @dataclass(frozen=True)
@@ -585,12 +595,19 @@ def covered_snapshot(
     """The recorded snapshot if its event is inside its stream's coverage.
 
     None when the snapshot was never recorded as a source event, lies beyond a
-    gap in its stream, belongs to another repository than the one stated, or its
-    stored manifest body no longer matches its digest. A read; it writes nothing.
+    gap in its stream, belongs to another repository than the one stated, its
+    stored manifest body no longer matches its digest (`flat_v1`), or its sealed
+    capture header is missing or inconsistent (`captured_v1`). An unrecognised
+    representation fails closed. A read; it writes nothing.
+
+    A `captured_v1` snapshot's `manifest` starts empty: the rich manifest is
+    never hydrated here, only the bounded paths `evaluate_applicability` later
+    resolves through `omnivia_engineering_snapshot_files`. No sentinel is ever
+    mistaken for an empty repository.
     """
     row = connection.execute(
         "SELECT st.repository_id, e.stream_id, e.sequence, st.covered_sequence, "
-        "e.manifest_json, e.manifest_digest, sn.capture_status "
+        "e.manifest_json, e.manifest_digest, sn.capture_status, e.manifest_format "
         "FROM omnivia_engineering_source_events e "
         "JOIN omnivia_engineering_source_streams st "
         "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
@@ -603,9 +620,28 @@ def covered_snapshot(
         return None
     if repository_id is not None and repository_id != str(row[0]):
         return None
-    if content_digest(str(row[4])) != str(row[5]):
+    representation = str(row[7])
+    if representation == "flat_v1":
+        if content_digest(str(row[4])) != str(row[5]):
+            return None
+        manifest: Mapping[str, str] = json.loads(str(row[4]))
+    elif representation == "captured_v1":
+        header = connection.execute(
+            "SELECT repository_id, rich_manifest_digest, capture_status "
+            "FROM omnivia_engineering_snapshot_captures "
+            "WHERE workspace_id = ? AND snapshot_id = ?",
+            (workspace_id, snapshot_id),
+        ).fetchone()
+        if (
+            header is None
+            or str(header[0]) != str(row[0])
+            or str(header[1]) != str(row[5])
+            or str(header[2]) != str(row[6])
+        ):
+            return None
+        manifest = {}
+    else:  # pragma: no cover - manifest_format is a closed, migration-enforced column
         return None
-    manifest = json.loads(str(row[4]))
     return CoveredSnapshot(
         repository_id=str(row[0]),
         stream_id=str(row[1]),
@@ -614,7 +650,45 @@ def covered_snapshot(
         capture_status=str(row[6]),
         manifest_digest=str(row[5]),
         manifest=manifest,
+        representation=representation,
     )
+
+
+def captured_manifest_lookup(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    snapshot_id: str,
+    paths: Sequence[str],
+) -> dict[str, str]:
+    """The bounded per-path read of a captured snapshot's indexed files (§15).
+
+    Queries only `paths` (at most the 64 dependency selectors) through the
+    table's own `(workspace_id, snapshot_id, path)` primary-key prefix. Never
+    hydrates the rich manifest, selects every indexed file, or recounts the
+    index.
+    """
+    if not paths:
+        return {}
+    placeholders = ",".join("?" for _ in paths)
+    rows = connection.execute(
+        "SELECT path, content_digest FROM omnivia_engineering_snapshot_files "
+        f"WHERE workspace_id = ? AND snapshot_id = ? AND path IN ({placeholders})",
+        (workspace_id, snapshot_id, *paths),
+    ).fetchall()
+    return {str(path): str(digest) for path, digest in rows}
+
+
+def captured_coverage_digest(files: Mapping[str, str]) -> str:
+    """The canonical coverage digest of a captured path-to-digest index (§6.3):
+    `content_digest(canonical_document({path: content_digest, ...}))`. Paths are
+    preserved exactly; canonical JSON sorts object keys. Stage 2's capture writer
+    computes this once, over the frozen manifest, before sealing; defined here so
+    it has exactly one spelling. The digest identifies this lookup projection; it
+    makes no completeness claim. The sealed capture status and rich-manifest
+    evidence preserve exclusions, ignored files and unavailable paths.
+    """
+    return content_digest(canonical_document(dict(files)))
 
 
 def parse_dependency_manifest(raw: object) -> DependencyManifest:
@@ -944,6 +1018,36 @@ def evaluate_applicability(
     ]
     if len(dependencies) != sealed:
         return "unknown"
+    if baseline.representation == "captured_v1" or target.representation == "captured_v1":
+        # Bounded by the sealed dependency count (at most 64): only the paths a
+        # whole-file selector actually names are ever looked up.
+        paths = list(
+            dict.fromkeys(
+                selector
+                for stype, selector, meaning, _expected in dependencies
+                if stype == "whole_file" and meaning != "context_only"
+            )
+        )
+        if baseline.representation == "captured_v1":
+            baseline = replace(
+                baseline,
+                manifest=captured_manifest_lookup(
+                    connection,
+                    workspace_id=workspace_id,
+                    snapshot_id=baseline.snapshot_id,
+                    paths=paths,
+                ),
+            )
+        if target.representation == "captured_v1":
+            target = replace(
+                target,
+                manifest=captured_manifest_lookup(
+                    connection,
+                    workspace_id=workspace_id,
+                    snapshot_id=target.snapshot_id,
+                    paths=paths,
+                ),
+            )
     return decide(
         dependencies,
         baseline=baseline,

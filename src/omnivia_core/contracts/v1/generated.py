@@ -320,6 +320,8 @@ __all__ = [
     "EngineeringSessionState",
     "EngineeringSnapshotRef",
     "EngineeringSourceAnchor",
+    "EngineeringSourceCaptureCommitInput",
+    "EngineeringSourceCaptureCommitResult",
     "EngineeringSourceManifestEntry",
     "EngineeringSourcePredecessor",
     "EngineeringSourceRecordInput",
@@ -7070,6 +7072,118 @@ class EngineeringSourceRecordResult:
 
 
 @dataclass(frozen=True, slots=True)
+class EngineeringSourceCaptureCommitResult:
+    """Result of the future `engineering.source.capture.commit` mutation (not accepted in this
+    contract version): the committed captured-index event's identities, counts, digests and
+    coverage. It exposes no local path, checkout hint, file list or raw manifest.
+    """
+
+    repository_id: Identifier
+    stream_id: Identifier
+    sequence: int
+    snapshot_id: Identifier
+    rich_manifest_digest: ContentChecksum
+    coverage_digest: ContentChecksum
+    capture_status: str
+    file_count: int
+    disposition: str
+    coverage: EngineeringSourceStreamCoverage
+    recorded_at: Timestamp
+    audit_reference: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["stream_id"] = self.stream_id
+        wire["sequence"] = self.sequence
+        wire["snapshot_id"] = self.snapshot_id
+        wire["rich_manifest_digest"] = self.rich_manifest_digest
+        wire["coverage_digest"] = self.coverage_digest
+        wire["capture_status"] = self.capture_status
+        wire["file_count"] = self.file_count
+        wire["disposition"] = self.disposition
+        wire["coverage"] = self.coverage.to_wire()
+        wire["recorded_at"] = self.recorded_at
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceCaptureCommitResult"
+    ) -> EngineeringSourceCaptureCommitResult:
+        """Decode a wire payload into a EngineeringSourceCaptureCommitResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_stream_id = _decode_str(
+            _require_field(mapping, "stream_id", path),
+            f"{path}.stream_id",
+        )
+        field_sequence = _decode_int(_require_field(mapping, "sequence", path), f"{path}.sequence")
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_rich_manifest_digest = _decode_str(
+            _require_field(mapping, "rich_manifest_digest", path),
+            f"{path}.rich_manifest_digest",
+        )
+        field_coverage_digest = _decode_str(
+            _require_field(mapping, "coverage_digest", path),
+            f"{path}.coverage_digest",
+        )
+        field_capture_status = _decode_str(
+            _require_field(mapping, "capture_status", path),
+            f"{path}.capture_status",
+        )
+        field_file_count = _decode_int(
+            _require_field(mapping, "file_count", path),
+            f"{path}.file_count",
+        )
+        field_disposition = _decode_str(
+            _require_field(mapping, "disposition", path),
+            f"{path}.disposition",
+        )
+        field_coverage = EngineeringSourceStreamCoverage.from_wire(
+            _require_field(mapping, "coverage", path),
+            f"{path}.coverage",
+        )
+        field_recorded_at = _decode_str(
+            _require_field(mapping, "recorded_at", path),
+            f"{path}.recorded_at",
+        )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            stream_id=field_stream_id,
+            sequence=field_sequence,
+            snapshot_id=field_snapshot_id,
+            rich_manifest_digest=field_rich_manifest_digest,
+            coverage_digest=field_coverage_digest,
+            capture_status=field_capture_status,
+            file_count=field_file_count,
+            disposition=field_disposition,
+            coverage=field_coverage,
+            recorded_at=field_recorded_at,
+            audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class EngineeringRepositoryRegisterInput:
     """Input for `engineering.repository.register`: an explicitly authorized local operator
     binds one exact, installation-local checkout directory to one logical repository
@@ -13602,6 +13716,98 @@ class EngineeringSourceRecordInput:
             capture_status=field_capture_status,
             manifest=field_manifest,
             manifest_digest=field_manifest_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceCaptureCommitInput:
+    """Input for the future `engineering.source.capture.commit` mutation (not accepted in this
+    contract version): it references an already sealed Core capture and derives every other
+    value from the persisted capture header, indexed file evidence and stream state -- never
+    from the payload. It carries only identities, the producer's stream sequence and
+    predecessor, the sealed snapshot identity, and an optional fail-closed precondition
+    digest. It never accepts a checkout path, a repository path, a file path, a manifest
+    body, raw bytes, a command, `checkout_id`, `installation_id`, a workspace, principal,
+    purpose, scope, role or capability field, or a caller-selected capture status, file
+    count, coverage digest or audit identity. Unknown keys are refused.
+    """
+
+    repository_id: Identifier
+    stream_id: Identifier
+    sequence: int
+    snapshot_id: Identifier
+    predecessor: EngineeringSourcePredecessor | None = None
+    expected_manifest_digest: ContentChecksum | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["stream_id"] = self.stream_id
+        wire["sequence"] = self.sequence
+        if self.predecessor is not None:
+            wire["predecessor"] = self.predecessor.to_wire()
+        wire["snapshot_id"] = self.snapshot_id
+        if self.expected_manifest_digest is not None:
+            wire["expected_manifest_digest"] = self.expected_manifest_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceCaptureCommitInput"
+    ) -> EngineeringSourceCaptureCommitInput:
+        """Decode a wire payload into a EngineeringSourceCaptureCommitInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_stream_id = _decode_str(
+            _require_field(mapping, "stream_id", path),
+            f"{path}.stream_id",
+        )
+        field_sequence = _decode_int(_require_field(mapping, "sequence", path), f"{path}.sequence")
+        field_predecessor: EngineeringSourcePredecessor | None = None
+        if "predecessor" in mapping:
+            raw_predecessor = mapping["predecessor"]
+            if raw_predecessor is None:
+                raise ContractDecodeError(
+                    f"{path}.predecessor: null is not a valid value"
+                )
+            field_predecessor = EngineeringSourcePredecessor.from_wire(
+                raw_predecessor,
+                f"{path}.predecessor",
+            )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_expected_manifest_digest: ContentChecksum | None = None
+        if "expected_manifest_digest" in mapping:
+            raw_expected_manifest_digest = mapping["expected_manifest_digest"]
+            if raw_expected_manifest_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.expected_manifest_digest: null is not a valid value"
+                )
+            field_expected_manifest_digest = _decode_str(
+                raw_expected_manifest_digest,
+                f"{path}.expected_manifest_digest",
+            )
+        return cls(
+            repository_id=field_repository_id,
+            stream_id=field_stream_id,
+            sequence=field_sequence,
+            predecessor=field_predecessor,
+            snapshot_id=field_snapshot_id,
+            expected_manifest_digest=field_expected_manifest_digest,
         )
 
 
