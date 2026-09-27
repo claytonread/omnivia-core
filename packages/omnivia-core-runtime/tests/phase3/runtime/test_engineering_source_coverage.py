@@ -1668,6 +1668,108 @@ def test_current_safe_pack_targets_are_non_empty_and_bounded(
     )
 
 
+# --- the current_safe cap is spent only by query-matching candidates ------------------
+
+
+def _off_query(manifest: dict[str, Any] | None, title: str, **kwargs: Any) -> dict[str, Any]:
+    """An observation admitted the same way as `_observation`, but whose bounded
+    preview text (title, summary/what, kind) never contains "provider"."""
+    payload = _observation(manifest, title=title, **kwargs)
+    payload["content"]["summary"] = "Nothing about the search word here."
+    payload["content"]["what"] = "Still nothing to see here."
+    return payload
+
+
+def test_off_query_candidates_never_spend_the_current_safe_cap(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Query filtering runs before the cap and the evaluator: an off-query
+    corpus far larger than the bounded cap never touches either, and the one
+    query match is proven and served. Before the fix, every admitted candidate
+    spent the cap regardless of the query, so this corpus alone would refuse."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+
+    monkeypatch.setattr(handlers, "CURRENT_SAFE_CANDIDATE_CAP", 2)
+    workspace.record(_source(1, "esnap-a", FILES_A))
+    for index in range(5):
+        workspace.observe(_off_query(_manifest(), f"Auth decision {index}"))
+    matched = workspace.observe(_observation(_manifest()))
+
+    evaluated: list[str] = []
+    evaluate = engineering_source.evaluate_applicability
+
+    def spy(connection: Any, **kwargs: Any) -> str:
+        evaluated.append(kwargs["record_id"])
+        return evaluate(connection, **kwargs)
+
+    monkeypatch.setattr(engineering_source, "evaluate_applicability", spy)
+    assert workspace.matched("esnap-a") == [matched["record_id"]]
+    assert evaluated == [matched["record_id"]]
+
+
+def test_query_matching_candidates_beyond_the_cap_still_refuse(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The query pre-filter narrows what spends the cap; it never loosens the
+    cap itself. More query-matching admitted candidates than the bounded cap
+    still refuses with the existing size-limit code."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+
+    monkeypatch.setattr(handlers, "CURRENT_SAFE_CANDIDATE_CAP", 2)
+    workspace.record(_source(1, "esnap-a", FILES_A))
+    for index in range(3):
+        workspace.observe(_observation(_manifest(), title=f"Sign-in provider decision {index}"))
+    assert workspace.refused(
+        "engineering.search",
+        {
+            "query": "provider",
+            "view": "candidates",
+            "applicability_mode": "current_safe",
+            "repository_target": {"repository_id": REPOSITORY, "snapshot_id": "esnap-a"},
+        },
+    )[0] == "size_limit_exceeded"
+
+
+def test_label_denied_matches_skip_the_cap_while_unproven_admits_spend_it(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For another reader, a label-denied version matching the query is never
+    admitted, so it never reaches the evaluator or the cap. An admitted version
+    whose dependencies cannot be proven does reach the evaluator and spend the
+    cap, and is still omitted from the result."""
+    m2.write(workspace.holder, m2.EVIDENCE, evidence_id="evd-open", source_native_id="doc-open")
+    open_source = {**EVIDENCE_SOURCE, "source_id": "doc-open"}
+    workspace.record(_source(1, "esnap-a", FILES_A))
+    hidden = workspace.observe(_observation(_manifest(), title="Hidden provider decision"))
+    unproven = workspace.observe(
+        _observation(
+            _manifest(coverage="partial"),
+            title="Unproven provider decision",
+            source=open_source,
+        )
+    )
+    matched = workspace.observe(
+        _observation(_manifest(), title="Matched provider decision", source=open_source)
+    )
+
+    evaluated: list[str] = []
+    evaluate = engineering_source.evaluate_applicability
+
+    def spy(connection: Any, **kwargs: Any) -> str:
+        evaluated.append(kwargs["record_id"])
+        return evaluate(connection, **kwargs)
+
+    monkeypatch.setattr(engineering_source, "evaluate_applicability", spy)
+    reader = engineering_family_session(
+        principal_id="reader",
+        installation_id=s0.INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+    )
+    assert workspace.matched("esnap-a", session=reader) == [matched["record_id"]]
+    assert set(evaluated) == {unproven["record_id"], matched["record_id"]}
+    assert hidden["record_id"] not in evaluated
+
+
 # --- fencing and atomicity ---------------------------------------------------------------
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -107,6 +107,39 @@ class AuthorizedMemoryFrontier:
 
 def random_identifier(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4()}"
+
+
+#: SQLite's host-parameter ceiling (32 766 on current builds, historically 999)
+#: is an implementation limit, not a design boundary: a 100 000-record workspace
+#: crosses it the first time a frontier folds evidence by `IN (...)` list. The
+#: id list is therefore issued in fixed chunks and the merged rows re-sorted in
+#: Python by the statement's own ORDER BY keys, which reproduces the unchunked
+#: statement's rows in its order exactly at any list size (BINARY collation on
+#: TEXT is code-point order, and the sort columns here are non-null keys).
+_SQL_VARIABLE_CHUNK: Final = 512
+
+
+def _execute_in_rows(
+    connection: sqlite3.Connection,
+    *,
+    select: str,
+    pre: str,
+    in_column: str,
+    post: str = "",
+    leading: tuple[object, ...] = (),
+    ids: Sequence[str],
+    trailing: tuple[object, ...] = (),
+    order_key: Callable[[tuple[object, ...]], tuple[object, ...]],
+) -> list[tuple[object, ...]]:
+    """One `IN (...)` query issued in host-parameter chunks, merged in order."""
+    rows: list[tuple[object, ...]] = []
+    for start in range(0, len(ids), _SQL_VARIABLE_CHUNK):
+        chunk = ids[start : start + _SQL_VARIABLE_CHUNK]
+        placeholders = ", ".join("?" for _ in chunk)
+        statement = f"{select} WHERE {pre} AND {in_column} IN ({placeholders}) {post}"
+        rows.extend(connection.execute(statement, (*leading, *chunk, *trailing)).fetchall())
+    rows.sort(key=order_key)
+    return rows
 
 
 def _microseconds(value: str) -> int:
@@ -742,23 +775,28 @@ def read_authorized_memory_frontier(
         evidence_rows: list[tuple[object, ...]] = []
         label_rows: list[tuple[object, ...]] = []
         if support_ids:
-            placeholders = ", ".join("?" for _ in support_ids)
-            evidence_rows = connection.execute(
-                "SELECT assembly_id, evidence_id FROM omnivia_governed_version_evidence_links "
-                f"WHERE workspace_id = ? AND assembly_id IN ({placeholders}) "
-                "ORDER BY assembly_id, evidence_id",
-                (workspace_id, *support_ids),
-            ).fetchall()
+            evidence_rows = _execute_in_rows(
+                connection,
+                select="SELECT assembly_id, evidence_id "
+                "FROM omnivia_governed_version_evidence_links",
+                pre="workspace_id = ?",
+                in_column="assembly_id",
+                leading=(workspace_id,),
+                ids=support_ids,
+                order_key=lambda row: (str(row[0]), str(row[1])),
+            )
             evidence_ids = tuple(sorted({str(row[1]) for row in evidence_rows}))
             if evidence_ids:
-                evidence_placeholders = ", ".join("?" for _ in evidence_ids)
-                label_rows = connection.execute(
-                    "SELECT evidence_id, label_sequence, label_action, permission_label "
-                    "FROM omnivia_evidence_permission_labels WHERE workspace_id = ? "
-                    f"AND evidence_id IN ({evidence_placeholders}) "
-                    "ORDER BY evidence_id, label_sequence",
-                    (workspace_id, *evidence_ids),
-                ).fetchall()
+                label_rows = _execute_in_rows(
+                    connection,
+                    select="SELECT evidence_id, label_sequence, label_action, permission_label "
+                    "FROM omnivia_evidence_permission_labels",
+                    pre="workspace_id = ?",
+                    in_column="evidence_id",
+                    leading=(workspace_id,),
+                    ids=evidence_ids,
+                    order_key=lambda row: (str(row[0]), cast("int", row[1])),
+                )
         labels_by_evidence: dict[str, list[tuple[object, ...]]] = {}
         for evidence_id, sequence, action, label in label_rows:
             labels_by_evidence.setdefault(str(evidence_id), []).append(
@@ -799,20 +837,34 @@ def read_authorized_memory_frontier(
         )
         application_transitions: list[tuple[object, ...]] = []
         if authorized_record_ids:
-            record_placeholders = ", ".join("?" for _ in authorized_record_ids)
-            application_transitions = connection.execute(
-                "SELECT governed_record_id, source_assembly_id, "
+            application_transitions = _execute_in_rows(
+                connection,
+                select="SELECT governed_record_id, source_assembly_id, "
                 "source_record_version_id, target_assembly_id, "
                 "target_record_version_id, transition_id, operation, "
                 "rationale_digest, rationale_byte_length, reason_code, "
                 "reason_comment, actor_id, actor_kind, audit_ref, settled_at_us "
-                "FROM omnivia_application_governance_transitions "
-                "WHERE workspace_id = ? "
-                f"AND governed_record_id IN ({record_placeholders}) "
-                "AND settled_at_us <= ? "
-                "ORDER BY governed_record_id, settled_at_us, transition_id",
-                (workspace_id, *authorized_record_ids, resolution_instant_us),
-            ).fetchall()
+                "FROM omnivia_application_governance_transitions",
+                pre="workspace_id = ?",
+                in_column="governed_record_id",
+                post="AND settled_at_us <= ?",
+                leading=(workspace_id,),
+                ids=authorized_record_ids,
+                trailing=(resolution_instant_us,),
+                order_key=lambda row: (
+                    str(row[0]),
+                    cast("int", row[14]),
+                    str(row[5]),
+                ),
+            )
+        authorized_id_set = set(authorized_ids)
+        authorized_support_id_set = set(authorized_support_ids)
+        permitted_evidence_ids = {
+            str(row[1])
+            for row in evidence_rows
+            if str(row[0]) in authorized_support_id_set
+        }
+        authorized_record_id_set = set(authorized_record_ids)
         digest_document = to_canonical_json(
             {
                 "view_policy": "memory-s2-v1",
@@ -821,25 +873,22 @@ def read_authorized_memory_frontier(
                 "frontier": [
                     [str(row[0]), str(row[1]), str(row[2]), int(row[8])]
                     for row in selected
-                    if str(row[0]) in authorized_ids
+                    if str(row[0]) in authorized_id_set
                 ],
                 "evidence": [
                     list(map(str, row))
                     for row in evidence_rows
-                    if str(row[0]) in authorized_support_ids
+                    if str(row[0]) in authorized_support_id_set
                 ],
                 "label_stream": [
                     [str(item) for item in row]
                     for row in label_rows
-                    if any(
-                        str(e[1]) == str(row[0]) and str(e[0]) in authorized_support_ids
-                        for e in evidence_rows
-                    )
+                    if str(row[0]) in permitted_evidence_ids
                 ],
                 "transition_chain": [
                     [None if item is None else str(item) for item in row]
                     for row in application_transitions
-                    if str(row[0]) in set(authorized_record_ids)
+                    if str(row[0]) in authorized_record_id_set
                 ],
                 "grant": {
                     "principal_id": label_grant.principal_id,
