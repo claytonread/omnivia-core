@@ -1,9 +1,10 @@
 """Bounded service-owned production of captured engineering source events.
 
 The executor shares the live ``ServiceRunner`` connection, lease and fencing
-generation. It first commits any sealed capture left behind by a crash, then may
-capture one registered checkout from local registration state. Filesystem paths stay
-inside the trusted capture primitive and never enter an application request or result.
+generation. It first attempts only chain-proven recovery of sealed captures left by a
+crash, then may capture one registered checkout from local registration state.
+Filesystem paths stay inside the trusted capture primitive and never enter an
+application request or result.
 """
 
 from __future__ import annotations
@@ -124,8 +125,13 @@ class EngineeringSourceCaptureExecutor:
                     checkout_id,
                 )
                 # A stream with a gap may only accept the missing sealed predecessor.
-                # Capturing another head would leave more unusable seals behind.
-                if not self._stream_accepts_new_head(repository_id, stream_id):
+                # Capturing another head would leave more unusable seals behind. The
+                # observed frontier is revalidated at commit time so a concurrent
+                # append or gap fails this attempt closed rather than misattaching.
+                expected_frontier = self._stream_accepts_new_head(
+                    repository_id, stream_id
+                )
+                if expected_frontier is None:
                     continue
 
                 def renew_lease() -> bool:
@@ -157,10 +163,16 @@ class EngineeringSourceCaptureExecutor:
                 )
                 captured += int(result.status == "captured")
                 try:
-                    self._commit(repository_id, snapshot_id, stream_id)
+                    self._commit(
+                        repository_id,
+                        snapshot_id,
+                        stream_id,
+                        expected_frontier=expected_frontier,
+                    )
                 except SourceCaptureRefused:
-                    # The seal is durable. A concurrent append or a lost authority
-                    # race is recovered from that seal on a later bounded pass.
+                    # The seal stays durable. A later pass may use it only if durable
+                    # chain metadata names it, or may re-observe the checkout and bind
+                    # that fresh capture to the then-current frontier.
                     continue
                 else:
                     committed += 1
@@ -271,7 +283,16 @@ class EngineeringSourceCaptureExecutor:
                 is not None
             )
 
-    def _stream_accepts_new_head(self, repository_id: str, stream_id: str) -> bool:
+    def _stream_accepts_new_head(
+        self, repository_id: str, stream_id: str
+    ) -> int | None:
+        """Return the announced-sequence frontier a fresh capture may extend.
+
+        ``None`` means a new head must not be attempted (repository mismatch or
+        an open gap); ``0`` means the stream does not exist yet. The caller
+        must hand this value back to ``_commit`` so the frontier is revalidated
+        at commit time under the fencing gate.
+        """
         connection, workspace_id, _installation_id = self._owned_facts()
         with self.runner.sqlite_gate:
             row = connection.execute(
@@ -280,11 +301,20 @@ class EngineeringSourceCaptureExecutor:
                 "WHERE workspace_id = ? AND stream_id = ?",
                 (workspace_id, stream_id),
             ).fetchone()
-        return row is None or (
-            str(row[0]) == repository_id and int(row[1]) == int(row[2])
-        )
+        if row is None:
+            return 0
+        if str(row[0]) != repository_id or int(row[1]) != int(row[2]):
+            return None
+        return int(row[1])
 
-    def _commit(self, repository_id: str, snapshot_id: str, stream_id: str) -> None:
+    def _commit(
+        self,
+        repository_id: str,
+        snapshot_id: str,
+        stream_id: str,
+        *,
+        expected_frontier: int | None = None,
+    ) -> None:
         connection, workspace_id, installation_id = self._owned_facts()
         with self.runner.sqlite_gate:
             seal = connection.execute(
@@ -315,6 +345,7 @@ class EngineeringSourceCaptureExecutor:
                 checkout_id=checkout_id,
                 stream_id=stream_id,
                 snapshot_id=snapshot_id,
+                expected_frontier=expected_frontier,
             )
             payload: dict[str, object] = {
                 "repository_id": repository_id,
@@ -376,8 +407,15 @@ class EngineeringSourceCaptureExecutor:
         checkout_id: str,
         stream_id: str,
         snapshot_id: str,
+        expected_frontier: int | None,
     ) -> _CommitPlan:
-        """Choose the only append that can extend this stream's durable chain."""
+        """Choose the only append that can extend this stream's durable chain.
+
+        ``expected_frontier`` is the announced-sequence frontier observed
+        before a fresh checkout capture, or ``None`` for pending-seal recovery.
+        An arbitrary recovered seal may only ever fill an exact, named gap; it
+        may never become ``announced_sequence + 1`` on a contiguous stream.
+        """
 
         stream = connection.execute(
             "SELECT repository_id, announced_sequence, covered_sequence "
@@ -430,6 +468,10 @@ class EngineeringSourceCaptureExecutor:
                 ),
             )
 
+        if expected_frontier is None or announced != expected_frontier:
+            raise SourceCaptureRefused(
+                "an unmatched sealed capture cannot extend the stream head"
+            )
         return _CommitPlan(
             sequence=announced + 1,
             predecessor_snapshot_id=self._snapshot_at(
