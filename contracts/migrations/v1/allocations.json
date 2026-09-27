@@ -469,6 +469,17 @@
       "sha256": "8ddb101c387fd3ac354864a773d81346a8c81f6efef5401872484327cbb59c22",
       "introduced_commit": "360a5989b1e607db1f23d29e5b8a60c1de9b40b1",
       "accepted_commit": null
+    },
+    {
+      "number": 60,
+      "filename": "0060_engineering_continuity_lifecycle.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 59,
+      "sha256": "a406360999ebf98ffea59d3ad5fb2699adad6742db4c14a35962299bc1385657",
+      "introduced_commit": "1d49d70a561c34db9a6e088cce4f869f6554fe56",
+      "accepted_commit": null
     }
   ]
 }
