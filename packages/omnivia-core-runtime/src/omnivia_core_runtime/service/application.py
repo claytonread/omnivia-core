@@ -375,15 +375,31 @@ def _narrow_session(
         for ref in caller.capabilities
         if ref.id in configured_capabilities
     )
+    workspaces = caller.workspaces & configured.workspaces
+    continuity_binding = caller.continuity_binding
+    if (
+        continuity_binding is not None
+        and continuity_binding.workspace_id not in workspaces
+    ):
+        continuity_binding = None
+    if (
+        configured.continuity_binding is not None
+        and configured.continuity_binding != continuity_binding
+    ):
+        # A configured binding is a ceiling for the fixed ``dispatch`` path,
+        # never an identity that a transport-resolved caller may inherit.  A
+        # caller must arrive with the same trusted binding itself.
+        continuity_binding = None
     return AuthenticatedSession(
         principal_id=caller.principal_id,
         roles=caller.roles & configured.roles,
         installations=caller.installations & configured.installations,
-        workspaces=caller.workspaces & configured.workspaces,
+        workspaces=workspaces,
         operations=caller.operations & configured.operations,
         scopes=caller.scopes & configured.scopes,
         purposes=caller.purposes & configured.purposes,
         capabilities=capabilities,
+        continuity_binding=continuity_binding,
     )
 
 

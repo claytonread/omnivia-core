@@ -412,6 +412,15 @@ def test_every_catalogue_operation_outside_the_curated_profile_is_unreachable() 
 
 
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
+def test_continuity_session_register_is_not_model_facing(profile: str) -> None:
+    exposed = manifest.exposure_manifest(profile)
+    assert "continuity.session.register" not in {
+        entry.operation for entry in exposed
+    }
+    assert manifest.exposed_by_tool_name("continuity_session_register", profile) is None
+
+
+@pytest.mark.parametrize("profile", ["restricted", "authoring"])
 def test_continuity_checkpoint_append_is_withdrawn_from_model_exposure(
     profile: str,
 ) -> None:

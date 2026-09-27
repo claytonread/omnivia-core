@@ -43,6 +43,7 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
+    ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
@@ -61,6 +62,7 @@ from omnivia_core.contracts.v1 import (
     idempotency_equivalence,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
+from omnivia_core_runtime.service.authorization import TrustedContinuityBinding
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
     MutationPreconditionFailed,
@@ -79,6 +81,7 @@ from omnivia_core_runtime.storage.continuity import (
     ParentCheckpointMismatch,
     PayloadTooLarge,
     SequencePreconditionFailed,
+    SessionBindingMismatch,
     SessionNotActive,
     SessionNotFound,
 )
@@ -101,6 +104,9 @@ _MESSAGE_UNACCOUNTED_PAYLOAD_FIELD: Final = (
 )
 _MESSAGE_INTEGRITY: Final = (
     "the stored continuity checkpoint failed an internal integrity check"
+)
+_MESSAGE_BINDING_REQUIRED: Final = (
+    "this continuity operation requires a server-established session binding"
 )
 
 # A handoff is a deliberately small projection of checkpoint evidence.  These
@@ -150,6 +156,11 @@ _ERROR_FOR_STORAGE: Final[tuple[tuple[type[BaseException], str, str], ...]] = (
     ),
     (
         SessionNotActive,
+        ERROR_CODE_CONFLICT,
+        _MESSAGE_CONFLICT,
+    ),
+    (
+        SessionBindingMismatch,
         ERROR_CODE_CONFLICT,
         _MESSAGE_CONFLICT,
     ),
@@ -224,8 +235,39 @@ def _handoff_omissions(payload: Mapping[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def _require_continuity_binding(
+    context: OperationContext,
+    *,
+    requested_session_id: str | None = None,
+) -> TrustedContinuityBinding:
+    """Return the adapter-established binding, never one derived from payload.
+
+    An absent binding is an authority failure.  A principal/workspace mismatch
+    or a different session selector is deliberately indistinguishable from a
+    missing continuity record, preserving the existing cross-principal hiding
+    rule while refusing same-principal session substitution before storage.
+    """
+    binding = getattr(context.authorization, "continuity_binding", None)
+    if not isinstance(binding, TrustedContinuityBinding):
+        raise OperationError(
+            ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_BINDING_REQUIRED
+        )
+    if (
+        binding.principal_id != context.principal
+        or binding.workspace_id != context.workspace_id
+        or (
+            requested_session_id is not None
+            and requested_session_id != binding.session_id
+        )
+    ):
+        raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+    return binding
+
+
 def _session_version(
-    fenced: sqlite3.Connection, context: OperationContext, session_id: str
+    fenced: sqlite3.Connection,
+    context: OperationContext,
+    binding: TrustedContinuityBinding,
 ) -> str:
     """The version append and close compare, read under the fence as the caller.
 
@@ -233,15 +275,44 @@ def _session_version(
     before the stated version is compared, so its head is never disclosed as a
     precondition failure.
     """
-    session = storage.read_session(
+    session = storage.read_bound_session(
         fenced,
         workspace_id=context.workspace_id,
-        session_id=session_id,
+        session_id=binding.session_id,
         principal_id=context.principal,
+        binding_generation=binding.binding_generation,
     )
     if session is None:
-        raise SessionNotFound(session_id)
+        raise SessionNotFound(binding.session_id)
     return f"seq-{session['last_checkpoint_sequence'] or 0}"
+
+
+def _require_current_binding(
+    connection: sqlite3.Connection,
+    context: OperationContext,
+    binding: TrustedContinuityBinding,
+) -> None:
+    """Refuse a stale binding before the idempotency replay path can answer.
+
+    ``execute_mutation`` deliberately resolves a committed replay before it
+    calls the record-version reader.  That is correct for a lost response, but
+    the binding generation is authority rather than a record precondition and
+    must govern replays too.  Migration 0048 makes the generation immutable, so
+    this read cannot race a generation change in the current lifecycle model;
+    the fenced write still checks it again before a new mutation settles.
+    """
+    try:
+        session = storage.read_bound_session(
+            connection,
+            workspace_id=context.workspace_id,
+            session_id=binding.session_id,
+            principal_id=context.principal,
+            binding_generation=binding.binding_generation,
+        )
+    except SessionBindingMismatch as error:
+        raise _as_operation_error(error) from error
+    if session is None:
+        raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
 
 
 @dataclass(frozen=True)
@@ -349,6 +420,9 @@ class ContinuityHandlers:
             request = ContinuityCheckpointAppendInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        continuity_binding = _require_continuity_binding(
+            context, requested_session_id=request.session_id
+        )
         connection, identity, guard = self._authority()
         equivalence = idempotency_equivalence(
             context.request.operation,
@@ -365,6 +439,7 @@ class ContinuityHandlers:
             equivalence=equivalence,
             clock=self.clock,
         )
+        _require_current_binding(connection, context, continuity_binding)
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -382,7 +457,8 @@ class ContinuityHandlers:
                 workspace_id=context.workspace_id,
                 principal_id=context.principal,
                 checkpoint_id=self.allocate_identifier("eck"),
-                session_id=request.session_id,
+                session_id=continuity_binding.session_id,
+                binding_generation=continuity_binding.binding_generation,
                 parent_checkpoint_id=request.parent_checkpoint_id,
                 expected_parent_sequence=request.expected_parent_sequence,
                 checkpoint_kind=request.payload.checkpoint_kind,
@@ -408,7 +484,7 @@ class ContinuityHandlers:
             return True
 
         def precondition(fenced: Any) -> str:
-            return _session_version(fenced, context, request.session_id)
+            return _session_version(fenced, context, continuity_binding)
 
         outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
@@ -422,6 +498,9 @@ class ContinuityHandlers:
             request = ContinuitySessionCloseInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        continuity_binding = _require_continuity_binding(
+            context, requested_session_id=request.session_id
+        )
         connection, identity, guard = self._authority()
         equivalence = idempotency_equivalence(
             context.request.operation,
@@ -438,6 +517,7 @@ class ContinuityHandlers:
             equivalence=equivalence,
             clock=self.clock,
         )
+        _require_current_binding(connection, context, continuity_binding)
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -448,7 +528,8 @@ class ContinuityHandlers:
                 settlement,
                 workspace_id=context.workspace_id,
                 principal_id=context.principal,
-                session_id=request.session_id,
+                session_id=continuity_binding.session_id,
+                binding_generation=continuity_binding.binding_generation,
                 expected_sequence=request.expected_sequence,
                 final_checkpoint=None if final is None else final.to_wire(),
                 final_checkpoint_id=self.allocate_identifier("eck"),
@@ -479,7 +560,7 @@ class ContinuityHandlers:
             return True
 
         def precondition(fenced: Any) -> str:
-            return _session_version(fenced, context, request.session_id)
+            return _session_version(fenced, context, continuity_binding)
 
         outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
@@ -508,6 +589,9 @@ class ContinuityHandlers:
         )
         if not valid_selector:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        continuity_binding = _require_continuity_binding(
+            context, requested_session_id=request.session_id
+        )
         connection, _identity, _guard = self._authority()
         # One statement resolves the checkpoint and its session's owner before the
         # payload is loaded: another principal's checkpoint is `not_found` below.
@@ -515,6 +599,8 @@ class ContinuityHandlers:
             connection,
             workspace_id=context.workspace_id,
             principal_id=context.principal,
+            bound_session_id=continuity_binding.session_id,
+            binding_generation=continuity_binding.binding_generation,
             checkpoint_id=request.checkpoint_id,
             session_id=request.session_id,
             sequence=request.sequence,
@@ -587,11 +673,17 @@ class ContinuityHandlers:
             raise OperationError(
                 error.code, error.message, retry_class=error.retry_class
             ) from error
-        except (SessionNotFound, SessionNotActive, ParentCheckpointMismatch,
-                SequencePreconditionFailed, PayloadTooLarge,
-                repo_identity.RepositoryNotFound,
-                repo_identity.RepositoryAmbiguous,
-                repo_identity.SnapshotNotFound) as error:
+        except (
+            SessionNotFound,
+            SessionNotActive,
+            SessionBindingMismatch,
+            ParentCheckpointMismatch,
+            SequencePreconditionFailed,
+            PayloadTooLarge,
+            repo_identity.RepositoryNotFound,
+            repo_identity.RepositoryAmbiguous,
+            repo_identity.SnapshotNotFound,
+        ) as error:
             raise _as_operation_error(error) from error
         except MutationPreconditionFailed as error:
             raise OperationError(

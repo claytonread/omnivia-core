@@ -12,6 +12,7 @@ and source history is never rewritten.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -35,7 +36,11 @@ from omnivia_core_runtime.service.application import (
     engineering_family_session,
     memory_family_session,
 )
-from omnivia_core_runtime.service.authorization import AuthenticatedSession, Grant
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    Grant,
+    TrustedContinuityBinding,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.installed_mcp import (
     AUTHORING_POLICY,
@@ -46,6 +51,7 @@ from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.storage import engineering_source
 
 from omnivia_core.contracts.v1 import (
+    ContinuitySessionBinding,
     ErrorResponseEnvelope,
     MutationPrecondition,
     SuccessResponseEnvelope,
@@ -71,6 +77,14 @@ _SOURCE_TABLES = (
     "omnivia_engineering_dependencies",
     "omnivia_engineering_dependency_sets",
     "omnivia_engineering_assessments",
+)
+
+_BOUND_CONTINUITY_OPERATIONS = frozenset(
+    {
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "continuity.handoff.read",
+    }
 )
 
 
@@ -125,7 +139,7 @@ def _surface(holder: Any) -> ProductionApplicationSurface:
 
 
 class Workspace:
-    """One owned, fully migrated workspace behind the real production surface."""
+    """An owned production surface behind a trusted continuity adapter."""
 
     def __init__(self, tmp_path: Path) -> None:
         path = tmp_path / "workspace.sqlite"
@@ -135,12 +149,45 @@ class Workspace:
         m2.seed_chain(self.holder)
         self.surface = _surface(self.holder)
         self._requests = 0
+        self._continuity_bindings: dict[str, TrustedContinuityBinding] = {}
 
     def restart(self) -> None:
         """Drop the connection and adopt the workspace again, as a restart does."""
         self.holder.connection.close()
         self.holder = m2.take_ownership(self.holder.path)
         self.surface = _surface(self.holder)
+
+    def binding_for(self, principal_id: str) -> TrustedContinuityBinding:
+        return self._continuity_bindings[principal_id]
+
+    def _bound_session(self, session: AuthenticatedSession) -> AuthenticatedSession:
+        if session.continuity_binding is not None:
+            return session
+        retained = self._continuity_bindings.get(session.principal_id)
+        if retained is None:
+            return session
+        return dataclasses.replace(session, continuity_binding=retained)
+
+    def _retain_continuity_registration(self, response: Any) -> None:
+        if not isinstance(response, SuccessResponseEnvelope):
+            return
+        result = response.to_wire()["result"]
+        binding = TrustedContinuityBinding.from_registration(
+            ContinuitySessionBinding.from_wire(result["session"])
+        )
+        self._continuity_bindings[binding.principal_id] = binding
+
+    def dispatch_connection(self, request: Any) -> Any:
+        """Dispatch one local connection with its retained continuity binding."""
+        session = self.surface.session_for(request.operation)
+        if session is None:
+            return self.surface.dispatch(request)
+        if request.operation in _BOUND_CONTINUITY_OPERATIONS:
+            session = self._bound_session(session)
+        response = self.surface.dispatch_for_session(request, session)
+        if request.operation == "continuity.session.register":
+            self._retain_continuity_registration(response)
+        return response
 
     def call(
         self,
@@ -165,9 +212,20 @@ class Workspace:
             overrides["idempotency_key"] = key or f"idem-{request_id}"
         overrides.update(metadata)
         envelope = s0.envelope_for(entry, operation_input=payload, **overrides)
-        if session is None:
-            return self.surface.dispatch(envelope)
-        return self.surface.dispatch_for_session(envelope, session)
+        caller = session
+        if operation in _BOUND_CONTINUITY_OPERATIONS:
+            if caller is None:
+                caller = self.surface.session_for(operation)
+            if caller is not None:
+                caller = self._bound_session(caller)
+        response = (
+            self.surface.dispatch(envelope)
+            if caller is None
+            else self.surface.dispatch_for_session(envelope, caller)
+        )
+        if operation == "continuity.session.register":
+            self._retain_continuity_registration(response)
+        return response
 
     def ok(self, operation: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         response = self.call(operation, payload, **kwargs)

@@ -173,7 +173,7 @@ DECISION_OUTCOMES: dict[str, str] = {
     "decision_record_list": "success",
     "decision_record_get": "refused:not_found",
     "decision_evaluate": "refused:capability_not_granted",
-    "continuity_handoff_read": "refused:not_found",
+    "continuity_handoff_read": "refused:authorization_denied",
 }
 
 #: The tools a live session must answer successfully.

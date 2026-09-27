@@ -39,6 +39,8 @@ from omnivia_core_runtime.service.application import (
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    ContinuityBindingProvenance,
+    TrustedContinuityBinding,
 )
 from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
 from omnivia_core_runtime.service.operations import (
@@ -54,6 +56,7 @@ from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
 
 from omnivia_core.contracts.v1 import (
+    ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -62,6 +65,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     CapabilityRef,
+    ContinuitySessionBinding,
     EngineeringCheckpointPayload,
     ErrorResponseEnvelope,
     MutationPrecondition,
@@ -90,6 +94,27 @@ def _session(entry: Any) -> AuthenticatedSession:
     return s0.session_for(entry)
 
 
+_DIRECT_BINDINGS: dict[tuple[str, str], TrustedContinuityBinding] = {}
+
+
+def _trusted_registration_binding(result: Any) -> TrustedContinuityBinding:
+    """What a trusted adapter retains from the typed registration result."""
+    return TrustedContinuityBinding.from_registration(
+        ContinuitySessionBinding.from_wire(result["session"])
+    )
+
+
+def _with_binding(
+    session: AuthenticatedSession,
+    binding: TrustedContinuityBinding,
+) -> AuthenticatedSession:
+    return dataclasses.replace(session, continuity_binding=binding)
+
+
+def _direct_binding_key(holder: Any, principal_id: str) -> tuple[str, str]:
+    return str(holder.path), principal_id
+
+
 def _handlers(
     holder: Any, entry: Any, *, clock: Any | None = None
 ) -> ContinuityHandlers:
@@ -108,6 +133,7 @@ def _context(
     entry: Any,
     operation_input: dict[str, Any],
     *,
+    session: AuthenticatedSession | None = None,
     stated_version: str | None = None,
     idempotency_key: str | None = None,
 ) -> OperationContext:
@@ -121,7 +147,7 @@ def _context(
     envelope = s0.envelope_for(entry, operation_input=operation_input, **overrides)
     authorized = authorize_application_request(
         envelope,
-        session=_session(entry),
+        session=_session(entry) if session is None else session,
         binding=s0.BINDING,
         supported_capabilities=s0.SUPPORTED,
     )
@@ -181,19 +207,34 @@ def _call(
     handler_name: str,
     operation_input: dict[str, Any],
     *,
+    session: AuthenticatedSession | None = None,
     stated_version: str | None = None,
     idempotency_key: str | None = None,
     clock: Any | None = None,
 ) -> Any:
+    caller = _session(entry) if session is None else session
+    if caller.continuity_binding is None and entry.name != REGISTER.name:
+        retained = _DIRECT_BINDINGS.get(
+            _direct_binding_key(holder, caller.principal_id)
+        )
+        if retained is not None:
+            caller = _with_binding(caller, retained)
     handlers = _handlers(holder, entry, clock=clock)
     context = _context(
         holder,
         entry,
         operation_input,
+        session=caller,
         stated_version=stated_version,
         idempotency_key=idempotency_key,
     )
-    return getattr(handlers, handler_name)(context)
+    outcome = getattr(handlers, handler_name)(context)
+    if entry.name == REGISTER.name:
+        retained = _trusted_registration_binding(outcome.result)
+        _DIRECT_BINDINGS[
+            _direct_binding_key(holder, retained.principal_id)
+        ] = retained
+    return outcome
 
 
 def _rendered_handoff_digest(view: dict[str, Any]) -> str:
@@ -515,6 +556,7 @@ def test_an_unknown_checkpoint_is_not_found_and_unguarded_writes_refuse(
 ) -> None:
     holder = _owned(tmp_path)
     try:
+        _call(holder, REGISTER, "continuity_session_register", _register_input())
         with pytest.raises(OperationError) as missing:
             _call(
                 holder,
@@ -577,6 +619,211 @@ def _settled(workspace: Any) -> list[list[Any]]:
         connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
         for table in _SETTLED_TABLES
     ]
+
+
+def test_continuity_operations_require_a_server_established_binding(
+    workspace: Any,
+) -> None:
+    registered = workspace.ok(
+        "continuity.session.register",
+        _register_input(),
+        session=OWNER,
+        key="idem-binding-required-register",
+    )
+    session_id = registered["session"]["session_id"]
+    before = _settled(workspace)
+
+    envelope = s0.envelope_for(
+        APPEND,
+        operation_input=_append_input(
+            session_id,
+            binding_generation=registered["session"]["binding_generation"],
+            principal_id=OWNER.principal_id,
+            workspace_id=sc.WORKSPACE_ID,
+            continuity_binding=registered["session"],
+        ),
+        idempotency_key="idem-unbound-append",
+        mutation_precondition=MutationPrecondition(record_version="seq-0"),
+        workspace_id=sc.WORKSPACE_ID,
+    )
+    response = workspace.surface.dispatch_for_session(envelope, OWNER)
+
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert response.error.code == ERROR_CODE_AUTHORIZATION_DENIED
+    assert response.error.message == (
+        "this continuity operation requires a server-established session binding"
+    )
+    assert _settled(workspace) == before
+
+
+def test_same_principal_cannot_substitute_another_bound_session(
+    workspace: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = workspace.ok(
+        "continuity.session.register",
+        _register_input(host_session_ref="host-first"),
+        session=OWNER,
+        key="idem-first-bound-session",
+    )["session"]
+    first_binding = workspace.binding_for(OWNER.principal_id)
+    assert (
+        first_binding.provenance
+        is ContinuityBindingProvenance.VALIDATED_REGISTRATION
+    )
+    first_session = _with_binding(OWNER, first_binding)
+    first_receipt = workspace.ok(
+        "continuity.checkpoint.append",
+        _append_input(first["session_id"]),
+        session=first_session,
+        key="idem-first-bound-checkpoint",
+        **_stated("seq-0"),
+    )["receipt"]
+
+    second = workspace.ok(
+        "continuity.session.register",
+        _register_input(host_session_ref="host-second"),
+        session=OWNER,
+        key="idem-second-bound-session",
+    )["session"]
+    second_binding = workspace.binding_for(OWNER.principal_id)
+    second_session = _with_binding(OWNER, second_binding)
+    assert first["session_id"] != second["session_id"]
+    before = _settled(workspace)
+
+    def unexpected_storage_read(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("payload session substitution reached storage")
+
+    original_bound_read = continuity_storage.read_bound_session
+    original_checkpoint_read = continuity_storage.read_checkpoint
+    monkeypatch.setattr(
+        continuity_storage, "read_bound_session", unexpected_storage_read
+    )
+    monkeypatch.setattr(
+        continuity_storage, "read_checkpoint", unexpected_storage_read
+    )
+    for operation, payload, metadata in (
+        (
+            "continuity.checkpoint.append",
+            _append_input(first["session_id"]),
+            _stated("seq-1"),
+        ),
+        (
+            "continuity.session.close",
+            _close_input(first["session_id"], expected_sequence=1),
+            _stated("seq-1"),
+        ),
+        (
+            "continuity.handoff.read",
+            {"session_id": first["session_id"], "sequence": 1},
+            {},
+        ),
+    ):
+        refusal = workspace.refused(
+            operation,
+            payload,
+            session=second_session,
+            **metadata,
+        )
+        assert refusal[0] == ERROR_CODE_NOT_FOUND
+    monkeypatch.setattr(continuity_storage, "read_bound_session", original_bound_read)
+    monkeypatch.setattr(continuity_storage, "read_checkpoint", original_checkpoint_read)
+
+    # Binding is checked before the idempotency coordinator.  Reusing the
+    # first session's committed request and key under the second binding cannot
+    # replay its receipt.
+    assert workspace.refused(
+        "continuity.checkpoint.append",
+        _append_input(first["session_id"]),
+        session=second_session,
+        key="idem-first-bound-checkpoint",
+        **_stated("seq-0"),
+    )[0] == ERROR_CODE_NOT_FOUND
+
+    # A checkpoint-only selector cannot name its session in the payload.  The
+    # storage query still fences it to the authenticated binding and loads no
+    # payload from the other same-principal session.
+    assert workspace.refused(
+        "continuity.handoff.read",
+        {"checkpoint_id": first_receipt["checkpoint_id"]},
+        session=second_session,
+    )[0] == ERROR_CODE_NOT_FOUND
+    assert _settled(workspace) == before
+
+    second_receipt = workspace.ok(
+        "continuity.checkpoint.append",
+        _append_input(second["session_id"]),
+        session=second_session,
+        key="idem-second-bound-checkpoint",
+        **_stated("seq-0"),
+    )["receipt"]
+    assert workspace.ok(
+        "continuity.handoff.read",
+        {"checkpoint_id": second_receipt["checkpoint_id"]},
+        session=second_session,
+    )["handoff"]["checkpoint_id"] == second_receipt["checkpoint_id"]
+    closed = workspace.ok(
+        "continuity.session.close",
+        {"session_id": second["session_id"], "expected_sequence": 1},
+        session=second_session,
+        key="idem-second-bound-close",
+        **_stated("seq-1"),
+    )
+    assert closed["state"] == "closed"
+
+
+def test_stale_binding_generation_cannot_append_close_or_read(
+    workspace: Any,
+) -> None:
+    registered = workspace.ok(
+        "continuity.session.register",
+        _register_input(),
+        session=OWNER,
+        key="idem-stale-generation-register",
+    )["session"]
+    retained = workspace.binding_for(OWNER.principal_id)
+    valid_session = _with_binding(OWNER, retained)
+    append_request = _append_input(registered["session_id"])
+    receipt = workspace.ok(
+        "continuity.checkpoint.append",
+        append_request,
+        session=valid_session,
+        key="idem-stale-generation-append",
+        **_stated("seq-0"),
+    )["receipt"]
+    stale = dataclasses.replace(
+        retained,
+        binding_generation=retained.binding_generation + 1,
+    )
+    stale_session = _with_binding(OWNER, stale)
+    before = _settled(workspace)
+
+    append = workspace.refused(
+        "continuity.checkpoint.append",
+        append_request,
+        session=stale_session,
+        key="idem-stale-generation-append",
+        **_stated("seq-0"),
+    )
+    close = workspace.refused(
+        "continuity.session.close",
+        {"session_id": registered["session_id"], "expected_sequence": 1},
+        session=stale_session,
+        key="idem-stale-generation-close",
+        **_stated("seq-1"),
+    )
+    handoff = workspace.refused(
+        "continuity.handoff.read",
+        {"checkpoint_id": receipt["checkpoint_id"]},
+        session=stale_session,
+    )
+
+    assert append[0] == close[0] == ERROR_CODE_CONFLICT
+    assert append[1] == close[1] == (
+        "this continuity request conflicts with the session's current state"
+    )
+    assert handoff[0] == ERROR_CODE_NOT_FOUND
+    assert _settled(workspace) == before
 
 
 def _register_with_lease(holder: Any, lease_delta_us: int) -> str:
@@ -813,28 +1060,9 @@ def test_committed_append_replays_after_expiry_without_a_second_checkpoint(
 def test_concurrent_successors_through_real_transport_admit_exactly_one(
     tmp_path: Any,
 ) -> None:
-    """Two client threads race while the real server thread alone owns SQLite."""
+    """The socket adapter retains registration, then two client threads race."""
     workspace = sc.Workspace(tmp_path)
     try:
-        session_id = workspace.ok(
-            "continuity.session.register", _register_input(), key="idem-compete-register"
-        )["session"]["session_id"]
-        requests = [
-            s0.envelope_for(
-                APPEND,
-                operation_input=_append_input(
-                    session_id, expected_parent_sequence=0
-                ),
-                request_id=f"req-competing-{index}",
-                correlation_id=f"cor-competing-{index}",
-                trace_id=f"trc-competing-{index}",
-                workspace_id=sc.WORKSPACE_ID,
-                idempotency_key=f"idem-competing-{index}",
-                mutation_precondition=MutationPrecondition(record_version="seq-0"),
-            )
-            for index in range(2)
-        ]
-
         router = DocumentRouter(
             probes=ProbeRouter(
                 facts=lambda: ServiceFacts(
@@ -846,7 +1074,7 @@ def test_concurrent_successors_through_real_transport_admit_exactly_one(
                 capabilities=tuple,
                 clock=lambda: 0,
             ),
-            dispatch=workspace.surface.dispatch,
+            dispatch=workspace.dispatch_connection,
         )
 
         def receive_exact(client: socket.socket, byte_count: int) -> bytes:
@@ -859,10 +1087,7 @@ def test_concurrent_successors_through_real_transport_admit_exactly_one(
                 byte_count -= len(chunk)
             return b"".join(chunks)
 
-        barrier = Barrier(3)
-
-        def compete(address: str, request: Any) -> Any:
-            barrier.wait(timeout=10)
+        def exchange(address: str, request: Any) -> Any:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(10)
                 client.connect(address)
@@ -873,6 +1098,12 @@ def test_concurrent_successors_through_real_transport_admit_exactly_one(
                     decode_frame(header + receive_exact(client, body_length))
                 )
 
+        barrier = Barrier(3)
+
+        def compete(address: str, request: Any) -> Any:
+            barrier.wait(timeout=10)
+            return exchange(address, request)
+
         with tempfile.TemporaryDirectory(prefix="ov-continuity-", dir="/tmp") as directory:
             endpoint = endpoint_for_path(Path(directory) / "service.sock")
             with LocalSocketServer(
@@ -880,13 +1111,45 @@ def test_concurrent_successors_through_real_transport_admit_exactly_one(
                 endpoint=endpoint,
                 gate=RLock(),
                 timeout=10,
-            ), ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [
-                    executor.submit(compete, endpoint.address, request)
-                    for request in requests
+            ):
+                registered = exchange(
+                    endpoint.address,
+                    s0.envelope_for(
+                        REGISTER,
+                        operation_input=_register_input(),
+                        request_id="req-socket-register",
+                        correlation_id="cor-socket-register",
+                        trace_id="trc-socket-register",
+                        workspace_id=sc.WORKSPACE_ID,
+                        idempotency_key="idem-compete-register",
+                    ),
+                )
+                assert isinstance(registered, SuccessResponseEnvelope)
+                session_id = registered.result["session"]["session_id"]
+                requests = [
+                    s0.envelope_for(
+                        APPEND,
+                        operation_input=_append_input(
+                            session_id, expected_parent_sequence=0
+                        ),
+                        request_id=f"req-competing-{index}",
+                        correlation_id=f"cor-competing-{index}",
+                        trace_id=f"trc-competing-{index}",
+                        workspace_id=sc.WORKSPACE_ID,
+                        idempotency_key=f"idem-competing-{index}",
+                        mutation_precondition=MutationPrecondition(
+                            record_version="seq-0"
+                        ),
+                    )
+                    for index in range(2)
                 ]
-                barrier.wait(timeout=10)
-                outcomes = [future.result(timeout=30) for future in futures]
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(compete, endpoint.address, request)
+                        for request in requests
+                    ]
+                    barrier.wait(timeout=10)
+                    outcomes = [future.result(timeout=30) for future in futures]
 
         winners = [
             outcome for outcome in outcomes
@@ -956,6 +1219,7 @@ def test_another_principal_cannot_append_to_or_close_a_session(workspace: Any) -
     the owner closes it, and settles nothing. The owner's own stated versions,
     replay and close are unchanged."""
     owner = _session_with(workspace, OWNER, ["Investigate the restore failure"])
+    _session_with(workspace, OTHER, [])
     before = _settled(workspace)
 
     def attempts(session_id: str) -> list[tuple[str, str, str]]:
@@ -1026,6 +1290,7 @@ def test_the_fenced_write_refuses_another_principal_whatever_the_precondition_sa
     from omnivia_core_runtime.service.handlers import continuity as handlers
 
     owner = _session_with(workspace, OWNER, ["Investigate the restore failure"])
+    _session_with(workspace, OTHER, [])
     before = _settled(workspace)
     monkeypatch.setattr(handlers, "_session_version", lambda *_: "seq-1")
     for operation, payload in (
@@ -1041,6 +1306,7 @@ def test_another_principal_cannot_read_a_handoff_by_either_key(workspace: Any) -
     """A checkpoint id, or a session and sequence, of another principal's session
     is `not_found` exactly as a nonexistent one; each principal reads its own by
     both keys."""
+    _session_with(workspace, OWNER, [])
     missing = [
         workspace.refused("continuity.handoff.read", key, session=OWNER)
         for key in ({"checkpoint_id": "eck-nowhere"}, {"session_id": "esess-nowhere", "sequence": 1})
