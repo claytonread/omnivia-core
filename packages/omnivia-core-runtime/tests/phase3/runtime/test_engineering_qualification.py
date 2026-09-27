@@ -36,9 +36,12 @@ WORKSPACE_ID = sc.WORKSPACE_ID
 REPOSITORY = sc.REPOSITORY
 SNAPSHOT = "esnap-qual"
 
-#: Twenty topic stems; each query matches roughly a twentieth of the corpus,
-#: so the measured searches rank a realistic candidate set rather than one
-#: all-matching frontier.
+#: Twenty topic stems, crossed with eight component buckets below: each
+#: (stem, component) pair names roughly a 160th of the corpus, so a query
+#: naming one pair ranks a bounded candidate set at any qualification scale --
+#: at 100 000 observations, at most 625 per query, well inside
+#: `CURRENT_SAFE_CANDIDATE_CAP` -- rather than a whole stem's worth (a
+#: twentieth, which at 100 000 would be 5 000 and would itself exceed the cap).
 STEMS = [
     "authentication",
     "session-restoration",
@@ -62,12 +65,29 @@ STEMS = [
     "test-flakiness",
 ]
 
+#: Eight deterministic component buckets, crossed with the twenty stems above.
+COMPONENTS = [f"component-{index:02d}" for index in range(8)]
+
+_PAIRS = len(STEMS) * len(COMPONENTS)
+
+
+def _pair(index: int) -> tuple[str, str]:
+    """The (stem, component) bucket an index falls in, one of 160 evenly."""
+    slot = index % _PAIRS
+    return STEMS[slot % len(STEMS)], COMPONENTS[slot // len(STEMS)]
+
+
+def _query(run: int) -> str:
+    """The query naming exactly one (stem, component) pair."""
+    stem, component = _pair(run)
+    return f"{stem} {component}"
+
 
 def _observation(index: int) -> dict[str, Any]:
-    stem = STEMS[index % len(STEMS)]
+    stem, component = _pair(index)
     return sc._observation(
         sc._manifest(SNAPSHOT),
-        title=f"{stem} finding {index}",
+        title=f"{stem} {component} finding {index}",
     )
 
 
@@ -101,7 +121,11 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
 
     ws = sc.Workspace(tmp_path)
     try:
-        ws.record(sc._source(1, SNAPSHOT, {"src/auth.py": sc.AUTH_V1}))
+        # The baseline must attest every path `sc._manifest`'s dependencies name
+        # (src/auth.py, src/util.py, README.md), not just the required one: a
+        # baseline missing an attested digest leaves the evaluator `unknown`
+        # for every seeded record, so no current_safe probe could ever match.
+        ws.record(sc._source(1, SNAPSHOT, sc.FILES_A))
 
         seed_started = time.perf_counter()
         for index in range(corpus):
@@ -115,23 +139,45 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
         for _ in range(5):
             ws.ok(
                 "engineering.search",
-                {"query": "authentication finding", "view": "candidates"},
+                {"query": _query(0), "view": "candidates"},
             )
         search_samples: list[float] = []
         for run in range(samples_search):
-            query = f"{STEMS[run % len(STEMS)]} finding"
             started = time.perf_counter()
             result = ws.ok(
                 "engineering.search",
-                {"query": query, "view": "candidates"},
+                {"query": _query(run), "view": "candidates"},
             )
             search_samples.append((time.perf_counter() - started) * 1000.0)
             assert result["previews"], "a seeded query must match its corpus"
         print("search percentiles:", _percentiles(search_samples), flush=True)
 
+        # --- preview search, current_safe -------------------------------------
+        # Bounded by design: each query names one (stem, component) pair, at
+        # most 625 matches at the 100 000 lane, inside CURRENT_SAFE_CANDIDATE_CAP.
+        safe_search_samples: list[float] = []
+        for run in range(samples_search):
+            started = time.perf_counter()
+            result = ws.ok(
+                "engineering.search",
+                {
+                    "query": _query(run),
+                    "view": "candidates",
+                    "applicability_mode": "current_safe",
+                    "repository_target": {
+                        "repository_id": REPOSITORY,
+                        "snapshot_id": SNAPSHOT,
+                    },
+                },
+            )
+            safe_search_samples.append((time.perf_counter() - started) * 1000.0)
+            assert result["previews"], "a seeded query must match its corpus under current_safe"
+            assert {p["applicability"] for p in result["previews"]} == {"matched"}
+        print("current_safe search percentiles:", _percentiles(safe_search_samples), flush=True)
+
         # --- context pack ----------------------------------------------------
         pack_input = {
-            "query": "authentication finding",
+            "query": _query(0),
             "targets": [
                 {
                     "repository_id": REPOSITORY,
@@ -145,12 +191,36 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
         assert built["pack"]["format_version"] == "engineering_context.v1"
         pack_samples: list[float] = []
         for run in range(samples_pack):
-            pack_input["query"] = f"{STEMS[run % len(STEMS)]} finding"
+            pack_input["query"] = _query(run)
             started = time.perf_counter()
             result = ws.ok("engineering.context.build", pack_input)
             pack_samples.append((time.perf_counter() - started) * 1000.0)
             assert result["pack"]["fresh_authorization_required"] is True
         print("pack percentiles:", _percentiles(pack_samples), flush=True)
+
+        # --- context pack, current_safe ---------------------------------------
+        # Not asserted to pass at scale: unlike search, the pack builder still
+        # hydrates its authorized frontier's bodies before any query filter
+        # narrows it (a separate pending change), so this probe only records
+        # whatever the current implementation does -- a pack or a refusal --
+        # diagnostically, at this corpus size.
+        safe_pack_input = {
+            **pack_input,
+            "query": _query(0),
+            "applicability_mode": "current_safe",
+        }
+        safe_pack_started = time.perf_counter()
+        safe_pack_response = ws.call("engineering.context.build", safe_pack_input)
+        safe_pack_elapsed_ms = (time.perf_counter() - safe_pack_started) * 1000.0
+        safe_pack_outcome = (
+            "success"
+            if isinstance(safe_pack_response, sc.SuccessResponseEnvelope)
+            else safe_pack_response.error.code
+        )
+        print(
+            f"current_safe pack probe: {safe_pack_outcome} in {safe_pack_elapsed_ms:.1f}ms",
+            flush=True,
+        )
 
         # --- checkpoint commit -----------------------------------------------
         registered = ws.ok(
@@ -198,7 +268,12 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
             "seed_seconds": round(seed_seconds, 1),
             "operations": {
                 "engineering.search": _percentiles(search_samples),
+                "engineering.search.current_safe": _percentiles(safe_search_samples),
                 "engineering.context.build": _percentiles(pack_samples),
+                "engineering.context.build.current_safe": {
+                    "outcome": safe_pack_outcome,
+                    "elapsed_ms": round(safe_pack_elapsed_ms, 3),
+                },
                 "continuity.checkpoint.append": _percentiles(checkpoint_samples),
             },
         }
