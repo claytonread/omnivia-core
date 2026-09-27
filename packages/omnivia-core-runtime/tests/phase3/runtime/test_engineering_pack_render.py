@@ -11,12 +11,15 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
+from omnivia_core_runtime.service import engineering_pack
 from omnivia_core_runtime.service.engineering_pack import (
+    BYTE_ONLY_COUNTING_MODE,
     BuildContext,
     MandatoryContextTooLarge,
     PackRecord,
     WorkingItem,
     build_pack,
+    build_pack_byte_only,
 )
 from omnivia_core_runtime.storage.context_pack import (
     CONTEXT_PACK_TOKENIZER_ID,
@@ -27,6 +30,7 @@ from referencing import Registry, Resource
 from omnivia_core.contracts.v1 import to_canonical_json
 
 NOTICE = "Target applicability is not evaluated in this build."
+FIXTURE_DIR = Path(__file__).with_name("fixtures")
 
 CTX = BuildContext(
     resolved_at_us=1_700_000_000_000_000,
@@ -47,6 +51,20 @@ ACCEPTED = PackRecord(
     "rec-b", "ver-1", "accepted_knowledge", "Auth", "Provider A, naïve 認証 `f(x)`;"
 )
 CANDIDATE = PackRecord("rec-a", "ver-2", "candidate_findings", "Guess", "Maybe provider B.")
+V2_WORKING = (
+    WorkingItem("ck-1", 3, "Resume ‘auth’", ("call a.b()", "終わり!")),
+)
+V2_CTX = dataclasses.replace(
+    CTX,
+    requested_budget={
+        "model_bytes": 16384,
+        "hydrations": 16,
+        "evidence_bytes": 524288,
+    },
+    counting_mode=BYTE_ONLY_COUNTING_MODE,
+    effective_hydrations=8,
+    effective_evidence_bytes=262144,
+)
 
 
 def _build(
@@ -65,6 +83,21 @@ def _build(
 def _tokens(text: str) -> int:
     # Independent restatement of context-pack.tokenizer.v1.
     return len(re.findall(r"[^\W_]+|[^\s]", text))
+
+
+def _build_v2(
+    ctx: BuildContext = V2_CTX,
+    records: Any = (CANDIDATE, ACCEPTED),
+    working: Any = V2_WORKING,
+) -> Any:
+    return build_pack_byte_only(
+        ctx,
+        tuple(records),
+        tuple(working),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+    )
 
 
 def test_rendered_pack_matches_the_published_result_schema() -> None:
@@ -92,11 +125,88 @@ def test_rendered_pack_matches_the_published_result_schema() -> None:
     for pack in (
         _build(),
         _build(dataclasses.replace(CTX, requested_budget={"model_tokens": 1000})),
+        _build_v2(),
     ):
         assert [
             (list(error.absolute_path), error.message)
             for error in validator.iter_errors({"pack": pack})
         ] == []
+
+
+def test_legacy_v1_matches_the_prechange_canonical_golden() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v1_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    actual = to_canonical_json(_build())
+    assert actual == expected
+    assert (
+        _build()["pack_id"]
+        == "sha256:270959fb56b2e5f863e521ee67dfe4c27409e9175fe0b94761e558165d4550f8"
+    )
+
+
+def test_byte_only_v2_matches_its_canonical_golden_and_exact_utf8_count() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v2_byte_only_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    pack = _build_v2()
+    text = pack["rendering"]["text"]
+    assert to_canonical_json(pack) == expected
+    assert pack["format_version"] == "engineering_context.v2"
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert pack["rendering"]["byte_count"] <= pack["budget"]["effective"]["model_bytes"]
+    assert NOTICE in text
+    assert "[accepted_knowledge]" in text
+    assert "[candidate_findings]" in text
+    assert "[working_context]" in text
+    assert "[cite-1]" in text
+    assert "[uncited checkpoint ck-1#3]" in text
+    assert "naïve 認証 `f(x)`" in text
+    assert "終わり!" in text
+
+
+def test_byte_only_v2_contains_no_token_or_tokenizer_fields() -> None:
+    pack = _build_v2()
+    forbidden = {
+        "model_tokens",
+        "rendered_tokens",
+        "token_count",
+        "tokenizer_id",
+        "tokenizer_version",
+    }
+
+    def keys(value: Any) -> set[str]:
+        if isinstance(value, dict):
+            return set(value).union(*(keys(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(keys(item) for item in value))
+        return set()
+
+    assert forbidden.isdisjoint(keys(pack))
+    assert "token estimate" not in to_canonical_json(pack).lower()
+    assert pack["normalized_request"]["counting_mode"] == BYTE_ONLY_COUNTING_MODE
+    assert pack["reproducibility"]["counting_mode"] == BYTE_ONLY_COUNTING_MODE
+
+
+def test_byte_only_v2_replay_and_digest_inputs_are_stable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _build_v2()
+    assert to_canonical_json(first) == to_canonical_json(_build_v2())
+    assert first["pack_id"] == _build_v2()["pack_id"]
+    assert _build_v2(dataclasses.replace(V2_CTX, resolved_at_us=1))["pack_id"] != first[
+        "pack_id"
+    ]
+    assert _build_v2(dataclasses.replace(V2_CTX, effective_bytes=16000))[
+        "pack_id"
+    ] != first["pack_id"]
+    assert _build()["pack_id"] != first["pack_id"]
+
+    monkeypatch.setattr(engineering_pack, "BYTE_ONLY_RENDERER_VERSION", "eng-render-test")
+    renderer_changed = _build_v2()["pack_id"]
+    assert renderer_changed != first["pack_id"]
+    monkeypatch.setattr(engineering_pack, "BYTE_ONLY_BUILDER_VERSION", "eng-build-test")
+    assert _build_v2()["pack_id"] != renderer_changed
 
 
 def test_same_frozen_context_replays_to_identical_bytes_and_checksum() -> None:
@@ -175,6 +285,27 @@ def test_an_oversized_optional_section_is_dropped_whole() -> None:
 def test_a_mandatory_rendering_that_cannot_fit_is_refused() -> None:
     with pytest.raises(MandatoryContextTooLarge):
         _build(dataclasses.replace(CTX, effective_tokens=1))
+
+
+def test_byte_only_drops_optional_sections_whole_and_refuses_too_small_mandatory() -> (
+    None
+):
+    mandatory = _build_v2(records=(ACCEPTED,), working=())
+    cap = mandatory["rendering"]["byte_count"]
+    tight = dataclasses.replace(V2_CTX, effective_bytes=cap)
+    packed = _build_v2(tight, records=(ACCEPTED, CANDIDATE), working=V2_WORKING)
+    assert [section["partition"] for section in packed["sections"]] == [
+        "accepted_knowledge"
+    ]
+    assert packed["citations"] == [
+        {
+            "citation_id": "cite-1",
+            "record_ref": {"record_id": "rec-b", "version": "ver-1"},
+        }
+    ]
+    assert all(omission["reason"] == "budget" for omission in packed["omissions"])
+    with pytest.raises(MandatoryContextTooLarge):
+        _build_v2(dataclasses.replace(V2_CTX, effective_bytes=cap - 1), records=(ACCEPTED,), working=())
 
 
 def test_authorized_selection_order_survives_within_a_partition() -> None:

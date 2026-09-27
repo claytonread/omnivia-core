@@ -1180,6 +1180,15 @@ _GRAPH_READ: tuple[str, ...] = tuple(sorted((*_PROJECTION_READ, "not_found", "si
 _CONTEXT_READ: tuple[str, ...] = tuple(
     sorted((*_PROJECTION_READ, "size_limit_exceeded", "token_limit_exceeded"))
 )
+_ENGINEERING_CONTEXT_READ: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CONTEXT_READ,
+            "context_budget_insufficient",
+            "tokenizer_unavailable",
+        )
+    )
+)
 _CREATE_MUT: tuple[str, ...] = tuple(
     sorted(
         (
@@ -1287,6 +1296,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "PROJECTION_READ": _PROJECTION_READ,
     "GRAPH_READ": _GRAPH_READ,
     "CONTEXT_READ": _CONTEXT_READ,
+    "ENGINEERING_CONTEXT_READ": _ENGINEERING_CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
     "GOV_MUT": _GOV_MUT,
@@ -1531,7 +1541,8 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     # Engineering memory (SPEC-CORE-ENGMEM-001): continuity + engineering retrieval.
     # Reads: handoff reads authoritative L0 checkpoints (POINT_READ); retrieval goes
     # through serving projections with bounded results (GRAPH_READ); the pack build
-    # adds token budgets (CONTEXT_READ). Mutations: continuity appends (ENG_CONTINUITY_MUT),
+    # adds counting-contract budgets (ENGINEERING_CONTEXT_READ). Mutations: continuity
+    # appends (ENG_CONTINUITY_MUT),
     # priority is a principal-scoped preference (ENG_PRIORITY_MUT), and review records
     # a governed attestation with a precondition (GOV_MUT).
     "continuity.session.register": FrozenOperation(
@@ -1560,7 +1571,7 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     ),
     "engineering.context.build": FrozenOperation(
         "workspace", ("engineering:read",), "none", "engineering.read",
-        "engineering", "EngineeringContextBuild", "CONTEXT_READ", False,
+        "engineering", "EngineeringContextBuild", "ENGINEERING_CONTEXT_READ", False,
     ),
     "context.priority.set": FrozenOperation(
         "workspace", ("engineering:write",), "update", "engineering.write",

@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 147
+    assert len(corpus) == 149
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "cb721732fe67052d47984d59f9b9f6e17b1347c1b177b0a0a8599877398aaceb"
+        "f57d0bbf01a18c568be1360863116542cb7824a9e7ee192416333f03751ceb62"
     )
 
 
@@ -1618,6 +1618,59 @@ def test_the_canonical_maximum_item_count_is_enforced() -> None:
     assert conformance._validate_against_schema(["a", "b"], schema, schemas, "x") == []
     assert conformance._validate_against_schema(["a", "b", "c"], schema, schemas, "x") == [
         "x: more than maxItems 2"
+    ]
+
+
+def test_the_canonical_conditional_composition_keywords_are_enforced() -> None:
+    """The bounded evaluator applies allOf, if/then, and not together."""
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    schema = {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string"},
+            "bytes": {"type": "integer"},
+            "tokenizer": {"type": "string"},
+        },
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"mode": {"const": "byte"}},
+                    "required": ["mode"],
+                },
+                "then": {
+                    "required": ["bytes"],
+                    "not": {"required": ["tokenizer"]},
+                },
+            }
+        ],
+    }
+    validate = conformance._validate_against_schema
+    assert validate({"mode": "legacy"}, schema, schemas, "x") == []
+    assert validate({"mode": "byte", "bytes": 10}, schema, schemas, "x") == []
+    assert validate({"mode": "byte"}, schema, schemas, "x") == [
+        "x: missing required field(s) ['bytes']"
+    ]
+    assert validate(
+        {"mode": "byte", "bytes": 10, "tokenizer": "forbidden"},
+        schema,
+        schemas,
+        "x",
+    ) == ["x: must not satisfy the excluded schema"]
+
+
+def test_the_canonical_evaluator_still_refuses_every_unlisted_keyword() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    findings = conformance._validate_against_schema(
+        2,
+        {"type": "integer", "exclusiveMinimum": 1},
+        conformance._CanonicalSchemas(),
+        "x",
+    )
+    assert findings == [
+        "x: canonical schema uses unsupported keyword(s) ['exclusiveMinimum']"
     ]
 
 

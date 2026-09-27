@@ -81,12 +81,17 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
+    ENGINEERING_COUNTING_MODE_BYTE_ONLY,
+    ENGINEERING_COUNTING_MODE_EXACT_TOKENS,
     ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
+    ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT,
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
@@ -95,13 +100,13 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_STALE_PROJECTION,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+    ERROR_CODE_TOKENIZER_UNAVAILABLE,
     GOVERNANCE_STATE_ACCEPTED,
     RETRY_CLASS_RETRYABLE_AFTER_DELAY,
     ContextPrioritySetInput,
     ContextPrioritySetResult,
     ContractDecodeError,
     ContractSemanticError,
-    EngineeringContextBuildInput,
     EngineeringExpandInput,
     EngineeringRepositoryRegisterInput,
     EngineeringRepositoryRegisterResult,
@@ -110,6 +115,7 @@ from omnivia_core.contracts.v1 import (
     EngineeringSearchInput,
     EngineeringSourceRecordInput,
     EngineeringSourceRecordResult,
+    decode_engineering_context_build_input,
     idempotency_equivalence,
     is_identifier,
     to_canonical_json,
@@ -126,6 +132,7 @@ from omnivia_core_runtime.service.engineering_pack import (
     PackRecord,
     WorkingItem,
     build_pack,
+    build_pack_byte_only,
 )
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
@@ -215,13 +222,46 @@ _RESPONSE_RESERVE: Final = 2048
 _MESSAGE_BUDGET: Final = (
     "the minimum safe engineering context does not fit the effective budget"
 )
+_MESSAGE_TOKENIZER_UNAVAILABLE: Final = (
+    "the requested exact tokenizer is not available in this service"
+)
 
 #: Server hard budget ceilings (§12.4). Effective budgets are the minimum of the
 #: caller request and these ceilings; both token and byte caps are simultaneous.
 BUDGET_CEILING_TOKENS: Final = 16000
 BUDGET_CEILING_BYTES: Final = 65536
+BUDGET_CEILING_HYDRATIONS: Final = 32
+BUDGET_CEILING_EVIDENCE_BYTES: Final = 1_048_576
 BUDGET_DEFAULT_TOKENS: Final = 4000
 BUDGET_DEFAULT_BYTES: Final = 16384
+BUDGET_DEFAULT_HYDRATIONS: Final = 8
+BUDGET_DEFAULT_EVIDENCE_BYTES: Final = 262_144
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringBudgetPolicy:
+    """Server-owned limits for one named engineering retrieval profile."""
+
+    model_tokens: int
+    model_bytes: int
+    hydrations: int
+    evidence_bytes: int
+
+
+_DEFAULT_ENGINEERING_BUDGET_POLICY: Final = EngineeringBudgetPolicy(
+    model_tokens=BUDGET_DEFAULT_TOKENS,
+    model_bytes=BUDGET_DEFAULT_BYTES,
+    hydrations=BUDGET_DEFAULT_HYDRATIONS,
+    evidence_bytes=BUDGET_DEFAULT_EVIDENCE_BYTES,
+)
+ENGINEERING_PROFILE_BUDGETS: Final[Mapping[str, EngineeringBudgetPolicy]] = (
+    MappingProxyType(
+        {
+            profile: _DEFAULT_ENGINEERING_BUDGET_POLICY
+            for profile in ("investigate", "implement", "review", "resume")
+        }
+    )
+)
 
 _MESSAGE_PRIORITY: Final = (
     "context priority ships contracts first; the preference store lands in a "
@@ -1400,12 +1440,80 @@ class EngineeringHandlers:
         `reproducibility.artifact_checksum` removed (§12.3a).
         """
         try:
-            request = EngineeringContextBuildInput.from_wire(context.request.input)
+            request = decode_engineering_context_build_input(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         mode = request.applicability_mode or "diagnostic"
         if mode not in _APPLICABILITY_MODES:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+
+        negotiated = request.counting_mode is not None
+        if negotiated:
+            profile_policy = ENGINEERING_PROFILE_BUDGETS.get(request.profile)
+            if profile_policy is None or request.budget is None:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            caller_tokens = (
+                profile_policy.model_tokens
+                if request.budget.model_tokens is None
+                else request.budget.model_tokens
+            )
+            caller_bytes = (
+                profile_policy.model_bytes
+                if request.budget.model_bytes is None
+                else request.budget.model_bytes
+            )
+            caller_hydrations = (
+                profile_policy.hydrations
+                if request.budget.hydrations is None
+                else request.budget.hydrations
+            )
+            caller_evidence_bytes = (
+                profile_policy.evidence_bytes
+                if request.budget.evidence_bytes is None
+                else request.budget.evidence_bytes
+            )
+            effective_tokens = min(
+                caller_tokens,
+                profile_policy.model_tokens,
+                BUDGET_CEILING_TOKENS,
+            )
+            effective_bytes = min(
+                caller_bytes,
+                profile_policy.model_bytes,
+                BUDGET_CEILING_BYTES,
+            )
+            effective_hydrations = min(
+                caller_hydrations,
+                profile_policy.hydrations,
+                BUDGET_CEILING_HYDRATIONS,
+            )
+            effective_evidence_bytes = min(
+                caller_evidence_bytes,
+                profile_policy.evidence_bytes,
+                BUDGET_CEILING_EVIDENCE_BYTES,
+            )
+            if request.counting_mode == ENGINEERING_COUNTING_MODE_EXACT_TOKENS:
+                raise OperationError(
+                    ERROR_CODE_TOKENIZER_UNAVAILABLE,
+                    _MESSAGE_TOKENIZER_UNAVAILABLE,
+                    retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                        ERROR_CODE_TOKENIZER_UNAVAILABLE
+                    ],
+                )
+        else:
+            effective_tokens = (
+                BUDGET_DEFAULT_TOKENS
+                if request.budget is None or request.budget.model_tokens is None
+                else min(request.budget.model_tokens, BUDGET_CEILING_TOKENS)
+            )
+            effective_bytes = (
+                BUDGET_DEFAULT_BYTES
+                if request.budget is None or request.budget.model_bytes is None
+                else min(request.budget.model_bytes, BUDGET_CEILING_BYTES)
+            )
+            effective_hydrations = BUDGET_DEFAULT_HYDRATIONS
+            effective_evidence_bytes = BUDGET_DEFAULT_EVIDENCE_BYTES
+
         connection = self._connection()
         # current_safe: every target's authoritative coverage is checked before the
         # frontier is read; one uncovered target refuses the whole build.
@@ -1430,17 +1538,6 @@ class EngineeringHandlers:
                     raise _applicability_pending()
                 covered.append(resolved)
         resolved_at_us = time.time_ns() // 1000
-
-        effective_tokens = (
-            BUDGET_DEFAULT_TOKENS
-            if request.budget is None or request.budget.model_tokens is None
-            else min(request.budget.model_tokens, BUDGET_CEILING_TOKENS)
-        )
-        effective_bytes = (
-            BUDGET_DEFAULT_BYTES
-            if request.budget is None or request.budget.model_bytes is None
-            else min(request.budget.model_bytes, BUDGET_CEILING_BYTES)
-        )
 
         normalized = " ".join(request.query.lower().split())
 
@@ -1570,9 +1667,17 @@ class EngineeringHandlers:
             effective_bytes=effective_bytes,
             projection_version=PROJECTION_VERSION,
             applicability_evaluator=EVALUATOR_VERSION,
+            counting_mode=request.counting_mode,
+            effective_hydrations=effective_hydrations,
+            effective_evidence_bytes=effective_evidence_bytes,
         )
         try:
-            pack = build_pack(
+            builder = (
+                build_pack_byte_only
+                if request.counting_mode == ENGINEERING_COUNTING_MODE_BYTE_ONLY
+                else build_pack
+            )
+            pack = builder(
                 build_context,
                 tuple(
                     PackRecord(
@@ -1603,9 +1708,14 @@ class EngineeringHandlers:
                 omissions=omissions,
             )
         except MandatoryContextTooLarge as error:
+            error_code = (
+                ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT
+                if request.counting_mode == ENGINEERING_COUNTING_MODE_BYTE_ONLY
+                else ERROR_CODE_TOKEN_LIMIT_EXCEEDED
+            )
             raise OperationError(
-                ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+                error_code,
                 _MESSAGE_BUDGET,
-                retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_TOKEN_LIMIT_EXCEEDED],
+                retry_class=DEFAULT_RETRY_CLASSIFICATION[error_code],
             ) from error
         return {"pack": pack}

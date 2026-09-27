@@ -708,7 +708,7 @@ _SUPPORTED_SCHEMA_KEYWORDS: Final[frozenset[str]] = frozenset({
     "unevaluatedProperties", "propertyNames", "minProperties",
     "items", "minItems", "maxItems", "uniqueItems",
     "pattern", "minLength", "maxLength", "format",
-    "minimum", "maximum", "oneOf", "const", "enum",
+    "minimum", "maximum", "oneOf", "allOf", "if", "then", "not", "const", "enum",
 })
 
 _JSON_TYPES: Final[dict[str, tuple[type, ...]]] = {
@@ -835,16 +835,56 @@ def _validate_against_schema(
 
     if "oneOf" in schema:
         branches = schema["oneOf"]
-        matched = [
-            branch
-            for branch in branches
-            if not _validate_against_schema(value, branch, schemas, path)
-        ]
-        if len(matched) != 1:
+        if not isinstance(branches, list) or not branches or not all(
+            isinstance(branch, Mapping) for branch in branches
+        ):
+            findings.append(f"{path}: canonical schema oneOf must contain schemas")
+        else:
+            matched = [
+                branch
+                for branch in branches
+                if not _validate_against_schema(value, branch, schemas, path)
+            ]
+            if len(matched) != 1:
+                findings.append(
+                    f"{path}: must match exactly one of {len(branches)} alternatives, matched "
+                    f"{len(matched)}"
+                )
+
+    if "allOf" in schema:
+        branches = schema["allOf"]
+        if not isinstance(branches, list) or not branches or not all(
+            isinstance(branch, Mapping) for branch in branches
+        ):
+            findings.append(f"{path}: canonical schema allOf must contain schemas")
+        else:
+            for branch in branches:
+                findings.extend(_validate_against_schema(value, branch, schemas, path))
+
+    if "if" in schema:
+        condition = schema["if"]
+        if not isinstance(condition, Mapping):
             findings.append(
-                f"{path}: must match exactly one of {len(branches)} alternatives, matched "
-                f"{len(matched)}"
+                f"{path}: canonical schema if must contain a schema"
             )
+        elif (
+            not _validate_against_schema(value, condition, schemas, path)
+            and "then" in schema
+        ):
+            consequence = schema["then"]
+            if not isinstance(consequence, Mapping):
+                findings.append(f"{path}: canonical schema then must contain a schema")
+            else:
+                findings.extend(
+                    _validate_against_schema(value, consequence, schemas, path)
+                )
+
+    if "not" in schema:
+        excluded = schema["not"]
+        if not isinstance(excluded, Mapping):
+            findings.append(f"{path}: canonical schema not must contain a schema")
+        elif not _validate_against_schema(value, excluded, schemas, path):
+            findings.append(f"{path}: must not satisfy the excluded schema")
     return findings
 
 

@@ -1074,10 +1074,39 @@ export interface EngineeringExternalEffect {
 export type EngineeringSearchView = string;
 
 /**
- * Caller-requested bounded budgets for one engineering context build. Byte and token limits are
- * simultaneous limits, not conversions of one another. Effective budgets are the minimum of the
- * request, the granted profile and server hard limits; zero, negative, non-finite, oversized or
- * inconsistent values are rejected.
+ * Closed, versioned counting contract for an engineering context build. `byte_only.v1`
+ * negotiates exact UTF-8 byte accounting without a token estimate. `exact_tokens.v1` requires an
+ * exact named tokenizer; a service that has not installed it refuses the request rather than
+ * estimating.
+ */
+export type EngineeringCountingMode = string;
+
+/**
+ * The closed `EngineeringCountingMode` vocabulary, emitted from the schema's `enum`.
+ */
+export const ENGINEERING_COUNTING_MODE_VALUES = [
+  "byte_only.v1",
+  "exact_tokens.v1",
+] as const;
+
+/**
+ * Return whether a value is a declared `EngineeringCountingMode`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isEngineeringCountingMode(value: unknown): value is EngineeringCountingMode {
+  return (
+    typeof value === "string" &&
+    (ENGINEERING_COUNTING_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Caller-requested bounded budgets for one engineering context build. Exact-token mode applies
+ * byte and token limits simultaneously, never converting one into the other; byte-only mode
+ * omits the token limit entirely. Effective budgets are the minimum of the request, the server-
+ * owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent
+ * values are rejected.
  */
 export interface EngineeringBudget {
   /**
@@ -1104,10 +1133,10 @@ export interface EngineeringBudget {
 
 /**
  * The complete model-facing rendering of a pack: one canonical UTF-8 string containing section
- * labels, content, authority/applicability warnings and compact citations, counted exactly with
- * the pinned tokenizer. Headers, citation labels, warnings and separators count when they are
- * sent to the model; transport metadata that is not sent is separately byte-capped and lives
- * elsewhere.
+ * labels, content, authority/applicability warnings and compact citations. Legacy v1 reports the
+ * pinned pattern-token count and exact UTF-8 byte count; byte-only v2 reports only the exact
+ * UTF-8 byte count. Headers, citation labels, warnings and separators are part of the measured
+ * string; transport metadata that is not sent lives elsewhere.
  */
 export interface EngineeringRendering {
   /**
@@ -1121,7 +1150,7 @@ export interface EngineeringRendering {
   /**
    * Exact token count of `text` under the pinned supported tokenizer.
    */
-  readonly token_count: number;
+  readonly token_count?: number;
   /**
    * Exact UTF-8 byte count of `text`.
    */
@@ -4125,6 +4154,21 @@ export interface EngineeringPreview {
 }
 
 /**
+ * Exact tokenizer identity and version requested for model-token counting. The pair is replay
+ * input, never a model-family guess or permission to download a tokenizer.
+ */
+export interface EngineeringTokenizerReference {
+  /**
+   * Exact tokenizer identity.
+   */
+  readonly tokenizer_id: Identifier;
+  /**
+   * Exact tokenizer version.
+   */
+  readonly tokenizer_version: Identifier;
+}
+
+/**
  * One section of an engineering context pack, carrying its exact content, its citations, and one
  * explicit knowledge partition. The partition is the integrity contract: candidate assertions
  * never appear under `accepted_knowledge`, and working context is never an instruction or grant.
@@ -4171,7 +4215,7 @@ export interface EngineeringBudgetOutcome {
   /**
    * Tokens actually rendered model-facing.
    */
-  readonly rendered_tokens: number;
+  readonly rendered_tokens?: number;
   /**
    * UTF-8 bytes actually rendered model-facing.
    */
@@ -6908,6 +6952,15 @@ export interface EngineeringContextBuildInput {
    * proven `matched` at every target enter the pack.
    */
   readonly applicability_mode?: EngineeringApplicabilityMode;
+  /**
+   * Optional explicit counting negotiation. Omission preserves the legacy
+   * engineering_context.v1 behavior.
+   */
+  readonly counting_mode?: EngineeringCountingMode;
+  /**
+   * Exact tokenizer requested by exact_tokens.v1. Forbidden for byte_only.v1.
+   */
+  readonly tokenizer?: EngineeringTokenizerReference;
 }
 
 /**
@@ -8456,12 +8509,13 @@ export interface EngineeringExpandResult {
 }
 
 /**
- * The engineering context pack representation (`format_version` `engineering_context.v1`): a
- * non-persisted deterministic view built from a pinned BuildContext and the authorised frontier.
- * `pack_id` equals the canonical artifact checksum computed after removing exactly the root
- * `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token:
- * following any citation requires fresh authorisation, and a previously generated pack may no
- * longer be deliverable after revocation even when its bytes are reproducible.
+ * A non-persisted deterministic engineering context view built from a pinned BuildContext and
+ * the authorised frontier. Legacy `engineering_context.v1` retains the pinned pattern-token
+ * count. Negotiated `engineering_context.v2` carries exact UTF-8 byte accounting and no token
+ * estimate. `pack_id` equals the canonical artifact checksum computed after removing exactly the
+ * root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer
+ * token: following any citation requires fresh authorisation, and a previously generated pack
+ * may no longer be deliverable after revocation even when its bytes are reproducible.
  */
 export interface EngineeringContextPack {
   /**
@@ -10318,7 +10372,9 @@ export const FROZEN_ERROR_CODES = [
   "stale_projection",
   "rate_limited",
   "size_limit_exceeded",
+  "context_budget_insufficient",
   "token_limit_exceeded",
+  "tokenizer_unavailable",
   "deadline_exceeded",
   "cancelled",
   "dependency_unavailable",
@@ -10373,7 +10429,9 @@ export const DEFAULT_RETRY_CLASSIFICATION: Readonly<Record<FrozenErrorCode, Froz
   stale_projection: "retryable_after_delay",
   rate_limited: "retryable_after_delay",
   size_limit_exceeded: "non_retryable",
+  context_budget_insufficient: "non_retryable",
   token_limit_exceeded: "non_retryable",
+  tokenizer_unavailable: "non_retryable",
   deadline_exceeded: "retryable",
   cancelled: "non_retryable",
   dependency_unavailable: "retryable_after_delay",
@@ -12070,6 +12128,7 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "authorization_denied",
       "cancelled",
       "capability_not_granted",
+      "context_budget_insufficient",
       "deadline_exceeded",
       "dependency_unavailable",
       "incompatible_version",
@@ -12082,6 +12141,7 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "size_limit_exceeded",
       "stale_projection",
       "token_limit_exceeded",
+      "tokenizer_unavailable",
       "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
