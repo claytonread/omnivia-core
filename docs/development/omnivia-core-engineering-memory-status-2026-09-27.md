@@ -31,8 +31,12 @@ This branch adds the accepted `engineering.source.capture.commit` operation and 
 0056 captured-source representation. The trusted capture path seals a rich-manifest
 evidence row plus an immutable path-to-digest index, and the commit handler binds that
 seal to one authenticated installation, registered checkout and source stream. The
-installed service now polls registered local checkouts in bounded passes and resumes a
-sealed-but-uncommitted capture after restart. The mutation remains absent from MCP and
+installed service now polls registered local checkouts from the managed service tick,
+independent of request traffic, and resumes a sealed-but-uncommitted capture after
+restart. It fills a linked coverage gap before appending a head and skips a refused
+oldest seal within each bounded batch. Durable scheduling fairness across restarts and
+history-independent pending lookup still need a service-owned work queue, cursor and
+next-eligible index in a later schema change. The mutation remains absent from MCP and
 is available to trusted clients as `engineering capture`.
 
 ## PR-H2 evidence (this change)
@@ -62,7 +66,7 @@ The first 100 000-observation lane failed with `sqlite3.OperationalError: too ma
 
 - Lease expiry and binding-generation fencing are recorded but not enforced (§7.3).
 - Single-principal Personal mode only; no validated organisational isolation (§19.4).
-- Applicability is dependency-qualified against recorded source streams. Core now has a bounded local polling producer and crash recovery, but Platform filesystem notifications and Dev semantic parser/indexer adapters remain external integration work.
+- Applicability is dependency-qualified against recorded source streams. Core has a bounded local polling producer and durable-seal crash recovery. Persisted scheduler fairness and indexed pending lookup need a later schema change; Platform filesystem notifications and Dev semantic parser/indexer adapters remain external integration work.
 - Context packs do not yet emit known-conflict warnings; conflict discovery and governed reconciliation are incomplete release work.
 - Semantic assessment (P2-08) is deliberately not implemented; it waits on the owner gates G-2 (Laya distribution pin) and G-3 (signed-manifest trust anchor).
 - Performance numbers are lane measurements on the development machine that produced them, not qualified release guarantees (§20.2).

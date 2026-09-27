@@ -28,7 +28,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -553,8 +553,13 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     return parse_http_endpoint(endpoint)
 
 
-def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> int:
-    """Hold the workspace until asked to stop, keeping the lease current meanwhile.
+def _serve_until_stopped(
+    runner: ServiceRunner,
+    stopping: threading.Event,
+    *,
+    source_work: Callable[[], object] | None = None,
+) -> int:
+    """Hold the workspace, renew its lease and run bounded source work.
 
     A single indefinite `wait()` never returns to the bytecode loop, so on Windows
     the pending signal set by the console control handler thread is never serviced:
@@ -564,11 +569,11 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
     interrupted (EINTR) and the signal runs immediately -- but polling is harmless
     there too, so one path serves both platforms.
 
-    **That poll is the lease-renewal seam as well as the signal seam, and it is why
-    there is no scheduler here.** Renewal has to run on the thread that opened the
-    exclusive connection, this loop already runs there, and `renew_lease_if_due()`
-    decides for itself whether the interval has elapsed -- so nothing is written on
-    the other 39 ticks out of 40.
+    The poll is also the service-owned source scheduler. ``source_work`` is a bounded,
+    internally rate-limited pass, so it advances sealed or registered checkouts while
+    both transports are idle and under HTTP-only traffic. Git and filesystem work run
+    without the shared SQLite gate; the pass acquires that gate only for short reads,
+    fenced settlement and lease renewal.
 
     A renewal this instance can no longer show succeeded ends the run, through the
     same unwind and the same reverse resource order a signal takes. Nothing keeps
@@ -584,6 +589,18 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
             except Exception:  # noqa: BLE001 - the public message is structural only
                 renewal_failed = True
                 break
+            if source_work is not None:
+                try:
+                    source_work()
+                except Exception:  # noqa: BLE001 - bounded work cannot end serving
+                    # A capture failure is recovered from its durable seal on a later
+                    # pass. Recheck the lease immediately: renewal failures raised
+                    # from inside capture must still make this loop fail closed.
+                    try:
+                        runner.renew_lease_if_due()
+                    except Exception:  # noqa: BLE001 - same structural output below
+                        renewal_failed = True
+                        break
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.
@@ -819,6 +836,8 @@ def main(
         )
         return 2
 
+    source_work: Callable[[], object] | None = None
+
     def serve(started: ServiceRunner) -> None:
         """Start the endpoint, and hand its shutdown to the resource stack.
 
@@ -828,6 +847,7 @@ def main(
         is about to die. The `evidence.search` projection is brought up on that same
         rule and for the same reason -- see the build below.
         """
+        nonlocal source_work
         assert endpoint is not None and started.workspace_id is not None
         assert started.identity is not None
         assert started.connection is not None and started.generation is not None
@@ -908,11 +928,10 @@ def main(
         # through the authoritative live process rather than opening its database.
         # HTTP is deliberately not given either: this slice adds no HTTP behaviour.
         #
-        # The seam service-owned work runs on, and the only one in this process that
-        # holds the connection, identity and current generation without also holding
-        # a caller's transaction open. Imports and conflict discovery enqueue and
-        # answer first; these bounded executors advance them between requests on the
-        # thread that owns the writable connection.
+        # Imports and conflict discovery remain bounded request-adjacent work on the
+        # local-socket thread that owns the writable connection. Source capture is
+        # assigned to the managed service tick below so it advances while idle or
+        # serving HTTP without inheriting a request-held SQLite gate.
         executor = ImportJobExecutor(
             connection=started.connection,
             identity=started.identity,
@@ -933,11 +952,11 @@ def main(
             application=application,
             principal_id=LOCAL_PRINCIPAL,
         )
+        source_work = source_executor.run_pending
 
         def service_work() -> None:
             executor.run_pending()
             conflict_executor.run_pending()
-            source_executor.run_pending()
 
         server = LocalSocketServer(
             router=router,
@@ -1018,7 +1037,7 @@ def main(
     # Reached only by a process that serves. `--check-only` stopped and returned
     # above, so it never enters the loop and never renews a lease it took only to
     # report on.
-    return _serve_until_stopped(runner, stopping)
+    return _serve_until_stopped(runner, stopping, source_work=source_work)
 
 
 if __name__ == "__main__":

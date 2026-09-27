@@ -572,6 +572,8 @@ class _RootIdentityChanged(_SourceChanged):
 
 class _SourceOversized(SourceCaptureRefused):
     """The file is larger than `MAX_SOURCE_BYTES`."""
+
+
 def _identity(name: bytes, directory: int | None) -> tuple[int, int] | None:
     """What `name` is right now, relative to a held directory, without following it."""
     try:
@@ -680,7 +682,10 @@ def read_checkout_file(
 
 
 def _walk_read(
-    root: int, components: tuple[bytes, ...], expected_digest: str | None
+    root: int,
+    components: tuple[bytes, ...],
+    expected_digest: str | None,
+    heartbeat: Callable[[], object] | None = None,
 ) -> CheckoutFile:
     """Read one file below an already-opened, no-follow-verified `root` descriptor.
 
@@ -722,6 +727,8 @@ def _walk_read(
         chunks: list[bytes] = []
         remaining = MAX_SOURCE_BYTES + 1
         while remaining:
+            if heartbeat is not None:
+                heartbeat()
             chunk = os.read(descriptor, min(1024 * 1024, remaining))
             if not chunk:
                 break
@@ -757,6 +764,7 @@ def _read_checkout(
     relative_path: str,
     expected_digest: str | None,
     expected_identity: tuple[int, int] | None = None,
+    heartbeat: Callable[[], object] | None = None,
 ) -> CheckoutFile:
     """The walked read; `expected_digest=None` returns the verified-stable bytes.
 
@@ -779,7 +787,7 @@ def _read_checkout(
     components = tuple(part.encode() for part in relative_path.split("/"))
     root = _open_checkout_root(_root_components(checkout_root), expected_identity)
     try:
-        return _walk_read(root, components, expected_digest)
+        return _walk_read(root, components, expected_digest, heartbeat)
     finally:
         os.close(root)
 
@@ -900,7 +908,11 @@ _GIT_ROOT_EXEC_HELPER: Final = (
 )
 
 
-def _git(root: int, *args: str) -> bytes:
+def _git(
+    root: int,
+    *args: str,
+    heartbeat: Callable[[], object] | None = None,
+) -> bytes:
     """Run one bounded, read-only git query rooted at an open directory descriptor.
 
     `root` must already be opened by a no-follow walk (`_open_checkout_root`); a
@@ -936,10 +948,12 @@ def _git(root: int, *args: str) -> bytes:
     failure = ""
     try:
         while not failure:
+            if heartbeat is not None:
+                heartbeat()
             wait = deadline - time.monotonic()
             if wait <= 0:
                 failure = "git query exceeded its time bound"
-            elif select.select([process.stdout], [], [], wait)[0]:
+            elif select.select([process.stdout], [], [], min(wait, 0.25))[0]:
                 chunk = os.read(process.stdout.fileno(), 65536)
                 if not chunk:
                     break
@@ -960,7 +974,9 @@ def _git(root: int, *args: str) -> bytes:
 
 
 def _enumerate(
-    root: Path, expected_identity: tuple[int, int] | None
+    root: Path,
+    expected_identity: tuple[int, int] | None,
+    heartbeat: Callable[[], object] | None = None,
 ) -> tuple[str, dict[bytes, tuple[str, bool]], tuple[int, int]]:
     """HEAD identity, `{path bytes: (git mode, tracked)}`, and the root's own identity.
 
@@ -981,24 +997,40 @@ def _enumerate(
     try:
         opened = os.fstat(root_fd)
         opened_identity = (opened.st_dev, opened.st_ino)
-        toplevel = _git(root_fd, "rev-parse", "--show-toplevel").rstrip(b"\n")
+        toplevel = _git(
+            root_fd, "rev-parse", "--show-toplevel", heartbeat=heartbeat
+        ).rstrip(b"\n")
         if os.path.realpath(os.fsdecode(toplevel)) != os.path.realpath(root):
             raise SourceCaptureRefused("checkout root is not a repository top level")
         head = _git(
-            root_fd, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"
+            root_fd,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD^{commit}",
+            heartbeat=heartbeat,
         ).strip()
         algorithm = {40: "sha1", 64: "sha256"}.get(len(head))
         if algorithm is None or re.fullmatch(rb"[0-9a-f]+", head) is None:
             raise SourceCaptureRefused("checkout has no verifiable base commit")
         entries: dict[bytes, tuple[str, bool]] = {}
-        for record in _git(root_fd, "ls-files", "-z", "--stage").split(b"\0"):
+        for record in _git(
+            root_fd, "ls-files", "-z", "--stage", heartbeat=heartbeat
+        ).split(b"\0"):
             if not record:
                 continue
             meta, _, path = record.partition(b"\t")
             mode, _oid, stage = meta.split(b" ")
             # An unmerged path (stage != 0) has no single content: recorded as such.
             entries[path] = (mode.decode() if stage == b"0" else "unmerged", True)
-        others = _git(root_fd, "ls-files", "-z", "--others", "--exclude-standard")
+        others = _git(
+            root_fd,
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            heartbeat=heartbeat,
+        )
         for path in others.split(b"\0"):
             if path:
                 entries[path] = ("100644", False)
@@ -1015,6 +1047,7 @@ def _capture_pass(
     root: Path,
     entries: dict[bytes, tuple[str, bool]],
     expected_identity: tuple[int, int],
+    heartbeat: Callable[[], object] | None = None,
 ) -> tuple[list[ManifestFile], list[ManifestOmission], bool]:
     """Read every entry, pinned to the root identity this capture attempt started with.
 
@@ -1041,7 +1074,9 @@ def _capture_pass(
             omissions.append(ManifestOmission(path, reason))
             continue
         try:
-            read = _read_checkout(root, path, None, expected_identity)
+            read = _read_checkout(
+                root, path, None, expected_identity, heartbeat=heartbeat
+            )
         except _SourceChanged:
             stable = False
             omissions.append(ManifestOmission(path, "changed_during_capture"))
@@ -1050,13 +1085,10 @@ def _capture_pass(
             omissions.append(ManifestOmission(path, "oversized"))
             continue
         except SourceCaptureRefused:
-            # A label only: the reader already refused, this decides no capture.
-            try:
-                is_link = stat.S_ISLNK((root / path).lstat().st_mode)
-            except OSError:
-                is_link = False
-            reason = "symlink" if is_link else "missing_or_unsupported"
-            omissions.append(ManifestOmission(path, reason))
+            # The descriptor-relative reader has already refused the path. Do not
+            # classify it with a second pathname lookup: an intermediate directory
+            # may have been replaced by a symlink between those operations.
+            omissions.append(ManifestOmission(path, "missing_or_unsupported"))
             continue
         if total + len(read.content) > MAX_CAPTURE_TOTAL_BYTES:
             omissions.append(ManifestOmission(path, "total_bytes_limit"))
@@ -1076,7 +1108,13 @@ def _capture_pass(
     kept: list[ManifestFile] = []
     for file in files:
         try:
-            _read_checkout(root, file.path, file.digest, expected_identity)
+            _read_checkout(
+                root,
+                file.path,
+                file.digest,
+                expected_identity,
+                heartbeat=heartbeat,
+            )
         except SourceCaptureRefused:
             stable = False
             omissions.append(ManifestOmission(file.path, "changed_during_capture"))
@@ -1085,7 +1123,11 @@ def _capture_pass(
     return kept, omissions, stable
 
 
-def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest:
+def capture_working_tree_manifest(
+    *,
+    checkout_root: Path,
+    heartbeat: Callable[[], object] | None = None,
+) -> WorkingTreeManifest:
     """Capture an explicitly trusted checkout as a `working_tree` over its HEAD commit.
 
     Git is used only to name HEAD and to list tracked and untracked paths, by fixed
@@ -1112,11 +1154,17 @@ def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest
             "this host cannot read a checkout without following links"
         )
     for attempt in range(1, MAX_CAPTURE_ATTEMPTS + 1):
-        head, entries, root_identity = _enumerate(checkout_root, None)
-        files, omissions, stable = _capture_pass(checkout_root, entries, root_identity)
+        head, entries, root_identity = _enumerate(
+            checkout_root, None, heartbeat=heartbeat
+        )
+        files, omissions, stable = _capture_pass(
+            checkout_root, entries, root_identity, heartbeat=heartbeat
+        )
         if stable:
             try:
-                other_head, other_entries, _ = _enumerate(checkout_root, root_identity)
+                other_head, other_entries, _ = _enumerate(
+                    checkout_root, root_identity, heartbeat=heartbeat
+                )
                 stable = (other_head, other_entries) == (head, entries)
             except _SourceChanged:
                 stable = False
@@ -1235,15 +1283,23 @@ def _validate_capture_seal(
         "WHERE workspace_id = ? AND snapshot_id = ?",
         (runner.workspace_id, snapshot_id),
     ).fetchone()
-    if row is None or tuple(map(str, row[:6])) != (
-        repository_id,
-        installation_id,
-        checkout_id,
-        evidence_id,
-        manifest_digest,
-        coverage_digest,
-    ) or int(row[6]) != len(coverage) or str(row[7]) != capture_status:
-        raise SourceCaptureRefused("the existing snapshot has no consistent capture seal")
+    if (
+        row is None
+        or tuple(map(str, row[:6]))
+        != (
+            repository_id,
+            installation_id,
+            checkout_id,
+            evidence_id,
+            manifest_digest,
+            coverage_digest,
+        )
+        or int(row[6]) != len(coverage)
+        or str(row[7]) != capture_status
+    ):
+        raise SourceCaptureRefused(
+            "the existing snapshot has no consistent capture seal"
+        )
     indexed = runner.connection.execute(
         "SELECT path, content_digest, audit_ref "
         "FROM omnivia_engineering_snapshot_files "
@@ -1255,7 +1311,9 @@ def _validate_capture_seal(
         or any(str(audit) != str(row[8]) for _path, _digest, audit in indexed)
         or captured_coverage_digest(coverage) != coverage_digest
     ):
-        raise SourceCaptureRefused("the existing snapshot has no consistent capture index")
+        raise SourceCaptureRefused(
+            "the existing snapshot has no consistent capture index"
+        )
 
 
 def capture_working_tree_snapshot_owned(
@@ -1286,13 +1344,19 @@ def capture_working_tree_snapshot_owned(
         or runner.generation is None
     ):
         raise SourceCaptureRefused("workspace ownership is not active")
-    checkout_id = _require_bound_checkout(
-        runner, repository_id=repository_id, checkout_root=checkout_root
-    )
+    # The live connection is shared by the service loop and both transports. Keep
+    # each database section behind its gate, but release it before Git, file reads,
+    # hashing and blob publication so requests never wait for a checkout scan.
+    with runner.sqlite_gate:
+        checkout_id = _require_bound_checkout(
+            runner, repository_id=repository_id, checkout_root=checkout_root
+        )
     if renew_lease is not None:
         renew_lease()
     frozen = (
-        capture_working_tree_manifest(checkout_root=checkout_root)
+        capture_working_tree_manifest(
+            checkout_root=checkout_root, heartbeat=renew_lease
+        )
         if manifest is None
         else manifest
     )
@@ -1305,23 +1369,29 @@ def capture_working_tree_snapshot_owned(
     coverage = {file.path: file.digest for file in frozen.files}
     coverage_digest = captured_coverage_digest(coverage)
     expected = (repository_id, "working_tree", manifest_digest, capture_status)
-    prior = _existing_identity(runner, snapshot_id)
+    with runner.sqlite_gate:
+        prior = _existing_identity(runner, snapshot_id)
     if prior is not None and prior != expected:
         raise SourceCaptureRefused("snapshot identity already names different content")
 
     blobs = {file.digest: file.content for file in frozen.files}
     blobs[manifest_digest] = manifest_bytes
-    for index, (digest, content) in enumerate(blobs.items()):
-        if renew_lease is not None and index % 32 == 0:
+    for digest, content in blobs.items():
+        if renew_lease is not None:
             renew_lease()
         publish_blob(runner.layout.blobs_path, digest, content)
 
     source_id = f"working-tree-manifest.{snapshot_id}"
-    with fenced_transaction(
-        runner.connection,
-        runner.identity,
-        workspace_id=runner.workspace_id,
-        fencing_generation=runner.generation,
+    if renew_lease is not None:
+        renew_lease()
+    with (
+        runner.sqlite_gate,
+        fenced_transaction(
+            runner.connection,
+            runner.identity,
+            workspace_id=runner.workspace_id,
+            fencing_generation=runner.generation,
+        ),
     ):
         existing = _existing_identity(runner, snapshot_id)
         status = "captured"
@@ -1412,8 +1482,8 @@ def capture_working_tree_snapshot_owned(
                 "INSERT INTO omnivia_engineering_snapshot_captures "
                 "(workspace_id, snapshot_id, repository_id, installation_id, "
                 "checkout_id, manifest_evidence_id, rich_manifest_digest, "
-                "coverage_digest, file_count, capture_status, captured_at_us, audit_ref) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "coverage_digest, file_count, capture_status, captured_at_us, "
+                "audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     runner.workspace_id,
                     snapshot_id,

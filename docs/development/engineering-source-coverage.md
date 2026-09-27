@@ -39,13 +39,28 @@ it as evidence of an empty repository. `capture_status: incomplete` and the rich
 manifest omissions remain authoritative, so incomplete baselines and targets evaluate
 as `unknown`.
 
-The installed local service runs a small bounded polling executor between requests. It
-uses only installation-local registered checkout roots, renews the existing workspace
-lease around capture work, dispatches the accepted application operation, and resumes a
-sealed header that has no event before reading the checkout again. Stable derived
-stream, snapshot and idempotency identities make retries and lost replies converge.
-Its pass result contains counts only and application/capture results contain no local
-path, checkout hint, file list or raw manifest.
+The installed local service runs a small bounded polling executor from its managed
+service tick, independently of local-socket or HTTP requests. It uses only
+installation-local registered checkout roots, renews the existing workspace lease
+during Git, file-read and blob-publication loops, and holds the shared SQLite gate only
+for short reads and fenced settlement. A sealed header that has no event is recovered
+before the checkout is read again. When coverage has a gap, the executor commits only
+the missing snapshot named by the earliest successor's predecessor link; it does not
+append another head. Stable derived stream, snapshot and idempotency identities make
+retries and lost replies converge. Its pass result contains counts only and
+application/capture results contain no local path, checkout hint, file list or raw
+manifest.
+
+Pending seals are inspected in deterministic bounded batches with an in-memory cursor,
+so refused oldest seals do not consume every later pass. The current schema has no
+durable work-queue cursor or pending-capture index, however. Persisted round-robin
+fairness across service restarts and history-independent pending lookup remain a `NEXT`
+schema dependency: a
+service-owned source-capture work queue keyed by workspace, installation and snapshot,
+with checkout/stream identity, pending/retry/settled state, bounded retry timing and a
+durable per-installation cursor, plus indexes for the next eligible item and capture
+identity. No release claim should treat the in-memory checkout cursor as that durable
+guarantee.
 
 The trusted CLI route is `engineering capture`; the operation is deliberately omitted
 from model-facing MCP with reason `mutation`. Platform filesystem notifications remain
