@@ -200,7 +200,9 @@ def test_a_pack_is_built_with_exact_counts_and_a_self_verifying_checksum(
 
         # The rendering counts reconcile against the budget block.
         rendering = pack["rendering"]
-        assert rendering["token_count"] == len(rendering["text"].split())
+        import re
+
+        assert rendering["token_count"] == len(re.findall(r"[^\W_]+|[^\s]", rendering["text"]))
         assert rendering["byte_count"] == len(rendering["text"].encode("utf-8"))
         assert pack["budget"]["rendered_tokens"] == rendering["token_count"]
         assert pack["budget"]["rendered_bytes"] == rendering["byte_count"]
@@ -244,5 +246,25 @@ def test_a_budget_too_small_for_the_minimum_context_is_a_typed_refusal(
                 budget={"model_tokens": 1, "model_bytes": 10},
             )
         assert budget.value.code == ERROR_CODE_TOKEN_LIMIT_EXCEEDED
+    finally:
+        holder.connection.close()
+
+
+def test_service_build_replays_under_a_frozen_frontier_and_differs_by_instant(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    holder = _owned(tmp_path)
+    try:
+        _settle_create(holder, marker="obs-1", content=dict(_CONTENT))
+        now = time.time_ns()
+        monkeypatch.setattr(time, "time_ns", lambda: now)
+        first = _build(holder)["pack"]
+        second = _build(holder)["pack"]
+        assert first["pack_id"] == second["pack_id"]
+        monkeypatch.setattr(time, "time_ns", lambda: now + 5_000)
+        assert _build(holder)["pack"]["pack_id"] != first["pack_id"]
+        assert first["reproducibility"]["tokenizer_id"]
     finally:
         holder.connection.close()
