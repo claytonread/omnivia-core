@@ -157,11 +157,16 @@ from omnivia_core_runtime.storage.engineering_preview import (
     rank_previews,
     read_authorized_previews,
 )
-from omnivia_core_runtime.storage.governed import read_governed_supersessions
+from omnivia_core_runtime.storage.governed import (
+    hydrate_authorized_governed_record_values,
+    read_governed_supersessions,
+)
 from omnivia_core_runtime.storage.memory import (
     IdentifierAllocator,
     random_identifier,
+    read_authorized_memory_frontier,
     read_authorized_memory_snapshot,
+    read_snapshot,
 )
 from omnivia_core_runtime.storage.retrieval import (
     EvidenceLabelGrant,
@@ -216,12 +221,27 @@ _MESSAGE_BUDGET: Final = (
     "the minimum safe engineering context does not fit the effective budget"
 )
 
-#: Server hard budget ceilings (§12.4). Effective budgets are the minimum of the
-#: caller request and these ceilings; both token and byte caps are simultaneous.
+#: Server hard budget ceilings (§12.4). A supplied budget above its ceiling, zero,
+#: negative or non-integer is refused (`invalid_request`) rather than silently
+#: clamped; an absent field resolves to its default.
 BUDGET_CEILING_TOKENS: Final = 16000
 BUDGET_CEILING_BYTES: Final = 65536
+BUDGET_CEILING_HYDRATIONS: Final = 32
+BUDGET_CEILING_EVIDENCE_BYTES: Final = 1048576
 BUDGET_DEFAULT_TOKENS: Final = 4000
 BUDGET_DEFAULT_BYTES: Final = 16384
+BUDGET_DEFAULT_HYDRATIONS: Final = 8
+BUDGET_DEFAULT_EVIDENCE_BYTES: Final = 262144
+_MESSAGE_BUDGET_INVALID: Final = (
+    "the requested budget is not a positive integer at or below its server ceiling"
+)
+#: The pre-hydration size gate (§12.4/§12.5): the whole-workspace admitted
+#: candidate count, before any body is read, is refused as a size limit past
+#: this absolute bound or past the effective hydration cap, whichever is lower.
+CONTEXT_BUILD_CANDIDATE_CAP: Final = 2000
+_MESSAGE_HYDRATION_BOUND: Final = (
+    "the admitted engineering frontier exceeds the effective hydration budget"
+)
 
 _MESSAGE_PRIORITY: Final = (
     "context priority ships contracts first; the preference store lands in a "
@@ -435,6 +455,42 @@ class EngineeringHandlers:
             principal_id=context.principal,
             workspace_id=context.workspace_id,
             granted_workspace="" if granted is None else granted,
+        )
+
+    def _effective_budget(self, budget: Any) -> tuple[int, int, int, int]:
+        """The four effective budget fields, each validated before any read.
+
+        A supplied field must be a positive, non-bool integer at or below its
+        server ceiling; anything else -- zero, negative, non-integer, a bool
+        or one that exceeds its ceiling -- is refused outright, never silently
+        clamped. An absent field resolves to its default.
+        """
+
+        def resolve(value: Any, default: int, ceiling: int) -> int:
+            if value is None:
+                return default
+            if type(value) is not int or value <= 0 or value > ceiling:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_BUDGET_INVALID)
+            return value
+
+        if budget is None:
+            return (
+                BUDGET_DEFAULT_TOKENS,
+                BUDGET_DEFAULT_BYTES,
+                BUDGET_DEFAULT_HYDRATIONS,
+                BUDGET_DEFAULT_EVIDENCE_BYTES,
+            )
+        return (
+            resolve(budget.model_tokens, BUDGET_DEFAULT_TOKENS, BUDGET_CEILING_TOKENS),
+            resolve(budget.model_bytes, BUDGET_DEFAULT_BYTES, BUDGET_CEILING_BYTES),
+            resolve(
+                budget.hydrations, BUDGET_DEFAULT_HYDRATIONS, BUDGET_CEILING_HYDRATIONS
+            ),
+            resolve(
+                budget.evidence_bytes,
+                BUDGET_DEFAULT_EVIDENCE_BYTES,
+                BUDGET_CEILING_EVIDENCE_BYTES,
+            ),
         )
 
     def _authorized_values(
@@ -1429,37 +1485,74 @@ class EngineeringHandlers:
                 if resolved is None:
                     raise _applicability_pending()
                 covered.append(resolved)
+        # The pre-hydration budget gate (§12.4): every supplied budget field is
+        # validated whole -- a positive, non-bool integer at or below its server
+        # ceiling -- before any frontier or body read; an absent field resolves
+        # to its default rather than being clamped.
+        (
+            effective_tokens,
+            effective_bytes,
+            effective_hydrations,
+            effective_evidence_bytes,
+        ) = self._effective_budget(request.budget)
         resolved_at_us = time.time_ns() // 1000
-
-        effective_tokens = (
-            BUDGET_DEFAULT_TOKENS
-            if request.budget is None or request.budget.model_tokens is None
-            else min(request.budget.model_tokens, BUDGET_CEILING_TOKENS)
-        )
-        effective_bytes = (
-            BUDGET_DEFAULT_BYTES
-            if request.budget is None or request.budget.model_bytes is None
-            else min(request.budget.model_bytes, BUDGET_CEILING_BYTES)
-        )
 
         normalized = " ".join(request.query.lower().split())
 
         # The authorised frontier: accepted observations matching the query,
         # plus (for the investigate profile, which explicitly requests them)
-        # proposed candidates under the candidate_findings partition.
+        # proposed candidates under the candidate_findings partition. One
+        # outer snapshot: every view's body-free frontier and the hydration
+        # that follows it read the same frozen frontier and resolution
+        # instant, and the size gate below runs before any of it hydrates a
+        # body.
         views = ("current_canonical",) + (
             ("candidates",) if request.profile == "investigate" else ()
         )
-        values: tuple[Any, ...] = ()
-        for governed_view in views:
-            # Both modes hydrate only versions the effective caller's evidence
-            # grant admits, so a denied version is never selected, cited or
-            # counted as an omission.
-            values += self._authorized_values(
+        with read_snapshot(connection):
+            frontiers = [
+                read_authorized_memory_frontier(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    resolution_instant_us=resolved_at_us,
+                    view=governed_view,
+                    label_grant=self._label_grant(context),
+                    domain_scope=OBSERVATION_DOMAIN,
+                    body_free=True,
+                )
+                for governed_view in views
+            ]
+            total_admitted = sum(len(frontier.versions) for frontier in frontiers)
+            if (
+                total_admitted > CONTEXT_BUILD_CANDIDATE_CAP
+                or total_admitted > effective_hydrations
+            ):
+                raise application_refusal(
+                    ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_HYDRATION_BOUND
+                )
+            assembly_ids = tuple(
+                version.assembly_id
+                for frontier in frontiers
+                for version in frontier.versions
+            )
+            support_assembly_ids = tuple(
+                sorted(
+                    {
+                        support_id
+                        for frontier in frontiers
+                        for support_id in frontier.support_assembly_ids
+                    }
+                )
+            )
+            # Only these ACL-authorized, engineering-domain assembly ids are
+            # hydrated, inside this same snapshot: a denied or off-domain
+            # version is never selected, cited or counted as an omission.
+            values = hydrate_authorized_governed_record_values(
                 connection,
-                context,
+                workspace_id=context.workspace_id,
                 resolution_instant_us=resolved_at_us,
-                view=governed_view,
+                assembly_ids=assembly_ids,
+                support_assembly_ids=support_assembly_ids,
             )
         # Each record keeps its own partition: a candidate never renders under
         # `accepted_knowledge`, whatever else the frontier holds.
@@ -1570,6 +1663,9 @@ class EngineeringHandlers:
             effective_bytes=effective_bytes,
             projection_version=PROJECTION_VERSION,
             applicability_evaluator=EVALUATOR_VERSION,
+            effective_hydrations=effective_hydrations,
+            effective_evidence_bytes=effective_evidence_bytes,
+            hydrations=len(values),
         )
         try:
             pack = build_pack(

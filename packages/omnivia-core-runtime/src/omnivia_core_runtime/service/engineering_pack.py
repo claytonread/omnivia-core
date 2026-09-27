@@ -62,6 +62,9 @@ class BuildContext:
     effective_bytes: int
     projection_version: int
     applicability_evaluator: str
+    effective_hydrations: int = 8
+    effective_evidence_bytes: int = 262144
+    hydrations: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,11 +193,13 @@ def build_pack(
         "effective": {
             "model_tokens": ctx.effective_tokens,
             "model_bytes": ctx.effective_bytes,
+            "hydrations": ctx.effective_hydrations,
+            "evidence_bytes": ctx.effective_evidence_bytes,
         },
         "rendered_tokens": token_count,
         "rendered_bytes": byte_count,
         "source_bytes_read": 0,
-        "hydrations": 0,
+        "hydrations": ctx.hydrations,
     }
     if ctx.requested_budget is not None:
         budget["requested"] = dict(ctx.requested_budget)
