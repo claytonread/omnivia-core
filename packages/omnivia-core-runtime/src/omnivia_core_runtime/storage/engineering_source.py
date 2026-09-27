@@ -617,6 +617,56 @@ def covered_snapshot(
     )
 
 
+@dataclass(frozen=True)
+class SequencedEvent:
+    """One stream's exact recorded event, by its own sequence, with its snapshot body."""
+
+    stream_id: str
+    sequence: int
+    snapshot_id: str
+    capture_status: str
+    manifest: Mapping[str, str]
+    audit_ref: str
+
+
+def sequenced_event(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    stream_id: str,
+    sequence: int,
+) -> SequencedEvent | None:
+    """One stream's recorded event and its snapshot body, addressed by sequence.
+
+    None when no event of this stream holds this sequence. Unlike
+    `covered_snapshot`, the sequence need not lie inside the coverage barrier:
+    the invalidation worker walks sequences it has already proven covered
+    itself, one at a time, so re-deriving that here would only repeat a check
+    the caller already made. A read; it writes nothing.
+    """
+    row = connection.execute(
+        "SELECT e.snapshot_id, e.manifest_json, e.manifest_digest, e.audit_ref, "
+        "sn.capture_status "
+        "FROM omnivia_engineering_source_events e "
+        "JOIN omnivia_engineering_snapshots sn "
+        "ON sn.workspace_id = e.workspace_id AND sn.snapshot_id = e.snapshot_id "
+        "WHERE e.workspace_id = ? AND e.stream_id = ? AND e.sequence = ?",
+        (workspace_id, stream_id, sequence),
+    ).fetchone()
+    if row is None:
+        return None
+    if content_digest(str(row[1])) != str(row[2]):
+        return None
+    return SequencedEvent(
+        stream_id=stream_id,
+        sequence=sequence,
+        snapshot_id=str(row[0]),
+        capture_status=str(row[4]),
+        manifest=json.loads(str(row[1])),
+        audit_ref=str(row[3]),
+    )
+
+
 def parse_dependency_manifest(raw: object) -> DependencyManifest:
     """Validate one `dependency_manifest` content profile; never drop a dependency."""
     value = _plain(raw)

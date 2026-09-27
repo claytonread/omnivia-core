@@ -19,6 +19,7 @@ from omnivia_core.contracts.v1 import ServiceEndpointDescriptor, ServiceProcessE
 from omnivia_core.workspace.compatibility import evaluate_compatibility
 from omnivia_core_runtime.ownership.discovery import compare_and_clean, publish
 from omnivia_core_runtime.ownership.fencing import (
+    StaleGeneration,
     assert_guards_intact,
     close_guard,
     fenced_transaction,
@@ -67,6 +68,7 @@ from omnivia_core_runtime.service.versions import (
     workspace_contract_version,
 )
 from omnivia_core_runtime.service.workflow_runtime import workflow_runtime_scheduler
+from omnivia_core_runtime.storage import engineering_invalidation
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
@@ -603,6 +605,28 @@ class ServiceRunner:
                 "WHERE m.job_id = omnivia_durable_jobs.job_id)",
                 (self.generation,),
             )
+
+        # Engineering source invalidation (migration 0054): a stream left mid-event
+        # or simply behind when the previous instance stopped resumes from its own
+        # durable watermark, exactly as the job sweep above resumes from durable
+        # job state. Best-effort and never a readiness precondition -- `current_safe`
+        # proves every version directly on each read and never consults this
+        # worker's output, so catching up slowly costs staleness of the
+        # `diagnostic`-mode assessment history, never correctness.
+        try:
+            for stream_id in engineering_invalidation.pending_streams(
+                connection, workspace_id=self.workspace_id
+            ):
+                engineering_invalidation.drain_invalidation(
+                    connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    stream_id=stream_id,
+                    fencing_generation=self.generation,
+                    now_us=now_us,
+                )
+        except Exception:  # noqa: BLE001,S110 - best-effort catch-up, not a readiness gate
+            pass
         return True
 
     # --- keeping the lease current -------------------------------------------
@@ -646,6 +670,72 @@ class ServiceRunner:
             raise
         self._lease_renewed_at = now
         return True
+
+    def drain_pending_invalidation(self) -> None:
+        """One bounded engineering-invalidation step for every stream that lags.
+
+        Called from the same main serve loop poll as `renew_lease_if_due` --
+        the only scheduler seam this service has (see `main._serve_until_stopped`).
+        Startup recovery (`_recover`) and the live per-record trigger
+        (`EngineeringHandlers._drain_invalidation`) each drain a stream once, up
+        to `DRAIN_STEP_LIMIT` bounded steps; neither runs again on its own, so a
+        backlog beyond either bound would otherwise sit forever in an
+        otherwise-idle service. One `advance_invalidation` step per pending
+        stream keeps this poll itself bounded exactly as `advance_invalidation`
+        already bounds one step's own work, and the tick repeats every 250ms
+        while the service is up, so a backlog of any size eventually converges
+        without another source write or a restart.
+
+        Best-effort, like the other two call sites: this worker's assessment
+        history is diagnostic-only bookkeeping that `current_safe` never reads
+        -- it proves every version directly, from its own guarded evaluator, on
+        every read -- so a failure here costs staleness of that history, never
+        correctness, and is never folded into readiness. It is still surfaced
+        rather than silently absorbed, so a persistent failure is diagnosable
+        from the service's own output instead of only from a growing backlog.
+        One stream's failure does not block another's turn this tick; a stale
+        fencing generation stops the whole pass at once, since every remaining
+        stream would refuse identically and the loop's own lease check is what
+        decides whether this instance keeps serving at all.
+        """
+        if self.connection is None or self.identity is None or self.generation is None:
+            return
+        if self.workspace_id is None:  # pragma: no cover - set before the connection is
+            return
+        import sys as _s
+
+        now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
+        try:
+            streams = engineering_invalidation.pending_streams(
+                self.connection, workspace_id=self.workspace_id
+            )
+        except Exception as error:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+            print(
+                f"INVALIDATION_TICK_ERROR: pending_streams {type(error).__name__}: {error}",
+                file=_s.stderr,
+            )
+            return
+        for stream_id in streams:
+            try:
+                engineering_invalidation.advance_invalidation(
+                    self.connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    stream_id=stream_id,
+                    fencing_generation=self.generation,
+                    now_us=now_us,
+                )
+            except StaleGeneration:
+                # This instance's authority is gone; every remaining stream
+                # would refuse identically, and the poll's own lease check
+                # (run just before this, every tick) is what stops serving.
+                break
+            except Exception as error:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+                print(
+                    f"INVALIDATION_TICK_ERROR: stream={stream_id!r} "
+                    f"{type(error).__name__}: {error}",
+                    file=_s.stderr,
+                )
 
     # --- shutdown ------------------------------------------------------------
 

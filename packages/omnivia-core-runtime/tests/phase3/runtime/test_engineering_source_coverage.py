@@ -474,8 +474,25 @@ def test_the_source_coverage_vertical_through_the_production_surface(
     assert safe["applicability"][0]["status"] == "matched"
     assert safe["normalized_request"]["applicability_mode"] == "current_safe"
     assert safe["reproducibility"]["source_coverage"][0]["sequence"] == 4
-    # Reads never wrote an assessment or touched source history.
-    assert workspace.counts()["omnivia_engineering_assessments"] == 0
+    # Reads write nothing: every stored assessment is the invalidation worker's
+    # own durable output (migration 0054), one per covered event that actually
+    # changed a required dependency of this record -- esnap-b turning the
+    # required auth.py stale, esnap-c's revert clearing it again. Not esnap-a1
+    # (identical digests to esnap-a, so nothing changed) and not esnap-a
+    # itself (recorded before the observation, and its own baseline, existed).
+    assessments = [
+        tuple(row)
+        for row in workspace.holder.connection.execute(
+            "SELECT target_snapshot_id, status, basis FROM omnivia_engineering_assessments "
+            "WHERE record_id = ? ORDER BY assessed_at_us",
+            (record["record_id"],),
+        ).fetchall()
+    ]
+    assert assessments == [
+        ("esnap-b", "potentially_stale", "deterministic"),
+        ("esnap-c", "matched", "deterministic"),
+    ]
+    assert workspace.counts()["omnivia_engineering_assessments"] == len(assessments)
 
 
 # --- grants ---------------------------------------------------------------------
