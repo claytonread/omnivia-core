@@ -206,7 +206,7 @@ def _derive_policy(entries: tuple[tuple[str, str], ...]) -> tuple[McpGrant, ...]
 #: `INSTALLATION_ADMINISTRATOR_ROLE`, which administers this catalogue.
 _AUTHORING_ROLE: Final = McpGrant(McpGrantKind.ROLE, WORKSPACE_CONTRIBUTOR_ROLE)
 
-#: The restricted grant: exactly the manifest's restricted ten and what they
+#: The restricted grant: exactly the manifest's restricted fourteen and what they
 #: need. `decision.evaluate` is a mutation the restricted manifest admits, and
 #: the mutation coordinator serves it under the one workspace-contributor role,
 #: so the restricted principal holds that role -- and nothing else.

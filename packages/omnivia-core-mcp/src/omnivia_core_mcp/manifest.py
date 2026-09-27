@@ -439,7 +439,7 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
     ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then the five.
+#: The `authoring` profile: the restricted surface, in its order, then six additions.
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
