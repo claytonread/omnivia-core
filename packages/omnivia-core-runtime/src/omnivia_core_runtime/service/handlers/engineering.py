@@ -1,11 +1,11 @@
 """The `engineering.*` handlers (SPEC-CORE-ENGMEM-001, plans PR-D/PR-F).
 
-All ten engineering-memory operations are durable here and in
+All eleven engineering-memory operations are durable here and in
 `handlers.continuity`: the continuity vertical (register/append/close/handoff),
 the retrieval reads (search/expand) served from the governed record store, the
 supersession edge table and the continuity checkpoint index, the non-persisted
-context pack builder, the priority writes, the review attestations and the
-trusted source record.
+context pack builder, the priority writes, the review attestations, the
+trusted source record and the repository/checkout registration surface.
 
 The pack builder (§12) is a non-persisting read: one frozen frontier, one
 resolution instant, exact budget reconciliation with mandatory notices rendered
@@ -68,6 +68,12 @@ Retrieval security shape, inherited from the knowledge family and the plan:
 `engineering.source.record` is the trusted source producer's write: it records
 one immutable source event under its own `engineering:source` grant through the
 same fenced, audited, idempotent mutation seam as every other write here.
+
+`engineering.repository.register` is the ratified production registration path
+(spec §16.3) onto `storage.repository_identity`: an explicitly authorized local
+operator's own write, under its own `engineering:repository` grant, binding one
+exact installation-local checkout to one logical repository identity through
+that same fenced, audited, idempotent seam.
 """
 
 from __future__ import annotations
@@ -97,15 +103,19 @@ from omnivia_core.contracts.v1 import (
     ContractSemanticError,
     EngineeringContextBuildInput,
     EngineeringExpandInput,
+    EngineeringRepositoryRegisterInput,
+    EngineeringRepositoryRegisterResult,
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
     EngineeringSourceRecordInput,
     EngineeringSourceRecordResult,
     idempotency_equivalence,
+    is_identifier,
     to_canonical_json,
 )
 from omnivia_core_runtime.ownership.identity import Clock, SystemClock
+from omnivia_core_runtime.service import source_capture
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     ServiceBinding,
@@ -137,6 +147,7 @@ from omnivia_core_runtime.service.pagination import (
 from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import engineering_source as source_storage
+from omnivia_core_runtime.storage import repository_identity
 from omnivia_core_runtime.storage.engineering_preview import (
     PREVIEW_MAX_CODEPOINTS,
     PROJECTION_VERSION,
@@ -249,6 +260,20 @@ _MESSAGE_SOURCE_CONFLICT: Final = (
     "the source record conflicts with an immutable source identity or binding"
 )
 _MESSAGE_SOURCE_FOREIGN: Final = "the source stream is owned by another principal"
+_MESSAGE_REPOSITORY_INVALID: Final = (
+    "the repository registration request is outside its bounded, validated shape"
+)
+_MESSAGE_REPOSITORY_CONFLICT: Final = (
+    "the repository id is already registered with different identity metadata"
+)
+#: `EngineeringRepositoryRegisterInput` declares `unevaluatedProperties: false` and its
+#: own docstring says unknown keys are refused, but the generated `from_wire` ignores
+#: any it doesn't recognise (so a newer peer's additive minor release still decodes) --
+#: so the raw payload's keys are checked against this set directly, before decoding
+#: proceeds, rather than trusting the decoder to reject them.
+_REPOSITORY_REGISTER_KEYS: Final[frozenset[str]] = frozenset(
+    {"repository_id", "display_name", "provider_hint", "checkout_root"}
+)
 
 
 def _applicability_pending() -> OperationError:
@@ -580,6 +605,10 @@ class EngineeringHandlers:
         except source_storage.SourceConflict as error:
             raise application_refusal(
                 ERROR_CODE_CONFLICT, _MESSAGE_SOURCE_CONFLICT
+            ) from error
+        except repository_identity.RepositoryIdentityConflict as error:
+            raise application_refusal(
+                ERROR_CODE_CONFLICT, _MESSAGE_REPOSITORY_CONFLICT
             ) from error
         except source_storage.SourceWindowExceeded as error:
             raise application_refusal(
@@ -1081,6 +1110,143 @@ class EngineeringHandlers:
         def valid_result(wire: Mapping[str, Any]) -> bool:
             try:
                 EngineeringSourceRecordResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, guard, equivalence, mutate, valid_result
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
+    # --- engineering.repository.register --------------------------------------------
+
+    def engineering_repository_register(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Bind one exact, installation-local checkout to one logical repository.
+
+        An explicitly authorized local operator's own act, reached only through the
+        accepted local client/CLI and never over the model-facing catalogue: the
+        workspace comes from the authorised context and the installation from this
+        service instance's own trusted identity, and neither can be named by the
+        payload. `repository_id` is the caller's stable identity, never derived from
+        `display_name` or from anything the checkout itself asserts, and
+        `checkout_root` is validated as a real, non-symlinked, absolute local
+        directory before anything is read from storage or written to it. Repeating
+        an identical registration is idempotent; naming an already-registered
+        repository id under different metadata is refused as a conflict; and
+        re-registering an already-bound path under a different repository is an
+        audited rebind (`checkout_disposition: "rebound"`), never a silent one.
+
+        The contract's decoder tolerates and drops unknown fields (so a newer peer's
+        additive minor release still decodes), but the schema itself refuses them, so
+        the raw payload's keys are checked against the declared set before anything
+        else: an unrecognised key -- `workspace_id`, `installation_id` or any other --
+        is refused as invalid, never silently ignored.
+        """
+        if (
+            not isinstance(context.request.input, Mapping)
+            or not set(context.request.input) <= _REPOSITORY_REGISTER_KEYS
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_REPOSITORY_INVALID)
+        try:
+            request = EngineeringRepositoryRegisterInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        if (
+            not is_identifier(request.repository_id)
+            or not 1 <= len(request.display_name) <= 256
+            or "\x00" in request.display_name
+            or (
+                request.provider_hint is not None
+                and (
+                    not 1 <= len(request.provider_hint) <= 256
+                    or "\x00" in request.provider_hint
+                )
+            )
+            or not source_capture.is_trusted_local_checkout_root(request.checkout_root)
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_REPOSITORY_INVALID)
+
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import (
+            read_guard as _read_guard,
+        )
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        if identity is None or guard is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        # Trusted service state, never the payload: the same source
+        # `_require_bound_checkout` reads before a snapshot capture is served.
+        installation_id = identity.installation_id
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            # Read before write, so the disposition reports what was true before this
+            # delivery, not what this delivery just made true.
+            existing_repository = fenced.execute(
+                "SELECT display_name, provider_hint FROM omnivia_engineering_repositories "
+                "WHERE workspace_id = ? AND repository_id = ?",
+                (context.workspace_id, request.repository_id),
+            ).fetchone()
+            repository_disposition = (
+                "already_registered" if existing_repository is not None else "registered"
+            )
+            repository_identity.register_repository(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                repository_id=request.repository_id,
+                display_name=request.display_name,
+                provider_hint=request.provider_hint,
+                registered_at_us=settlement.settled_at_us,
+            )
+            existing_checkout = fenced.execute(
+                "SELECT checkout_id, repository_id FROM omnivia_engineering_checkouts "
+                "WHERE workspace_id = ? AND installation_id = ? AND checkout_hint = ?",
+                (context.workspace_id, installation_id, request.checkout_root),
+            ).fetchone()
+            if existing_checkout is None:
+                checkout_id = self.allocate_identifier("erc")
+                checkout_disposition = "bound"
+            else:
+                checkout_id = str(existing_checkout[0])
+                checkout_disposition = (
+                    "already_bound"
+                    if existing_checkout[1] == request.repository_id
+                    else "rebound"
+                )
+            repository_identity.register_checkout(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                checkout_id=checkout_id,
+                repository_id=request.repository_id,
+                installation_id=installation_id,
+                checkout_hint=request.checkout_root,
+                registered_at_us=settlement.settled_at_us,
+            )
+            return {
+                "repository_id": request.repository_id,
+                "checkout_id": checkout_id,
+                "repository_disposition": repository_disposition,
+                "checkout_disposition": checkout_disposition,
+                "audit_reference": settlement.audit_ref,
+            }
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringRepositoryRegisterResult.from_wire(wire)
             except (ContractDecodeError, ContractSemanticError):
                 return False
             return True

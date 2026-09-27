@@ -873,11 +873,12 @@ def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
 ) -> ApplicationOperationRegistry:
-    """The ten engineering-memory operations, one registry, catalogue-complete.
+    """The eleven engineering-memory operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
-    plan's PR-B producer; retrieval, the pack builder, priorities, reviews and
-    the trusted source record are served by `EngineeringHandlers`.
+    plan's PR-B producer; retrieval, the pack builder, priorities, reviews, the
+    trusted source record and repository/checkout registration are served by
+    `EngineeringHandlers`.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
@@ -917,6 +918,10 @@ def build_engineering_registry(
         "engineering.source.record",
         cast(OperationHandler, refusals.engineering_source_record),
     )
+    registry.register(
+        "engineering.repository.register",
+        cast(OperationHandler, refusals.engineering_repository_register),
+    )
     return registry
 
 
@@ -931,7 +936,7 @@ def build_engineering_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the ten-operation S-engineering family around the existing router."""
+    """Compose the eleven-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,

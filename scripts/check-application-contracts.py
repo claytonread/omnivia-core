@@ -1272,6 +1272,11 @@ _ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 _ENG_SOURCE_MUT: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
 )
+#: `engineering.repository.register` binds an exact local checkout to a repository
+#: identity: re-registering the same identity with different metadata is a
+#: `conflict`, but there is no bounded manifest here, so `size_limit_exceeded` does
+#: not apply the way it does to `engineering.source.record`.
+_ENG_REPOSITORY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
@@ -1309,6 +1314,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
     "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
     "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
+    "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1569,6 +1575,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "engineering.source.record": FrozenOperation(
         "workspace", ("engineering:source",), "create", "engineering.source",
         "engineering", "EngineeringSourceRecord", "ENG_SOURCE_MUT", False,
+    ),
+    # An explicitly authorized local operator's own grant: distinct from
+    # `engineering:write` and `engineering:source`, so neither a contributed
+    # observation nor a trusted source stream carries the authority to bind a
+    # local checkout to a repository identity.
+    "engineering.repository.register": FrozenOperation(
+        "workspace", ("engineering:repository",), "create", "engineering.repository",
+        "engineering", "EngineeringRepositoryRegister", "ENG_REPOSITORY_MUT", False,
     ),
 }
 
