@@ -1077,10 +1077,8 @@ def _result(module: ModuleType, name: str) -> object:
 def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
     """A complete, accepted session observation, before any mutation.
 
-    `names` are the six data-bearing reads; the four decision tools are always
-    appended, answering exactly what a default (capability-off) session answers:
-    the two passive projections succeed with structured content, and the other
-    two refuse with exactly their typed error codes.
+    `names` are the six data-bearing reads; the eight decision and engineering
+    tools are appended with their expected success or typed-refusal outcomes.
     """
     called = {
         name: {
@@ -1550,7 +1548,7 @@ def test_a_host_manifest_that_differs_from_the_others_fails_closed(
     assert str(excinfo.value) == "the advertised tool manifest differed between hosts"
 
 
-def test_a_manifest_that_is_not_the_accepted_ten_tools_fails_closed(
+def test_a_manifest_that_is_not_the_accepted_fourteen_tools_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _module()

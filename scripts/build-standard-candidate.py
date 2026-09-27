@@ -71,8 +71,8 @@ HOST_TOOLS: Final = [
     "memory_search",
     "workspace_inspect",
 ]
-#: The reads the journey counts populated results for; the eight decision and engineering tools
-#: are stubs and are refused, not answered.
+#: The six reads for which the journey requires populated results. The other
+#: eight tools have separately checked success or typed-refusal outcomes.
 HOST_READ_TOOLS: Final = [
     "context_pack_build",
     "evidence_search",
@@ -86,7 +86,7 @@ HOST_READ_TOOLS: Final = [
 HOST_EVIDENCE: Final = {
     "connected": True,
     "session_completed": True,
-    "tool_count": 10,
+    "tool_count": 14,
     "tool_calls": 6,
     "verdict": "pass",
 }

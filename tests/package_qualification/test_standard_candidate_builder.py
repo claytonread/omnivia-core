@@ -393,7 +393,7 @@ def _accepted_result() -> dict[str, object]:
                     "config_format": config_format,
                     "connected": True,
                     "session_completed": True,
-                    "tool_count": 10,
+                    "tool_count": 14,
                     "tool_calls": 6,
                     "tools": list(_TOOLS),
                     "result_counts": dict.fromkeys(
@@ -593,7 +593,7 @@ def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> No
     assert module.HOST_EVIDENCE == {
         "connected": True,
         "session_completed": True,
-        "tool_count": 10,
+        "tool_count": 14,
         "tool_calls": 6,
         "verdict": "pass",
     }
