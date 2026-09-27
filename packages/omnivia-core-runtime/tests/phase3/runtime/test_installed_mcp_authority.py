@@ -183,7 +183,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
     assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
-def test_authoring_policy_is_the_read_surface_plus_exactly_the_six() -> None:
+def test_authoring_policy_is_the_read_surface_plus_exactly_five() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
     # R004 section 9.1's "workspace contributor authority sufficient for
@@ -197,19 +197,16 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_the_six() -> None:
         "memory.create",
         "evidence.capture",
         "import.start",
-        "continuity.checkpoint.append",
         "job.get",
         "job.events",
     }
     assert kinds(added, McpGrantKind.SCOPE) == {
         "memory:write",
-        "engineering:write",
         "job:read",
     }
     assert kinds(added, McpGrantKind.PURPOSE) == {
         "memory_authoring",
         "content_ingestion",
-        "continuity_checkpoint",
         "job_observation",
     }
     assert {
@@ -220,7 +217,6 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_the_six() -> None:
         ("memory.write", "1.0"),
         ("evidence.write", "1.0"),
         ("ingestion.import", "1.0"),
-        ("engineering.write", "1.0"),
         ("job.read", "1.0"),
     }
 

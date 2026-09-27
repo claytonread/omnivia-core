@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC
@@ -160,6 +161,11 @@ class ServiceRunner:
         self.lifecycle = ServiceLifecycle()
         self.identity: ServiceInstanceIdentity | None = None
         self.connection: sqlite3.Connection | None = None
+        #: Serializes every use of `connection` across the threads that touch it --
+        #: the serving thread and this thread's own lease renewal -- so SQLite's
+        #: connection-global mutex is never held by one while the other waits on
+        #: the GIL inside it.
+        self.sqlite_gate: threading.RLock = threading.RLock()
         self.generation: int | None = None
         self.workspace_id: str | None = None
         self.workspace_format_ordinal: str | None = None
@@ -634,16 +640,34 @@ class ServiceRunner:
         age = now - self._lease_renewed_at
         if age < LEASE_RENEWAL_INTERVAL_SECONDS:
             return False
+        deadline = self._lease_renewed_at + LEASE_RENEWAL_DEADLINE_SECONDS
+        remaining = deadline - now
+        if remaining <= 0:
+            raise RuntimeError("the lease renewal deadline has passed")
+        if not self.sqlite_gate.acquire(timeout=max(remaining, 0)):
+            raise RuntimeError(
+                "could not acquire the sqlite gate before the lease renewal deadline"
+            )
         try:
-            heartbeat(self.connection, self.identity, clock=self.clock)
-        except LeaseHeld:
-            raise
-        except Exception:
-            if age < LEASE_RENEWAL_DEADLINE_SECONDS:
-                # Retried on the next 250ms tick, not swallowed: `age` keeps growing
-                # from the last heartbeat this instance actually wrote.
-                return False
-            raise
+            if self.clock.monotonic() >= deadline:
+                raise RuntimeError("the lease renewal deadline has passed")
+            heartbeat_missed_deadline = False
+            try:
+                heartbeat(self.connection, self.identity, clock=self.clock)
+            except LeaseHeld:
+                raise
+            except Exception:  # noqa: BLE001 -- retry transient heartbeat failures
+                if self.clock.monotonic() < deadline:
+                    # Retry on the next 250ms tick. Read the clock again here:
+                    # heartbeat itself may have consumed the remaining margin.
+                    return False
+                heartbeat_missed_deadline = True
+            if heartbeat_missed_deadline:
+                raise RuntimeError("the lease renewal deadline has passed")
+            if self.clock.monotonic() >= deadline:
+                raise RuntimeError("the lease renewal deadline has passed")
+        finally:
+            self.sqlite_gate.release()
         self._lease_renewed_at = now
         return True
 
@@ -670,10 +694,19 @@ class ServiceRunner:
         return self.lifecycle.transition_to(ServiceState.DRAINING)
 
     def stop(self) -> StartupReport:
-        """Release everything in reverse acquisition order."""
+        """Release everything in reverse acquisition order.
+
+        A blocked release leaves resources held: `lifecycle.resources.names` is
+        non-empty afterward, and the reason says `"shutdown incomplete"` rather
+        than `"stopped"` so a caller does not believe the workspace was let go
+        of while a resource beneath the blocked one -- the storage lock, the
+        exclusive connection -- is still acquired. A later call to `stop()`
+        retries the same unwind.
+        """
         if self.lifecycle.state.advertises_writable:
             self.lifecycle.transition_to(ServiceState.DRAINING)
         released = self.lifecycle.stop()
+        incomplete = bool(self.lifecycle.resources.names)
         return StartupReport(
             ready=False,
             state=self.lifecycle.state.value,
@@ -683,7 +716,7 @@ class ServiceRunner:
                 None if self.identity is None else self.identity.service_instance_id
             ),
             unmet=(),
-            reason="stopped",
+            reason="shutdown incomplete" if incomplete else "stopped",
             released=tuple(released),
         )
 
