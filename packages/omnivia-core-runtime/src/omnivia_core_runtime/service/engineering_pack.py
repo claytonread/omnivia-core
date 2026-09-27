@@ -69,7 +69,7 @@ class PackRecord:
     """One authorised record already reduced to what the pack may render."""
 
     record_id: str
-    version: int
+    version: str
     partition: str
     title: str
     body: str
@@ -151,9 +151,6 @@ def build_pack(
     # never invalidate the checksum already computed over this pack.
     uncertainties = list(uncertainties)
     omissions = [dict(o) for o in omissions]
-    mandatory_text = _render(
-        notice, [s for s in sections if s["partition"] not in DROP_ORDER], labels
-    )
     while True:
         text = _render(notice, sections, labels)
         token_count = _token_count(text)
@@ -189,6 +186,19 @@ def build_pack(
     # sections (every candidate dropped for budget, or none selected) makes
     # no applicability claim.
     status = "matched" if ctx.source_coverage and citations else "not_evaluated"
+    budget: dict[str, Any] = {
+        "effective": {
+            "model_tokens": ctx.effective_tokens,
+            "model_bytes": ctx.effective_bytes,
+        },
+        "rendered_tokens": token_count,
+        "rendered_bytes": byte_count,
+        "source_bytes_read": 0,
+        "hydrations": 0,
+    }
+    if ctx.requested_budget is not None:
+        budget["requested"] = dict(ctx.requested_budget)
+
     pack: dict[str, Any] = {
         "format_version": "engineering_context.v1",
         "normalized_request": normalized_request,
@@ -205,21 +215,7 @@ def build_pack(
             "token_count": token_count,
             "byte_count": byte_count,
         },
-        "budget": {
-            "requested": None
-            if ctx.requested_budget is None
-            else dict(ctx.requested_budget),
-            "effective": {
-                "model_tokens": ctx.effective_tokens,
-                "model_bytes": ctx.effective_bytes,
-            },
-            "rendered_tokens": token_count,
-            "rendered_bytes": byte_count,
-            "mandatory_tokens": _token_count(mandatory_text),
-            "mandatory_bytes": len(mandatory_text.encode("utf-8")),
-            "source_bytes_read": 0,
-            "hydrations": 0,
-        },
+        "budget": budget,
         "applicability": [{"snapshot": dict(t), "status": status} for t in ctx.targets],
         "authorization_context": {
             "workspace_id": ctx.workspace_id,

@@ -6,9 +6,11 @@ import dataclasses
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 from omnivia_core_runtime.service.engineering_pack import (
     BuildContext,
     MandatoryContextTooLarge,
@@ -20,6 +22,7 @@ from omnivia_core_runtime.storage.context_pack import (
     CONTEXT_PACK_TOKENIZER_ID,
     CONTEXT_PACK_TOKENIZER_VERSION,
 )
+from referencing import Registry, Resource
 
 from omnivia_core.contracts.v1 import to_canonical_json
 
@@ -41,9 +44,9 @@ CTX = BuildContext(
     applicability_evaluator="eval-1",
 )
 ACCEPTED = PackRecord(
-    "rec-b", 1, "accepted_knowledge", "Auth", "Provider A, naïve 認証 `f(x)`;"
+    "rec-b", "ver-1", "accepted_knowledge", "Auth", "Provider A, naïve 認証 `f(x)`;"
 )
-CANDIDATE = PackRecord("rec-a", 2, "candidate_findings", "Guess", "Maybe provider B.")
+CANDIDATE = PackRecord("rec-a", "ver-2", "candidate_findings", "Guess", "Maybe provider B.")
 
 
 def _build(
@@ -62,6 +65,38 @@ def _build(
 def _tokens(text: str) -> int:
     # Independent restatement of context-pack.tokenizer.v1.
     return len(re.findall(r"[^\W_]+|[^\s]", text))
+
+
+def test_rendered_pack_matches_the_published_result_schema() -> None:
+    schema_dir = (
+        Path(__file__).resolve().parents[5]
+        / "contracts"
+        / "application"
+        / "v1"
+        / "schemas"
+    )
+    resources = []
+    for path in sorted(schema_dir.glob("*.schema.json")):
+        resource = Resource.from_contents(json.loads(path.read_text(encoding="utf-8")))
+        resource_id = resource.id()
+        assert resource_id is not None
+        resources.append((resource_id, resource))
+    validator = Draft202012Validator(
+        {
+            "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringContextBuildResult"
+        },
+        registry=Registry().with_resources(resources),
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    )
+    for pack in (
+        _build(),
+        _build(dataclasses.replace(CTX, requested_budget={"model_tokens": 1000})),
+    ):
+        assert [
+            (list(error.absolute_path), error.message)
+            for error in validator.iter_errors({"pack": pack})
+        ] == []
 
 
 def test_same_frozen_context_replays_to_identical_bytes_and_checksum() -> None:
@@ -106,14 +141,13 @@ def test_partitions_stay_separate_and_accepted_renders_first() -> None:
         "accepted_knowledge",
         "candidate_findings",
     ]
-    assert pack["citations"][0]["record_ref"] == {"record_id": "rec-b", "version": 1}
+    assert pack["citations"][0]["record_ref"] == {"record_id": "rec-b", "version": "ver-1"}
 
 
 def test_tight_token_budget_drops_optional_sections_but_keeps_notice_and_accepted() -> (
     None
 ):
-    full = _build()
-    mandatory = full["budget"]["mandatory_tokens"]
+    mandatory = _build(records=(ACCEPTED,))["rendering"]["token_count"]
     tight = dataclasses.replace(CTX, effective_tokens=mandatory)
     pack = _build(tight, working=(WorkingItem("ck-1", 1, "Obj", ("x",)),))
     assert [s["partition"] for s in pack["sections"]] == ["accepted_knowledge"]
@@ -124,7 +158,7 @@ def test_tight_token_budget_drops_optional_sections_but_keeps_notice_and_accepte
 
 
 def test_tight_byte_budget_is_enforced_simultaneously() -> None:
-    mandatory_bytes = _build()["budget"]["mandatory_bytes"]
+    mandatory_bytes = _build(records=(ACCEPTED,))["rendering"]["byte_count"]
     tight = dataclasses.replace(CTX, effective_bytes=mandatory_bytes)
     pack = _build(tight)
     assert pack["rendering"]["byte_count"] <= mandatory_bytes
@@ -132,7 +166,7 @@ def test_tight_byte_budget_is_enforced_simultaneously() -> None:
 
 
 def test_an_oversized_optional_section_is_dropped_whole() -> None:
-    big = PackRecord("rec-z", 1, "candidate_findings", "Big", "word " * 5000)
+    big = PackRecord("rec-z", "ver-1", "candidate_findings", "Big", "word " * 5000)
     pack = _build(records=(ACCEPTED, big))
     assert [s["partition"] for s in pack["sections"]] == ["accepted_knowledge"]
     assert pack["omissions"] == [{"field": "sec-2", "reason": "budget"}]
@@ -146,8 +180,8 @@ def test_a_mandatory_rendering_that_cannot_fit_is_refused() -> None:
 def test_authorized_selection_order_survives_within_a_partition() -> None:
     # Two candidates in the same partition: the frozen upstream order
     # (relevance/priority), not record_id, must decide render order.
-    first = PackRecord("rec-z", 1, "candidate_findings", "First", "picked first")
-    second = PackRecord("rec-a", 1, "candidate_findings", "Second", "picked second")
+    first = PackRecord("rec-z", "ver-1", "candidate_findings", "First", "picked first")
+    second = PackRecord("rec-a", "ver-1", "candidate_findings", "Second", "picked second")
     pack = _build(records=(ACCEPTED, first, second))
     assert [c["record_ref"]["record_id"] for c in pack["citations"]] == [
         "rec-b",
@@ -163,7 +197,7 @@ _COVERED = (
 
 def test_applicability_is_not_evaluated_when_every_candidate_is_dropped() -> None:
     ctx = dataclasses.replace(CTX, source_coverage=_COVERED)
-    big = PackRecord("rec-z", 1, "candidate_findings", "Big", "word " * 5000)
+    big = PackRecord("rec-z", "ver-1", "candidate_findings", "Big", "word " * 5000)
     pack = _build(ctx, records=(big,))
     assert pack["sections"] == []
     assert pack["citations"] == []
