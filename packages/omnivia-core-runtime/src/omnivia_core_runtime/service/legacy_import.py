@@ -60,6 +60,13 @@ writes nothing; the same identity with anything different is refused. Available
 evidence identifiers are a set and are stored in canonical lexical order. The
 receipt distinguishes the attempted document run from the immutable run and
 ordinal already sealed onto each record.
+
+A note that fails after an earlier note in the same attempt is already durable
+is `partially_imported`: an honest count of earlier outcomes, an empty record
+list that discloses no identity on a failed invocation, and a fixed reason that
+names no note. A note that fails with nothing yet durable in the attempt is
+`refused` exactly as before: no identity, no count, nothing to resume but the
+document itself.
 """
 
 from __future__ import annotations
@@ -194,7 +201,12 @@ class _StoredImport:
 
 @dataclass(frozen=True, slots=True)
 class LegacyImportResult:
-    """The redacted, bounded receipt. The sealed 0009 lineage is the authority."""
+    """The redacted, bounded receipt. The sealed 0009 lineage is the authority.
+
+    Counts are carried independently of `records`. A `partially_imported`
+    result can therefore report exact outcomes while keeping `records` empty
+    and naming no note identity.
+    """
 
     status: str
     workspace_id: str | None = None
@@ -202,10 +214,12 @@ class LegacyImportResult:
     document_digest: str | None = None
     records: tuple[LegacyImportRecord, ...] = ()
     reason: str = ""
+    imported_count: int = 0
+    already_imported_count: int = 0
 
     @property
     def accepted(self) -> bool:
-        return self.status != "refused"
+        return self.status in ("imported", "already_imported")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -214,12 +228,8 @@ class LegacyImportResult:
             "workspace_id": self.workspace_id,
             "attempted_migration_run_id": self.attempted_migration_run_id,
             "document_digest": self.document_digest,
-            "imported": sum(
-                1 for record in self.records if record.status == "imported"
-            ),
-            "already_imported": sum(
-                1 for record in self.records if record.status == "already_imported"
-            ),
+            "imported": self.imported_count,
+            "already_imported": self.already_imported_count,
             "records": [record.to_dict() for record in self.records],
             "reason": self.reason,
         }
@@ -353,6 +363,15 @@ def _parse(raw: bytes) -> tuple[str, str, tuple[_Note, ...]]:
 
 
 def _load(path: Path) -> tuple[str, str, tuple[_Note, ...]]:
+    """Read `path` through the capture path's plain reader (`source_capture._read_source`).
+
+    That reader refuses a symlinked, missing or non-regular leaf and detects the
+    leaf being replaced or changed between its checks and its read; it does not
+    walk `path`'s ancestors by descriptor the way `source_capture.read_checkout_file`
+    does. `path` is supplied by whoever runs this maintenance command against their
+    own workspace, a trusted local operator, not an untrusted caller, so an ancestor
+    symlink in a path that operator chose is outside this adapter's boundary.
+    """
     raw = b""
     unreadable = False
     try:
@@ -373,7 +392,23 @@ def _plan(
 
     Read-only and before the first write. Only sealed versions count: a legacy
     identity is imported exactly when a sealed version carries its lineage.
+
+    Bounded by the document, not by the workspace: the lineage query's predicate
+    names only the at-most-`MAX_NOTES` distinct legacy id/version pairs `notes`
+    itself carries (`_parse` already refuses a document with a repeated pair), and
+    the evidence-link query's predicate names only the assembly ids that lineage
+    query actually matched. Duplicate lineage for one requested identity is refused
+    before that second query, keeping its predicate at most `MAX_NOTES` assembly
+    ids. Neither query names every legacy identity this workspace has ever imported.
+    This bounds the *rows a conflict can be built from*, not the query *plan*:
+    without an index on
+    `(workspace_id, legacy_source_id, legacy_source_version)`, SQLite still walks
+    `omnivia_governed_legacy_lineage` to test the predicate against each row: that
+    index is a future migration, out of scope for this fix.
     """
+    identities = tuple(sorted((note.legacy_id, note.legacy_version) for note in notes))
+    lineage_predicate = ", ".join("(?, ?)" for _ in identities)
+    lineage_params = [value for pair in identities for value in pair]
     with read_snapshot(connection):
         rows = connection.execute(
             "SELECT l.legacy_source_id, l.legacy_source_version, l.legacy_source_digest, "
@@ -383,19 +418,30 @@ def _plan(
             "FROM omnivia_governed_legacy_lineage l "
             "JOIN omnivia_authoritative_governed_versions a "
             "ON a.workspace_id = l.workspace_id AND a.assembly_id = l.assembly_id "
-            "WHERE l.workspace_id = ?",
-            (workspace_id,),
+            "WHERE l.workspace_id = ? "
+            f"AND (l.legacy_source_id, l.legacy_source_version) IN ({lineage_predicate})",
+            (workspace_id, *lineage_params),
         ).fetchall()
+        row_keys = [(str(row[0]), str(row[1])) for row in rows]
+        if len(set(row_keys)) != len(row_keys):
+            # Until the forward unique-index migration lands, fail before the
+            # evidence query so even a corrupt duplicate identity cannot expand
+            # that query past the document's at-most-MAX_NOTES identities.
+            raise LegacyImportRefused(
+                "a legacy note identity has ambiguous imported lineage"
+            )
         links: dict[str, list[str]] = {}
-        for assembly_id, evidence_id in connection.execute(
-            "SELECT k.assembly_id, k.evidence_id "
-            "FROM omnivia_governed_version_evidence_links k "
-            "JOIN omnivia_governed_legacy_lineage l "
-            "ON l.workspace_id = k.workspace_id AND l.assembly_id = k.assembly_id "
-            "WHERE k.workspace_id = ? ORDER BY k.assembly_id, k.link_ordinal",
-            (workspace_id,),
-        ):
-            links.setdefault(str(assembly_id), []).append(str(evidence_id))
+        matched_assembly_ids = tuple(sorted(str(row[7]) for row in rows))
+        if matched_assembly_ids:
+            assembly_predicate = ", ".join("?" for _ in matched_assembly_ids)
+            for assembly_id, evidence_id in connection.execute(
+                "SELECT k.assembly_id, k.evidence_id "
+                "FROM omnivia_governed_version_evidence_links k "
+                f"WHERE k.workspace_id = ? AND k.assembly_id IN ({assembly_predicate}) "
+                "ORDER BY k.assembly_id, k.link_ordinal",
+                (workspace_id, *matched_assembly_ids),
+            ):
+                links.setdefault(str(assembly_id), []).append(str(evidence_id))
         # Notes naming evidence that is absent from this workspace or tombstoned.
         unheld = {
             note.ordinal
@@ -594,6 +640,8 @@ def import_legacy_notes(
             raise LegacyImportRefused("import document is bound to another workspace")
         mapped = _plan(runner.connection, workspace_id, notes)
         records: list[LegacyImportRecord] = []
+        imported_count = 0
+        already_imported_count = 0
         failed = False
         for note in notes:
             status = "already_imported"
@@ -623,10 +671,26 @@ def import_legacy_notes(
                     status=status,
                 )
             )
+            if status == "imported":
+                imported_count += 1
+            else:
+                already_imported_count += 1
         if failed:
+            if records:
+                # Something before the failed note is durable. Report its outcome
+                # count without exposing its identity on this failed invocation.
+                return LegacyImportResult(
+                    status="partially_imported",
+                    reason=(
+                        "a note could not be committed; earlier notes are durable and "
+                        "exact replay resumes the document"
+                    ),
+                    imported_count=imported_count,
+                    already_imported_count=already_imported_count,
+                )
             raise LegacyImportRefused(
                 "a note could not be committed; the failed note was rolled back and "
-                "retry resumes the document"
+                "exact replay resumes the document"
             )
         return LegacyImportResult(
             status="imported"
@@ -637,6 +701,8 @@ def import_legacy_notes(
             document_digest=document_digest,
             records=tuple(records),
             reason="legacy notes are imported as proposed candidates",
+            imported_count=imported_count,
+            already_imported_count=already_imported_count,
         )
     finally:
         runner.stop()

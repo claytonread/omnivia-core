@@ -205,6 +205,33 @@ class _Env:
         for leaked in (MARKER, str(path), path.name, "note-17", "Traceback"):
             assert leaked not in json.dumps(receipt) + err
 
+    def partial(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        path: Path,
+        reason: str,
+        *,
+        imported: int,
+        already_imported: int,
+    ) -> None:
+        """A partial-success receipt: honest counts, no per-note identity at all."""
+        code, receipt, err = self.run(capsys, path)
+        assert code == 1
+        assert receipt == {
+            "already_imported": already_imported,
+            "document_digest": None,
+            "format": "omnivia.engineering-legacy-import-result.v1",
+            "imported": imported,
+            "attempted_migration_run_id": None,
+            "reason": reason,
+            "records": [],
+            "status": "partially_imported",
+            "workspace_id": None,
+        }
+        assert err == reason + "\n"
+        for leaked in (MARKER, str(path), path.name, "note-17", "note-18", "Traceback"):
+            assert leaked not in json.dumps(receipt) + err
+
     def rows(
         self, table: str, where: str = "", columns: str = "*"
     ) -> list[tuple[Any, ...]]:
@@ -563,6 +590,150 @@ def test_a_changed_mapping_under_an_imported_identity_is_refused_without_writes(
     assert env.counts() == written
 
 
+def test_plan_queries_name_only_the_requested_legacy_identities(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`_plan`'s lineage and evidence-link predicates are bounded by the document,
+    not by the workspace: an unrelated legacy identity's id, version and assembly
+    id never appear in either query. This proves the predicate's extent only --
+    it does not claim SQLite plans either query with an index-backed scan; that
+    still needs a future migration on
+    ``(workspace_id, legacy_source_id, legacy_source_version)``.
+    """
+    env = _Env(tmp_path)
+    noise_source = tmp_path / "noise-evidence.txt"
+    noise_source.write_text("noise evidence\n", encoding="utf-8")
+    noise_evidence = capture_local_source(
+        workspace_root=env.workspace,
+        installation_root=env.installation,
+        source_path=noise_source,
+        source_id="noise-evidence-1",
+        media_type="text/plain",
+        core_version=SERVER_VERSION,
+    )
+    assert noise_evidence.evidence_id is not None
+    keep_source = tmp_path / "keep-evidence.txt"
+    keep_source.write_text("keep evidence\n", encoding="utf-8")
+    keep_evidence = capture_local_source(
+        workspace_root=env.workspace,
+        installation_root=env.installation,
+        source_path=keep_source,
+        source_id="keep-evidence-1",
+        media_type="text/plain",
+        core_version=SERVER_VERSION,
+    )
+    assert keep_evidence.evidence_id is not None
+
+    keep_1_evidence = {
+        "disposition": "available",
+        "evidence_ids": [keep_evidence.evidence_id],
+    }
+    document = env.document(
+        _entry(
+            "noise-1",
+            evidence={
+                "disposition": "available",
+                "evidence_ids": [noise_evidence.evidence_id],
+            },
+        ),
+        _entry("keep-1", evidence=keep_1_evidence),
+        _entry("keep-2"),
+    )
+    code, _, _ = env.run(capsys, env.write(document))
+    assert code == 0
+
+    requested = (_entry("keep-1", evidence=keep_1_evidence), _entry("keep-2"))
+    notes = tuple(
+        legacy_import._note(ordinal, entry)
+        for ordinal, entry in enumerate(requested, 1)
+    )
+    traced: list[str] = []
+    runner = env.runner()
+    try:
+        assert runner.connection is not None
+        runner.connection.set_trace_callback(traced.append)
+        try:
+            legacy_import._plan(runner.connection, env.workspace_id, notes)
+        finally:
+            runner.connection.set_trace_callback(None)
+    finally:
+        runner.stop()
+
+    [lineage_sql] = [
+        sql
+        for sql in traced
+        if "FROM omnivia_governed_legacy_lineage l" in sql
+        and "JOIN omnivia_authoritative_governed_versions a" in sql
+    ]
+    assert "'keep-1'" in lineage_sql and "'keep-2'" in lineage_sql
+    assert "'noise-1'" not in lineage_sql
+
+    # The evidence-link predicate names assembly ids, not legacy ids or evidence
+    # ids: prove it is bounded to exactly the assemblies the (already bounded)
+    # lineage query matched, and never reaches the unrelated one.
+    assembly_by_legacy_id = {
+        str(legacy_id): str(assembly_id)
+        for legacy_id, assembly_id in env.rows(
+            "omnivia_governed_legacy_lineage", columns="legacy_source_id, assembly_id"
+        )
+    }
+    [evidence_sql] = [
+        sql for sql in traced if "FROM omnivia_governed_version_evidence_links k" in sql
+    ]
+    assert assembly_by_legacy_id["keep-1"] in evidence_sql
+    assert assembly_by_legacy_id["keep-2"] in evidence_sql
+    assert assembly_by_legacy_id["noise-1"] not in evidence_sql
+
+
+def test_plan_refuses_duplicate_legacy_identity_before_evidence_lookup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The migration-free guard keeps evidence lookup at most MAX_NOTES rows.
+
+    Migration 0009 permits two assemblies to claim one legacy identity. Until a
+    forward unique index closes that schema gap, the importer refuses duplicates
+    immediately instead of expanding the evidence predicate past the document.
+    """
+    env = _Env(tmp_path)
+    entry = _entry()
+    code, _, _ = env.run(capsys, env.write(env.document(entry)))
+    assert code == 0
+    note = legacy_import._note(1, entry)
+
+    runner = env.runner()
+    traced: list[str] = []
+    try:
+        assert runner.connection is not None
+        assert runner.identity is not None
+        assert runner.generation is not None
+        with fenced_transaction(
+            runner.connection,
+            runner.identity,
+            workspace_id=env.workspace_id,
+            fencing_generation=runner.generation,
+        ) as fenced:
+            legacy_import._write(
+                fenced, env.workspace_id, "mig-duplicate-lineage", note
+            )
+
+        runner.connection.set_trace_callback(traced.append)
+        try:
+            with pytest.raises(
+                legacy_import.LegacyImportRefused,
+                match="a legacy note identity has ambiguous imported lineage",
+            ):
+                legacy_import._plan(runner.connection, env.workspace_id, (note,))
+        finally:
+            runner.connection.set_trace_callback(None)
+    finally:
+        runner.stop()
+
+    assert any("FROM omnivia_governed_legacy_lineage l" in sql for sql in traced)
+    assert not any(
+        "FROM omnivia_governed_version_evidence_links k" in sql for sql in traced
+    )
+
+
 def _raw_document(env: _Env, text: str) -> bytes:
     return text.replace("WORKSPACE", env.workspace_id).encode("utf-8")
 
@@ -697,6 +868,7 @@ def test_the_largest_receipt_is_bounded() -> None:
         document_digest=f"sha256:{'0' * 64}",
         records=records,
         reason="legacy notes are imported as proposed candidates",
+        already_imported_count=len(records),
     )
     rendered = json.dumps(receipt.to_dict(), sort_keys=True).encode("utf-8") + b"\n"
     assert len(rendered) <= legacy_import.MAX_RESULT_BYTES
@@ -705,6 +877,13 @@ def test_the_largest_receipt_is_bounded() -> None:
 def test_symlinked_missing_nonregular_and_changing_documents_are_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A missing, non-regular, changing or symlinked *leaf* is refused.
+
+    `path` itself is supplied by a trusted local operator running this
+    maintenance command, so a symlink in one of `path`'s ancestor directories is
+    outside this reader's threat boundary and is not exercised here; only the
+    leaf is checked.
+    """
     env = _Env(tmp_path)
     reason = "import document is not one stable regular file within bounds"
     path = env.write(env.document(_entry()))
@@ -924,11 +1103,22 @@ def test_a_crash_after_a_committed_note_resumes_without_partial_records(
     ] == [(receipt["attempted_migration_run_id"], ordinal) for ordinal in (1, 2, 3)]
 
 
-def test_a_fault_inside_one_note_rolls_that_note_back_whole(
+def test_a_fault_after_a_durable_note_is_partial_not_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A note fails, but an earlier note in the same attempt is already durable:
+
+    the receipt is honest about that (`partially_imported`, exact counts) instead
+    of pretending nothing happened, and it still names no note's identity.
+    """
     env = _Env(tmp_path)
-    path = env.write(env.document(_entry(), _entry("note-18")))
+    document = env.document(_entry(), _entry("note-18"))
+    path = env.write(document)
+    run_id = f"mig-{hashlib.sha256(canonicalize(document).encode('utf-8')).hexdigest()}"
+    partial_reason = (
+        "a note could not be committed; earlier notes are durable and exact replay "
+        "resumes the document"
+    )
     real_identifier = legacy_import.random_identifier
 
     def colliding_seal(prefix: str) -> str:
@@ -937,12 +1127,8 @@ def test_a_fault_inside_one_note_rolls_that_note_back_whole(
         return "seal-collision" if prefix == "seal" else real_identifier(prefix)
 
     monkeypatch.setattr(legacy_import, "random_identifier", colliding_seal)
-    env.refused(
-        capsys,
-        path,
-        "a note could not be committed; the failed note was rolled back and "
-        "retry resumes the document",
-    )
+    # note-17 committed whole before note-18's seal collided: partial, not refused.
+    env.partial(capsys, path, partial_reason, imported=1, already_imported=0)
     monkeypatch.undo()
     assert env.counts(WRITTEN) == dict.fromkeys(WRITTEN, 1) | {
         "omnivia_governed_version_evidence_links": 0
@@ -955,12 +1141,9 @@ def test_a_fault_inside_one_note_rolls_that_note_back_whole(
         raise StorageError(MARKER)
 
     monkeypatch.setattr(engineering_preview, "record_preview", failing_preview)
-    env.refused(
-        capsys,
-        path,
-        "a note could not be committed; the failed note was rolled back and "
-        "retry resumes the document",
-    )
+    # note-17 is now already_imported (durable from the attempt above) before
+    # note-18's fresh write fails: still partial, this time with no new writes.
+    env.partial(capsys, path, partial_reason, imported=0, already_imported=1)
     monkeypatch.undo()
     assert env.counts(WRITTEN)["omnivia_governed_version_assemblies"] == 1
 
@@ -970,6 +1153,39 @@ def test_a_fault_inside_one_note_rolls_that_note_back_whole(
         "already_imported",
         "imported",
     ]
+    # The recovered receipt reports the authoritative durable run and ordinal
+    # sealed for note-17 during the earlier partial attempt, not a fresh one.
+    assert receipt["attempted_migration_run_id"] == run_id
+    assert (
+        receipt["records"][0]["migration_run_id"],
+        receipt["records"][0]["append_ordinal"],
+    ) == (run_id, 1)
+
+
+def test_a_fault_on_the_first_note_with_nothing_durable_yet_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note fails with no prior durable or replayed note in the attempt: the
+    whole document is refused, fully payload-free, exactly as before.
+    """
+    env = _Env(tmp_path)
+    path = env.write(env.document(_entry()))
+
+    def failing_preview(connection: sqlite3.Connection, **kwargs: str) -> None:
+        raise StorageError(MARKER)
+
+    monkeypatch.setattr(engineering_preview, "record_preview", failing_preview)
+    env.refused(
+        capsys,
+        path,
+        "a note could not be committed; the failed note was rolled back and "
+        "exact replay resumes the document",
+    )
+    monkeypatch.undo()
+    assert env.counts(WRITTEN) == dict.fromkeys(WRITTEN, 0)
+
+    code, receipt, _ = env.run(capsys, path)
+    assert (code, receipt["records"][0]["status"]) == (0, "imported")
 
 
 def test_available_evidence_is_linked_only_when_the_workspace_holds_it(
