@@ -808,6 +808,14 @@ def read_authorized_memory_frontier(
                 "ORDER BY governed_record_id, settled_at_us, transition_id",
                 (workspace_id, *authorized_record_ids, resolution_instant_us),
             ).fetchall()
+        authorized_id_set = set(authorized_ids)
+        authorized_support_id_set = set(authorized_support_ids)
+        permitted_evidence_ids = {
+            str(row[1])
+            for row in evidence_rows
+            if str(row[0]) in authorized_support_id_set
+        }
+        authorized_record_id_set = set(authorized_record_ids)
         digest_document = to_canonical_json(
             {
                 "view_policy": "memory-s2-v1",
@@ -816,25 +824,22 @@ def read_authorized_memory_frontier(
                 "frontier": [
                     [str(row[0]), str(row[1]), str(row[2]), int(row[8])]
                     for row in selected
-                    if str(row[0]) in authorized_ids
+                    if str(row[0]) in authorized_id_set
                 ],
                 "evidence": [
                     list(map(str, row))
                     for row in evidence_rows
-                    if str(row[0]) in authorized_support_ids
+                    if str(row[0]) in authorized_support_id_set
                 ],
                 "label_stream": [
                     [str(item) for item in row]
                     for row in label_rows
-                    if any(
-                        str(e[1]) == str(row[0]) and str(e[0]) in authorized_support_ids
-                        for e in evidence_rows
-                    )
+                    if str(row[0]) in permitted_evidence_ids
                 ],
                 "transition_chain": [
                     [None if item is None else str(item) for item in row]
                     for row in application_transitions
-                    if str(row[0]) in set(authorized_record_ids)
+                    if str(row[0]) in authorized_record_id_set
                 ],
                 "grant": {
                     "principal_id": label_grant.principal_id,
