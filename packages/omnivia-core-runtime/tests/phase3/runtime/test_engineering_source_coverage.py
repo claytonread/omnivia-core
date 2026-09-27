@@ -1080,6 +1080,15 @@ def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
     assert pack["omissions"] == []
     assert ranked and denied_ids.isdisjoint(ranked)
 
+    cited_ref = next(
+        citation["record_ref"]
+        for citation in pack["citations"]
+        if citation["record_ref"]["record_id"] == open_a["record_id"]
+    )
+    assert workspace.ok(
+        "engineering.expand", {"anchor": cited_ref}, session=reader
+    )["nodes"] == [cited_ref]
+
     # Access revocation: the open evidence gains the restricted label.
     pinned = search("candidates", limit=1)["page"]["continuation_token"]
     m2.write(
@@ -1098,6 +1107,9 @@ def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
     assert search("candidates")["previews"] == search("accepted")["previews"] == []
     revoked = workspace.ok("engineering.context.build", build, session=reader)["pack"]
     assert revoked["citations"] == [] and revoked["omissions"] == []
+    assert workspace.refused(
+        "engineering.expand", {"anchor": cited_ref}, session=reader
+    )[0] == "not_found"
 
 
 def _accept(workspace: Workspace, record: dict[str, str]) -> dict[str, str]:
