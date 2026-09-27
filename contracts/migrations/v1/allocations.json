@@ -425,6 +425,17 @@
       "sha256": "99e3c5dbdf9d3a93f3f82ab4dd473bd147d2ae0d3c7b4d180668ec2d4d430775",
       "introduced_commit": "25ffae20558536205ed2c1a1291c9fbdc215cae2",
       "accepted_commit": null
+    },
+    {
+      "number": 56,
+      "filename": "0056_engineering_captured_source_coverage.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 55,
+      "sha256": "1e001828c81494c86e6c8a6fb0fa157a480d99f6af7848e225919555bbc34dd9",
+      "introduced_commit": "403c02c706393054110355f0c39b58418d44f7d9",
+      "accepted_commit": null
     }
   ]
 }
