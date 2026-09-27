@@ -28,7 +28,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import select
 import stat
+import subprocess
 import time
 import uuid
 from contextlib import ExitStack
@@ -427,6 +429,15 @@ class CheckoutFile:
 
     content: bytes
     digest: str
+    executable: bool = False
+
+
+class _SourceChanged(SourceCaptureRefused):
+    """The file moved or changed while it was read (fixed text, like every refusal)."""
+
+
+class _SourceOversized(SourceCaptureRefused):
+    """The file is larger than `MAX_SOURCE_BYTES`."""
 
 
 def _open_component(name: bytes, flags: int, directory: int | None) -> int | None:
@@ -475,13 +486,20 @@ def read_checkout_file(
     relative, and no operating-system error is quoted or chained. Not every host can do
     this walk; one that cannot is refused, not given a weaker read. Nothing is persisted.
     """
-    if not valid_path(relative_path):
-        raise SourceCaptureRefused(
-            "repository path is outside the accepted portable domain"
-        )
     if not is_content_checksum(expected_digest):
         raise SourceCaptureRefused(
             "expected digest is outside the accepted checksum domain"
+        )
+    return _read_checkout(checkout_root, relative_path, expected_digest)
+
+
+def _read_checkout(
+    checkout_root: Path, relative_path: str, expected_digest: str | None
+) -> CheckoutFile:
+    """The walked read; `expected_digest=None` returns the verified-stable bytes."""
+    if not valid_path(relative_path):
+        raise SourceCaptureRefused(
+            "repository path is outside the accepted portable domain"
         )
     if not _NO_FOLLOW_WALK:
         raise SourceCaptureRefused(
@@ -516,7 +534,7 @@ def read_checkout_file(
         if not stat.S_ISREG(opened.st_mode):
             raise SourceCaptureRefused("source must be one regular file")
         if opened.st_size > MAX_SOURCE_BYTES:
-            raise SourceCaptureRefused("source exceeds the capture size limit")
+            raise _SourceOversized("source exceeds the capture size limit")
 
         chunks: list[bytes] = []
         remaining = MAX_SOURCE_BYTES + 1
@@ -530,7 +548,7 @@ def read_checkout_file(
         after = os.fstat(descriptor)
 
         if len(content) > MAX_SOURCE_BYTES:
-            raise SourceCaptureRefused("source exceeds the capture size limit")
+            raise _SourceOversized("source exceeds the capture size limit")
         if (
             (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns)
             or len(content) != after.st_size
@@ -539,22 +557,304 @@ def read_checkout_file(
                 for directory, name, status in held
             )
         ):
-            raise SourceCaptureRefused("source changed while it was being read")
+            raise _SourceChanged("source changed while it was being read")
 
     digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
-    if digest != expected_digest:
+    if expected_digest is not None and digest != expected_digest:
         raise SourceCaptureRefused("source content does not match the expected digest")
-    return CheckoutFile(content=content, digest=digest)
+    return CheckoutFile(
+        content=content,
+        digest=digest,
+        executable=bool(opened.st_mode & stat.S_IXUSR),
+    )
+
+
+WORKING_TREE_MANIFEST_FORMAT: Final = "omnivia.working-tree-manifest.v1"
+MAX_CAPTURE_FILES: Final = 10_000
+MAX_CAPTURE_TOTAL_BYTES: Final = 256 * 1024 * 1024
+MAX_CAPTURE_ATTEMPTS: Final = 3
+MAX_GIT_OUTPUT_BYTES: Final = 8 * 1024 * 1024
+GIT_TIMEOUT_SECONDS: Final = 20.0
+_GIT_ENV: Final = {
+    "PATH": os.environ.get("PATH", os.defpath),
+    "LC_ALL": "C",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
+#: Repository-provided commands and filters git could otherwise run for these read-only
+#: plumbing calls; none of them is needed, so each is turned off explicitly.
+_GIT_ARGS: Final = (
+    "git",
+    "--no-pager",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=" + os.devnull,
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "core.quotePath=false",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestFile:
+    """One captured regular file: exact path spelling, mode, digest and frozen bytes."""
+
+    path: str
+    mode: str
+    tracked: bool
+    digest: str
+    length: int
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestOmission:
+    """A path (or an unrepresentable one, `path=None`) that is not captured, and why."""
+
+    path: str | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkingTreeManifest:
+    """An immutable in-memory capture of a working tree over its base commit.
+
+    `complete` is true only when every enumerated path was captured and the checkout
+    was unchanged across the capture. It is never certified from Git metadata: the
+    bytes were read through the descriptor-walked reader. Ignored files are outside the
+    coverage by definition (`coverage`). Nothing here is persisted.
+    """
+
+    base_commit_id: str
+    files: tuple[ManifestFile, ...]
+    omissions: tuple[ManifestOmission, ...]
+    complete: bool
+    attempts: int
+
+    def to_dict(self) -> dict[str, object]:
+        """The bytes-free, deterministic description that `manifest_digest` covers."""
+        return {
+            "format": WORKING_TREE_MANIFEST_FORMAT,
+            "snapshot_kind": "working_tree",
+            "base": {"kind": "commit", "commit_id": self.base_commit_id},
+            "complete": self.complete,
+            "coverage": {
+                "tracked": "included",
+                "untracked": "included",
+                "ignored": "excluded",
+                "symlinks": "omitted",
+                "submodules": "omitted",
+            },
+            "files": [
+                {
+                    "path": f.path,
+                    "kind": "file",
+                    "mode": f.mode,
+                    "tracked": f.tracked,
+                    "content_digest": f.digest,
+                    "length_bytes": f.length,
+                }
+                for f in self.files
+            ],
+            "omissions": [{"path": o.path, "reason": o.reason} for o in self.omissions],
+        }
+
+    @property
+    def manifest_digest(self) -> str:
+        canonical = to_canonical_json(self.to_dict()).encode()
+        return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def _git(root: Path, *args: str) -> bytes:
+    """Run one bounded, read-only git query; fixed-text refusal on any failure."""
+    deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
+    try:
+        process = subprocess.Popen(
+            (*_GIT_ARGS, *args),
+            cwd=root,
+            env=_GIT_ENV,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        raise SourceCaptureRefused("git is not available for capture") from None
+    assert process.stdout is not None
+    chunks: list[bytes] = []
+    size = 0
+    failure = ""
+    try:
+        while not failure:
+            wait = deadline - time.monotonic()
+            if wait <= 0:
+                failure = "git query exceeded its time bound"
+            elif select.select([process.stdout], [], [], wait)[0]:
+                chunk = os.read(process.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                chunks.append(chunk)
+                if size > MAX_GIT_OUTPUT_BYTES:
+                    failure = "git query exceeded its output bound"
+    finally:
+        if failure or process.poll() is None:
+            process.kill()
+        process.stdout.close()
+        process.wait()
+    if failure:
+        raise SourceCaptureRefused(failure)
+    if process.returncode != 0:
+        raise SourceCaptureRefused("git could not describe this checkout")
+    return b"".join(chunks)
+
+
+def _enumerate(root: Path) -> tuple[str, dict[bytes, tuple[str, bool]]]:
+    """HEAD identity and `{path bytes: (git mode, tracked)}` for tracked + untracked."""
+    toplevel = _git(root, "rev-parse", "--show-toplevel").rstrip(b"\n")
+    if os.path.realpath(os.fsdecode(toplevel)) != os.path.realpath(root):
+        raise SourceCaptureRefused("checkout root is not a repository top level")
+    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}").strip()
+    algorithm = {40: "sha1", 64: "sha256"}.get(len(head))
+    if algorithm is None or re.fullmatch(rb"[0-9a-f]+", head) is None:
+        raise SourceCaptureRefused("checkout has no verifiable base commit")
+    entries: dict[bytes, tuple[str, bool]] = {}
+    for record in _git(root, "ls-files", "-z", "--stage").split(b"\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition(b"\t")
+        mode, _oid, stage = meta.split(b" ")
+        # An unmerged path (stage != 0) has no single content: recorded as such.
+        entries[path] = (mode.decode() if stage == b"0" else "unmerged", True)
+    others = _git(root, "ls-files", "-z", "--others", "--exclude-standard")
+    for path in others.split(b"\0"):
+        if path:
+            entries[path] = ("100644", False)
+    if len(entries) > MAX_CAPTURE_FILES:
+        raise SourceCaptureRefused("checkout exceeds the capture file limit")
+    return f"{algorithm}:{head.decode()}", entries
+
+
+def _capture_pass(
+    root: Path, entries: dict[bytes, tuple[str, bool]]
+) -> tuple[list[ManifestFile], list[ManifestOmission], bool]:
+    files: list[ManifestFile] = []
+    omissions: list[ManifestOmission] = []
+    stable = True
+    total = 0
+    for raw in sorted(entries):
+        mode, tracked = entries[raw]
+        try:
+            path = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            path = ""
+        if not valid_path(path):
+            omissions.append(ManifestOmission(None, "path_not_portable"))
+            continue
+        if mode in {"120000", "160000", "unmerged"}:
+            reason = {"120000": "symlink", "160000": "submodule"}.get(mode, mode)
+            omissions.append(ManifestOmission(path, reason))
+            continue
+        try:
+            read = _read_checkout(root, path, None)
+        except _SourceChanged:
+            stable = False
+            omissions.append(ManifestOmission(path, "changed_during_capture"))
+            continue
+        except _SourceOversized:
+            omissions.append(ManifestOmission(path, "oversized"))
+            continue
+        except SourceCaptureRefused:
+            # A label only: the reader already refused, this decides no capture.
+            try:
+                is_link = stat.S_ISLNK((root / path).lstat().st_mode)
+            except OSError:
+                is_link = False
+            reason = "symlink" if is_link else "missing_or_unsupported"
+            omissions.append(ManifestOmission(path, reason))
+            continue
+        if total + len(read.content) > MAX_CAPTURE_TOTAL_BYTES:
+            omissions.append(ManifestOmission(path, "total_bytes_limit"))
+            continue
+        total += len(read.content)
+        files.append(
+            ManifestFile(
+                path=path,
+                mode="100755" if read.executable else "100644",
+                tracked=tracked,
+                digest=read.digest,
+                length=len(read.content),
+                content=read.content,
+            )
+        )
+    # Second look: every captured file must still hold the bytes just frozen.
+    kept: list[ManifestFile] = []
+    for file in files:
+        try:
+            _read_checkout(root, file.path, file.digest)
+        except SourceCaptureRefused:
+            stable = False
+            omissions.append(ManifestOmission(file.path, "changed_during_capture"))
+        else:
+            kept.append(file)
+    return kept, omissions, stable
+
+
+def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest:
+    """Capture an explicitly trusted checkout as a `working_tree` over its HEAD commit.
+
+    Git is used only to name HEAD and to list tracked and untracked paths, by fixed
+    read-only plumbing commands with a scrubbed environment, no hooks, no external
+    diff, no filters and no network, each bounded in time and output. Every path then
+    goes through the portable-path validator and the descriptor-walked reader, and the
+    manifest keeps the frozen bytes for later publication. Symlinks, submodules,
+    oversized, missing, unreadable and changing files are omitted and make the manifest
+    `complete=False`; a checkout whose listing or HEAD moves across the capture is
+    retried up to `MAX_CAPTURE_ATTEMPTS` times and then returned incomplete.
+
+    Groundwork only: nothing is registered, persisted or published here. Registering
+    the checkout as a trusted source and writing manifest rows and blobs remain to be
+    done by a later slice.
+    """
+    if not _NO_FOLLOW_WALK:
+        raise SourceCaptureRefused(
+            "this host cannot read a checkout without following links"
+        )
+    for attempt in range(1, MAX_CAPTURE_ATTEMPTS + 1):
+        head, entries = _enumerate(checkout_root)
+        files, omissions, stable = _capture_pass(checkout_root, entries)
+        stable = stable and _enumerate(checkout_root) == (head, entries)
+        if stable or attempt == MAX_CAPTURE_ATTEMPTS:
+            return WorkingTreeManifest(
+                base_commit_id=head,
+                files=tuple(files),
+                omissions=tuple(
+                    sorted(omissions, key=lambda o: (o.path or "", o.reason))
+                    + ([] if stable else [ManifestOmission(None, "unstable_checkout")])
+                ),
+                complete=stable and not omissions,
+                attempts=attempt,
+            )
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 __all__ = [
+    "MAX_CAPTURE_ATTEMPTS",
     "MAX_SOURCE_BYTES",
     "SOURCE_CAPTURE_FORMAT",
+    "WORKING_TREE_MANIFEST_FORMAT",
     "BlobPublicationRefused",
     "CheckoutFile",
+    "ManifestFile",
+    "ManifestOmission",
     "SourceCaptureRefused",
     "SourceCaptureResult",
+    "WorkingTreeManifest",
     "capture_local_source",
+    "capture_working_tree_manifest",
     "publish_blob",
     "read_checkout_file",
 ]

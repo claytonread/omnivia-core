@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -412,3 +414,141 @@ def test_read_checkout_file_refuses_unsupported_host(
     assert _refused(_checkout(tmp_path)) == (
         "this host cannot read a checkout without following links"
     )
+
+
+# --- capture_working_tree_manifest -------------------------------------------------
+
+_GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+def _git_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "a.py").write_bytes(_DATA)
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=root, env=_GIT_ENV, check=True)
+    return root
+
+
+def _manifest(root: Path) -> source_capture.WorkingTreeManifest:
+    return source_capture.capture_working_tree_manifest(checkout_root=root)
+
+
+@needs_walk
+def test_capture_clean_then_dirty_tracked_file(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path)
+    clean = _manifest(root)
+    assert clean.complete and not clean.omissions
+    assert re.fullmatch(r"sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64}", clean.base_commit_id)
+    (file,) = clean.files
+    assert (file.path, file.mode, file.tracked) == ("pkg/a.py", "100644", True)
+    assert file.digest == _digest(_DATA) and file.content == _DATA
+    assert clean.to_dict()["snapshot_kind"] == "working_tree"
+
+    (root / "pkg" / "a.py").write_bytes(b"changed\n")
+    dirty = _manifest(root)
+    assert dirty.complete and dirty.base_commit_id == clean.base_commit_id
+    assert dirty.files[0].content == b"changed\n"
+    assert dirty.manifest_digest != clean.manifest_digest
+
+
+@needs_walk
+def test_capture_untracked_file_and_digest_determinism(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path)
+    (root / "New.txt").write_bytes(b"new")
+    (root / ".gitignore").write_bytes(b"ignored.txt\n")
+    (root / "ignored.txt").write_bytes(b"x")
+    first, second = _manifest(root), _manifest(root)
+    assert first.manifest_digest == second.manifest_digest
+    assert [(f.path, f.tracked) for f in first.files] == [
+        (".gitignore", False),
+        ("New.txt", False),
+        ("pkg/a.py", True),
+    ]
+    assert first.complete
+
+
+@needs_walk
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_capture_symlink_is_omitted_and_incomplete(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path)
+    os.symlink("pkg/a.py", root / "link")
+    manifest = _manifest(root)
+    assert not manifest.complete
+    assert [f.path for f in manifest.files] == ["pkg/a.py"]
+    assert [(o.path, o.reason) for o in manifest.omissions] == [("link", "symlink")]
+
+
+@needs_walk
+def test_capture_missing_tracked_file_is_incomplete(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path)
+    (root / "pkg" / "a.py").unlink()
+    manifest = _manifest(root)
+    assert not manifest.complete and not manifest.files
+    assert manifest.omissions[0].reason == "missing_or_unsupported"
+
+
+@needs_walk
+def test_capture_moving_file_is_bounded_and_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _git_repo(tmp_path)
+    reads = 0
+    real = source_capture._read_checkout
+
+    def moving(
+        checkout_root: Path, path: str, expected: str | None
+    ) -> source_capture.CheckoutFile:
+        nonlocal reads
+        reads += 1
+        (root / path).write_bytes(b"moving %d\n" % reads)
+        return real(checkout_root, path, expected)
+
+    monkeypatch.setattr(source_capture, "_read_checkout", moving)
+    manifest = _manifest(root)
+    assert not manifest.complete
+    assert manifest.attempts == source_capture.MAX_CAPTURE_ATTEMPTS
+    assert reads == 2 * source_capture.MAX_CAPTURE_ATTEMPTS
+    assert {o.reason for o in manifest.omissions} >= {
+        "changed_during_capture",
+        "unstable_checkout",
+    }
+
+
+@needs_walk
+def test_capture_malicious_portable_path_is_omitted(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path)
+    bad = root / "bad\\name.txt"  # backslash is outside the portable domain
+    bad.write_bytes(b"x")
+    manifest = _manifest(root)
+    assert not manifest.complete
+    assert [f.path for f in manifest.files] == ["pkg/a.py"]
+    assert [(o.path, o.reason) for o in manifest.omissions] == [
+        (None, "path_not_portable")
+    ]
+
+
+def test_capture_refuses_unsupported_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(source_capture, "_NO_FOLLOW_WALK", False)
+    with pytest.raises(SourceCaptureRefused):
+        _manifest(tmp_path)
+
+
+@needs_walk
+def test_capture_refuses_non_repository(tmp_path: Path) -> None:
+    with pytest.raises(SourceCaptureRefused):
+        _manifest(_checkout(tmp_path))
