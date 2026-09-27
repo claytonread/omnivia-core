@@ -543,6 +543,23 @@ def create_memory_record(
                 retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
             ) from error
 
+    if (
+        claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
+    ):
+        # The run is part of the same fenced settlement as its exact anchor. If
+        # enqueue fails, the observation, preview, dependency facts and run all roll
+        # back together.
+        from omnivia_core_runtime.storage import engineering_conflicts
+
+        engineering_conflicts.enqueue_discovery(
+            connection,
+            settlement,
+            workspace_id=workspace_id,
+            assembly_id=assembly_id,
+            allocate_identifier=allocate_identifier,
+        )
+
     at = _timestamp(settlement.settled_at_us)
     temporal = RecordTemporalMetadata(
         event_at=claim.event_at,

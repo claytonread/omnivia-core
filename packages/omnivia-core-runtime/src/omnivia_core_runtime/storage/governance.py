@@ -28,7 +28,11 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationError
-from omnivia_core_runtime.storage import engineering_preview, engineering_source
+from omnivia_core_runtime.storage import (
+    engineering_conflicts,
+    engineering_preview,
+    engineering_source,
+)
 from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
 )
@@ -588,6 +592,22 @@ def apply_governance_transition(
             record_id=source.record_id,
             source_version=source.version_id,
             target_version=version_id,
+            allocate_identifier=allocate_identifier,
+        )
+
+    if (
+        operation != CANDIDATE_REJECT_OPERATION
+        and claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
+    ):
+        # Enqueue after any copied dependency set exists, within the exact version's
+        # settlement. Rejected versions are not discoverable through governed reads
+        # and therefore never enter the queue.
+        engineering_conflicts.enqueue_discovery(
+            connection,
+            settlement,
+            workspace_id=workspace_id,
+            assembly_id=assembly_id,
             allocate_identifier=allocate_identifier,
         )
 

@@ -28,7 +28,12 @@ import test_engineering_source_coverage as esc
 from omnivia_core_runtime.ownership.fencing import assert_guards_intact
 from omnivia_core_runtime.service import ovc1
 from omnivia_core_runtime.service.handlers import engineering as handlers
-from omnivia_core_runtime.storage import engineering_preview, governed, memory
+from omnivia_core_runtime.storage import (
+    engineering_conflicts,
+    engineering_preview,
+    governed,
+    memory,
+)
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     authorised,
@@ -1447,6 +1452,9 @@ def older_release(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     version and project nothing, as every workspace written before 0053 was."""
     with monkeypatch.context() as patched:
         patched.setattr(engineering_preview, "record_preview", lambda *_a, **_k: None)
+        patched.setattr(
+            engineering_conflicts, "enqueue_discovery", lambda *_a, **_k: None
+        )
         yield
 
 
@@ -1594,14 +1602,18 @@ def test_0053_fresh_and_upgraded_workspaces_reach_one_canonical_schema(
 
     # The restarted service serves the backfilled versions, and writes new ones by
     # trigger: the same rows either way.
-    upgraded.restart()
-    try:
-        assert len(_ids(_search(upgraded, view="accepted"))) == 1
-        (old_preview,) = _search(upgraded, view="accepted")["previews"]
-        upgraded.observe(_long("Long provider later", kind="decision"))
-        assert len(_ids(_search(upgraded, view="candidates"))) == 1
-    finally:
-        upgraded.holder.connection.close()
+    with monkeypatch.context() as release_0053:
+        release_0053.setattr(
+            engineering_conflicts, "enqueue_discovery", lambda *_a, **_k: None
+        )
+        upgraded.restart()
+        try:
+            assert len(_ids(_search(upgraded, view="accepted"))) == 1
+            (old_preview,) = _search(upgraded, view="accepted")["previews"]
+            upgraded.observe(_long("Long provider later", kind="decision"))
+            assert len(_ids(_search(upgraded, view="candidates"))) == 1
+        finally:
+            upgraded.holder.connection.close()
 
     (tmp_path / "fresh-run").mkdir()
     fresh_workspace = Workspace(tmp_path / "fresh-run")
@@ -1665,22 +1677,26 @@ def test_the_migration_backfill_never_fails_a_workspace_with_unreadable_content(
             maintenance.close()
     assert assembled == [fine["record_id"]]
 
-    workspace.restart()
-    try:
-        # A version whose content cannot be read has no row: a search that admits it
-        # refuses, and does not read the body it cannot decode.
-        with Trace(workspace.holder.connection) as trace:
-            code = workspace.refused(
-                "engineering.search", {"query": "provider", "view": "candidates"}
-            )[0]
-        assert code == "projection_unavailable"
-        assert trace.body_reads() == []
-        # A title with a null byte writes and reads like any other.
-        odd = esc._observation(None, title="a\u0000b provider", evidence=False)
-        odd_record = workspace.observe(odd)
-        (odd_assembly,) = _assemblies(workspace, odd_record["record_id"])
-        assert _projection_rows(workspace, [odd_assembly])[odd_assembly][2] == odd_record[
-            "record_id"
-        ]
-    finally:
-        workspace.holder.connection.close()
+    with monkeypatch.context() as release_0053:
+        release_0053.setattr(
+            engineering_conflicts, "enqueue_discovery", lambda *_a, **_k: None
+        )
+        workspace.restart()
+        try:
+            # A version whose content cannot be read has no row: a search that admits it
+            # refuses, and does not read the body it cannot decode.
+            with Trace(workspace.holder.connection) as trace:
+                code = workspace.refused(
+                    "engineering.search", {"query": "provider", "view": "candidates"}
+                )[0]
+            assert code == "projection_unavailable"
+            assert trace.body_reads() == []
+            # A title with a null byte writes and reads like any other.
+            odd = esc._observation(None, title="a\u0000b provider", evidence=False)
+            odd_record = workspace.observe(odd)
+            (odd_assembly,) = _assemblies(workspace, odd_record["record_id"])
+            assert _projection_rows(workspace, [odd_assembly])[odd_assembly][2] == odd_record[
+                "record_id"
+            ]
+        finally:
+            workspace.holder.connection.close()
