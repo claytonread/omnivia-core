@@ -64,6 +64,11 @@ from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
+from omnivia_core_runtime.service.engineering_relation_assessment import (
+    EngineeringRelationAssessmentExecutor,
+    RelationAssessmentPolicy,
+    RelationAssessmentProvider,
+)
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.handlers.workflow import WorkflowReleaseResolver
 from omnivia_core_runtime.service.http_transport import (
@@ -711,6 +716,8 @@ def main(
     resolve_credential: CredentialResolver | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    relation_assessment_policy: RelationAssessmentPolicy | None = None,
+    relation_assessment_provider: RelationAssessmentProvider | None = None,
 ) -> int:
     """Own one workspace until told to stop.
 
@@ -925,10 +932,28 @@ def main(
             fencing_generation=started.generation,
             clock=started.clock,
         )
+        assessment_policy = relation_assessment_policy or RelationAssessmentPolicy()
+        assessment_executor = (
+            EngineeringRelationAssessmentExecutor(
+                connection=started.connection,
+                identity=started.identity,
+                workspace_id=started.workspace_id,
+                fencing_generation=started.generation,
+                clock=started.clock,
+                policy=assessment_policy,
+                provider=relation_assessment_provider,
+            )
+            if assessment_policy.enabled
+            else None
+        )
 
         def service_work() -> None:
             executor.run_pending()
             conflict_executor.run_pending()
+            if assessment_executor is not None:
+                # Discovery has returned and committed before an assessment request is
+                # staged. The executor likewise closes staging before provider egress.
+                assessment_executor.run_pending()
 
         server = LocalSocketServer(
             router=router,

@@ -8,9 +8,13 @@ later AC-050 slice.
 
 from __future__ import annotations
 
+import inspect
 import itertools
 import json
 import sqlite3
+import threading
+import time
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +26,18 @@ from omnivia_core_runtime.ownership.fencing import (
     fenced_transaction,
 )
 from omnivia_core_runtime.ownership.identity import SystemClock
+from omnivia_core_runtime.service import main as service_main
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
+from omnivia_core_runtime.service.engineering_relation_assessment import (
+    HARD_MAXIMUM_CALLS,
+    HARD_MAXIMUM_CONCURRENCY,
+    EngineeringRelationAssessmentExecutor,
+    RelationAssessmentPolicy,
+)
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
-from omnivia_core_runtime.storage import engineering_conflicts
+from omnivia_core_runtime.storage import engineering_assessments, engineering_conflicts
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     StorageError,
@@ -54,6 +65,12 @@ TABLES = (
     "omnivia_engineering_discovery_run_events",
     "omnivia_engineering_relation_candidates",
     "omnivia_engineering_discovery_candidate_observations",
+)
+ASSESSMENT_MIGRATION_VERSION = 57
+ASSESSMENT_MIGRATION_NAME = "0057_engineering_relation_assessments.sql"
+ASSESSMENT_TABLES = (
+    "omnivia_engineering_relation_assessment_requests",
+    "omnivia_engineering_relation_assessment_results",
 )
 
 
@@ -1348,3 +1365,527 @@ def test_0054_does_not_backfill_old_versions_and_the_next_write_enqueues(
         assert _count(old, TABLES[0]) == 1
     finally:
         old.holder.connection.close()
+
+
+def _completed_assessment_candidate(
+    workspace: esc.Workspace,
+) -> tuple[
+    dict[str, str],
+    engineering_conflicts.RelationCandidate,
+]:
+    workspace.observe(
+        _discovery_observation("semantic provider alpha", topic="semantic.provider")
+    )
+    anchor = workspace.observe(
+        _discovery_observation("semantic provider beta", topic="semantic.provider")
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert completed.scan_complete
+    assert len(completed.candidates) == 1
+    return anchor, completed.candidates[0]
+
+
+def _assessment_policy(**overrides: Any) -> RelationAssessmentPolicy:
+    values: dict[str, Any] = {
+        "enabled": True,
+        "provider_id": "test-provider",
+        "model_id": "test-model-v1",
+    }
+    values.update(overrides)
+    return RelationAssessmentPolicy(**values)
+
+
+def _assessment_response(
+    request: engineering_assessments.RelationAssessmentInput,
+) -> dict[str, Any]:
+    def endpoint(
+        value: engineering_assessments.AssessmentEndpointInput,
+    ) -> dict[str, str]:
+        return {
+            "assembly_id": value.assembly_id,
+            "record_id": value.record_id,
+            "version": value.version,
+            "content_digest": value.content_digest,
+        }
+
+    return {
+        "schema_version": request.response_schema_version,
+        "relation_candidate_id": request.relation_candidate_id,
+        "endpoint_a": endpoint(request.endpoint_a),
+        "endpoint_b": endpoint(request.endpoint_b),
+        "relation": "conflicts_with",
+        "evidence_refs": list(request.allowed_evidence_refs),
+        "confidence": 0.75,
+    }
+
+
+def _assessment_executor(
+    workspace: esc.Workspace,
+    *,
+    policy: RelationAssessmentPolicy,
+    provider: Any = None,
+    allocate_identifier: Any = None,
+) -> EngineeringRelationAssessmentExecutor:
+    return EngineeringRelationAssessmentExecutor(
+        connection=workspace.holder.connection,
+        identity=workspace.holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=workspace.holder.generation,
+        clock=SystemClock(),
+        policy=policy,
+        provider=provider,
+        allocate_identifier=allocate_identifier or _identifier_allocator(),
+    )
+
+
+def test_0057_is_additive_append_only_and_follows_captured_source(
+    workspace: esc.Workspace,
+) -> None:
+    migrations = load_migrations()
+    migration = next(
+        item for item in migrations if item.version == ASSESSMENT_MIGRATION_VERSION
+    )
+    assert migration.name == ASSESSMENT_MIGRATION_NAME
+    assert migrations[migrations.index(migration) - 1].version == 56
+    assert "UPDATE omnivia_engineering_relation_candidates" not in migration.sql
+    assert "INSERT INTO omnivia_application_governance_transitions" not in migration.sql
+    assert applied_migrations(workspace.holder.connection)[57] == migration.checksum
+    present = {
+        str(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table'"
+        )
+    }
+    assert set(ASSESSMENT_TABLES) <= present
+    assert_guards_intact(workspace.holder.connection)
+    assert fingerprint_schema(workspace.holder.connection).matches(
+        canonical_schema_fingerprint()
+    )
+    assert foreign_key_check(workspace.holder.connection) == []
+    assert integrity_check(workspace.holder.connection) == []
+
+
+def test_assessment_is_disabled_by_default_and_main_schedules_it_after_discovery(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+    called = False
+
+    def provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return _assessment_response(request)
+
+    executor = _assessment_executor(
+        workspace,
+        policy=RelationAssessmentPolicy(),
+        provider=provider,
+    )
+    assert executor.run_pending() == ()
+    assert called is False
+    assert _count(workspace, ASSESSMENT_TABLES[0]) == 0
+    assert _count(workspace, ASSESSMENT_TABLES[1]) == 0
+
+    source = inspect.getsource(service_main.main)
+    assert source.index("conflict_executor.run_pending()") < source.index(
+        "assessment_executor.run_pending()"
+    )
+    assert "if assessment_policy.enabled" in source
+
+
+def test_provider_unavailable_is_explicit_after_discovery_and_retrieval_still_works(
+    workspace: esc.Workspace,
+) -> None:
+    anchor, candidate = _completed_assessment_candidate(workspace)
+    observations_before = _count(
+        workspace, "omnivia_engineering_discovery_candidate_observations"
+    )
+    reconciled = _assessment_executor(
+        workspace,
+        policy=_assessment_policy(),
+    ).run_pending(budget=1)
+    assert len(reconciled) == 1
+    assert reconciled[0].status == "unavailable"
+    assert reconciled[0].failure_code == "provider_unavailable"
+    assert _count(
+        workspace, "omnivia_engineering_discovery_candidate_observations"
+    ) == observations_before
+    assert workspace.holder.connection.execute(
+        "SELECT status FROM omnivia_engineering_relation_candidates "
+        "WHERE workspace_id = ? AND relation_candidate_id = ?",
+        (WORKSPACE_ID, candidate.relation_candidate_id),
+    ).fetchone() == ("pending",)
+
+    search = workspace.ok(
+        "engineering.search", {"query": "semantic provider", "view": "candidates"}
+    )
+    assert any(item["record_id"] == anchor["record_id"] for item in search["previews"])
+    expanded = workspace.ok("engineering.expand", {"anchor": anchor})
+    assert [edge["status"] for edge in expanded["edges"]] == ["pending"]
+
+    continuity_session = workspace.ok(
+        "continuity.session.register",
+        {"schema_version": "engineering.1"},
+    )["session"]
+    checkpoint = workspace.ok(
+        "continuity.checkpoint.append",
+        {
+            "session_id": continuity_session["session_id"],
+            "payload": {
+                "objective": "Continue after semantic provider outage",
+                "checkpoint_kind": "periodic",
+            },
+        },
+        mutation_precondition=MutationPrecondition(record_version="seq-0"),
+    )
+    assert checkpoint["receipt"]["sequence"] == 1
+    working_context = workspace.ok(
+        "engineering.search",
+        {"query": "semantic provider outage", "view": "working_context"},
+    )
+    assert len(working_context["previews"]) == 1
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    (
+        "unknown_relation",
+        "changed_endpoint",
+        "invented_evidence",
+        "nan_confidence",
+        "infinite_confidence",
+        "authority_field",
+    ),
+)
+def test_malformed_assessor_verdicts_fail_closed_without_governance(
+    workspace: esc.Workspace,
+    malformation: str,
+) -> None:
+    _anchor, candidate = _completed_assessment_candidate(workspace)
+    governance_before = int(
+        workspace.holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_application_governance_transitions"
+        ).fetchone()[0]
+    )
+
+    def provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        response = _assessment_response(request)
+        if malformation == "unknown_relation":
+            response["relation"] = "authoritative_truth"
+        elif malformation == "changed_endpoint":
+            endpoint = dict(response["endpoint_a"])
+            endpoint["record_id"] = "rec-substituted"
+            response["endpoint_a"] = endpoint
+        elif malformation == "invented_evidence":
+            response["evidence_refs"] = ["evidence-invented"]
+        elif malformation == "nan_confidence":
+            response["confidence"] = float("nan")
+        elif malformation == "infinite_confidence":
+            response["confidence"] = float("inf")
+        else:
+            response["authority"] = {"accept": True}
+        return response
+
+    reconciled = _assessment_executor(
+        workspace,
+        policy=_assessment_policy(),
+        provider=provider,
+    ).run_pending(budget=1)
+    assert len(reconciled) == 1
+    assert reconciled[0].status == "failed"
+    assert reconciled[0].failure_code == "invalid_response"
+    assert reconciled[0].response_digest is None
+    assert reconciled[0].assessed_relation is None
+    assert workspace.holder.connection.execute(
+        "SELECT status FROM omnivia_engineering_relation_candidates "
+        "WHERE workspace_id = ? AND relation_candidate_id = ?",
+        (WORKSPACE_ID, candidate.relation_candidate_id),
+    ).fetchone() == ("pending",)
+    assert int(
+        workspace.holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_application_governance_transitions"
+        ).fetchone()[0]
+    ) == governance_before
+    persisted = json.dumps(
+        workspace.holder.connection.execute(
+            "SELECT status, failure_code, response_digest "
+            "FROM omnivia_engineering_relation_assessment_results"
+        ).fetchall()
+    )
+    assert "evidence-invented" not in persisted
+    assert "authoritative_truth" not in persisted
+
+
+def test_valid_assessment_records_exact_provenance_outside_the_transaction(
+    workspace: esc.Workspace,
+) -> None:
+    _anchor, candidate = _completed_assessment_candidate(workspace)
+    observed: dict[str, Any] = {}
+
+    def provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        observed["request"] = request
+        observed["timeout_seconds"] = timeout_seconds
+        observed["in_transaction"] = workspace.holder.connection.in_transaction
+        return _assessment_response(request)
+
+    policy = _assessment_policy(timeout_seconds=3.25)
+    reconciled = _assessment_executor(
+        workspace, policy=policy, provider=provider
+    ).run_pending(budget=1)
+    assert len(reconciled) == 1
+    result = reconciled[0]
+    assert result.status == "assessed"
+    assert result.assessed_relation == "conflicts_with"
+    assert result.self_reported_confidence_ppm == 750_000
+    assert result.response_digest is not None
+    assert observed["timeout_seconds"] == 3.25
+    assert observed["in_transaction"] is False
+    request = observed["request"]
+    assert isinstance(request, engineering_assessments.RelationAssessmentInput)
+    assert not {
+        "workspace_id",
+        "principal_id",
+        "grant",
+        "authority",
+        "connection",
+        "identity",
+        "fencing_generation",
+    } & {field.name for field in fields(request)}
+
+    stored = workspace.holder.connection.execute(
+        "SELECT provider_id, model_id, prompt_version, request_schema_version, "
+        "response_schema_version, input_digest, input_byte_count, input_token_count, "
+        "tokenizer_id, timeout_ms, maximum_calls, maximum_concurrency "
+        "FROM omnivia_engineering_relation_assessment_requests"
+    ).fetchone()
+    assert stored is not None
+    assert stored[:5] == (
+        policy.provider_id,
+        policy.model_id,
+        policy.prompt_version,
+        engineering_assessments.REQUEST_SCHEMA_VERSION,
+        engineering_assessments.RESPONSE_SCHEMA_VERSION,
+    )
+    assert str(stored[5]).startswith("sha256:")
+    assert int(stored[6]) > 0
+    assert int(stored[7]) > 0
+    assert stored[8:] == (
+        engineering_assessments.TOKENIZER_ID,
+        3250,
+        policy.maximum_calls,
+        policy.maximum_concurrency,
+    )
+    assert workspace.holder.connection.execute(
+        "SELECT status FROM omnivia_engineering_relation_candidates "
+        "WHERE workspace_id = ? AND relation_candidate_id = ?",
+        (WORKSPACE_ID, candidate.relation_candidate_id),
+    ).fetchone() == ("pending",)
+
+
+def test_timeout_is_sanitized_and_durable(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+
+    def timeout_provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        raise TimeoutError("secret provider detail")
+
+    result = _assessment_executor(
+        workspace,
+        policy=_assessment_policy(),
+        provider=timeout_provider,
+    ).run_pending(budget=1)
+    assert len(result) == 1
+    assert result[0].status == "unavailable"
+    assert result[0].failure_code == "provider_timeout"
+    persisted = json.dumps(
+        workspace.holder.connection.execute(
+            "SELECT status, failure_code FROM "
+            "omnivia_engineering_relation_assessment_results"
+        ).fetchall()
+    )
+    assert "secret provider detail" not in persisted
+
+
+def test_executor_enforces_timeout_and_keeps_live_provider_concurrency_at_one(
+    workspace: esc.Workspace,
+) -> None:
+    workspace.observe(
+        _discovery_observation("semantic provider first", topic="semantic.provider")
+    )
+    workspace.observe(
+        _discovery_observation("semantic provider second", topic="semantic.provider")
+    )
+    anchor = workspace.observe(
+        _discovery_observation("semantic provider third", topic="semantic.provider")
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert len(completed.candidates) == 2
+
+    release = threading.Event()
+    finished = threading.Event()
+    calls = 0
+    provider_transactions: list[bool] = []
+
+    def ignores_deadline(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        provider_transactions.append(workspace.holder.connection.in_transaction)
+        try:
+            release.wait(timeout=1.0)
+            return _assessment_response(request)
+        finally:
+            finished.set()
+
+    policy = _assessment_policy(timeout_seconds=0.02, maximum_calls=2)
+    executor = _assessment_executor(
+        workspace,
+        policy=policy,
+        provider=ignores_deadline,
+    )
+    started = time.monotonic()
+    result = executor.run_pending()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5
+    assert len(result) == 1
+    assert result[0].status == "unavailable"
+    assert result[0].failure_code == "provider_timeout"
+    assert calls == 1
+    assert provider_transactions == [False]
+    assert finished.is_set() is False
+    assert _count(workspace, ASSESSMENT_TABLES[0]) == 2
+    assert _count(workspace, ASSESSMENT_TABLES[1]) == 1
+
+    release.set()
+    assert finished.wait(timeout=1.0)
+    resumed = executor.run_pending(budget=1)
+    assert len(resumed) == 1
+    assert resumed[0].status == "assessed"
+    assert calls == 2
+
+
+def test_restart_resumes_the_staged_request_without_duplicate_observations(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+    policy = _assessment_policy()
+
+    def interrupted_provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        assert workspace.holder.connection.in_transaction is False
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _assessment_executor(
+            workspace,
+            policy=policy,
+            provider=interrupted_provider,
+        ).run_pending(budget=1)
+    assert _count(workspace, ASSESSMENT_TABLES[0]) == 1
+    assert _count(workspace, ASSESSMENT_TABLES[1]) == 0
+    observations = _count(
+        workspace, "omnivia_engineering_discovery_candidate_observations"
+    )
+
+    workspace.restart()
+
+    def recovered_provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return _assessment_response(request)
+
+    result = _assessment_executor(
+        workspace,
+        policy=policy,
+        provider=recovered_provider,
+    ).run_pending(budget=1)
+    assert len(result) == 1
+    assert result[0].status == "assessed"
+    assert _count(workspace, ASSESSMENT_TABLES[0]) == 1
+    assert _count(workspace, ASSESSMENT_TABLES[1]) == 1
+    assert _count(
+        workspace, "omnivia_engineering_discovery_candidate_observations"
+    ) == observations
+    assert _assessment_executor(
+        workspace,
+        policy=policy,
+        provider=recovered_provider,
+    ).run_pending(budget=1) == ()
+
+
+def test_assessment_bounds_block_oversize_input_and_reject_unsafe_policy(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+    called = False
+
+    def provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return _assessment_response(request)
+
+    result = _assessment_executor(
+        workspace,
+        policy=_assessment_policy(max_input_bytes=1, max_input_tokens=1),
+        provider=provider,
+    ).run_pending(budget=1)
+    assert len(result) == 1
+    assert result[0].failure_code == "input_limit"
+    assert called is False
+    assert HARD_MAXIMUM_CALLS == 50
+    assert HARD_MAXIMUM_CONCURRENCY == 1
+    with pytest.raises(ValueError, match="maximum_calls"):
+        _assessment_policy(maximum_calls=51)
+    with pytest.raises(ValueError, match="maximum_concurrency"):
+        _assessment_policy(maximum_concurrency=2)
+    with pytest.raises(ValueError, match="finite bound"):
+        _assessment_policy(timeout_seconds=float("inf"))
+
+
+def test_assessment_rows_are_append_only(workspace: esc.Workspace) -> None:
+    _completed_assessment_candidate(workspace)
+    _assessment_executor(workspace, policy=_assessment_policy()).run_pending(budget=1)
+    with pytest.raises(sqlite3.DatabaseError), _fenced(workspace):
+        workspace.holder.connection.execute(
+            "UPDATE omnivia_engineering_relation_assessment_requests "
+            "SET provider_id = provider_id"
+        )
+    with pytest.raises(sqlite3.DatabaseError), _fenced(workspace):
+        workspace.holder.connection.execute(
+            "DELETE FROM omnivia_engineering_relation_assessment_results"
+        )
