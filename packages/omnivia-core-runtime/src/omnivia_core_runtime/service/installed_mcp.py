@@ -214,7 +214,7 @@ RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
 )
 
-#: The authoring grant: the restricted rights, exactly the five additions, and
+#: The authoring grant: the restricted rights, exactly the six additions, and
 #: the one role both profiles' mutations need.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(
