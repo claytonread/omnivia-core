@@ -32,6 +32,7 @@ import test_application_audit_idempotency_migration as m1
 import test_engineering_source_coverage as sc
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.service.application import (
+    ENGINEERING_FAMILY_PURPOSES,
     authorize_application_request,
     engineering_family_session,
 )
@@ -49,6 +50,7 @@ from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.transport import LocalSocketServer, endpoint_for_path
 from omnivia_core_runtime.storage import continuity as continuity_storage
+from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
@@ -57,6 +59,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    CapabilityRef,
     ErrorResponseEnvelope,
     MutationPrecondition,
     SuccessResponseEnvelope,
@@ -190,6 +193,13 @@ def _call(
     return getattr(handlers, handler_name)(context)
 
 
+def _rendered_handoff_digest(view: dict[str, Any]) -> str:
+    """Recompute the documented digest preimage from a delivered view."""
+    preimage = dict(view)
+    preimage.pop("content_digest")
+    return content_digest(canonical_document(preimage))
+
+
 def test_register_append_close_handoff_is_one_durable_vertical(tmp_path: Any) -> None:
     holder = _owned(tmp_path)
     try:
@@ -233,6 +243,12 @@ def test_register_append_close_handoff_is_one_durable_vertical(tmp_path: Any) ->
         assert view["redacted"] is False
         assert view["applicability"] == "not_evaluated"
         assert "Root cause still unconfirmed" in view["unresolved_work"]
+        assert view["content_digest"] == _rendered_handoff_digest(view)
+        assert view["content_digest"] != closed.result["receipt"]["content_digest"]
+
+        tampered = dict(view)
+        tampered["objective"] = "tampered after delivery"
+        assert tampered["content_digest"] != _rendered_handoff_digest(tampered)
 
         # The durable receipt survives a reopen of the same database: the
         # acknowledged sequence and digest are still there after the service
@@ -353,6 +369,103 @@ def test_an_append_to_a_closed_session_is_a_conflict(tmp_path: Any) -> None:
                 stated_version="seq-0",
             )
         assert closed_error.value.code == ERROR_CODE_CONFLICT
+    finally:
+        holder.connection.close()
+
+
+def test_failed_final_checkpoint_stage_rolls_back_and_replays_after_recovery(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staged final row, its close, and settlement are one atomic mutation."""
+    holder = _owned(tmp_path)
+    try:
+        session_id = _call(
+            holder,
+            REGISTER,
+            "continuity_session_register",
+            _register_input(),
+            idempotency_key="idem-register-close-rollback",
+        ).result["session"]["session_id"]
+        acknowledged = _call(
+            holder,
+            APPEND,
+            "continuity_checkpoint_append",
+            _append_input(session_id),
+            stated_version="seq-0",
+            idempotency_key="idem-acknowledged-before-close",
+        ).result["receipt"]
+        handoff_before = _call(
+            holder,
+            HANDOFF,
+            "continuity_handoff_read",
+            {"checkpoint_id": acknowledged["checkpoint_id"]},
+        )["handoff"]
+        settled_before = _settled_holder(holder)
+        original_append = continuity_storage.append_checkpoint
+
+        def fail_after_staging(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            receipt = original_append(*args, **kwargs)
+            if kwargs["checkpoint_kind"] == "session_close":
+                raise RuntimeError("injected final checkpoint staging failure")
+            return receipt
+
+        monkeypatch.setattr(continuity_storage, "append_checkpoint", fail_after_staging)
+        close_request = _close_input(session_id, expected_sequence=1)
+        with pytest.raises(RuntimeError, match="injected final checkpoint staging failure"):
+            _call(
+                holder,
+                CLOSE,
+                "continuity_session_close",
+                close_request,
+                stated_version="seq-1",
+                idempotency_key="idem-close-after-staging",
+            )
+
+        assert _settled_holder(holder) == settled_before
+        assert holder.connection.execute(
+            "SELECT state, last_checkpoint_sequence, last_checkpoint_id "
+            "FROM omnivia_engineering_sessions WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == ("active", 1, acknowledged["checkpoint_id"])
+        assert holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_checkpoints "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == (1,)
+        assert _call(
+            holder,
+            HANDOFF,
+            "continuity_handoff_read",
+            {"checkpoint_id": acknowledged["checkpoint_id"]},
+        )["handoff"] == handoff_before
+
+        # Because the failed mutation left no claim, the owning runtime can make a
+        # deliberate recovery attempt.  Once committed, an identical retry replays
+        # the same close receipt instead of appending a third checkpoint.
+        monkeypatch.setattr(continuity_storage, "append_checkpoint", original_append)
+        recovered = _call(
+            holder,
+            CLOSE,
+            "continuity_session_close",
+            close_request,
+            stated_version="seq-1",
+            idempotency_key="idem-close-after-staging",
+        )
+        replayed = _call(
+            holder,
+            CLOSE,
+            "continuity_session_close",
+            close_request,
+            stated_version="seq-1",
+            idempotency_key="idem-close-after-staging",
+        )
+        assert replayed.result == recovered.result
+        assert replayed.audit_reference == recovered.audit_reference
+        assert holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_checkpoints "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == (2,)
     finally:
         holder.connection.close()
 
@@ -941,6 +1054,132 @@ def test_another_principal_cannot_read_a_handoff_by_either_key(workspace: Any) -
             workspace.refused("continuity.handoff.read", key, session=reader)
             for key in keys[other.principal_id]
         ] == missing
+
+
+def test_lower_grant_receiver_gets_only_a_bounded_digest_bound_view(
+    workspace: Any,
+) -> None:
+    """A same-principal reader inherits context but none of the sender's authority."""
+    session_id = workspace.ok(
+        "continuity.session.register", _register_input(), session=OWNER
+    )["session"]["session_id"]
+    unresolved = [f"Open question {index}" for index in range(35)]
+    suggestions = [f"Suggested action {index}" for index in range(35)]
+    rich_payload = {
+        "objective": "Transfer only bounded working context",
+        "checkpoint_kind": "handoff",
+        "external_run_ref": "sender-run-secret",
+        "accepted_record_refs": [
+            {"record_id": "mem-sender-accepted", "version": "gvr-sender-accepted"}
+        ],
+        "candidate_record_refs": [
+            {"record_id": "mem-sender-candidate", "version": "gvr-sender-candidate"}
+        ],
+        "observations": [
+            {
+                "statement": "Sender-only observation",
+                "evidence_refs": ["ev-sender-only"],
+                "support": "claimed",
+            }
+        ],
+        "completed_work": [
+            {"statement": "Sender-only completion", "support": "claimed"}
+        ],
+        "failed_approaches": [
+            {"statement": "Sender-only failed approach", "support": "claimed"}
+        ],
+        "unresolved_work": unresolved,
+        "external_effects": [
+            {"effect_ref": "effect-sender-unknown", "status": "unknown"}
+        ],
+        "next_actions": suggestions,
+        "context_receipt": {"pack_checksum": "sha256:" + "a" * 64},
+    }
+    receipt = workspace.ok(
+        "continuity.checkpoint.append",
+        _append_input(session_id, payload=rich_payload),
+        session=OWNER,
+        **_stated("seq-0"),
+    )["receipt"]
+
+    required = HANDOFF.required_capability
+    lower_grant = AuthenticatedSession(
+        principal_id=OWNER.principal_id,
+        roles=frozenset(),
+        installations=OWNER.installations,
+        workspaces=OWNER.workspaces,
+        operations=frozenset({HANDOFF.name}),
+        scopes=frozenset(HANDOFF.scope.required_scopes),
+        purposes=frozenset({ENGINEERING_FAMILY_PURPOSES[HANDOFF.name]}),
+        capabilities=(
+            CapabilityRef(id=required.id, version=required.minimum_version),
+        ),
+    )
+    assert len(lower_grant.capabilities) < len(OWNER.capabilities)
+    view = workspace.ok(
+        "continuity.handoff.read",
+        {"checkpoint_id": receipt["checkpoint_id"]},
+        session=lower_grant,
+    )["handoff"]
+
+    assert view["redacted"] is True
+    assert view["unresolved_work"] == unresolved[:32]
+    assert view["next_actions"] == suggestions[:32]
+    assert view["omissions"] == [
+        {"field": "accepted_record_refs", "reason": "retrieve_current_separately"},
+        {"field": "candidate_record_refs", "reason": "working_context_redacted"},
+        {"field": "completed_work", "reason": "working_context_redacted"},
+        {"field": "context_receipt", "reason": "not_a_persisted_handle"},
+        {"field": "external_effects", "reason": "owner_reconciliation_required"},
+        {"field": "external_run_ref", "reason": "sender_runtime_context"},
+        {"field": "failed_approaches", "reason": "working_context_redacted"},
+        {"field": "next_actions", "reason": "bounded"},
+        {"field": "observations", "reason": "requires_fresh_authorization"},
+        {"field": "unresolved_work", "reason": "bounded"},
+    ]
+    assert view["content_digest"] == _rendered_handoff_digest(view)
+
+    encoded = canonical_document(view)
+    for sender_only in (
+        "sender-run-secret",
+        "mem-sender-accepted",
+        "mem-sender-candidate",
+        "Sender-only observation",
+        "ev-sender-only",
+        "Sender-only completion",
+        "Sender-only failed approach",
+        "effect-sender-unknown",
+        "a" * 64,
+    ):
+        assert sender_only not in encoded
+
+    # Selection by the other exact key and a repeated read are byte-equivalent.
+    by_sequence = workspace.ok(
+        "continuity.handoff.read",
+        {"session_id": session_id, "sequence": 1},
+        session=lower_grant,
+    )["handoff"]
+    repeated = workspace.ok(
+        "continuity.handoff.read",
+        {"checkpoint_id": receipt["checkpoint_id"]},
+        session=lower_grant,
+    )["handoff"]
+    assert by_sequence == repeated == view
+
+    tampered = dict(view)
+    tampered["omissions"] = [*view["omissions"]]
+    tampered["omissions"][0] = {
+        "field": "accepted_record_refs",
+        "reason": "tampered",
+    }
+    assert tampered["content_digest"] != _rendered_handoff_digest(tampered)
+
+    stored_digest = workspace.holder.connection.execute(
+        "SELECT content_digest FROM omnivia_engineering_checkpoints "
+        "WHERE workspace_id = ? AND checkpoint_id = ?",
+        (sc.WORKSPACE_ID, receipt["checkpoint_id"]),
+    ).fetchone()[0]
+    assert view["content_digest"] != stored_digest
 
 
 def test_working_context_search_reads_only_the_callers_checkpoints(workspace: Any) -> None:

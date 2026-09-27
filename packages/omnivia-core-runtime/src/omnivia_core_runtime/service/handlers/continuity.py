@@ -96,6 +96,29 @@ _MESSAGE_PRECONDITION: Final = (
     "the continuity session advanced under this request; re-read and re-decide"
 )
 
+# A handoff is a deliberately small projection of checkpoint evidence.  These
+# regions either require their own current authorisation check, describe the
+# sender's runtime, or could be mistaken for authority to act.  The receiver is
+# told which *region* was withheld, never which record, source, run or effect was
+# inside it.  A tuple gives both the response and its digest one stable order.
+_HANDOFF_OMITTED_REGIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("accepted_record_refs", "retrieve_current_separately"),
+    ("candidate_record_refs", "working_context_redacted"),
+    ("completed_work", "working_context_redacted"),
+    ("context_receipt", "not_a_persisted_handle"),
+    ("external_effects", "owner_reconciliation_required"),
+    ("external_run_ref", "sender_runtime_context"),
+    ("failed_approaches", "working_context_redacted"),
+    ("observations", "requires_fresh_authorization"),
+    ("relevant_sources", "requires_fresh_authorization"),
+    ("repository_snapshots", "requires_fresh_authorization"),
+)
+
+# The stored checkpoint is already capped at 256 KiB, but a handoff is intended
+# to be a compact receiver view.  Bound each textual list independently so the
+# response shape is predictable even for a valid checkpoint near that cap.
+_HANDOFF_TEXT_ITEM_LIMIT: Final = 32
+
 _ERROR_FOR_STORAGE: Final[tuple[tuple[type[BaseException], str, str], ...]] = (
     (
         SessionNotFound,
@@ -152,6 +175,30 @@ def _timestamp(us: int) -> str:
         _dt.datetime.fromtimestamp(us / 1_000_000, tz=_dt.UTC)
         .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
+
+
+def _handoff_text_region(
+    payload: Mapping[str, Any],
+    field: str,
+    omissions: list[dict[str, str]],
+) -> list[str] | None:
+    """Render one bounded textual region and account for a partial projection."""
+    raw = payload.get(field)
+    if not isinstance(raw, list) or not raw:
+        return None
+    rendered = [str(item)[:2000] for item in raw[:_HANDOFF_TEXT_ITEM_LIMIT]]
+    if len(raw) > _HANDOFF_TEXT_ITEM_LIMIT:
+        omissions.append({"field": field, "reason": "bounded"})
+    return rendered
+
+
+def _handoff_omissions(payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Describe withheld regions without disclosing any identity inside them."""
+    return [
+        {"field": field, "reason": reason}
+        for field, reason in _HANDOFF_OMITTED_REGIONS
+        if payload.get(field)
+    ]
 
 
 def _session_version(
@@ -441,29 +488,28 @@ class ContinuityHandlers:
         if record is None:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
         payload = record["payload"]
+        omissions = _handoff_omissions(payload)
         view: dict[str, Any] = {
             "format_version": "continuity_handoff.v1",
             "checkpoint_id": record["checkpoint_id"],
-            "content_digest": content_digest(
-                canonical_document(
-                    {
-                        "checkpoint_id": record["checkpoint_id"],
-                        "sequence": record["sequence"],
-                        "payload": payload,
-                    }
-                )
-            ),
-            "redacted": False,
             "objective": str(payload.get("objective", ""))[:2000] or "(no objective recorded)",
             "applicability": (
                 "not_evaluated" if request.target_snapshot is None else "unknown"
             ),
         }
-        if payload.get("unresolved_work"):
-            view["unresolved_work"] = [str(item)[:2000] for item in payload["unresolved_work"]]
-        if payload.get("next_actions"):
-            view["next_actions"] = [str(item)[:2000] for item in payload["next_actions"]]
-        view["omissions"] = []
+        for field in ("unresolved_work", "next_actions"):
+            rendered = _handoff_text_region(payload, field, omissions)
+            if rendered is not None:
+                view[field] = rendered
+        omissions.sort(key=lambda omission: (omission["field"], omission["reason"]))
+        view["omissions"] = omissions
+        view["redacted"] = bool(omissions)
+
+        # A digest cannot literally include itself.  The canonical handoff digest
+        # therefore covers every delivered field except `content_digest`, including
+        # the exact bounded text, redaction label and omission diagnostics.  It never
+        # covers sender-only checkpoint content that was not delivered.
+        view["content_digest"] = content_digest(canonical_document(view))
         return {"handoff": view}
 
     def _execute(
