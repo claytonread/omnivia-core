@@ -51,7 +51,10 @@ Retrieval security shape, inherited from the knowledge family and the plan:
    version is indistinguishable from a nonexistent one;
 8. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
-   knowledge (§12.3).
+   knowledge (§12.3). Search and the `resume` pack read only checkpoints of
+   sessions the effective principal owns, filtered in SQL before matching,
+   pagination, the snapshot digest, selection and rendering. There is no
+   sharing grant, so working context is same-principal only.
 
 `engineering.source.record` is the trusted source producer's write: it records
 one immutable source event under its own `engineering:source` grant through the
@@ -113,6 +116,7 @@ from omnivia_core_runtime.service.pagination import (
     PROCESS_CONTINUATION_TOKENS,
     token_digest,
 )
+from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import engineering_source as source_storage
 from omnivia_core_runtime.storage.governed import read_governed_supersessions
@@ -595,12 +599,12 @@ class EngineeringHandlers:
             resolved_at_us = time.time_ns() // 1000
 
         if view == "working_context":
-            previews, total, snapshot_digest = self._working_context_previews(
+            previews, total, snapshot_digest, start = self._working_context_previews(
                 connection,
-                workspace_id=context.workspace_id,
+                context,
                 query=request.query,
                 limit=limit,
-                offset=supplied.get("o") if supplied else None,
+                supplied=supplied,
             )
         else:
             # Both modes hydrate only versions the effective caller's evidence
@@ -751,39 +755,44 @@ class EngineeringHandlers:
     def _working_context_previews(
         self,
         connection: Any,
+        context: OperationContext,
         *,
-        workspace_id: str,
         query: str,
         limit: int,
-        offset: Any,
-    ) -> tuple[list[dict[str, Any]], int, str]:
-        rows = connection.execute(
-            "SELECT checkpoint_id, sequence, payload_json, recorded_at_us "
-            "FROM omnivia_engineering_checkpoints WHERE workspace_id = ? "
-            "ORDER BY recorded_at_us DESC, sequence DESC",
-            (workspace_id,),
-        ).fetchall()
-        snapshot_digest = token_digest([list(row) for row in rows])
+        supplied: Mapping[str, Any] | None,
+    ) -> tuple[list[dict[str, Any]], int, str, int]:
+        """One page of the effective principal's own matching checkpoints.
+
+        Another principal's checkpoint never reaches matching, the total, the
+        snapshot digest or the offset. As in the governed views, the page is cut
+        from the matched set, and a continuation must name the same snapshot.
+        """
+        normalized = " ".join(query.lower().split())
+        matched: list[tuple[str, int, str]] = []
+        for checkpoint_id, sequence, payload_json in continuity_storage.read_checkpoints(
+            connection, workspace_id=context.workspace_id, principal_id=context.principal
+        ):
+            objective = str(json.loads(payload_json).get("objective", ""))
+            if normalized in objective.lower():
+                matched.append((checkpoint_id, sequence, objective))
+        snapshot_digest = token_digest([list(item) for item in matched])
         start = 0
-        if offset is not None:
-            if type(offset) is not int or not 0 < offset < len(rows):
+        if supplied is not None:
+            offset = supplied.get("o")
+            if (
+                supplied.get("s") != snapshot_digest
+                or type(offset) is not int
+                or not 0 < offset < len(matched)
+            ):
                 raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
             start = offset
-        normalized = " ".join(query.lower().split())
         previews: list[dict[str, Any]] = []
-        for row in rows[start:]:
-            try:
-                payload = json.loads(row[2])
-            except ValueError:
-                continue
-            objective = str(payload.get("objective", ""))
-            if normalized and normalized not in objective.lower():
-                continue
+        for checkpoint_id, sequence, objective in matched[start : start + limit]:
             body, truncated = _bounded(objective)
             previews.append(
                 {
-                    "record_id": row[0],
-                    "version": str(row[1]),
+                    "record_id": checkpoint_id,
+                    "version": str(sequence),
                     "title": body[:200],
                     "preview": body,
                     "truncated": truncated,
@@ -792,9 +801,7 @@ class EngineeringHandlers:
                     "evidence_available": True,
                 }
             )
-            if len(previews) >= limit:
-                break
-        return previews, len(rows), snapshot_digest
+        return previews, len(matched), snapshot_digest, start
 
     # --- engineering.expand ------------------------------------------------------
 
@@ -1262,24 +1269,23 @@ class EngineeringHandlers:
                     continue
             selected.append((record, partition))
 
-        # Working context (resume profile only, explicitly requested material).
+        # Working context (resume profile only, explicitly requested material):
+        # the effective principal's own five newest checkpoints. Ownership is
+        # filtered before the cut, so another principal's never takes a slot,
+        # a section, budget, an omission or a byte of the checksum.
         working: list[dict[str, Any]] = []
         if request.profile == "resume":
-            rows = connection.execute(
-                "SELECT checkpoint_id, sequence, payload_json FROM "
-                "omnivia_engineering_checkpoints WHERE workspace_id = ? "
-                "ORDER BY recorded_at_us DESC, sequence DESC LIMIT 5",
-                (context.workspace_id,),
-            ).fetchall()
-            for row in rows:
-                try:
-                    payload = json.loads(row[2])
-                except ValueError:
-                    continue
+            for checkpoint_id, sequence, payload_json in continuity_storage.read_checkpoints(
+                connection,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                limit=5,
+            ):
+                payload = json.loads(payload_json)
                 working.append(
                     {
-                        "checkpoint_id": row[0],
-                        "sequence": row[1],
+                        "checkpoint_id": checkpoint_id,
+                        "sequence": sequence,
                         "objective": str(payload.get("objective", "")),
                         "unresolved": payload.get("unresolved_work", []),
                     }

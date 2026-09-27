@@ -12,6 +12,13 @@ The record families are migrations 0048 only: `omnivia_engineering_sessions`
 (immutable L0 evidence, strictly append-only, contiguous per-session sequence).
 This module is the only writer; handlers never spell SQL against these tables.
 
+A session belongs to the principal that registered it. Every read here names
+that principal in its SQL, and append and close re-read the session that way
+inside their fenced transaction before writing. Another principal's session or
+checkpoint is indistinguishable from a missing one: `SessionNotFound` or `None`,
+never a payload, id, count or position. There is no sharing grant yet, so
+continuity is same-principal only.
+
 A stored checkpoint is evidence, not accepted knowledge: nothing here writes
 governed records, governance state, or anything the retrieval surfaces would
 serve as accepted.
@@ -29,6 +36,15 @@ from omnivia_core_runtime.storage.decisions import canonical_document, content_d
 _SESSIONS_TABLE: Final = "omnivia_engineering_sessions"
 _CHECKPOINTS_TABLE: Final = "omnivia_engineering_checkpoints"
 
+#: Checkpoints whose session belongs to one principal; binds (workspace, principal).
+#: Every checkpoint read goes through it, so another principal's payload is never
+#: loaded and never counted.
+_OWNED_CHECKPOINTS: Final = (
+    f"FROM {_CHECKPOINTS_TABLE} c JOIN {_SESSIONS_TABLE} s "
+    "ON s.workspace_id = c.workspace_id AND s.session_id = c.session_id "
+    "WHERE c.workspace_id = ? AND s.principal_id = ?"
+)
+
 #: The default checkpoint payload cap: 256 KiB of canonical UTF-8 (spec §9.2).
 CHECKPOINT_PAYLOAD_CAP_BYTES: Final = 262144
 
@@ -38,7 +54,7 @@ SESSION_LEASE_SECONDS: Final = 24 * 60 * 60
 
 
 class SessionNotFound(LookupError):
-    """The named continuity session does not exist in this workspace."""
+    """No such continuity session in this workspace for this principal."""
 
 
 class SessionNotActive(RuntimeError):
@@ -107,14 +123,17 @@ def read_session(
     *,
     workspace_id: str,
     session_id: str,
+    principal_id: str,
 ) -> dict[str, Any] | None:
+    """The session if `principal_id` owns it; another principal's reads as `None`."""
     row = connection.execute(
         f"SELECT session_id, principal_id, state, binding_generation, "
         "lease_expires_at_us, host_session_ref, checkout_hint, "
         "repository_target_json, registered_at_us, closed_at_us, "
         "last_checkpoint_sequence, last_checkpoint_id "
-        f"FROM {_SESSIONS_TABLE} WHERE workspace_id = ? AND session_id = ?",
-        (workspace_id, session_id),
+        f"FROM {_SESSIONS_TABLE} "
+        "WHERE workspace_id = ? AND session_id = ? AND principal_id = ?",
+        (workspace_id, session_id, principal_id),
     ).fetchone()
     if row is None:
         return None
@@ -135,10 +154,17 @@ def read_session(
 
 
 def _require_active_session(
-    connection: sqlite3.Connection, *, workspace_id: str, session_id: str
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    session_id: str,
+    principal_id: str,
 ) -> dict[str, Any]:
     session = read_session(
-        connection, workspace_id=workspace_id, session_id=session_id
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
     )
     if session is None:
         raise SessionNotFound(session_id)
@@ -152,6 +178,7 @@ def append_checkpoint(
     settlement: Any,
     *,
     workspace_id: str,
+    principal_id: str,
     checkpoint_id: str,
     session_id: str,
     parent_checkpoint_id: str | None,
@@ -166,10 +193,15 @@ def append_checkpoint(
     `last_checkpoint_*` pointer, so a competing successor loses here — either the
     expected parent still is the head and this caller wins, or the write is
     refused and the caller deliberately reconciles. The payload is stored whole
-    or not at all: an oversized payload raises before anything is written.
+    or not at all: an oversized payload raises before anything is written. A
+    session `principal_id` does not own is `SessionNotFound`, checked here under
+    the fence whatever the caller checked before.
     """
     session = _require_active_session(
-        connection, workspace_id=workspace_id, session_id=session_id
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
     )
     last_sequence = session["last_checkpoint_sequence"]
     last_id = session["last_checkpoint_id"]
@@ -227,6 +259,7 @@ def close_session(
     settlement: Any,
     *,
     workspace_id: str,
+    principal_id: str,
     session_id: str,
     expected_sequence: int | None,
     final_checkpoint: Mapping[str, Any] | None,
@@ -238,9 +271,13 @@ def close_session(
     The expected sequence is a mutation precondition against the session's last
     acknowledged checkpoint: a caller that watched another writer advance the
     session re-reads and re-decides rather than replacing the newer checkpoint.
+    Only `principal_id`'s own session closes; any other is `SessionNotFound`.
     """
     session = _require_active_session(
-        connection, workspace_id=workspace_id, session_id=session_id
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
     )
     last_sequence = session["last_checkpoint_sequence"] or 0
     if expected_sequence is not None and int(expected_sequence) != last_sequence:
@@ -253,6 +290,7 @@ def close_session(
             connection,
             settlement,
             workspace_id=workspace_id,
+            principal_id=principal_id,
             checkpoint_id=final_checkpoint_id,
             session_id=session_id,
             parent_checkpoint_id=session["last_checkpoint_id"],
@@ -278,13 +316,24 @@ def read_checkpoint(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
-    checkpoint_id: str,
+    principal_id: str,
+    checkpoint_id: str | None = None,
+    session_id: str | None = None,
+    sequence: int | None = None,
 ) -> dict[str, Any] | None:
+    """One checkpoint by id, or by session and sequence, if `principal_id` owns
+    its session. Ownership is decided by the same SQL that loads the payload, so
+    another principal's checkpoint is never loaded and reads as `None`."""
+    values: tuple[Any, ...]
+    if checkpoint_id is not None:
+        key, values = "c.checkpoint_id = ?", (checkpoint_id,)
+    else:
+        key, values = "c.session_id = ? AND c.sequence = ?", (session_id, sequence)
     row = connection.execute(
-        f"SELECT checkpoint_id, session_id, sequence, parent_checkpoint_id, "
-        "checkpoint_kind, payload_json, content_digest, recorded_at_us "
-        f"FROM {_CHECKPOINTS_TABLE} WHERE workspace_id = ? AND checkpoint_id = ?",
-        (workspace_id, checkpoint_id),
+        "SELECT c.checkpoint_id, c.session_id, c.sequence, c.parent_checkpoint_id, "
+        "c.checkpoint_kind, c.payload_json, c.content_digest, c.recorded_at_us "
+        f"{_OWNED_CHECKPOINTS} AND {key}",
+        (workspace_id, principal_id, *values),
     ).fetchone()
     if row is None:
         return None
@@ -298,3 +347,20 @@ def read_checkpoint(
         "content_digest": row[6],
         "recorded_at_us": row[7],
     }
+
+
+def read_checkpoints(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    limit: int = -1,
+) -> list[Any]:
+    """`principal_id`'s own checkpoints, newest first, as `(checkpoint_id,
+    sequence, payload_json)` rows. Ownership is filtered in SQL before the order
+    and `limit` apply (SQLite reads `LIMIT -1` as no limit)."""
+    return connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
+        "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT ?",
+        (workspace_id, principal_id, limit),
+    ).fetchall()
