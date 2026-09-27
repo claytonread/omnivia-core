@@ -877,6 +877,12 @@ class EngineeringHandlers:
                 "principal": context.principal,
                 "workspace": context.workspace_id,
                 "operation": "engineering.search",
+                "authority": (
+                    None if context.authority is None else context.authority.to_wire()
+                ),
+                "scopes": None if context.scopes is None else list(context.scopes),
+                "purpose": context.purpose,
+                "granted_operations": sorted(context.granted_operations),
                 "input": binding,
                 "limit": limit,
                 "view": view,

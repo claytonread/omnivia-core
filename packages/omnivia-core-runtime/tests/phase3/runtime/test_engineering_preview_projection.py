@@ -19,6 +19,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -694,6 +695,29 @@ def test_the_cursor_is_bound_to_the_ranked_versions_and_their_content(
     refused = resume()
     assert isinstance(refused, esc.ErrorResponseEnvelope)
     assert refused.error.code == "invalid_request"
+
+
+def test_the_cursor_restarts_when_the_server_authority_changes(
+    workspace: Workspace,
+) -> None:
+    """A continuation cannot cross a changed server grant with the same visible rows."""
+    for index in range(3):
+        workspace.observe(
+            esc._observation(None, title=f"Provider authority {index}", evidence=False)
+        )
+    reader = esc._reader()
+    request = {"query": "provider", "view": "candidates", "limit": 1}
+    first = workspace.ok("engineering.search", request, session=reader)
+    token = first["page"]["continuation_token"]
+
+    narrowed = replace(reader, operations=frozenset({"engineering.search"}))
+    resumed = workspace.call(
+        "engineering.search",
+        {**request, "page": {"continuation_token": token}},
+        session=narrowed,
+    )
+    assert isinstance(resumed, esc.ErrorResponseEnvelope)
+    assert resumed.error.code == "invalid_request"
 
 
 def test_the_legacy_snapshot_stays_off_the_0053_view_and_the_frontier_stays_on_it(
