@@ -98,7 +98,7 @@ __all__ = [
 #: alone with no output schema; ``1.1`` was the six-operation read surface;
 #: ``2.0`` is the major bump that adds a second, wider profile and the mutation
 #: wrapper -- a host that cached an ``1.1`` listing has cached the whole surface.
-MANIFEST_VERSION: Final = "2.1"
+MANIFEST_VERSION: Final = "2.2"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -124,7 +124,6 @@ ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
         "evidence.capture",
         "import.start",
         "decision.evaluate",
-        "continuity.checkpoint.append",
     }
 )
 
@@ -352,8 +351,7 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 )
 
 #: What the `authoring` profile adds, and all it adds: the mutations and the
-#: observations that make the asynchronous ones followable, plus the durable
-#: engineering checkpoint append (SPEC-CORE-ENGMEM-001).
+#: observations that make the asynchronous ones followable.
 #:
 #: The purposes are the service's own -- `memory_authoring` for memory,
 #: `content_ingestion` for both ways content enters a workspace, and
@@ -421,25 +419,10 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
             "Read-only, and not a transport stream."
         ),
     ),
-    ExposedOperation(
-        tool_name="continuity_checkpoint_append",
-        operation="continuity.checkpoint.append",
-        purpose="continuity_checkpoint",
-        title="Append a durable engineering checkpoint",
-        description=(
-            "Append one immutable engineering checkpoint to the caller's bound "
-            "continuity session: objective, working observations, unresolved "
-            "work and suggested next actions, stored whole as L0 evidence with "
-            "a durable receipt. The expected parent sequence makes a competing "
-            "successor an explicit precondition failure. Writes. Takes an outer "
-            "object with the operation input under `input` and a caller-chosen "
-            "`idempotency_key`; replaying the same key with the same input "
-            "returns the original receipt."
-        ),
-    ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then six additions.
+#: The `authoring` profile: the restricted surface, in its order, then five
+#: additions (19 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
