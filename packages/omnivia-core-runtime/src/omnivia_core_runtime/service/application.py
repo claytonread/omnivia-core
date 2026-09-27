@@ -804,10 +804,12 @@ def build_decision_application_dispatcher(
     )
 
 
-#: The S-engineering family (SPEC-CORE-ENGMEM-001): the nine engineering-memory
+#: The S-engineering family (SPEC-CORE-ENGMEM-001): the ten engineering-memory
 #: operations — continuity bindings, checkpoints and handoff, engineering preview
-#: retrieval, and the priority/review writes — one session and one binding. Purposes
-#: are the local-owner policy table's own, exactly as the decision family's are.
+#: retrieval, the priority/review writes and the trusted source record — one session
+#: and one binding. Purposes are the local-owner policy table's own, exactly as the
+#: decision family's are. The local owner is its own source producer here; the
+#: source record's distinct scope and capability reach no other family's session.
 ENGINEERING_FAMILY_OPERATIONS: Final[frozenset[str]] = frozenset(
     name
     for name in (*OPERATION_PURPOSES, *MUTATION_PURPOSES)
@@ -871,14 +873,11 @@ def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
 ) -> ApplicationOperationRegistry:
-    """The nine engineering-memory operations: four durable, five honest refusals.
+    """The ten engineering-memory operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
-    plan's PR-B producer; the preview/pack/preference/review operations stay the
-    contracts-first `dependency_unavailable` refusals (§28.4) until their
-    producers land. Registering both kinds in one registry is what keeps the
-    production surface exactly catalogue-complete without pretending a
-    capability exists that no producer stands behind.
+    plan's PR-B producer; retrieval, the pack builder, priorities, reviews and
+    the trusted source record are served by `EngineeringHandlers`.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
@@ -914,6 +913,10 @@ def build_engineering_registry(
         "engineering.review.record",
         cast(OperationHandler, refusals.engineering_review_record),
     )
+    registry.register(
+        "engineering.source.record",
+        cast(OperationHandler, refusals.engineering_source_record),
+    )
     return registry
 
 
@@ -928,20 +931,25 @@ def build_engineering_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the nine-operation S-engineering family around the existing router."""
+    """Compose the ten-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
         workspace_id=workspace_id,
     )
     binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    server_clock = SystemClock() if clock is None else clock
     registry = build_engineering_registry(
-        EngineeringHandlers(service=service),
+        # The engineering writes (priority, review, source record) issue their
+        # mutation grants from this family's own session and binding.
+        EngineeringHandlers(
+            service=service, session=session, binding=binding, clock=server_clock
+        ),
         ContinuityHandlers(
             service=service,
             session=session,
             binding=binding,
-            clock=SystemClock() if clock is None else clock,
+            clock=server_clock,
         ),
     )
     return ApplicationDispatcher(

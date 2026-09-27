@@ -3653,6 +3653,10 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "$ref": "#/$defs/engineering__EngineeringBudget",
                 "description": "Optional caller-requested budgets; effective budgets are also bounded by the granted profile and server hard limits.",
             },
+            "applicability_mode": {
+                "$ref": "#/$defs/engineering__EngineeringApplicabilityMode",
+                "description": "How applicability qualifies this pack. `diagnostic` (the default) is the pre-existing behaviour: every target statement is `not_evaluated`. `current_safe` requires every target to be a recorded snapshot inside its source stream's contiguous validated coverage, checked before any selection, or the build is refused with `dependency_unavailable` and the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records proven `matched` at every target enter the pack.",
+            },
         },
         "required": [
             "query",
@@ -3667,6 +3671,15 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "minLength": 1,
                 "maxLength": 128,
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "engineering__EngineeringApplicabilityMode": {
+                "title": "EngineeringApplicabilityMode",
+                "description": "The closed applicability mode of an engineering read: `diagnostic` (the default, conservative and never a safety claim) or `current_safe` (only proven `matched` records at fully covered, explicitly requested targets). Any other value is refused; there is no automatic downgrade from `current_safe`.",
+                "type": "string",
+                "enum": [
+                    "diagnostic",
+                    "current_safe",
+                ],
             },
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
@@ -4463,6 +4476,10 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "$ref": "#/$defs/common__PageMetadata",
                 "description": "Opaque continuation position. A changed authority epoch, projection snapshot or bound scope invalidates the token with an explicit restart response.",
             },
+            "applicability_mode": {
+                "$ref": "#/$defs/engineering__EngineeringApplicabilityMode",
+                "description": "How applicability qualifies this read. `diagnostic` (the default) is the pre-existing behaviour: previews carry conservative, never-certified applicability. `current_safe` requires `repository_target`: the target must be a recorded snapshot inside its source stream's contiguous validated coverage, checked before any ranking, or the read is refused with `dependency_unavailable` and the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records whose whole-file dependencies are proven `matched` at that target are returned.",
+            },
         },
         "required": [
             "query",
@@ -4496,6 +4513,15 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 },
                 "required": [],
                 "unevaluatedProperties": False,
+            },
+            "engineering__EngineeringApplicabilityMode": {
+                "title": "EngineeringApplicabilityMode",
+                "description": "The closed applicability mode of an engineering read: `diagnostic` (the default, conservative and never a safety claim) or `current_safe` (only proven `matched` records at fully covered, explicitly requested targets). Any other value is refused; there is no automatic downgrade from `current_safe`.",
+                "type": "string",
+                "enum": [
+                    "diagnostic",
+                    "current_safe",
+                ],
             },
             "engineering__EngineeringSearchView": {
                 "title": "EngineeringSearchView",

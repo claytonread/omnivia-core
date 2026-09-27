@@ -50,7 +50,8 @@ def _owned(tmp_path: Any) -> Any:
 
 def _handlers(holder: Any, entry: Any) -> Any:
     return EngineeringHandlers(
-        service=SimpleNamespace(connection=holder.connection, identity=holder.identity)
+        service=SimpleNamespace(connection=holder.connection, identity=holder.identity),
+        binding=s0.BINDING,
     )
 
 

@@ -5,13 +5,15 @@ changes governed state, and `preferred` reorders the already-ranked page as a
 stable secondary sort — never as a score. A review records an attestation and a
 target-specific assessment: the expected assessment version is a real
 precondition, an acknowledged review without evidence cannot clear a stale
-target (§15.5), and the deterministic assessment is conservative — `matched`
-only when the target snapshot is the newest registered snapshot of the record's
-claimed repository.
+target (§15.5), and the assessment is conservative. No dependency validation
+exists yet, so nothing mints `matched`: not registration, recency, a review
+outcome or a review evidence id. A legacy `matched` row is not replayed by
+search.
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +23,7 @@ import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.service.application import authorize_application_request
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
+from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import repository_identity as repo_identity
 
 from omnivia_core.contracts.v1 import (
@@ -52,12 +55,14 @@ def _owned(tmp_path: Any) -> Any:
     return m1.take_ownership(path)
 
 
-def _handlers(holder: Any, entry: Any) -> Any:
+def _handlers(holder: Any, entry: Any, *, at_s: int = 0) -> Any:
+    # `at_s` moves the settlement wall clock so that the latest assessment is
+    # decided by time, not by a tie between random assessment ids.
     return EngineeringHandlers(
         service=SimpleNamespace(connection=holder.connection, identity=holder.identity),
         session=s0.session_for(entry),
         binding=s0.BINDING,
-        clock=s0.clock_at(),
+        clock=s0.clock_at(wall=s0.WALL_BASE + timedelta(seconds=at_s)),
     )
 
 
@@ -205,6 +210,34 @@ def _register_repo_and_snapshot(holder: Any, *, marker: str, snapshot_id: str) -
         )
         return {"snapshot": snapshot_id}
 
+    _fenced(holder, marker=marker, mutate=mutate)
+
+
+def _seed_assessment(
+    holder: Any, *, marker: str, record: dict[str, Any], snapshot_id: str, status: str
+) -> None:
+    """Write an assessment row the way pre-fix builds did, through the real
+    fenced coordinator. This is how the tests get a legacy `matched` row."""
+
+    def mutate(fenced: Any, settlement: Any) -> Any:
+        app_storage.record_assessment(
+            fenced,
+            settlement,
+            workspace_id=WORKSPACE_ID,
+            assessment_id=f"eas-{marker}",
+            record_id=record["record_id"],
+            version=record["version"],
+            target_snapshot_id=snapshot_id,
+            status=status,
+            basis="review",
+            assessed_at_us=settlement.settled_at_us,
+        )
+        return {"seeded": marker}
+
+    _fenced(holder, marker=marker, mutate=mutate)
+
+
+def _fenced(holder: Any, *, marker: str, mutate: Any) -> None:
     from omnivia_core_runtime.ownership.fencing import read_guard
     from omnivia_core_runtime.service.mutation import (
         execute_mutation,
@@ -354,8 +387,9 @@ def test_a_review_precondition_and_the_conservative_assessment(tmp_path: Any) ->
         assert stale.value.code == ERROR_CODE_MUTATION_PRECONDITION_FAILED
 
         # The honest first write: the count-based expectation states zero prior
-        # assessments. The target is the newest registered snapshot, so the
-        # deterministic assessment is `matched`.
+        # assessments. The target is the newest registered snapshot, but that
+        # is not dependency validation, and neither is the evidence id. The
+        # result is `unknown`, not `matched`.
         recorded = handlers.engineering_review_record(
             _context(
                 holder,
@@ -373,7 +407,7 @@ def test_a_review_precondition_and_the_conservative_assessment(tmp_path: Any) ->
                 idempotency_key="idem-review-first",
             )
         )
-        assert recorded["applicability"] == "matched"
+        assert recorded["applicability"] == "unknown"
 
         # A newer head is registered: the same target is now potentially stale,
         # and an acknowledgement without evidence cannot clear it.
@@ -424,5 +458,216 @@ def test_an_unknown_target_is_unknown_never_matched(tmp_path: Any) -> None:
             )
         )
         assert recorded["applicability"] == "unknown"
+    finally:
+        holder.connection.close()
+
+
+def _record(holder: Any, *, marker: str = "obs-1", title: str | None = None) -> Any:
+    content = dict(_CONTENT)
+    if title is not None:
+        content["title"] = title
+    outcome = _settle_create(holder, marker=marker, content=content)
+    identity = outcome.result["record"]["provenance"]["identity"]
+    return {"record_id": identity["record_id"], "version": identity["version"]}
+
+
+def _review(
+    holder: Any,
+    record: dict[str, Any],
+    snapshot_id: str,
+    *,
+    stated: str,
+    key: str,
+    at_s: int,
+    outcome: str = "acknowledged",
+    evidence: str | None = None,
+) -> Any:
+    operation_input: dict[str, Any] = {
+        "record_ref": dict(record),
+        "target_snapshot": {"snapshot_id": snapshot_id},
+        "review_outcome": outcome,
+    }
+    if evidence is not None:
+        operation_input["review_evidence_id"] = evidence
+    return _handlers(holder, REVIEW, at_s=at_s).engineering_review_record(
+        _context(
+            holder, REVIEW, operation_input, stated_version=stated, idempotency_key=key
+        )
+    )
+
+
+def _history(holder: Any, record: dict[str, Any]) -> list[tuple[Any, ...]]:
+    return holder.connection.execute(
+        "SELECT assessment_id, target_snapshot_id, status, basis, assessed_at_us, "
+        "audit_ref FROM omnivia_engineering_assessments "
+        "WHERE record_id = ? AND version = ? ORDER BY assessed_at_us, assessment_id",
+        (record["record_id"], record["version"]),
+    ).fetchall()
+
+
+def _applicability(
+    holder: Any, snapshot_id: str, *, view: str = "candidates"
+) -> tuple[dict[str, str], Any]:
+    page = _search(
+        holder,
+        view=view,
+        repository_target={"repository_id": "erepo-1", "snapshot_id": snapshot_id},
+    )
+    return (
+        {p["record_id"]: p["applicability"] for p in page["previews"]},
+        page["coverage"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "evidence"),
+    [("acknowledged", None), ("evidence_attached", "ev-arbitrary-1")],
+)
+def test_a_review_of_the_newest_snapshot_never_mints_matched(
+    tmp_path: Any, outcome: str, evidence: str | None
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        _register_repo_and_snapshot(holder, marker="repo", snapshot_id="esnap-a")
+        _register_repo_and_snapshot(holder, marker="snap-a", snapshot_id="esnap-a")
+        record = _record(holder)
+        recorded = _review(
+            holder,
+            record,
+            "esnap-a",
+            outcome=outcome,
+            evidence=evidence,
+            stated="assessment-0",
+            key="idem-review-newest",
+            at_s=1,
+        )
+        assert recorded["applicability"] == "unknown"
+        assert [row[2] for row in _history(holder, record)] == ["unknown"]
+        assert _applicability(holder, "esnap-a")[0] == {record["record_id"]: "unknown"}
+    finally:
+        holder.connection.close()
+
+
+def test_search_never_replays_a_legacy_matched_assessment(tmp_path: Any) -> None:
+    holder = _owned(tmp_path)
+    try:
+        _register_repo_and_snapshot(holder, marker="repo", snapshot_id="esnap-a")
+        _register_repo_and_snapshot(holder, marker="snap-a", snapshot_id="esnap-a")
+        record = _record(holder)
+        other = _record(holder, marker="obs-2", title="Second provider A decision")
+        _seed_assessment(
+            holder, marker="legacy", record=record, snapshot_id="esnap-a", status="matched"
+        )
+        seeded = _history(holder, record)
+        assert [row[2] for row in seeded] == ["matched"]
+
+        # Being the newest registered snapshot does not make the legacy row
+        # true. A record version with no assessment at this exact target is
+        # `not_evaluated`, and coverage stays `unavailable`.
+        statuses, coverage = _applicability(holder, "esnap-a")
+        assert statuses == {record["record_id"]: "unknown", other["record_id"]: "not_evaluated"}
+        assert coverage == {"projection": "current", "applicability": "unavailable"}
+
+        # The head moves before any review: the legacy row is now potentially
+        # stale, and the new head has no assessment of its own.
+        _register_repo_and_snapshot(holder, marker="snap-b", snapshot_id="esnap-b")
+        assert _applicability(holder, "esnap-a")[0][record["record_id"]] == (
+            "potentially_stale"
+        )
+        assert _applicability(holder, "esnap-b")[0] == {
+            record["record_id"]: "not_evaluated",
+            other["record_id"]: "not_evaluated",
+        }
+
+        # Proposed records stay out of the accepted view even when they have
+        # assessments, and reads leave the history unchanged.
+        assert _applicability(holder, "esnap-a", view="accepted")[0] == {}
+        assert _history(holder, record) == seeded
+        assert _history(holder, other) == []
+    finally:
+        holder.connection.close()
+
+
+@pytest.mark.parametrize("prior", ["invalid", "potentially_stale"])
+def test_a_review_cannot_clear_a_stale_or_invalid_assessment(
+    tmp_path: Any, prior: str
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        _register_repo_and_snapshot(holder, marker="repo", snapshot_id="esnap-a")
+        _register_repo_and_snapshot(holder, marker="snap-a", snapshot_id="esnap-a")
+        record = _record(holder)
+        _seed_assessment(
+            holder, marker="prior", record=record, snapshot_id="esnap-a", status=prior
+        )
+        seeded = _history(holder, record)
+
+        # Neither an acknowledgement nor an unvalidated evidence id clears it,
+        # even on the newest registered snapshot.
+        reviews = [("acknowledged", None), ("evidence_attached", "ev-arbitrary-1")]
+        for count, (outcome, evidence) in enumerate(reviews, start=1):
+            recorded = _review(
+                holder,
+                record,
+                "esnap-a",
+                outcome=outcome,
+                evidence=evidence,
+                stated=f"assessment-{count}",
+                key=f"idem-review-{count}",
+                at_s=count,
+            )
+            assert recorded["applicability"] == prior
+
+        history = _history(holder, record)
+        assert history[0] == seeded[0]
+        assert [row[2] for row in history] == [prior, prior, prior]
+        assert _applicability(holder, "esnap-a")[0] == {record["record_id"]: prior}
+    finally:
+        holder.connection.close()
+
+
+def test_a_review_replay_is_idempotent_and_history_is_append_only(
+    tmp_path: Any,
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        _register_repo_and_snapshot(holder, marker="repo", snapshot_id="esnap-a")
+        _register_repo_and_snapshot(holder, marker="snap-a", snapshot_id="esnap-a")
+        record = _record(holder)
+        review = {
+            "outcome": "evidence_attached",
+            "evidence": "ev-1",
+            "stated": "assessment-0",
+            "key": "idem-review-once",
+        }
+        first = _review(holder, record, "esnap-a", at_s=1, **review)
+        once = _history(holder, record)
+        assert len(once) == 1
+
+        # Same key and body: the stored answer is replayed and nothing is written.
+        replayed = _review(holder, record, "esnap-a", at_s=2, **review)
+        assert dict(replayed) == dict(first)
+        assert _history(holder, record) == once
+
+        # A later review appends a row. The earlier one is never rewritten.
+        _register_repo_and_snapshot(holder, marker="snap-b", snapshot_id="esnap-b")
+        second = _review(
+            holder,
+            record,
+            "esnap-a",
+            stated="assessment-1",
+            key="idem-review-twice",
+            at_s=3,
+        )
+        assert second["applicability"] == "potentially_stale"
+        history = _history(holder, record)
+        assert history[0] == once[0]
+        assert [row[2] for row in history] == ["unknown", "potentially_stale"]
+        attestations = holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_review_attestations "
+            "WHERE record_id = ?",
+            (record["record_id"],),
+        ).fetchone()[0]
+        assert attestations == 2
     finally:
         holder.connection.close()

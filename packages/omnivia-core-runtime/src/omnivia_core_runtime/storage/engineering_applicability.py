@@ -8,15 +8,19 @@ impossible. The module is the only writer for the four families of migration
 
 Applicability rules (§15), enforced here:
 
-- the current value for one (record version, target snapshot) is the latest
-  appended assessment — append-only history, never an in-place flag;
-- `matched` requires the target snapshot to be the newest registered snapshot
-  of the record's repository — a newer registered head means
-  `potentially_stale` until a deterministic check or review says otherwise;
-- an `acknowledged` review without new evidence cannot clear
-  `potentially_stale`, `invalid` or `unknown` (§15.5): the returned status is
-  the previous assessment, not a freshly minted `matched`;
-- an unknown target snapshot is `unknown`, never guessed into `matched`.
+- the latest appended assessment for one (record version, target snapshot) is
+  the stored value. History is append-only and never an in-place flag;
+- nothing here mints `matched`. Only a qualified dependency validation can show
+  that a target is equivalent, and none exists yet. Registration, recency, a
+  review outcome and a `review_evidence_id` are not that proof. The newest
+  registered target is `unknown`, and an older registered target is
+  `potentially_stale`;
+- a review without validated evidence cannot clear `potentially_stale` or
+  `invalid` (§15.5), and a caller-supplied evidence id is not validated
+  evidence. The earlier status is carried forward;
+- a stored `matched` (a legacy row) is not replayed. It is re-assessed
+  under the same rules, and the history row is left unchanged;
+- a target that is unregistered or belongs to another repository is `unknown`.
 
 Priority rules (§13.3): a preference is per principal, per exact target; it
 never changes governed state, and `preferred` influences selection only after
@@ -253,29 +257,33 @@ def assess_against_registered_head(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
-    record_id: str,
-    version: str,
     claimed_repository_id: str | None,
     target_snapshot_id: str,
+    prior_status: str | None = None,
 ) -> str:
-    """The deterministic v1 assessment (§15.4, conservative subset).
+    """The v1 assessment (§15.4): a conservative subset with no dependency check.
 
-    With no dependency-machinery producer yet, the assessment is registry-based:
-    `matched` only when the target snapshot is the newest registered snapshot of
-    the record's claimed repository; `potentially_stale` when a newer head is
-    registered; `unknown` when the claim names no repository, no snapshot is
-    registered for it, or the target is not among them. A narrow claim proves
-    nothing: this is the conservative direction §15.4 requires.
+    This never returns `matched`. The registry records which snapshots exist, but
+    that does not show a target is equivalent to the record's dependencies.
+    Without qualified dependency validation the result is `unknown` for the
+    newest registered snapshot of the record's claimed repository. It is
+    `potentially_stale` for an older registered snapshot, and `unknown` when the
+    record claims no repository or the target is not registered for it.
+
+    `prior_status` is the stored assessment. A prior `invalid` or
+    `potentially_stale` is returned unchanged, because nothing here is validated
+    evidence (§15.5). A prior `matched` or `unknown` gets the result above, so
+    a legacy `matched` row is never certified again.
     """
+    if prior_status in ("invalid", "potentially_stale"):
+        return prior_status
     if claimed_repository_id is None:
         return "unknown"
     newest = _newest_registered_snapshot(
         connection, workspace_id=workspace_id, repository_id=claimed_repository_id
     )
-    if newest is None:
+    if newest is None or target_snapshot_id == newest:
         return "unknown"
-    if target_snapshot_id == newest:
-        return "matched"
     known = connection.execute(
         "SELECT 1 FROM omnivia_engineering_snapshots "
         "WHERE workspace_id = ? AND repository_id = ? AND snapshot_id = ?",

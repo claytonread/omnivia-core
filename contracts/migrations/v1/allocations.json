@@ -359,6 +359,39 @@
       "sha256": "2ef7b757363aa3674f967ecf19be94e8805430e25ba8980dfd60bed225c9ada8",
       "introduced_commit": "752ce7a5d768b4d5a585502d8db9c10abd209c40",
       "accepted_commit": null
+    },
+    {
+      "number": 50,
+      "filename": "0050_engineering_source_coverage.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 49,
+      "sha256": "5d01353103797cca5bc37cea77e7d9b52e65e9bf87c9bac1dccf953682f1ec41",
+      "introduced_commit": "c3aca0a50fd0b5d675b4d5389a3ff99cfb765b7f",
+      "accepted_commit": null
+    },
+    {
+      "number": 51,
+      "filename": "0051_engineering_dependency_carry.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 50,
+      "sha256": "1c80cf1a3141f1aa8758af2f3acb55901017df8a124145a83545a6861d0ca508",
+      "introduced_commit": "3fcc8d5a9c618b201c9223c19f4b381d555911d9",
+      "accepted_commit": null
+    },
+    {
+      "number": 52,
+      "filename": "0052_engineering_dependency_lookup.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 51,
+      "sha256": "b4e11f6c8a84753f6b3914d76883e61d2ff487047767d5c656dfab279b4cc1f3",
+      "introduced_commit": "4e4a6ed3ef4b1d8ce0145e8ffe52325fde0f80be",
+      "accepted_commit": null
     }
   ]
 }

@@ -1,10 +1,11 @@
 """The `engineering.*` handlers (SPEC-CORE-ENGMEM-001, plans PR-D/PR-F).
 
-All nine engineering-memory operations are durable here and in
+All ten engineering-memory operations are durable here and in
 `handlers.continuity`: the continuity vertical (register/append/close/handoff),
 the retrieval reads (search/expand) served from the governed record store, the
 supersession edge table and the continuity checkpoint index, the non-persisted
-context pack builder, the priority writes and the review attestations.
+context pack builder, the priority writes, the review attestations and the
+trusted source record.
 
 The pack builder (§12) is a non-persisting read: one frozen frontier, one
 resolution instant, exact budget reconciliation with mandatory notices rendered
@@ -30,13 +31,34 @@ Retrieval security shape, inherited from the knowledge family and the plan:
 5. continuations are the established MAC'd tokens, bound to the request
    digest, the frozen snapshot and the resolution instant; a changed binding,
    snapshot or epoch is an explicit restart (§11.4);
-6. `applicability` states what is actually known: nothing evaluates target
-   freshness yet, so record-level applicability is `not_evaluated` and the
-   coverage block reports `unavailable` rather than implying freshness
-   (§15.1);
-7. `working_context` reads the continuity checkpoint index — reported
+6. `applicability` reports only what is known. In the default `diagnostic`
+   mode, with no assessment for the exact (record version, target snapshot),
+   it is `not_evaluated`; with one, the stored status is re-assessed
+   conservatively and never reported as `matched`, and the coverage block
+   stays `unavailable` rather than implying freshness (§15.1);
+7. `current_safe` (search and pack build) consults authoritative source
+   coverage first: a target that is not a recorded snapshot inside its
+   stream's contiguous validated coverage is refused with
+   `dependency_unavailable` / `applicability_pending` before any frontier read
+   or ranking, never downgraded. For covered targets the shared evaluator in
+   `storage.engineering_source` then checks each admitted candidate's exact
+   dependency set directly, before scoring, and only proven `matched` records
+   are served. In both modes the governed frontier is read through
+   `storage.memory.read_authorized_memory_snapshot` under the effective caller's
+   evidence-label grant, so a denied version is never hydrated;
+   exact references (the expand anchor and its supersession endpoints, the
+   priority and review targets) resolve under that same grant, so a hidden
+   version is indistinguishable from a nonexistent one;
+8. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
-   knowledge (§12.3).
+   knowledge (§12.3). Search and the `resume` pack read only checkpoints of
+   sessions the effective principal owns, filtered in SQL before matching,
+   pagination, the snapshot digest, selection and rendering. There is no
+   sharing grant, so working context is same-principal only.
+
+`engineering.source.record` is the trusted source producer's write: it records
+one immutable source event under its own `engineering:source` grant through the
+same fenced, audited, idempotent mutation seam as every other write here.
 """
 
 from __future__ import annotations
@@ -49,11 +71,15 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
+    ERROR_CODE_AUTHORIZATION_DENIED,
+    ERROR_CODE_CONFLICT,
+    ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+    GOVERNANCE_STATE_ACCEPTED,
     ContextPrioritySetInput,
     ContextPrioritySetResult,
     ContractDecodeError,
@@ -63,6 +89,8 @@ from omnivia_core.contracts.v1 import (
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
+    EngineeringSourceRecordInput,
+    EngineeringSourceRecordResult,
     idempotency_equivalence,
     to_canonical_json,
 )
@@ -82,21 +110,26 @@ from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
     OperationContext,
     OperationError,
+    application_refusal,
 )
 from omnivia_core_runtime.service.pagination import (
     PROCESS_CONTINUATION_TOKENS,
     token_digest,
 )
+from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
-from omnivia_core_runtime.storage.governed import (
-    read_governed_record_values,
-    read_governed_supersessions,
+from omnivia_core_runtime.storage import engineering_source as source_storage
+from omnivia_core_runtime.storage.governed import read_governed_supersessions
+from omnivia_core_runtime.storage.memory import (
+    IdentifierAllocator,
+    random_identifier,
+    read_authorized_memory_snapshot,
 )
-from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 from omnivia_core_runtime.storage.retrieval import (
     GOVERNED_FRONTIER_FILTERS,
     GovernedCandidate,
     GovernedFrontier,
+    local_owner_label_grant,
     rank_governed,
 )
 
@@ -165,6 +198,65 @@ _MESSAGE_REVIEW: Final = (
     "engineering review recording ships contracts first; the attestation "
     "producer lands in a later engineering-memory package"
 )
+
+#: The compatibility-preserving refusal signal of `current_safe` (§15): the
+#: existing `dependency_unavailable` code with this fixed message, not a newly
+#: ratified error code. It is raised before any frontier read or ranking and is
+#: never answered by downgrading to `diagnostic`.
+APPLICABILITY_PENDING: Final = "applicability_pending"
+_APPLICABILITY_MODES: Final[frozenset[str]] = frozenset({"diagnostic", "current_safe"})
+#: The bounded direct-check budget of one `current_safe` read: candidates beyond
+#: it are refused as a size limit rather than silently left unevaluated.
+CURRENT_SAFE_CANDIDATE_CAP: Final = 1000
+#: The bounded target count of one `current_safe` pack build, enforced before any
+#: coverage read so candidate-by-target work and manifest loading stay bounded.
+CURRENT_SAFE_TARGET_CAP: Final = 16
+EVALUATOR_VERSION: Final = "eng-applicability-1"
+_MESSAGE_CURRENT_SAFE_BOUND: Final = (
+    "the current_safe frontier exceeds its bounded applicability check budget"
+)
+_MESSAGE_SOURCE_INVALID: Final = (
+    "the source record is outside its bounded, validated shape"
+)
+_MESSAGE_SOURCE_TOO_LARGE: Final = (
+    "the source manifest or pending window exceeds this workspace's bound"
+)
+_MESSAGE_SOURCE_CONFLICT: Final = (
+    "the source record conflicts with an immutable source identity or binding"
+)
+_MESSAGE_SOURCE_FOREIGN: Final = "the source stream is owned by another principal"
+
+
+def _applicability_pending() -> OperationError:
+    return application_refusal(ERROR_CODE_DEPENDENCY_UNAVAILABLE, APPLICABILITY_PENDING)
+
+
+def _proven_matched(
+    connection: Any,
+    workspace_id: str,
+    record: Any,
+    targets: list[source_storage.CoveredSnapshot],
+) -> bool:
+    """Whether the evaluator proves `matched` for this exact version at every target.
+
+    Evidence counts only as the record's own resolved evidence: a proposal saved
+    with `evidence_disposition` other than `available`, or with no source, stays
+    unqualified however well its digests line up.
+    """
+    provenance = record.provenance
+    evidence = provenance.evidence_disposition == "available" and bool(provenance.sources)
+    return all(
+        source_storage.evaluate_applicability(
+            connection,
+            workspace_id=workspace_id,
+            record_id=provenance.identity.record_id,
+            version=provenance.identity.version,
+            evidence_available=evidence,
+            target=target,
+        )
+        == "matched"
+        for target in targets
+    )
 
 
 def _as_result(outcome: Any) -> Mapping[str, Any] | AuditedOperationResult:
@@ -281,46 +373,93 @@ class EngineeringHandlers:
             raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
         return connection
 
+    def _authorized_values(
+        self,
+        connection: Any,
+        context: OperationContext,
+        *,
+        resolution_instant_us: int,
+        view: str,
+    ) -> tuple[Any, ...]:
+        """The governed frontier: identities and evidence-label grants are
+        resolved first and only admitted versions are hydrated, so a denied version
+        never reaches applicability, scoring, the candidate cap or omissions.
+
+        The grant is the EFFECTIVE caller's (`context.principal`), never the
+        principal this owner-composed handler was issued for: a session dispatch
+        runs it as another principal. The granted workspace is the server binding's.
+        """
+        granted = self._binding().workspace_id
+        grant = local_owner_label_grant(
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+            # A binding with no granted workspace grants no evidence label.
+            granted_workspace="" if granted is None else granted,
+        )
+        return read_authorized_memory_snapshot(
+            connection,
+            workspace_id=context.workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            view=view,
+            label_grant=grant,
+        ).values
+
     def _timestamp_us(self, value: str) -> int:
         import datetime as _dt
 
         parsed = _dt.datetime.fromisoformat(value)
         return int(parsed.timestamp() * 1_000_000)
 
-    def _require_visible_version(
+    def _visible_records(
         self,
-        fenced: Any,
+        connection: Any,
+        context: OperationContext,
         *,
-        workspace_id: str,
-        record_id: str,
-        version: str,
-    ) -> str | None:
-        """The exact record version must exist; returns its claimed repository.
-
-        A priority or a review names an exact visible target: a reference that
-        resolves under no governed view is `not_found`, never silently accepted.
-        The claimed repository comes from the record's own applicability, so a
-        review can be assessed against the registry without trusting the caller.
-        """
-        now_us = time.time_ns() // 1000
+        resolution_instant_us: int,
+    ) -> dict[tuple[str, str], Any]:
+        """Every governed version the effective caller's grant admits under any
+        governed view, keyed by exact (record id, version)."""
+        visible: dict[tuple[str, str], Any] = {}
         for governed_view in ("current_canonical", "candidates", "history"):
-            for value in read_governed_record_values(
-                fenced,
-                workspace_id=workspace_id,
-                resolution_instant_us=now_us,
+            for value in self._authorized_values(
+                connection,
+                context,
+                resolution_instant_us=resolution_instant_us,
                 view=governed_view,
             ):
                 identity = value.record.provenance.identity
-                if identity.record_id == record_id and identity.version == version:
-                    content = value.record.content
-                    if isinstance(content, Mapping):
-                        applicability = content.get("applicability")
-                        if isinstance(applicability, Mapping):
-                            claimed = applicability.get("repository_id")
-                            if isinstance(claimed, str) and claimed:
-                                return claimed
-                    return None
-        raise app_storage.RecordVersionNotFound(record_id)
+                visible[(identity.record_id, identity.version)] = value.record
+        return visible
+
+    def _require_visible_version(
+        self,
+        connection: Any,
+        context: OperationContext,
+        *,
+        record_id: str,
+        version: str,
+    ) -> str | None:
+        """The exact record version must be visible; returns its claimed repository.
+
+        A priority or a review names an exact visible target: a reference that
+        resolves under no governed view for the effective caller's evidence grant
+        is `not_found` -- hidden and nonexistent alike, naming neither. The claimed
+        repository comes from the record's own applicability, so a review can be
+        assessed against the registry without trusting the caller.
+        """
+        record = self._visible_records(
+            connection, context, resolution_instant_us=time.time_ns() // 1000
+        ).get((record_id, version))
+        if record is None:
+            raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+        content = record.content
+        if isinstance(content, Mapping):
+            applicability = content.get("applicability")
+            if isinstance(applicability, Mapping):
+                claimed = applicability.get("repository_id")
+                if isinstance(claimed, str) and claimed:
+                    return claimed
+        return None
 
     def _execute(
         self,
@@ -358,6 +497,18 @@ class EngineeringHandlers:
             raise OperationError(
                 error.code, error.message, retry_class=error.retry_class
             ) from error
+        except source_storage.SourceStreamForeignPrincipal as error:
+            raise application_refusal(
+                ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_SOURCE_FOREIGN
+            ) from error
+        except source_storage.SourceConflict as error:
+            raise application_refusal(
+                ERROR_CODE_CONFLICT, _MESSAGE_SOURCE_CONFLICT
+            ) from error
+        except source_storage.SourceWindowExceeded as error:
+            raise application_refusal(
+                ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_SOURCE_TOO_LARGE
+            ) from error
         except (
             app_storage.RecordVersionNotFound,
             app_storage.AssessmentPreconditionFailed,
@@ -393,8 +544,23 @@ class EngineeringHandlers:
         connection = self._connection()
         limit = SEARCH_DEFAULT_LIMIT if request.limit is None else request.limit
         view = request.view or "accepted"
-        if view not in _ENGINEERING_VIEWS:
+        mode = request.applicability_mode or "diagnostic"
+        if view not in _ENGINEERING_VIEWS or mode not in _APPLICABILITY_MODES:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        target: source_storage.CoveredSnapshot | None = None
+        if mode == "current_safe":
+            if view not in ("accepted", "candidates") or request.repository_target is None:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            # Authoritative coverage first: an uncovered target is refused before
+            # the frontier is read or anything is ranked.
+            target = source_storage.covered_snapshot(
+                connection,
+                workspace_id=context.workspace_id,
+                snapshot_id=request.repository_target.snapshot_id,
+                repository_id=request.repository_target.repository_id,
+            )
+            if target is None:
+                raise _applicability_pending()
         binding = request.to_wire()
         binding.pop("page", None)
         binding_digest = token_digest(
@@ -433,21 +599,25 @@ class EngineeringHandlers:
             resolved_at_us = time.time_ns() // 1000
 
         if view == "working_context":
-            previews, total, snapshot_digest = self._working_context_previews(
+            previews, total, snapshot_digest, start = self._working_context_previews(
                 connection,
-                workspace_id=context.workspace_id,
+                context,
                 query=request.query,
                 limit=limit,
-                offset=supplied.get("o") if supplied else None,
+                supplied=supplied,
             )
         else:
-            values = read_governed_record_values(
+            # Both modes hydrate only versions the effective caller's evidence
+            # grant admits: a denied version never reaches scoring, previews,
+            # totals or the continuation's snapshot digest.
+            values = self._authorized_values(
                 connection,
-                workspace_id=context.workspace_id,
+                context,
                 resolution_instant_us=resolved_at_us,
                 view=_GOVERNED_VIEWS[view],
             )
             candidates: list[GovernedCandidate] = []
+            evaluated = 0
             for value in values:
                 record = value.record
                 if record.domain_scope != OBSERVATION_DOMAIN:
@@ -461,7 +631,19 @@ class EngineeringHandlers:
                     # §8.2: a hypothesis stays marked and is excluded from
                     # accepted-facts selection even after governance accepts it.
                     continue
-                if request.repository_target is not None:
+                if target is not None:
+                    # current_safe: the bounded direct check runs before scoring,
+                    # and only a proven `matched` version enters the frontier.
+                    evaluated += 1
+                    if evaluated > CURRENT_SAFE_CANDIDATE_CAP:
+                        raise application_refusal(
+                            ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CURRENT_SAFE_BOUND
+                        )
+                    if not _proven_matched(
+                        connection, context.workspace_id, record, [target]
+                    ):
+                        continue
+                elif request.repository_target is not None:
                     if not isinstance(content, Mapping):
                         continue
                     applicability = content.get("applicability")
@@ -523,7 +705,9 @@ class EngineeringHandlers:
                 rendered = _observation_preview(record)
                 if rendered is None:
                     continue
-                if request.repository_target is not None:
+                if target is not None:
+                    rendered["applicability"] = "matched"
+                elif request.repository_target is not None:
                     latest = app_storage.latest_assessment(
                         connection,
                         workspace_id=context.workspace_id,
@@ -532,7 +716,19 @@ class EngineeringHandlers:
                         target_snapshot_id=request.repository_target.snapshot_id,
                     )
                     if latest is not None:
-                        rendered["applicability"] = latest["status"]
+                        # The stored status goes back through the conservative
+                        # assessment rather than being replayed, so a legacy
+                        # `matched` row is not certified by recency. This is
+                        # a read and writes nothing to the history.
+                        rendered["applicability"] = (
+                            app_storage.assess_against_registered_head(
+                                connection,
+                                workspace_id=context.workspace_id,
+                                claimed_repository_id=rendered.get("repository_id"),
+                                target_snapshot_id=request.repository_target.snapshot_id,
+                                prior_status=latest["status"],
+                            )
+                        )
                 previews.append(rendered)
             total = len(ordered)
 
@@ -550,45 +746,53 @@ class EngineeringHandlers:
         return {
             "previews": previews,
             "page": ({"continuation_token": continuation} if continuation else {}),
-            "coverage": {"projection": "current", "applicability": "unavailable"},
+            "coverage": {
+                "projection": "current",
+                "applicability": "unavailable" if target is None else "current",
+            },
         }
 
     def _working_context_previews(
         self,
         connection: Any,
+        context: OperationContext,
         *,
-        workspace_id: str,
         query: str,
         limit: int,
-        offset: Any,
-    ) -> tuple[list[dict[str, Any]], int, str]:
-        rows = connection.execute(
-            "SELECT checkpoint_id, sequence, payload_json, recorded_at_us "
-            "FROM omnivia_engineering_checkpoints WHERE workspace_id = ? "
-            "ORDER BY recorded_at_us DESC, sequence DESC",
-            (workspace_id,),
-        ).fetchall()
-        snapshot_digest = token_digest([list(row) for row in rows])
+        supplied: Mapping[str, Any] | None,
+    ) -> tuple[list[dict[str, Any]], int, str, int]:
+        """One page of the effective principal's own matching checkpoints.
+
+        Another principal's checkpoint never reaches matching, the total, the
+        snapshot digest or the offset. As in the governed views, the page is cut
+        from the matched set, and a continuation must name the same snapshot.
+        """
+        normalized = " ".join(query.lower().split())
+        matched: list[tuple[str, int, str]] = []
+        for checkpoint_id, sequence, payload_json in continuity_storage.read_checkpoints(
+            connection, workspace_id=context.workspace_id, principal_id=context.principal
+        ):
+            objective = str(json.loads(payload_json).get("objective", ""))
+            if normalized in objective.lower():
+                matched.append((checkpoint_id, sequence, objective))
+        snapshot_digest = token_digest([list(item) for item in matched])
         start = 0
-        if offset is not None:
-            if type(offset) is not int or not 0 < offset < len(rows):
+        if supplied is not None:
+            offset = supplied.get("o")
+            if (
+                supplied.get("s") != snapshot_digest
+                or type(offset) is not int
+                or not 0 < offset < len(matched)
+            ):
                 raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
             start = offset
-        normalized = " ".join(query.lower().split())
         previews: list[dict[str, Any]] = []
-        for row in rows[start:]:
-            try:
-                payload = json.loads(row[2])
-            except ValueError:
-                continue
-            objective = str(payload.get("objective", ""))
-            if normalized and normalized not in objective.lower():
-                continue
+        for checkpoint_id, sequence, objective in matched[start : start + limit]:
             body, truncated = _bounded(objective)
             previews.append(
                 {
-                    "record_id": row[0],
-                    "version": str(row[1]),
+                    "record_id": checkpoint_id,
+                    "version": str(sequence),
                     "title": body[:200],
                     "preview": body,
                     "truncated": truncated,
@@ -597,9 +801,7 @@ class EngineeringHandlers:
                     "evidence_available": True,
                 }
             )
-            if len(previews) >= limit:
-                break
-        return previews, len(rows), snapshot_digest
+        return previews, len(matched), snapshot_digest, start
 
     # --- engineering.expand ------------------------------------------------------
 
@@ -612,25 +814,14 @@ class EngineeringHandlers:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection = self._connection()
         now_us = time.time_ns() // 1000
-        anchor_found = False
-        for governed_view in ("current_canonical", "candidates", "history"):
-            values = read_governed_record_values(
-                connection,
-                workspace_id=context.workspace_id,
-                resolution_instant_us=now_us,
-                view=governed_view,
-            )
-            for value in values:
-                identity = value.record.provenance.identity
-                if (
-                    identity.record_id == request.anchor.record_id
-                    and identity.version == request.anchor.version
-                ):
-                    anchor_found = True
-                    break
-            if anchor_found:
-                break
-        if not anchor_found:
+        # The anchor and every endpoint resolve under the effective caller's
+        # evidence grant: a hidden anchor is `not_found`, exactly as a missing
+        # one, and a hidden neighbour is never an edge, a node or a count.
+        visible = self._visible_records(
+            connection, context, resolution_instant_us=now_us
+        )
+        anchor = (request.anchor.record_id, request.anchor.version)
+        if anchor not in visible:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
 
         depth = 1 if request.depth is None else request.depth
@@ -649,9 +840,10 @@ class EngineeringHandlers:
         for edge in supersessions:
             if len(edges) >= edge_limit:
                 break
-            if (
-                edge.source_version_id != request.anchor.version
-                and edge.target_version_id != request.anchor.version
+            source = (edge.governed_record_id, edge.source_version_id)
+            target = (edge.governed_record_id, edge.target_version_id)
+            if anchor not in (source, target) or not (
+                source in visible and target in visible
             ):
                 continue
             edges.append(
@@ -668,12 +860,8 @@ class EngineeringHandlers:
                     "status": "accepted",
                 }
             )
-            other = (
-                edge.target_version_id
-                if edge.source_version_id == request.anchor.version
-                else edge.source_version_id
-            )
-            node = {"record_id": edge.governed_record_id, "version": other}
+            other = target if source == anchor else source
+            node = {"record_id": other[0], "version": other[1]}
             if node not in nodes and len(nodes) < node_limit:
                 nodes.append(node)
         # `depth` is declared by the contract and bounded by it (1..3); this
@@ -714,7 +902,7 @@ class EngineeringHandlers:
 
         self._require_visible_version(
             connection,
-            workspace_id=context.workspace_id,
+            context,
             record_id=request.target.record_id,
             version=request.target.version,
         )
@@ -722,6 +910,14 @@ class EngineeringHandlers:
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
         ) -> Mapping[str, Any]:
+            # Rechecked under the fence: a revocation since the check above
+            # writes no priority and rolls the audit back with it.
+            self._require_visible_version(
+                fenced,
+                context,
+                record_id=request.target.record_id,
+                version=request.target.version,
+            )
             app_storage.set_priority(
                 fenced,
                 settlement,
@@ -758,6 +954,72 @@ class EngineeringHandlers:
             )
         )
 
+    # --- engineering.source.record -------------------------------------------------
+
+    def engineering_source_record(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Record one trusted source event and commit its stream head and barrier.
+
+        The contract decoder is tolerant, so the raw payload is also validated
+        strictly: unknown keys, malformed paths or digests and oversized manifests
+        are refused before any grant is issued. Stream ownership comes from the
+        authenticated principal, never from the payload.
+        """
+        try:
+            request = EngineeringSourceRecordInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        try:
+            record = source_storage.parse_source_record(context.request.input)
+        except source_storage.SourceRecordTooLarge as error:
+            raise application_refusal(
+                ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_SOURCE_TOO_LARGE
+            ) from error
+        except source_storage.SourceRecordInvalid as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_SOURCE_INVALID
+            ) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import (
+            read_guard as _read_guard,
+        )
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        if identity is None or guard is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            return source_storage.record_source_event(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                record=record,
+            )
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringSourceRecordResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, guard, equivalence, mutate, valid_result
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
     # --- engineering.review.record -------------------------------------------------
 
     def engineering_review_record(
@@ -783,12 +1045,14 @@ class EngineeringHandlers:
             workspace_id=context.workspace_id,
         )
 
-        claimed_repository = self._require_visible_version(
+        self._require_visible_version(
             connection,
-            workspace_id=context.workspace_id,
+            context,
             record_id=request.record_ref.record_id,
             version=request.record_ref.version,
         )
+        # Set under the fence by `precondition`, which always runs before `mutate`.
+        claimed: list[str | None] = []
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -807,16 +1071,16 @@ class EngineeringHandlers:
                 raise app_storage.AssessmentPreconditionFailed(
                     "the target's current assessment is not the version this review expects"
                 )
-            # §15.5: the assessment follows the registry, so an acknowledgement
-            # can never *fabricate* a clearing — it recomputes, and a stale
-            # target stays stale under the newest registered head.
+            # §15.5: no qualified dependency validation exists yet, so no review
+            # outcome or evidence id can mint `matched` or clear a prior
+            # `invalid` / `potentially_stale`. The review is recorded and the
+            # assessment stays conservative.
             status = app_storage.assess_against_registered_head(
                 fenced,
                 workspace_id=context.workspace_id,
-                record_id=request.record_ref.record_id,
-                version=request.record_ref.version,
-                claimed_repository_id=claimed_repository,
+                claimed_repository_id=claimed[-1],
                 target_snapshot_id=request.target_snapshot.snapshot_id,
+                prior_status=None if latest is None else latest["status"],
             )
             app_storage.record_assessment(
                 fenced,
@@ -856,6 +1120,17 @@ class EngineeringHandlers:
             return True
 
         def precondition(fenced: Any) -> str:
+            # Rechecked under the fence and before the stated version is compared:
+            # a revocation since the check above neither writes a review nor
+            # discloses the hidden target's assessment count.
+            claimed.append(
+                self._require_visible_version(
+                    fenced,
+                    context,
+                    record_id=request.record_ref.record_id,
+                    version=request.record_ref.version,
+                )
+            )
             count = fenced.execute(
                 "SELECT COUNT(*) FROM omnivia_engineering_assessments "
                 "WHERE workspace_id = ? AND record_id = ? AND version = ? "
@@ -900,7 +1175,32 @@ class EngineeringHandlers:
             request = EngineeringContextBuildInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        mode = request.applicability_mode or "diagnostic"
+        if mode not in _APPLICABILITY_MODES:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
         connection = self._connection()
+        # current_safe: every target's authoritative coverage is checked before the
+        # frontier is read; one uncovered target refuses the whole build.
+        covered: list[source_storage.CoveredSnapshot] = []
+        if mode == "current_safe":
+            # No targets would silently degrade to an unqualified pack; too many
+            # would unbound the check. Both refuse before any source read.
+            if not request.targets:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            if len(request.targets) > CURRENT_SAFE_TARGET_CAP:
+                raise OperationError(
+                    ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CURRENT_SAFE_BOUND
+                )
+            for requested in request.targets:
+                resolved = source_storage.covered_snapshot(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    snapshot_id=requested.snapshot_id,
+                    repository_id=requested.repository_id,
+                )
+                if resolved is None:
+                    raise _applicability_pending()
+                covered.append(resolved)
         resolved_at_us = time.time_ns() // 1000
 
         effective_tokens = (
@@ -919,57 +1219,73 @@ class EngineeringHandlers:
         # The authorised frontier: accepted observations matching the query,
         # plus (for the investigate profile, which explicitly requests them)
         # proposed candidates under the candidate_findings partition.
-        values = read_governed_record_values(
-            connection,
-            workspace_id=context.workspace_id,
-            resolution_instant_us=resolved_at_us,
-            view="current_canonical",
+        views = ("current_canonical",) + (
+            ("candidates",) if request.profile == "investigate" else ()
         )
-        if request.profile == "investigate":
-            values = values + read_governed_record_values(
+        values: tuple[Any, ...] = ()
+        for governed_view in views:
+            # Both modes hydrate only versions the effective caller's evidence
+            # grant admits, so a denied version is never selected, cited or
+            # counted as an omission.
+            values += self._authorized_values(
                 connection,
-                workspace_id=context.workspace_id,
+                context,
                 resolution_instant_us=resolved_at_us,
-                view="candidates",
+                view=governed_view,
             )
-        accepted_records = []
+        # Each record keeps its own partition: a candidate never renders under
+        # `accepted_knowledge`, whatever else the frontier holds.
+        selected: list[tuple[Any, str]] = []
+        evaluated = unproven = 0
         for value in values:
             record = value.record
             if record.domain_scope != OBSERVATION_DOMAIN:
                 continue
-            partition = (
-                "accepted_knowledge"
-                if value.record.provenance.identity.governance_state == "canonical"
-                else "candidate_findings"
-            )
             content = record.content
             if not isinstance(content, Mapping):
                 continue
+            # Only a governance-accepted version is accepted knowledge; a
+            # hypothesis stays a finding even after acceptance (§8.2).
+            partition = (
+                "accepted_knowledge"
+                if record.provenance.identity.governance_state
+                == GOVERNANCE_STATE_ACCEPTED
+                and content.get("assertion_basis") != "hypothesis"
+                else "candidate_findings"
+            )
             text = " ".join(
                 str(content.get(key, "")) for key in ("title", "summary", "what")
             ).lower()
             if normalized and normalized not in text:
                 continue
-            accepted_records.append(record)
+            if covered:
+                evaluated += 1
+                if evaluated > CURRENT_SAFE_CANDIDATE_CAP:
+                    raise application_refusal(
+                        ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CURRENT_SAFE_BOUND
+                    )
+                if not _proven_matched(connection, context.workspace_id, record, covered):
+                    unproven += 1
+                    continue
+            selected.append((record, partition))
 
-        # Working context (resume profile only, explicitly requested material).
+        # Working context (resume profile only, explicitly requested material):
+        # the effective principal's own five newest checkpoints. Ownership is
+        # filtered before the cut, so another principal's never takes a slot,
+        # a section, budget, an omission or a byte of the checksum.
         working: list[dict[str, Any]] = []
         if request.profile == "resume":
-            rows = connection.execute(
-                "SELECT checkpoint_id, sequence, payload_json FROM "
-                "omnivia_engineering_checkpoints WHERE workspace_id = ? "
-                "ORDER BY recorded_at_us DESC, sequence DESC LIMIT 5",
-                (context.workspace_id,),
-            ).fetchall()
-            for row in rows:
-                try:
-                    payload = json.loads(row[2])
-                except ValueError:
-                    continue
+            for checkpoint_id, sequence, payload_json in continuity_storage.read_checkpoints(
+                connection,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                limit=5,
+            ):
+                payload = json.loads(payload_json)
                 working.append(
                     {
-                        "checkpoint_id": row[0],
-                        "sequence": row[1],
+                        "checkpoint_id": checkpoint_id,
+                        "sequence": sequence,
                         "objective": str(payload.get("objective", "")),
                         "unresolved": payload.get("unresolved_work", []),
                     }
@@ -977,7 +1293,7 @@ class EngineeringHandlers:
 
         sections: list[dict[str, Any]] = []
         citations: list[dict[str, Any]] = []
-        for ordinal, record in enumerate(accepted_records, 1):
+        for ordinal, (record, partition) in enumerate(selected, 1):
             content = record.content if isinstance(record.content, Mapping) else {}
             title = str(content.get("title") or record.provenance.identity.record_id)
             body = str(content.get("summary") or content.get("what") or "")
@@ -1014,10 +1330,22 @@ class EngineeringHandlers:
                 }
             )
 
-        uncertainties = [
-            "Target applicability is not evaluated in this build; every applicability statement is `not_evaluated`.",
-        ]
         omissions: list[dict[str, Any]] = []
+        if covered:
+            uncertainties = [
+                (
+                    "current_safe: every cited record is proven `matched` at every "
+                    "target by whole-file dependency digests recorded by a trusted "
+                    "source; records whose applicability is unknown, potentially stale "
+                    "or invalid are omitted."
+                ),
+            ]
+            if unproven:
+                omissions.append({"field": "sections", "reason": "applicability_unproven"})
+        else:
+            uncertainties = [
+                "Target applicability is not evaluated in this build; every applicability statement is `not_evaluated`.",
+            ]
 
         def render(
             pack_sections: list[dict[str, Any]],
@@ -1086,17 +1414,40 @@ class EngineeringHandlers:
         budget["rendered_bytes"] = byte_count
         budget["source_bytes_read"] = 0
         budget["hydrations"] = 0
+        # A statement about the pack's records: `matched` only when current_safe
+        # proved every included record at that target; nothing is claimed about
+        # an empty pack.
+        status = "matched" if covered and selected else "not_evaluated"
         applicability = [
-            {"snapshot": target.to_wire(), "status": "not_evaluated"}
+            {"snapshot": target.to_wire(), "status": status}
             for target in request.targets
         ]
+        normalized_request: dict[str, Any] = {
+            "query": request.query,
+            "profile": request.profile,
+        }
+        reproducibility: dict[str, Any] = {
+            "builder_version": BUILDER_VERSION,
+            "renderer_version": RENDERER_VERSION,
+            "artifact_canonicalization": "rfc8785",
+            "resolution_instant_us": resolved_at_us,
+        }
+        if covered:
+            normalized_request["applicability_mode"] = mode
+            reproducibility["applicability_evaluator"] = EVALUATOR_VERSION
+            reproducibility["source_coverage"] = [
+                {
+                    "snapshot_id": target.snapshot_id,
+                    "stream_id": target.stream_id,
+                    "sequence": target.sequence,
+                    "manifest_digest": target.manifest_digest,
+                }
+                for target in covered
+            ]
 
         pack: dict[str, Any] = {
             "format_version": "engineering_context.v1",
-            "normalized_request": {
-                "query": request.query,
-                "profile": request.profile,
-            },
+            "normalized_request": normalized_request,
             "targets": [target.to_wire() for target in request.targets],
             "profile": request.profile,
             "sections": sections,
@@ -1111,12 +1462,7 @@ class EngineeringHandlers:
                 "workspace_id": context.workspace_id,
                 "principal_id": context.principal,
             },
-            "reproducibility": {
-                "builder_version": BUILDER_VERSION,
-                "renderer_version": RENDERER_VERSION,
-                "artifact_canonicalization": "rfc8785",
-                "resolution_instant_us": resolved_at_us,
-            },
+            "reproducibility": reproducibility,
             "fresh_authorization_required": True,
         }
         canonical = to_canonical_json(pack)

@@ -36,8 +36,18 @@ _FILE_FLAG_OPEN_REPARSE_POINT: Final = 0x00200000
 _FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x00000400
 
 
+#: How many times verification reopens an address whose named object was replaced
+#: between open and check. Each replacement needs a concurrent publisher's rename, so
+#: this bounds the work rather than waiting for every racer to finish.
+_VERIFY_ATTEMPTS: Final = 4
+
+
 class BlobPublicationRefused(RuntimeError):
     """Bytes cannot be published, or what is already published is not those bytes."""
+
+
+class _BlobReplaced(BlobPublicationRefused):
+    """A rename moved the name to another regular object while it was being checked."""
 
 
 def _windows_file_api() -> Any:
@@ -126,16 +136,20 @@ def _opened_blob(path: Path) -> int:
         attributes = int(getattr(opened, "st_file_attributes", 0)) | int(
             getattr(named, "st_file_attributes", 0)
         )
-        safe = (
+        regular = (
             stat.S_ISREG(opened.st_mode)
             and stat.S_ISREG(named.st_mode)
-            and opened.st_nlink == 1
-            and named.st_nlink == 1
             and attributes & _FILE_ATTRIBUTE_REPARSE_POINT == 0
-            and (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode))
-            == (named.st_dev, named.st_ino, stat.S_IFMT(named.st_mode))
         )
-        if not safe:
+        same = (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino)
+        links = {opened.st_nlink, named.st_nlink}
+        # A concurrent publisher's atomic replace can land between open and lstat, or
+        # inside lstat after it resolved the name. Either way the name now holds another
+        # object, and the one seen has one link or none once the rename unlinked it; the
+        # caller may reopen and re-verify whatever the name now holds.
+        if regular and links <= {0, 1} and (not same or 0 in links):
+            raise _BlobReplaced("the content-addressed blob is not one regular file")
+        if not (regular and same and links == {1}):
             raise BlobPublicationRefused(
                 "the content-addressed blob is not one regular file"
             )
@@ -192,9 +206,18 @@ def _verify(path: Path, content: bytes) -> None:
 
     Opened with `O_NOFOLLOW` and re-checked through the descriptor, so a symlink or a
     non-regular file standing where the object should be is refused rather than
-    followed to whatever it points at.
+    followed to whatever it points at. Concurrent first publishers of the same address
+    rename identical bytes over each other; when that swaps the named object between
+    open and check, the current object is reopened and verified in full, a bounded
+    number of times. Every other refusal is immediate.
     """
-    descriptor = _opened_blob(path)
+    for attempt in range(1, _VERIFY_ATTEMPTS + 1):
+        try:
+            descriptor = _opened_blob(path)
+            break
+        except _BlobReplaced:
+            if attempt == _VERIFY_ATTEMPTS:
+                raise
     try:
         offset = 0
         while True:

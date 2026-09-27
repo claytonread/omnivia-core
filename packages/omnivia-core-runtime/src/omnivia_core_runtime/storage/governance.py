@@ -28,10 +28,13 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationError
+from omnivia_core_runtime.storage import engineering_source
 from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
 )
 from omnivia_core_runtime.storage.memory import (
+    _ENGINEERING_DOMAIN,
+    _ENGINEERING_RECORD_TYPES,
     IdentifierAllocator,
     resolve_memory_claim_evidence,
 )
@@ -563,6 +566,23 @@ def apply_governance_transition(
             settlement.settled_at_us,
         ),
     )
+    if (
+        operation in (KNOWLEDGE_PROPOSE_OPERATION, CANDIDATE_APPROVE_OPERATION)
+        and claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
+    ):
+        # Content, claim and evidence were copied unchanged above, so the
+        # observation's consistent sealed dependency set, if any, travels with them
+        # in this same settlement. The review adds no applicability of its own.
+        engineering_source.carry_dependency_set(
+            connection,
+            settlement,
+            workspace_id=workspace_id,
+            record_id=source.record_id,
+            source_version=source.version_id,
+            target_version=version_id,
+            allocate_identifier=allocate_identifier,
+        )
 
     previous = _governed_record(
         connection,
