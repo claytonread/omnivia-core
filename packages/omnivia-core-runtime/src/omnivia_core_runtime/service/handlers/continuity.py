@@ -23,7 +23,14 @@ The security shape is the one the decision family established:
    transaction, so a session that closed or advanced under the request is
    honoured, and a competing successor loses as a precondition failure
    rather than silently replacing a newer checkpoint (§9.2);
-6. refusals carry no caller value: every message is a frozen module constant.
+6. refusals carry no caller value: every message is a frozen module constant;
+7. a session is its registering principal's alone. Append, close (with its
+   final checkpoint) and handoff resolve it as the effective principal
+   (`context.principal`, never the principal this owner-composed handler was
+   issued for), in the precondition read and again inside the fenced write.
+   Another principal's session or checkpoint is `not_found` exactly as a
+   missing one, before any stated version is compared. There is no sharing
+   grant, so continuity is same-principal only.
 """
 
 from __future__ import annotations
@@ -145,6 +152,26 @@ def _timestamp(us: int) -> str:
         _dt.datetime.fromtimestamp(us / 1_000_000, tz=_dt.UTC)
         .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
+
+
+def _session_version(
+    fenced: sqlite3.Connection, context: OperationContext, session_id: str
+) -> str:
+    """The version append and close compare, read under the fence as the caller.
+
+    A session the effective principal does not own is `SessionNotFound` here,
+    before the stated version is compared, so its head is never disclosed as a
+    precondition failure.
+    """
+    session = storage.read_session(
+        fenced,
+        workspace_id=context.workspace_id,
+        session_id=session_id,
+        principal_id=context.principal,
+    )
+    if session is None:
+        raise SessionNotFound(session_id)
+    return f"seq-{session['last_checkpoint_sequence'] or 0}"
 
 
 @dataclass(frozen=True)
@@ -283,6 +310,7 @@ class ContinuityHandlers:
                 fenced,
                 settlement,
                 workspace_id=context.workspace_id,
+                principal_id=context.principal,
                 checkpoint_id=self.allocate_identifier("eck"),
                 session_id=request.session_id,
                 parent_checkpoint_id=request.parent_checkpoint_id,
@@ -309,13 +337,8 @@ class ContinuityHandlers:
                 return False
             return True
 
-        def precondition(fenced: Any) -> str | None:
-            session = storage.read_session(
-                fenced, workspace_id=context.workspace_id, session_id=request.session_id
-            )
-            if session is None:
-                return None
-            return f"seq-{session['last_checkpoint_sequence'] or 0}"
+        def precondition(fenced: Any) -> str:
+            return _session_version(fenced, context, request.session_id)
 
         outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
@@ -354,6 +377,7 @@ class ContinuityHandlers:
                 fenced,
                 settlement,
                 workspace_id=context.workspace_id,
+                principal_id=context.principal,
                 session_id=request.session_id,
                 expected_sequence=request.expected_sequence,
                 final_checkpoint=None if final is None else final.to_wire(),
@@ -384,13 +408,8 @@ class ContinuityHandlers:
                 return False
             return True
 
-        def precondition(fenced: Any) -> str | None:
-            session = storage.read_session(
-                fenced, workspace_id=context.workspace_id, session_id=request.session_id
-            )
-            if session is None:
-                return None
-            return f"seq-{session['last_checkpoint_sequence'] or 0}"
+        def precondition(fenced: Any) -> str:
+            return _session_version(fenced, context, request.session_id)
 
         outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
@@ -404,26 +423,21 @@ class ContinuityHandlers:
             request = ContinuityHandoffReadInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        if request.checkpoint_id is None and (
+            request.session_id is None or request.sequence is None
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
         connection, _identity, _guard = self._authority()
-        connection.execute("BEGIN")
-        try:
-            if request.checkpoint_id is not None:
-                record = storage.read_checkpoint(
-                    connection,
-                    workspace_id=context.workspace_id,
-                    checkpoint_id=request.checkpoint_id,
-                )
-            elif request.session_id is not None and request.sequence is not None:
-                record = self._read_by_sequence(
-                    connection,
-                    workspace_id=context.workspace_id,
-                    session_id=request.session_id,
-                    sequence=request.sequence,
-                )
-            else:
-                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
-        finally:
-            connection.execute("ROLLBACK")
+        # One statement resolves the checkpoint and its session's owner before the
+        # payload is loaded: another principal's checkpoint is `not_found` below.
+        record = storage.read_checkpoint(
+            connection,
+            workspace_id=context.workspace_id,
+            principal_id=context.principal,
+            checkpoint_id=request.checkpoint_id,
+            session_id=request.session_id,
+            sequence=request.sequence,
+        )
         if record is None:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
         payload = record["payload"]
@@ -451,25 +465,6 @@ class ContinuityHandlers:
             view["next_actions"] = [str(item)[:2000] for item in payload["next_actions"]]
         view["omissions"] = []
         return {"handoff": view}
-
-    def _read_by_sequence(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        workspace_id: str,
-        session_id: str,
-        sequence: int,
-    ) -> dict[str, Any] | None:
-        row = connection.execute(
-            "SELECT checkpoint_id FROM omnivia_engineering_checkpoints "
-            "WHERE workspace_id = ? AND session_id = ? AND sequence = ?",
-            (workspace_id, session_id, sequence),
-        ).fetchone()
-        if row is None:
-            return None
-        return storage.read_checkpoint(
-            connection, workspace_id=workspace_id, checkpoint_id=row[0]
-        )
 
     def _execute(
         self,

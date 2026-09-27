@@ -745,26 +745,110 @@ def test_unqualified_dependency_sets_are_never_matched(workspace: Workspace) -> 
     assert workspace.matched("esnap-a") == [qualified["record_id"]]
 
 
-def test_an_approved_version_does_not_inherit_matched(workspace: Workspace) -> None:
-    """Governance transitions mint new exact versions and no dependency set comes
-    with them, so `current_safe` omits the accepted version rather than inheriting
-    the proposal's `matched` (a known limitation, not a qualification)."""
+def test_an_approved_version_carries_its_qualified_dependency_set(
+    workspace: Workspace,
+) -> None:
+    """`knowledge.propose` and `candidate.approve` copy the observation's content,
+    claim and evidence, so its sealed dependency set travels to each new exact
+    version in the same settlement (migration 0051). Approval proves nothing by
+    itself: every read re-evaluates the carried set at its target, and each
+    version keeps its own partition."""
     workspace.record(_source(1, "esnap-a", FILES_A))
-    record = workspace.observe(_observation(_manifest()))
-    assert workspace.matched("esnap-a") == [record["record_id"]]
-    version = record["version"]
-    for operation in ("knowledge.propose", "candidate.approve"):
-        transitioned = workspace.ok(
+    workspace.record(
+        _source(2, "esnap-b", {**FILES_A, "src/auth.py": AUTH_V2}, predecessor="esnap-a")
+    )
+    workspace.record(
+        _source(
+            3,
+            "esnap-gone",
+            {"src/util.py": UTIL_V1, "README.md": README_V1},
+            predecessor="esnap-b",
+        )
+    )
+    created = workspace.observe(_observation(_manifest()))
+    connection = workspace.holder.connection
+
+    def carried(version: str) -> tuple[Any, ...]:
+        claims = connection.execute(
+            "SELECT repository_id, stream_id, snapshot_id, producer, producer_version, "
+            "coverage, dependency_count FROM omnivia_engineering_dependency_sets "
+            "WHERE version = ?",
+            (version,),
+        ).fetchone()
+        rows = connection.execute(
+            "SELECT selector_type, selector, meaning, producer, expected_digest "
+            "FROM omnivia_engineering_dependencies WHERE version = ? ORDER BY selector",
+            (version,),
+        ).fetchall()
+        return claims, rows
+
+    def served(snapshot_id: str, view: str) -> list[dict[str, str]]:
+        response = workspace.search(snapshot_id, view=view)
+        assert isinstance(response, SuccessResponseEnvelope), response
+        return [
+            {"record_id": p["record_id"], "version": p["version"]}
+            for p in response.to_wire()["result"]["previews"]
+        ]
+
+    def pack(snapshot_id: str) -> dict[str, Any]:
+        return workspace.ok(
+            "engineering.context.build",
+            {
+                "query": "provider",
+                "targets": [{"repository_id": REPOSITORY, "snapshot_id": snapshot_id}],
+                "profile": "investigate",
+                "applicability_mode": "current_safe",
+            },
+        )["pack"]
+
+    def transition(operation: str, record: dict[str, str]) -> dict[str, str]:
+        result = workspace.ok(
             operation,
             {"record_id": record["record_id"], "rationale": {"reason_code": "review"}},
-            mutation_precondition=MutationPrecondition(record_version=version),
+            mutation_precondition=MutationPrecondition(record_version=record["version"]),
         )
-        version = transitioned["updated_record"]["provenance"]["identity"]["version"]
-    accepted = {"record_id": record["record_id"], "version": version}
-    assert accepted["version"] != record["version"]
-    assert workspace.status(accepted, "esnap-a") == "unknown"
-    assert workspace.matched("esnap-a", view="accepted") == []
-    assert workspace.ok("engineering.search", {"query": "provider"})["previews"] != []
+        identity = result["updated_record"]["provenance"]["identity"]
+        return {"record_id": identity["record_id"], "version": identity["version"]}
+
+    proposed = transition("knowledge.propose", created)
+    assert workspace.status(proposed, "esnap-a") == "matched"
+    assert served("esnap-a", "candidates") == [proposed]
+    assert served("esnap-a", "accepted") == []
+    candidate_pack = pack("esnap-a")
+    assert [s["partition"] for s in candidate_pack["sections"]] == ["candidate_findings"]
+    assert [c["record_ref"] for c in candidate_pack["citations"]] == [proposed]
+
+    accepted = transition("candidate.approve", proposed)
+    assert len({created["version"], proposed["version"], accepted["version"]}) == 3
+    # The same baseline, producer, coverage and digest claims on every version.
+    assert carried(created["version"]) == carried(proposed["version"])
+    assert carried(proposed["version"]) == carried(accepted["version"])
+    assert carried(accepted["version"])[0] == (
+        REPOSITORY, STREAM, "esnap-a", "omnivia-dev-indexer", "1.0.0", "complete", 3
+    )
+    assert workspace.status(accepted, "esnap-a") == "matched"
+    assert workspace.status(accepted, "esnap-b") == "potentially_stale"
+    assert workspace.status(accepted, "esnap-gone") == "invalid"
+    assert served("esnap-a", "accepted") == [accepted]
+    assert served("esnap-a", "candidates") == []
+    for snapshot_id in ("esnap-b", "esnap-gone"):
+        assert served(snapshot_id, "accepted") == []
+        unproven = pack(snapshot_id)
+        assert unproven["citations"] == []
+        assert unproven["omissions"] == [
+            {"field": "sections", "reason": "applicability_unproven"}
+        ]
+    accepted_pack = pack("esnap-a")
+    assert [s["partition"] for s in accepted_pack["sections"]] == ["accepted_knowledge"]
+    assert [c["record_ref"] for c in accepted_pack["citations"]] == [accepted]
+    assert accepted_pack["applicability"][0]["status"] == "matched"
+    # Diagnostic reads still list it without claiming applicability.
+    diagnostic = workspace.ok("engineering.search", {"query": "provider"})["previews"]
+    assert [(p["version"], p["applicability"]) for p in diagnostic] == [
+        (accepted["version"], "not_evaluated")
+    ]
+    # Reads wrote nothing.
+    assert workspace.counts()["omnivia_engineering_assessments"] == 0
 
 
 def test_review_evidence_cannot_establish_a_match(workspace: Workspace) -> None:
@@ -869,6 +953,437 @@ def test_current_safe_never_reveals_label_denied_records_to_another_reader(
         {"field": "sections", "reason": "applicability_unproven"}
     ]
     assert denied_ids <= set(evaluated)
+
+
+def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default `diagnostic` search and pack build read through the same
+    evidence-label grant as `current_safe`. A denied, high-relevance sentinel in
+    both the accepted and candidate partitions never reaches the scorer, previews,
+    citations, omissions, page totals or continuations, and the permitted records
+    keep the order the owner sees. Labelling the open evidence withdraws access at
+    once: a pinned continuation restarts and fresh reads are empty."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+
+    m2.write(workspace.holder, m2.EVIDENCE, evidence_id="evd-open", source_native_id="doc-open")
+    open_source = {**EVIDENCE_SOURCE, "source_id": "doc-open"}
+
+    def accept(record: dict[str, str]) -> dict[str, str]:
+        version = record["version"]
+        for operation in ("knowledge.propose", "candidate.approve"):
+            transitioned = workspace.ok(
+                operation,
+                {"record_id": record["record_id"], "rationale": {"reason_code": "review"}},
+                mutation_precondition=MutationPrecondition(record_version=version),
+            )
+            version = transitioned["updated_record"]["provenance"]["identity"]["version"]
+        return {"record_id": record["record_id"], "version": version}
+
+    sentinel = "XYZZY provider provider provider provider"
+    hidden_candidate = workspace.observe(_observation(None, title=sentinel))
+    hidden_accepted = accept(workspace.observe(_observation(None, title=sentinel + " accepted")))
+    open_a = workspace.observe(_observation(None, title="Open alpha", source=open_source))
+    open_b = workspace.observe(_observation(None, title="Open provider beta", source=open_source))
+    open_accepted = accept(
+        workspace.observe(_observation(None, title="Open accepted", source=open_source))
+    )
+    denied_ids = {hidden_candidate["record_id"], hidden_accepted["record_id"]}
+
+    ranked: list[str] = []
+    rank = handlers.rank_governed
+
+    def spy_rank(frontier: Any, *args: Any, **kwargs: Any) -> Any:
+        ranked.extend(c.record.provenance.identity.record_id for c in frontier.candidates)
+        return rank(frontier, *args, **kwargs)
+
+    monkeypatch.setattr(handlers, "rank_governed", spy_rank)
+    reader = engineering_family_session(
+        principal_id="reader",
+        installation_id=s0.INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+    )
+    build = {
+        "query": "provider",
+        "targets": [{"repository_id": REPOSITORY, "snapshot_id": "esnap-a"}],
+        "profile": "investigate",
+    }
+
+    def search(view: str, **extra: Any) -> dict[str, Any]:
+        return workspace.ok(
+            "engineering.search", {"query": "provider", "view": view, **extra}, **extra_session
+        )
+
+    def ids(result: dict[str, Any]) -> list[str]:
+        return [preview["record_id"] for preview in result["previews"]]
+
+    # The owner holds the label: the sentinel outranks every permitted record.
+    extra_session: dict[str, Any] = {}
+    owner_candidates = ids(search("candidates"))
+    assert owner_candidates[0] == hidden_candidate["record_id"]
+    assert ids(search("accepted"))[0] == hidden_accepted["record_id"]
+    owner_pack = workspace.ok("engineering.context.build", build)["pack"]
+    assert {c["record_ref"]["record_id"] for c in owner_pack["citations"]} >= denied_ids
+
+    ranked.clear()
+    extra_session = {"session": reader}
+    first = search("candidates", limit=1)
+    token = first["page"]["continuation_token"]
+    second = search("candidates", limit=1, page={"continuation_token": token})
+    assert second["page"] == {}
+    accepted = search("accepted")
+    pack = workspace.ok("engineering.context.build", build, session=reader)["pack"]
+    for result in (first, second, accepted, pack):
+        wire = json.dumps(result)
+        assert "XYZZY" not in wire
+        assert not any(record_id in wire for record_id in denied_ids)
+    # Two permitted candidates, two pages, in the owner's order minus the sentinel.
+    assert ids(first) + ids(second) == [
+        record_id for record_id in owner_candidates if record_id not in denied_ids
+    ]
+    assert set(ids(first) + ids(second)) == {open_a["record_id"], open_b["record_id"]}
+    assert ids(accepted) == [open_accepted["record_id"]] and accepted["page"] == {}
+    partitions = {
+        c["record_ref"]["record_id"]: s["partition"]
+        for s, c in zip(pack["sections"], pack["citations"], strict=True)
+    }
+    assert set(partitions) == {
+        open_accepted["record_id"],
+        open_a["record_id"],
+        open_b["record_id"],
+    }
+    # A candidate never renders as accepted knowledge.
+    assert partitions[open_a["record_id"]] == partitions[open_b["record_id"]] == (
+        "candidate_findings"
+    )
+    assert pack["omissions"] == []
+    assert ranked and denied_ids.isdisjoint(ranked)
+
+    # Access revocation: the open evidence gains the restricted label.
+    pinned = search("candidates", limit=1)["page"]["continuation_token"]
+    m2.write(
+        workspace.holder,
+        m2.LABELS,
+        label_event_id="lbl-open",
+        evidence_id="evd-open",
+        label_sequence=1,
+    )
+    assert workspace.refused(
+        "engineering.search",
+        {"query": "provider", "view": "candidates", "limit": 1,
+         "page": {"continuation_token": pinned}},
+        session=reader,
+    )[0] == "invalid_request"
+    assert search("candidates")["previews"] == search("accepted")["previews"] == []
+    revoked = workspace.ok("engineering.context.build", build, session=reader)["pack"]
+    assert revoked["citations"] == [] and revoked["omissions"] == []
+
+
+def _accept(workspace: Workspace, record: dict[str, str]) -> dict[str, str]:
+    version = record["version"]
+    for operation in ("knowledge.propose", "candidate.approve"):
+        transitioned = workspace.ok(
+            operation,
+            {"record_id": record["record_id"], "rationale": {"reason_code": "review"}},
+            mutation_precondition=MutationPrecondition(record_version=version),
+        )
+        version = transitioned["updated_record"]["provenance"]["identity"]["version"]
+    return {"record_id": record["record_id"], "version": version}
+
+
+def _supersede(
+    workspace: Workspace, record: dict[str, str], replacement: dict[str, Any]
+) -> dict[str, str]:
+    superseded = workspace.ok(
+        "record.supersede",
+        {
+            "record_id": record["record_id"],
+            "replacement": replacement,
+            "rationale": {"reason_code": "correction"},
+        },
+        mutation_precondition=MutationPrecondition(record_version=record["version"]),
+    )
+    identity = superseded["updated_record"]["provenance"]["identity"]
+    return {"record_id": identity["record_id"], "version": identity["version"]}
+
+
+def _reader() -> AuthenticatedSession:
+    return engineering_family_session(
+        principal_id="reader",
+        installation_id=s0.INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+    )
+
+
+def test_expand_resolves_anchors_and_endpoints_under_the_readers_grant(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label-hidden anchor is `not_found` exactly as a nonexistent one, and a
+    visible anchor's expansion never names, counts or spends a cap on a hidden
+    endpoint. A label added later hides the anchor on the next read."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+    from omnivia_core_runtime.storage.governed import GovernedSupersession
+
+    m2.write(workspace.holder, m2.EVIDENCE, evidence_id="evd-open", source_native_id="doc-open")
+    open_source = {**EVIDENCE_SOURCE, "source_id": "doc-open"}
+
+    def fact(title: str, source: dict[str, Any] = EVIDENCE_SOURCE) -> dict[str, Any]:
+        # `record.supersede` supports `memory.fact` replacements only.
+        claim = _observation(None, source=source)
+        return {**claim, "record_type": "memory.fact", "content": {"fact": title}}
+
+    hidden_v1 = _accept(workspace, workspace.observe(fact("XYZZY one")))
+    hidden_v2 = _supersede(workspace, hidden_v1, fact("XYZZY two"))
+    open_v1 = _accept(workspace, workspace.observe(fact("Open one", open_source)))
+    open_v2 = _supersede(workspace, open_v1, fact("Open two", open_source))
+    denied = {hidden_v1["record_id"], hidden_v1["version"], hidden_v2["version"]}
+    reader = _reader()
+
+    def expand(anchor: dict[str, str], **extra: Any) -> dict[str, Any]:
+        return workspace.ok("engineering.expand", {"anchor": anchor, **extra}, **extra_session)
+
+    # The owner holds the label and sees both one-hop supersessions.
+    extra_session: dict[str, Any] = {}
+    assert expand(hidden_v1)["nodes"] == [hidden_v1, hidden_v2]
+    assert expand(open_v2)["nodes"] == [open_v2, open_v1]
+
+    # Hidden anchors (current and history) refuse exactly as a nonexistent one.
+    nonexistent = {"record_id": open_v1["record_id"], "version": hidden_v1["version"]}
+    refusals = {
+        workspace.refused("engineering.expand", {"anchor": anchor}, session=reader)
+        for anchor in (hidden_v1, hidden_v2, nonexistent)
+    }
+    assert len(refusals) == 1
+    (refusal,) = refusals
+    assert refusal[0] == "not_found"
+    assert not any(value in json.dumps(refusal) for value in denied)
+
+    # A visible anchor: hidden and nonexistent endpoints are no edge, node or
+    # cap usage, even when the edge read lists them first.
+    extra_session = {"session": reader}
+    real = handlers.read_governed_supersessions
+
+    def with_hidden_endpoints(*args: Any, **kwargs: Any) -> Any:
+        def edge(source: str, target: str) -> GovernedSupersession:
+            return GovernedSupersession(
+                workspace_id=WORKSPACE_ID,
+                governed_record_id=open_v1["record_id"],
+                source_version_id=source,
+                target_version_id=target,
+                assembly_id="asm-injected",
+                effective_at_us=0,
+                reason_code=None,
+            )
+
+        injected = (
+            edge(open_v1["version"], hidden_v2["version"]),
+            edge(hidden_v1["version"], open_v1["version"]),
+        )
+        return injected + tuple(real(*args, **kwargs))
+
+    monkeypatch.setattr(handlers, "read_governed_supersessions", with_hidden_endpoints)
+    for limits in ({}, {"edge_limit": 1, "node_limit": 2}):
+        result = expand(open_v1, **limits)
+        assert not any(value in json.dumps(result) for value in denied)
+        assert result["nodes"] == [open_v1, open_v2]
+        assert [(e["from_record"], e["to_record"]) for e in result["edges"]] == [
+            (open_v1, open_v2)
+        ]
+        assert result["truncated"] is False
+
+    # Revocation: the open evidence gains the restricted label.
+    m2.write(
+        workspace.holder,
+        m2.LABELS,
+        label_event_id="lbl-open",
+        evidence_id="evd-open",
+        label_sequence=1,
+    )
+    assert workspace.refused(
+        "engineering.expand", {"anchor": open_v1}, session=reader
+    ) == refusal
+    monkeypatch.undo()
+    extra_session = {}
+    assert expand(open_v1)["nodes"] == [open_v1, open_v2]
+
+
+def test_priority_and_review_never_reveal_or_touch_a_hidden_target(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hidden exact target is `not_found` exactly as a nonexistent one, before
+    any stated assessment version is compared, with no priority, assessment,
+    attestation or audit written. A revocation between the preliminary check and
+    settlement is caught under the fence and writes nothing."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+
+    workspace.record(_source(1, "esnap-a", FILES_A))
+    for suffix in ("a", "b"):
+        m2.write(
+            workspace.holder,
+            m2.EVIDENCE,
+            evidence_id=f"evd-open-{suffix}",
+            source_native_id=f"doc-open-{suffix}",
+        )
+    hidden = workspace.observe(_observation(None, title="XYZZY hidden"))
+    open_a, open_b = (
+        workspace.observe(
+            _observation(
+                None, title=f"Open {suffix}", source={**EVIDENCE_SOURCE, "source_id": f"doc-open-{suffix}"}
+            )
+        )
+        for suffix in ("a", "b")
+    )
+    reader = _reader()
+    snapshot = {"repository_id": REPOSITORY, "snapshot_id": "esnap-a"}
+
+    def priority(target: dict[str, str]) -> dict[str, Any]:
+        return {"target": target, "priority": "preferred"}
+
+    def review(target: dict[str, str]) -> dict[str, Any]:
+        return {"record_ref": target, "target_snapshot": snapshot, "review_outcome": "acknowledged"}
+
+    def stated(count: int) -> dict[str, Any]:
+        return {"mutation_precondition": MutationPrecondition(record_version=f"assessment-{count}")}
+
+    tables = (
+        "omnivia_application_audit_events",
+        "omnivia_engineering_context_priorities",
+        "omnivia_engineering_assessments",
+        "omnivia_engineering_review_attestations",
+    )
+
+    def rows() -> dict[str, int]:
+        return {
+            table: workspace.holder.connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            for table in tables
+        }
+
+    # The owner can see and review the hidden record: it has one assessment.
+    workspace.ok("engineering.review.record", review(hidden), **stated(0))
+    before = rows()
+
+    nonexistent = {"record_id": open_a["record_id"], "version": hidden["version"]}
+    refusals = set()
+    for target in (hidden, nonexistent):
+        refusals.add(
+            workspace.refused("context.priority.set", priority(target), session=reader)
+        )
+        # Either stated count: never `mutation_precondition_failed`, which would
+        # disclose the hidden target's assessment history.
+        for count in (0, 1):
+            refusals.add(
+                workspace.refused(
+                    "engineering.review.record", review(target), session=reader, **stated(count)
+                )
+            )
+    assert {refusal[0] for refusal in refusals} == {"not_found"}
+    assert len({refusal[1] for refusal in refusals}) == 1
+    assert hidden["record_id"] not in json.dumps(sorted(refusals))
+    assert rows() == before
+
+    # Visible targets write as before.
+    workspace.ok("context.priority.set", priority(open_a), session=reader)
+    workspace.ok("engineering.review.record", review(open_a), session=reader, **stated(0))
+
+    # Revocation after the preliminary check, before the fenced settlement.
+    issue = handlers.issue_mutation_grant
+
+    def revoked_in_flight(operation: str, payload: dict[str, Any], evidence_id: str, **extra: Any) -> Any:
+        def revoke_then_issue(*args: Any, **kwargs: Any) -> Any:
+            m2.write(
+                workspace.holder,
+                m2.LABELS,
+                label_event_id=f"lbl-{evidence_id}",
+                evidence_id=evidence_id,
+                label_sequence=1,
+            )
+            return issue(*args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(handlers, "issue_mutation_grant", revoke_then_issue)
+            return workspace.refused(operation, payload, session=reader, **extra)
+
+    before = rows()
+    assert revoked_in_flight("context.priority.set", priority(open_b), "evd-open-b") in refusals
+    assert revoked_in_flight(
+        "engineering.review.record", review(open_a), "evd-open-a", **stated(1)
+    ) in refusals
+    assert rows() == before
+
+
+def test_pack_partitions_accepted_knowledge_from_candidate_findings(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accepted exact version renders as `accepted_knowledge`; a candidate, and
+    an accepted hypothesis (§8.2), as `candidate_findings`. Accepted knowledge is
+    never dropped to fit: optional findings go first, and a budget too small for
+    it is the typed refusal."""
+    from omnivia_core_runtime.service.handlers import engineering as handlers
+
+    workspace.record(_source(1, "esnap-a", FILES_A))
+    candidate = workspace.observe(_observation(_manifest(), title="Candidate provider"))
+    accepted = _accept(workspace, workspace.observe(_observation(None, title="Accepted provider")))
+    guess = _observation(None, title="Hypothesis provider")
+    guess["content"]["assertion_basis"] = "hypothesis"
+    hypothesis = _accept(workspace, workspace.observe(guess))
+
+    def partitions(pack: dict[str, Any]) -> dict[str, str]:
+        cited = {c["citation_id"]: c["record_ref"]["record_id"] for c in pack["citations"]}
+        return {
+            cited[citation_id]: section["partition"]
+            for section in pack["sections"]
+            for citation_id in section["citation_ids"]
+        }
+
+    def build(**extra: Any) -> dict[str, Any]:
+        payload = {"query": "provider", "targets": [], "profile": "investigate", **extra}
+        return workspace.ok("engineering.context.build", payload)["pack"]
+
+    # diagnostic: every partition is the version's own governance state.
+    pack = build()
+    assert partitions(pack) == {
+        accepted["record_id"]: "accepted_knowledge",
+        hypothesis["record_id"]: "candidate_findings",
+        candidate["record_id"]: "candidate_findings",
+    }
+    assert partitions(build(profile="implement")) == {
+        accepted["record_id"]: "accepted_knowledge",
+        hypothesis["record_id"]: "candidate_findings",
+    }
+
+    # Budget: exactly the notice plus accepted knowledge fits once every
+    # finding is dropped; one token less refuses rather than drop it.
+    parts = pack["rendering"]["text"].split("\n\n")
+    (knowledge,) = [part for part in parts if part.startswith("[accepted_knowledge]")]
+    minimum = len((parts[0] + " " + knowledge).split())
+    fitted = build(budget={"model_tokens": minimum})
+    assert partitions(fitted) == {accepted["record_id"]: "accepted_knowledge"}
+    assert [o["reason"] for o in fitted["omissions"]] == ["budget", "budget"]
+    assert fitted["rendering"]["text"].startswith("[uncertainty] ")
+    assert workspace.refused(
+        "engineering.context.build",
+        {"query": "provider", "targets": [], "profile": "investigate",
+         "budget": {"model_tokens": minimum - 1}},
+    )[0] == "token_limit_exceeded"
+
+    # current_safe: only the proven candidate enters, as a finding; the approved
+    # version has no dependency set of its own and is an unproven omission.
+    safe = {
+        "applicability_mode": "current_safe",
+        "targets": [{"repository_id": REPOSITORY, "snapshot_id": "esnap-a"}],
+    }
+    pack = build(**safe)
+    assert partitions(pack) == {candidate["record_id"]: "candidate_findings"}
+    assert pack["omissions"] == [{"field": "sections", "reason": "applicability_unproven"}]
+    # Were the accepted version proven, it would render as accepted knowledge.
+    monkeypatch.setattr(handlers, "_proven_matched", lambda *_args: True)
+    assert partitions(build(**safe)) == {
+        accepted["record_id"]: "accepted_knowledge",
+        hypothesis["record_id"]: "candidate_findings",
+        candidate["record_id"]: "candidate_findings",
+    }
 
 
 # --- bounds ------------------------------------------------------------------------------
@@ -1083,7 +1598,8 @@ def test_pending_is_decided_before_the_frontier_is_read(
     def untouchable(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("the frontier was read before coverage decided")
 
-    monkeypatch.setattr(handlers, "read_governed_record_values", untouchable)
+    # The handler holds no unauthorized governed reader; this is its only one.
+    assert not hasattr(handlers, "read_governed_record_values")
     monkeypatch.setattr(handlers, "read_authorized_memory_snapshot", untouchable)
     monkeypatch.setattr(handlers, "rank_governed", untouchable)
     target = {"repository_id": REPOSITORY, "snapshot_id": "esnap-c"}
@@ -1125,7 +1641,6 @@ def test_current_safe_pack_targets_are_non_empty_and_bounded(
     with monkeypatch.context() as patched:
         patched.setattr(engineering_source, "covered_snapshot", untouchable)
         patched.setattr(engineering_source, "evaluate_applicability", untouchable)
-        patched.setattr(handlers, "read_governed_record_values", untouchable)
         patched.setattr(handlers, "read_authorized_memory_snapshot", untouchable)
         patched.setattr(handlers, "rank_governed", untouchable)
         assert workspace.refused(
