@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,9 +37,11 @@ from omnivia_core_runtime.service.bootstrap import (
 )
 from omnivia_core_runtime.service.lifecycle import (
     LEGAL_TRANSITIONS,
+    SHUTDOWN_BLOCKED_REASON,
     LifecycleError,
     ReadinessRefused,
     ReadinessRequirements,
+    ResourceReleaseBlocked,
     ResourceStack,
     ServiceLifecycle,
     ServiceState,
@@ -1192,7 +1196,7 @@ def test_a_transient_renewal_failure_is_retried_until_the_deadline_then_raises(
         clock.advance_monotonic(
             LEASE_RENEWAL_DEADLINE_SECONDS - LEASE_RENEWAL_DEADLINE_SECONDS / 4
         )
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(RuntimeError, match="renewal deadline"):
             runner.renew_lease_if_due()
 
         expired = read_lease(runner.connection)
@@ -1200,6 +1204,109 @@ def test_a_transient_renewal_failure_is_retried_until_the_deadline_then_raises(
         assert not expired.is_expired(clock), (
             "the instance must stop while its lease is still demonstrably current"
         )
+    finally:
+        runner.stop()
+
+
+def test_heartbeat_failure_after_deadline_refuses_on_the_same_tick(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    try:
+        def late_failure(*_args: object, **_kwargs: object) -> None:
+            clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS)
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(
+            "omnivia_core_runtime.service.runner.heartbeat", late_failure
+        )
+        clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+        with pytest.raises(RuntimeError, match="renewal deadline") as raised:
+            runner.renew_lease_if_due()
+        assert raised.value.__context__ is None
+        assert raised.value.__cause__ is None
+    finally:
+        runner.stop()
+
+
+def test_lease_renewal_acquisition_is_bounded_by_the_remaining_deadline(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """`sqlite_gate` held elsewhere must not let renewal wait past its own margin.
+
+    Stands in for the deadlock this gate exists to close: the serving thread (or,
+    here, a stand-in thread) holds `sqlite_gate` around its own use of the shared
+    connection while renewal is due. `renew_lease_if_due` must fail closed --
+    raising rather than eventually writing a heartbeat once authority can no
+    longer be demonstrated to have persisted for at most the deadline -- and it
+    must do so bounded by whatever margin is *left*, not by the full deadline.
+
+    That bound is exercised for real: `sqlite_gate` is a genuine `threading.RLock`
+    and `acquire(timeout=...)` measures real wall-clock time, which a fake clock
+    cannot stand in for. What the fake clock buys instead is control over `age`,
+    so the real wait this test spends is the small `remaining` budget left after
+    the jump -- well under a second -- rather than the full
+    `LEASE_RENEWAL_DEADLINE_SECONDS` of actual waiting the naive version of this
+    test would need.
+    """
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    try:
+        before = read_lease(runner.connection) if runner.connection else None
+        assert before is not None
+
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold_the_gate() -> None:
+            runner.sqlite_gate.acquire()
+            held.set()
+            release.wait(timeout=10)
+            runner.sqlite_gate.release()
+
+        holder = threading.Thread(target=hold_the_gate, daemon=True)
+        holder.start()
+        try:
+            assert held.wait(timeout=5), "the stand-in thread never took the gate"
+
+            # Due, and with only a small real-time budget left to acquire against
+            # -- not the full deadline, which is the wait this test avoids.
+            small_remaining = 0.3
+            clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS - small_remaining)
+            started = time.monotonic()
+            with pytest.raises(RuntimeError, match="sqlite gate"):
+                runner.renew_lease_if_due()
+            elapsed = time.monotonic() - started
+            assert elapsed < 5.0, (
+                f"acquisition was not bounded by the remaining deadline: {elapsed:.1f}s"
+            )
+        finally:
+            release.set()
+            holder.join(timeout=5)
+            assert not holder.is_alive()
+
+        # Nothing was written while the gate could not be acquired.
+        during = read_lease(runner.connection)
+        assert during is not None
+        assert during.heartbeat_monotonic == before.heartbeat_monotonic
+
+        # A retry within the remaining margin succeeds once the gate is free.
+        clock.advance_monotonic(small_remaining / 2)
+        assert runner.renew_lease_if_due() is True
+        after = read_lease(runner.connection)
+        assert after is not None
+        assert after.heartbeat_monotonic == clock.monotonic()
+
+        # Releasing the gate after the next deadline cannot revive authority.
+        clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS)
+        with pytest.raises(RuntimeError, match="renewal deadline"):
+            runner.renew_lease_if_due()
     finally:
         runner.stop()
 
@@ -1283,3 +1390,113 @@ def test_a_renewed_lease_is_still_released_exactly_once_in_reverse_order(
     assert final.heartbeat_monotonic == renewed.heartbeat_monotonic
     assert final.fencing_generation == renewed.fencing_generation
     assert discover(installation.runtime_for(WORKSPACE_ID)) is None
+
+
+# --- fail-closed shutdown: a resource that will not release ------------------
+
+
+def test_a_blocked_release_preserves_lower_resources_for_a_retry() -> None:
+    """`ResourceReleaseBlocked` stops the unwind rather than dropping past it.
+
+    Two resources sit beneath the blocked one. They must stay acquired -- not
+    popped, not released -- until a retry actually clears the block, and the
+    retry must resume at the same entry rather than skipping it or restarting
+    the whole stack from the top.
+    """
+    released: list[str] = []
+    stack = ResourceStack()
+    stack.push("lowest", lambda: released.append("lowest"))
+    stack.push("middle", lambda: released.append("middle"))
+    blocked = True
+
+    def flaky_top() -> None:
+        if blocked:
+            raise ResourceReleaseBlocked("still running")
+        released.append("top")
+
+    stack.push("top", flaky_top)
+
+    first = stack.unwind()
+    assert first == []
+    assert stack.names == ["lowest", "middle", "top"]
+    assert released == []
+
+    # A retry while still blocked changes nothing.
+    second = stack.unwind()
+    assert second == []
+    assert stack.names == ["lowest", "middle", "top"]
+
+    blocked = False
+    third = stack.unwind()
+    assert third == ["top", "middle", "lowest"]
+    assert released == ["top", "middle", "lowest"]
+    assert stack.names == []
+
+
+def test_a_blocked_socket_server_release_leaves_sqlite_and_the_lock_held_until_retry(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """A stop that cannot release its top resource must not drop the ones beneath.
+
+    Stands in for `LocalSocketServer.stop()` raising `ResourceReleaseBlocked`
+    while its serving thread is genuinely still running: the runner's own
+    SQLite connection and the lifetime storage lock, pushed underneath it, must
+    still be open and held after the first `stop()`, and the reported reason
+    must say the shutdown is incomplete rather than claim `stopped`. Only once
+    the block clears does a retry finish the unwind in the normal order.
+    """
+    _workspace, _installation, settings = served
+    runner = ServiceRunner(settings, clock=FakeClock())
+    report = runner.start()
+    assert report.ready, report.to_dict()
+
+    connection = runner.connection
+    assert connection is not None
+    blocked = True
+    stop_calls: list[None] = []
+
+    def fake_socket_server_stop() -> None:
+        stop_calls.append(None)
+        if blocked:
+            raise ResourceReleaseBlocked("serving thread still running")
+
+    runner.lifecycle.resources.push("socket_server", fake_socket_server_stop)
+
+    first = runner.stop()
+    assert first.reason == "shutdown incomplete"
+    assert first.released == ()
+    assert runner.lifecycle.state is ServiceState.FAILED
+    assert runner.lifecycle.last_failure == SHUTDOWN_BLOCKED_REASON
+
+    # Still genuinely held: the connection still answers, and a second runner
+    # cannot take the storage lock this one never released.
+    connection.execute("SELECT 1").fetchone()
+    contender = ServiceRunner(settings, clock=FakeClock())
+    try:
+        blocked_report = contender.start()
+        assert not blocked_report.ready
+        assert "storage lock" in blocked_report.reason
+    finally:
+        contender.stop()
+
+    blocked = False
+    second = runner.stop()
+    assert second.reason == "stopped"
+    assert second.released == (
+        "socket_server",
+        "discovery_descriptor",
+        "mutation_guard",
+        "workspace_lease",
+        "exclusive_connection",
+        "lifetime_storage_lock",
+    )
+    assert len(stop_calls) == 2
+    assert runner.lifecycle.state is ServiceState.STOPPED
+
+    # The workspace is genuinely free now.
+    successor = ServiceRunner(settings, clock=FakeClock())
+    try:
+        successor_report = successor.start()
+        assert successor_report.ready, successor_report.to_dict()
+    finally:
+        successor.stop()
