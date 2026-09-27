@@ -366,6 +366,27 @@ def test_read_checkout_file_refuses_symlinks(tmp_path: Path) -> None:
     assert _refused(link_root) == "checkout root is not an accessible directory"
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+@needs_walk
+def test_read_checkout_file_refuses_symlinked_ancestor_of_checkout_root(
+    tmp_path: Path,
+) -> None:
+    """An ancestor symlink, not just the checkout root itself, must be refused: the
+    root's own descriptor is opened by walking every one of its components, not by
+    opening the absolute path in one call, which would follow every ancestor but the
+    last."""
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    root = _checkout(real_parent)
+    link_ancestor = tmp_path / "link-ancestor"
+    try:
+        link_ancestor.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks")
+    linked_root = link_ancestor / root.name
+    assert _refused(linked_root) == "checkout root is not an accessible directory"
+
+
 @needs_walk
 def test_read_checkout_file_refuses_path_rebound_mid_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -509,12 +530,15 @@ def test_capture_moving_file_is_bounded_and_incomplete(
     real = source_capture._read_checkout
 
     def moving(
-        checkout_root: Path, path: str, expected: str | None
+        checkout_root: Path,
+        path: str,
+        expected: str | None,
+        expected_identity: tuple[int, int] | None = None,
     ) -> source_capture.CheckoutFile:
         nonlocal reads
         reads += 1
         (root / path).write_bytes(b"moving %d\n" % reads)
-        return real(checkout_root, path, expected)
+        return real(checkout_root, path, expected, expected_identity)
 
     monkeypatch.setattr(source_capture, "_read_checkout", moving)
     manifest = _manifest(root)
@@ -552,3 +576,113 @@ def test_capture_refuses_unsupported_host(
 def test_capture_refuses_non_repository(tmp_path: Path) -> None:
     with pytest.raises(SourceCaptureRefused):
         _manifest(_checkout(tmp_path))
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+@needs_walk
+def test_capture_refuses_symlinked_ancestor_of_checkout_root(tmp_path: Path) -> None:
+    """The same ancestor-symlink refusal `read_checkout_file` gets must hold for
+    working-tree capture: the root descriptor is opened by the same no-follow walk
+    before Git or the reader ever sees it."""
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    root = _git_repo(real_parent)
+    link_ancestor = tmp_path / "link-ancestor"
+    try:
+        link_ancestor.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks")
+    linked_root = link_ancestor / root.name
+    with pytest.raises(SourceCaptureRefused):
+        _manifest(linked_root)
+
+
+@needs_walk
+def test_capture_root_rebind_during_enumeration_is_refused_before_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path rename that swaps `checkout_root` for a different repository while Git
+    enumeration is in flight must not let that replacement's bytes reach a manifest:
+    every git query in one enumeration is pinned to the descriptor opened before the
+    swap, and the identity re-check once enumeration is done must then refuse rather
+    than silently capture whatever now sits at that path."""
+    root = _git_repo(tmp_path)
+    replacement = tmp_path / "replacement"
+    (replacement / "pkg").mkdir(parents=True)
+    (replacement / "pkg" / "a.py").write_bytes(b"REPLACEMENT CONTENT\n")
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=replacement, env=_GIT_ENV, check=True)
+    moved_original = tmp_path / "repo-original"
+
+    real_git = source_capture._git
+    calls = 0
+
+    def rebinding(root_fd: int, *args: str) -> bytes:
+        nonlocal calls
+        calls += 1
+        result = real_git(root_fd, *args)
+        if calls == 1:
+            root.rename(moved_original)
+            replacement.rename(root)
+        return result
+
+    monkeypatch.setattr(source_capture, "_git", rebinding)
+    with pytest.raises(
+        SourceCaptureRefused, match="changed identity during capture"
+    ):
+        _manifest(root)
+
+
+@needs_walk
+def test_capture_root_swapped_for_dirty_clone_between_enumeration_and_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different clone, sharing HEAD and the tracked-file list but carrying dirty
+    replacement bytes, swapped in only for the read between the first enumeration and
+    the capture pass, must not let those bytes reach the manifest -- even though the
+    swap is reverted immediately afterwards, well before the trailing enumeration that
+    a before/after comparison alone would see as unchanged. One identity is pinned for
+    the whole attempt, and it is the read itself that must refuse a root that does not
+    match it, not the enumeration surrounding it."""
+    root = _git_repo(tmp_path)
+    evil = tmp_path / "evil-clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(root), str(evil)], env=_GIT_ENV, check=True
+    )
+    (evil / "pkg" / "a.py").write_bytes(b"DIRTY REPLACEMENT BYTES\n")
+    moved_original = tmp_path / "repo-original"
+
+    real_open_root = source_capture._open_checkout_root
+    calls = 0
+
+    def swapping(
+        components: tuple[bytes, ...],
+        expected_identity: tuple[int, int] | None = None,
+    ) -> int:
+        nonlocal calls
+        calls += 1
+        if calls % 3 == 0:
+            root.rename(moved_original)
+            evil.rename(root)
+            try:
+                return real_open_root(components, expected_identity)
+            finally:
+                root.rename(evil)
+                moved_original.rename(root)
+        return real_open_root(components, expected_identity)
+
+    monkeypatch.setattr(source_capture, "_open_checkout_root", swapping)
+    manifest = _manifest(root)
+
+    assert not manifest.complete
+    assert manifest.attempts == source_capture.MAX_CAPTURE_ATTEMPTS
+    assert not manifest.files
+    assert all(b"DIRTY REPLACEMENT" not in f.content for f in manifest.files)
+    assert {o.reason for o in manifest.omissions} >= {
+        "changed_during_capture",
+        "unstable_checkout",
+    }
