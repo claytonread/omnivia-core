@@ -26,6 +26,7 @@ from omnivia_core_runtime.ownership.fencing import (
     fenced_transaction,
 )
 from omnivia_core_runtime.ownership.identity import SystemClock
+from omnivia_core_runtime.service import engineering_pack
 from omnivia_core_runtime.service import main as service_main
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
@@ -1529,6 +1530,14 @@ def test_provider_unavailable_is_explicit_after_discovery_and_retrieval_still_wo
     assert any(item["record_id"] == anchor["record_id"] for item in search["previews"])
     expanded = workspace.ok("engineering.expand", {"anchor": anchor})
     assert [edge["status"] for edge in expanded["edges"]] == ["pending"]
+    pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "semantic provider", "targets": [], "profile": "investigate"},
+    )["pack"]
+    assert [conflict["status"] for conflict in pack["conflicts"]] == [
+        "unresolved_overlap"
+    ]
+    assert "unresolved potential overlap" in pack["rendering"]["text"]
 
     continuity_session = workspace.ok(
         "continuity.session.register",
@@ -1695,6 +1704,406 @@ def test_valid_assessment_records_exact_provenance_outside_the_transaction(
         "WHERE workspace_id = ? AND relation_candidate_id = ?",
         (WORKSPACE_ID, candidate.relation_candidate_id),
     ).fetchone() == ("pending",)
+
+
+def _assess_relation(
+    workspace: esc.Workspace,
+    relation: str,
+    *,
+    budget: int = 32,
+) -> tuple[engineering_assessments.RelationAssessmentReconciliation, ...]:
+    def provider(
+        request: engineering_assessments.RelationAssessmentInput,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        response = _assessment_response(request)
+        response["relation"] = relation
+        return response
+
+    return _assessment_executor(
+        workspace,
+        policy=_assessment_policy(maximum_calls=budget),
+        provider=provider,
+    ).run_pending(budget=budget)
+
+
+def test_context_build_renders_assessed_material_conflict_in_diagnostic_mode(
+    workspace: esc.Workspace,
+) -> None:
+    _anchor, candidate = _completed_assessment_candidate(workspace)
+    reconciled = _assess_relation(workspace, "conflicts_with", budget=1)
+    assert len(reconciled) == 1 and reconciled[0].status == "assessed"
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "semantic provider", "targets": [], "profile": "investigate"},
+    )["pack"]
+    assert len(pack["conflicts"]) == 1
+    assert {
+        (record["record_id"], record["version"])
+        for record in pack["conflicts"][0]["records"]
+    } == {
+        (candidate.endpoint_a.record_id, candidate.endpoint_a.version),
+        (candidate.endpoint_b.record_id, candidate.endpoint_b.version),
+    }
+    warning = "[conflict unresolved]"
+    assert pack["rendering"]["text"].count(warning) == 1
+    first_conflicting_section = next(
+        section
+        for section in pack["sections"]
+        if section["citation_ids"][0]
+        in {
+            citation["citation_id"]
+            for citation in pack["citations"]
+            if (
+                citation["record_ref"]["record_id"],
+                citation["record_ref"]["version"],
+            )
+            in {
+                (candidate.endpoint_a.record_id, candidate.endpoint_a.version),
+                (candidate.endpoint_b.record_id, candidate.endpoint_b.version),
+            }
+        }
+    )
+    assert pack["rendering"]["text"].index(warning) < pack["rendering"]["text"].index(
+        first_conflicting_section["content"]
+    )
+
+
+def test_context_build_renders_unassessed_overlap_as_a_neutral_atomic_group(
+    workspace: esc.Workspace,
+) -> None:
+    _anchor, candidate = _completed_assessment_candidate(workspace)
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "semantic provider", "targets": [], "profile": "investigate"},
+    )["pack"]
+
+    assert len(pack["conflicts"]) == 1
+    assert pack["conflicts"][0]["status"] == "unresolved_overlap"
+    assert "unresolved potential overlap" in pack["conflicts"][0]["note"]
+    assert "materially conflict" not in pack["conflicts"][0]["note"]
+    assert {
+        (record["record_id"], record["version"])
+        for record in pack["conflicts"][0]["records"]
+    } == {
+        (candidate.endpoint_a.record_id, candidate.endpoint_a.version),
+        (candidate.endpoint_b.record_id, candidate.endpoint_b.version),
+    }
+    assert "[conflict unresolved_overlap]" in pack["rendering"]["text"]
+
+
+def test_conflict_group_outside_hydration_capacity_becomes_a_cited_warning_only(
+    workspace: esc.Workspace,
+) -> None:
+    _anchor, candidate = _completed_assessment_candidate(workspace)
+    assert len(_assess_relation(workspace, "conflicts_with", budget=1)) == 1
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "semantic provider",
+            "targets": [],
+            "profile": "investigate",
+            "budget": {"hydrations": 1},
+        },
+    )["pack"]
+
+    conflict_refs = {
+        (record["record_id"], record["version"])
+        for record in pack["conflicts"][0]["records"]
+    }
+    assert conflict_refs == {
+        (candidate.endpoint_a.record_id, candidate.endpoint_a.version),
+        (candidate.endpoint_b.record_id, candidate.endpoint_b.version),
+    }
+    assert pack["reproducibility"]["selection_profile"] == "eng-preview-select-4"
+    assert pack["sections"] == []
+    assert pack["budget"]["hydrations"] == 0
+    assert {
+        (citation["record_ref"]["record_id"], citation["record_ref"]["version"])
+        for citation in pack["citations"]
+    } == conflict_refs
+    assert "were omitted" in pack["rendering"]["text"]
+    assert any(
+        omission["reason"] == "conflict_group_selection"
+        for omission in pack["omissions"]
+    )
+
+
+def test_conflict_group_outside_source_budget_never_returns_one_clean_claim(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+    assert len(_assess_relation(workspace, "conflicts_with", budget=1)) == 1
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "semantic provider",
+            "targets": [],
+            "profile": "investigate",
+            "budget": {"evidence_bytes": 1},
+        },
+    )["pack"]
+
+    assert pack["sections"] == []
+    assert pack["budget"]["hydrations"] == 0
+    assert len(pack["conflicts"]) == 1
+    assert pack["conflicts"][0]["note"] == engineering_pack.OMITTED_CONFLICT_NOTE
+    assert any(
+        omission["reason"] == "source_budget" for omission in pack["omissions"]
+    )
+    assert any(
+        omission["reason"] == "conflict_group_selection"
+        for omission in pack["omissions"]
+    )
+
+
+def test_non_conflict_assessment_does_not_create_a_false_pack_warning(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+    reconciled = _assess_relation(workspace, "not_conflict", budget=1)
+    assert len(reconciled) == 1 and reconciled[0].assessed_relation == "not_conflict"
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "semantic provider", "targets": [], "profile": "investigate"},
+    )["pack"]
+    assert pack["conflicts"] == []
+    assert "[conflict" not in pack["rendering"]["text"]
+
+
+def test_latest_non_material_assessment_supersedes_an_older_conflict_result(
+    workspace: esc.Workspace,
+) -> None:
+    _completed_assessment_candidate(workspace)
+    allocate = _identifier_allocator()
+
+    def provider_for(relation: str) -> Any:
+        def provider(
+            request: engineering_assessments.RelationAssessmentInput,
+            *,
+            timeout_seconds: float,
+        ) -> dict[str, Any]:
+            response = _assessment_response(request)
+            response["relation"] = relation
+            return response
+
+        return provider
+
+    first = _assessment_executor(
+        workspace,
+        policy=_assessment_policy(model_id="test-model-v1"),
+        provider=provider_for("conflicts_with"),
+        allocate_identifier=allocate,
+    ).run_pending(budget=1)
+    second = _assessment_executor(
+        workspace,
+        policy=_assessment_policy(model_id="test-model-v2"),
+        provider=provider_for("not_conflict"),
+        allocate_identifier=allocate,
+    ).run_pending(budget=1)
+    assert [result.assessed_relation for result in (*first, *second)] == [
+        "conflicts_with",
+        "not_conflict",
+    ]
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "semantic provider", "targets": [], "profile": "investigate"},
+    )["pack"]
+    assert pack["conflicts"] == []
+    assert "[conflict" not in pack["rendering"]["text"]
+
+
+def test_context_conflict_read_reauthorizes_both_endpoints_without_hidden_leak(
+    workspace: esc.Workspace,
+) -> None:
+    hidden = workspace.observe(
+        _discovery_observation(
+            "private conflict sentinel", topic="private.conflict", evidence=True
+        )
+    )
+    visible = workspace.observe(
+        _discovery_observation("visible conflict", topic="private.conflict")
+    )
+    run = _run_for(workspace, visible)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert len(completed.candidates) == 1
+    assert len(_assess_relation(workspace, "conflicts_with", budget=1)) == 1
+
+    owner_pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "conflict", "targets": [], "profile": "investigate"},
+    )["pack"]
+    assert len(owner_pack["conflicts"]) == 1
+
+    reader_pack = workspace.ok(
+        "engineering.context.build",
+        {"query": "conflict", "targets": [], "profile": "investigate"},
+        session=esc._reader(),
+    )["pack"]
+    serialized = json.dumps(reader_pack)
+    assert reader_pack["conflicts"] == []
+    assert "[conflict" not in reader_pack["rendering"]["text"]
+    assert hidden["record_id"] not in serialized
+    assert "private conflict sentinel" not in serialized
+    assert visible["record_id"] not in serialized
+    assert "authorization_safety" in serialized
+    assert "safe use could not be established" in serialized
+
+
+def test_low_rank_hidden_conflict_does_not_change_a_full_safe_selection(
+    workspace: esc.Workspace,
+) -> None:
+    hidden = workspace.observe(
+        _discovery_observation(
+            "private conflict sentinel", topic="private.conflict", evidence=True
+        )
+    )
+    visible = workspace.observe(
+        _discovery_observation("visible conflict", topic="private.conflict")
+    )
+    run = _run_for(workspace, visible)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert len(completed.candidates) == 1
+    assert len(_assess_relation(workspace, "conflicts_with", budget=1)) == 1
+    winner = workspace.observe(
+        _discovery_observation(
+            "winner winner winner", topic="unrelated.safe.winner"
+        )
+    )
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "winner winner winner",
+            "targets": [],
+            "profile": "investigate",
+            "budget": {"hydrations": 1},
+        },
+        session=esc._reader(),
+    )["pack"]
+
+    serialized = json.dumps(pack)
+    assert len(pack["sections"]) == 1
+    assert {
+        citation["record_ref"]["record_id"] for citation in pack["citations"]
+    } == {winner["record_id"]}
+    assert "authorization_safety" not in serialized
+    assert "safe use could not be established" not in serialized
+    assert hidden["record_id"] not in serialized
+    assert visible["record_id"] not in serialized
+
+
+def test_authorized_ineligible_conflict_peer_is_not_treated_as_hidden(
+    workspace: esc.Workspace,
+) -> None:
+    _anchor, candidate = _completed_assessment_candidate(workspace)
+
+    result = engineering_conflicts.read_authorized_conflict_components(
+        workspace.holder.connection,
+        workspace_id=WORKSPACE_ID,
+        resolution_instant_us=2**62,
+        label_grant=_grant(),
+        eligible_endpoints=(candidate.endpoint_a,),
+    )
+
+    assert result.components == ()
+    assert result.withheld_endpoint_ids == frozenset()
+
+
+def test_saturated_relation_read_refuses_instead_of_claiming_authorization_loss(
+    workspace: esc.Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace.observe(
+        _discovery_observation("dense provider alpha", topic="dense.provider")
+    )
+    workspace.observe(
+        _discovery_observation("dense provider beta", topic="dense.provider")
+    )
+    anchor = workspace.observe(
+        _discovery_observation("dense provider gamma", topic="dense.provider")
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert len(completed.candidates) >= 2
+    reconciled = _assess_relation(workspace, "not_conflict")
+    assert all(result.assessed_relation == "not_conflict" for result in reconciled)
+    monkeypatch.setattr(
+        engineering_conflicts, "MAX_CONTEXT_RELATION_ROWS_PER_BATCH", 1
+    )
+
+    refusal = workspace.refused(
+        "engineering.context.build",
+        {"query": "dense provider", "targets": [], "profile": "investigate"},
+    )
+
+    assert refusal[0] == "size_limit_exceeded"
+    assert "authorization" not in refusal[1].lower()
+
+
+def test_assessed_conflict_is_preserved_in_current_safe_context(
+    workspace: esc.Workspace,
+) -> None:
+    workspace.record(esc._source(1, "esnap-a", esc.FILES_A))
+    earlier = workspace.observe(
+        esc._observation(esc._manifest(), title="Provider alpha decision")
+    )
+    anchor = workspace.observe(
+        esc._observation(esc._manifest(), title="Provider beta decision")
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    completed = _finish_run(workspace, run, allocate_identifier=allocate)
+    assert any(
+        {candidate.endpoint_a.record_id, candidate.endpoint_b.record_id}
+        == {earlier["record_id"], anchor["record_id"]}
+        for candidate in completed.candidates
+    )
+    assert _assess_relation(workspace, "conflicts_with")
+
+    pack = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "provider",
+            "targets": [
+                {"repository_id": esc.REPOSITORY, "snapshot_id": "esnap-a"}
+            ],
+            "profile": "investigate",
+            "applicability_mode": "current_safe",
+        },
+    )["pack"]
+    assert len(pack["conflicts"]) == 1
+    assert {item["status"] for item in pack["applicability"]} == {"matched"}
+    assert "[conflict unresolved]" in pack["rendering"]["text"]
+
+    warning_only = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "provider",
+            "targets": [
+                {"repository_id": esc.REPOSITORY, "snapshot_id": "esnap-a"}
+            ],
+            "profile": "investigate",
+            "applicability_mode": "current_safe",
+            "budget": {"hydrations": 1},
+        },
+    )["pack"]
+    assert warning_only["sections"] == []
+    assert len(warning_only["conflicts"]) == 1
+    assert {item["status"] for item in warning_only["applicability"]} == {"matched"}
 
 
 def test_timeout_is_sanitized_and_durable(

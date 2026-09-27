@@ -41,6 +41,11 @@ DEFAULT_CANDIDATE_BUDGET: Final = 8
 MAX_CANDIDATE_BUDGET: Final = 32
 DEFAULT_SCAN_RECORD_BUDGET: Final = 128
 MAX_SCAN_RECORD_BUDGET: Final = 512
+MAX_CONTEXT_CONFLICT_ELIGIBLE_ENDPOINTS: Final = 10_000
+MAX_CONTEXT_CONFLICT_ENDPOINTS: Final = 64
+MAX_CONTEXT_CONFLICT_EDGES: Final = 512
+MAX_CONTEXT_RELATION_ROWS_PER_BATCH: Final = 512
+MAX_CONTEXT_RELATED_ENDPOINTS: Final = 10_000
 
 _ELIGIBLE_RECORD_TYPES: Final = (
     "knowledge.finding",
@@ -55,6 +60,9 @@ _ELIGIBLE_OPERATIONS: Final = (
 )
 _DOMAIN: Final = "engineering.codebase"
 _RELATION_READ_BATCH: Final = 400
+_CONTEXT_RELATION_READ_BATCH: Final = (
+    MAX_CONTEXT_RELATION_ROWS_PER_BATCH // MAX_CANDIDATE_BUDGET
+)
 _DISCOVERY_VIEWS: Final[tuple[str | None, ...]] = (
     "candidates",
     None,
@@ -112,6 +120,24 @@ class RelationCandidate:
     status: str
     first_discovery_run_id: str
     recorded_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictComponent:
+    """One connected group of exact visible endpoints requiring a warning."""
+
+    endpoints: tuple[RelationEndpoint, ...]
+    status: str = "unresolved"
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictReadResult:
+    components: tuple[ConflictComponent, ...]
+    withheld_endpoint_ids: frozenset[str]
+
+
+class ContextConflictLimitExceeded(StorageError):
+    """The authorized context conflict graph exceeds its declared read bound."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1312,6 +1338,399 @@ def _read_visible_relation_candidates(
     return tuple(candidates)
 
 
+_NON_MATERIAL_ASSESSMENTS: Final = frozenset(
+    {"compatible", "not_conflict", "related", "scoped_difference"}
+)
+
+
+def _latest_relation_assessment(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    relation_candidate_id: str,
+    resolution_instant_us: int,
+) -> tuple[str, str | None] | None:
+    """Read one deterministic latest result through the candidate-history index."""
+
+    row = connection.execute(
+        "SELECT status, assessed_relation "
+        "FROM omnivia_engineering_relation_assessment_results INDEXED BY "
+        "omnivia_idx_engineering_relation_assessment_results_candidate "
+        "WHERE workspace_id = ? AND relation_candidate_id = ? "
+        "AND reconciled_at_us <= ? "
+        "ORDER BY reconciled_at_us DESC, result_id DESC LIMIT 1",
+        (workspace_id, relation_candidate_id, resolution_instant_us),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), None if row[1] is None else str(row[1])
+
+
+def _context_relation_status(
+    candidate: RelationCandidate,
+    assessment: tuple[str, str | None] | None,
+) -> str | None:
+    """Classify one pending relation without promoting uncertainty to fact."""
+
+    if assessment is not None and assessment[0] == "assessed":
+        relation = assessment[1]
+        if relation == "conflicts_with":
+            return "unresolved"
+        if relation in _NON_MATERIAL_ASSESSMENTS:
+            return None
+        # A proposed supersession is not governed resolution. Until review it
+        # remains unsafe to select either endpoint as the sole conclusion.
+        return "unresolved_overlap"
+    if candidate.scope_classification == "scoped_difference":
+        return None
+    # Missing, unavailable and failed semantic assessment retain the structural
+    # overlap as a neutral warning rather than asserting a contradiction.
+    return "unresolved_overlap"
+
+
+def _read_context_relation_candidates(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    label_grant: EvidenceLabelGrant,
+    visible: Mapping[str, RelationEndpoint],
+) -> tuple[tuple[tuple[RelationCandidate, str], ...], frozenset[str]]:
+    """Read bounded unsafe relations and hide unauthorized peer identities.
+
+    Each indexed batch is capped. If a batch exceeds the cap, every visible anchor
+    in that batch is withheld generically; no hidden endpoint identity or count is
+    returned. Latest assessment reads are one indexed row per candidate.
+    """
+
+    assembly_ids = tuple(sorted(visible))
+    if not assembly_ids:
+        return (), frozenset()
+    if len(assembly_ids) > MAX_CONTEXT_CONFLICT_ELIGIBLE_ENDPOINTS:
+        raise ContextConflictLimitExceeded(
+            "the context conflict eligible endpoint set exceeds its bound"
+        )
+    columns = (
+        "candidate.relation_candidate_id, candidate.endpoint_a_assembly_id, "
+        "candidate.endpoint_a_record_id, candidate.endpoint_a_version, "
+        "candidate.endpoint_a_digest, candidate.endpoint_b_assembly_id, "
+        "candidate.endpoint_b_record_id, candidate.endpoint_b_version, "
+        "candidate.endpoint_b_digest, candidate.detector_version, "
+        "candidate.scope_classification, candidate.proposed_relation, "
+        "candidate.status, candidate.first_discovery_run_id, "
+        "candidate.recorded_at_us"
+    )
+    unsafe: dict[str, tuple[RelationCandidate, str]] = {}
+    assessment_cache: dict[str, tuple[str, str | None] | None] = {}
+    withheld: set[str] = set()
+    for start in range(0, len(assembly_ids), _CONTEXT_RELATION_READ_BATCH):
+        batch = assembly_ids[start : start + _CONTEXT_RELATION_READ_BATCH]
+        placeholders = ", ".join("?" for _ in batch)
+        for anchor_column, other_column, index_name, anchor_slice in (
+            (
+                "endpoint_a_assembly_id",
+                "endpoint_b_assembly_id",
+                "omnivia_idx_engineering_relation_candidates_endpoint_a",
+                slice(1, 5),
+            ),
+            (
+                "endpoint_b_assembly_id",
+                "endpoint_a_assembly_id",
+                "omnivia_idx_engineering_relation_candidates_endpoint_b",
+                slice(5, 9),
+            ),
+        ):
+            rows = connection.execute(
+                f"SELECT {columns} FROM omnivia_engineering_relation_candidates "
+                f"AS candidate INDEXED BY {index_name} "
+                "WHERE candidate.workspace_id = ? AND candidate.status = 'pending' "
+                "AND candidate.recorded_at_us <= ? "
+                f"AND candidate.{anchor_column} IN ({placeholders}) "
+                f"ORDER BY candidate.{anchor_column}, candidate.{other_column}, "
+                "candidate.recorded_at_us, candidate.relation_candidate_id LIMIT ?",
+                (
+                    workspace_id,
+                    resolution_instant_us,
+                    *batch,
+                    MAX_CONTEXT_RELATION_ROWS_PER_BATCH + 1,
+                ),
+            ).fetchall()
+            if len(rows) > MAX_CONTEXT_RELATION_ROWS_PER_BATCH:
+                raise ContextConflictLimitExceeded(
+                    "the context conflict relation read exceeds its bound"
+                )
+            for row in rows:
+                endpoint_a = RelationEndpoint(*(str(value) for value in row[1:5]))
+                endpoint_b = RelationEndpoint(*(str(value) for value in row[5:9]))
+                anchor = RelationEndpoint(*(str(value) for value in row[anchor_slice]))
+                if visible.get(anchor.assembly_id) != anchor:
+                    withheld.add(anchor.assembly_id)
+                    continue
+                candidate = RelationCandidate(
+                    relation_candidate_id=str(row[0]),
+                    endpoint_a=endpoint_a,
+                    endpoint_b=endpoint_b,
+                    detector_version=str(row[9]),
+                    scope_classification=str(row[10]),
+                    proposed_relation=str(row[11]),
+                    status=str(row[12]),
+                    first_discovery_run_id=str(row[13]),
+                    recorded_at_us=int(str(row[14])),
+                )
+                if candidate.relation_candidate_id not in assessment_cache:
+                    assessment_cache[candidate.relation_candidate_id] = (
+                        _latest_relation_assessment(
+                            connection,
+                            workspace_id=workspace_id,
+                            relation_candidate_id=candidate.relation_candidate_id,
+                            resolution_instant_us=resolution_instant_us,
+                        )
+                    )
+                assessment = assessment_cache[candidate.relation_candidate_id]
+                status = _context_relation_status(candidate, assessment)
+                if status is None:
+                    continue
+                unsafe[candidate.relation_candidate_id] = (candidate, status)
+
+    related_requests = {
+        endpoint.assembly_id: endpoint
+        for candidate, _status in unsafe.values()
+        for endpoint in (candidate.endpoint_a, candidate.endpoint_b)
+        if visible.get(endpoint.assembly_id) != endpoint
+    }
+    authorized_related: dict[str, RelationEndpoint] = dict(visible)
+    if len(related_requests) > MAX_CONTEXT_RELATED_ENDPOINTS:
+        # The generic handler notice is emitted only if one of these anchors would
+        # otherwise enter the final selection.
+        withheld.update(visible)
+    elif related_requests:
+        related_record_ids = tuple(
+            sorted({endpoint.record_id for endpoint in related_requests.values()})
+        )
+        for view in _DISCOVERY_VIEWS:
+            frontier = read_authorized_memory_frontier(
+                connection,
+                workspace_id=workspace_id,
+                resolution_instant_us=resolution_instant_us,
+                view=view,
+                label_grant=label_grant,
+                domain_scope=_DOMAIN,
+                record_ids=related_record_ids,
+            )
+            for version in frontier.versions:
+                endpoint = RelationEndpoint(
+                    version.assembly_id,
+                    version.record_id,
+                    version.version_id,
+                    version.content_digest,
+                )
+                if related_requests.get(endpoint.assembly_id) == endpoint:
+                    authorized_related[endpoint.assembly_id] = endpoint
+
+    held: dict[str, tuple[RelationCandidate, str]] = {}
+    for candidate_id, relation in unsafe.items():
+        candidate, _status = relation
+        endpoint_a_eligible = visible.get(candidate.endpoint_a.assembly_id) == (
+            candidate.endpoint_a
+        )
+        endpoint_b_eligible = visible.get(candidate.endpoint_b.assembly_id) == (
+            candidate.endpoint_b
+        )
+        if endpoint_a_eligible and endpoint_b_eligible:
+            held[candidate_id] = relation
+            if len(held) > MAX_CONTEXT_CONFLICT_EDGES:
+                raise ContextConflictLimitExceeded(
+                    "the context conflict edge set exceeds its bound"
+                )
+            continue
+        if endpoint_a_eligible:
+            eligible = candidate.endpoint_a
+            other = candidate.endpoint_b
+        elif endpoint_b_eligible:
+            eligible = candidate.endpoint_b
+            other = candidate.endpoint_a
+        else:  # pragma: no cover - every row was selected by one exact anchor
+            continue
+        if authorized_related.get(other.assembly_id) != other:
+            withheld.add(eligible.assembly_id)
+
+    # A generically withheld endpoint cannot leave its visible peer looking like
+    # an uncontested conclusion. Propagate withholding over every known unsafe edge.
+    changed = True
+    while changed:
+        changed = False
+        for candidate, _status in held.values():
+            endpoints = {
+                candidate.endpoint_a.assembly_id,
+                candidate.endpoint_b.assembly_id,
+            }
+            if endpoints & withheld and not endpoints <= withheld:
+                withheld.update(endpoints)
+                changed = True
+
+    return (
+        tuple(
+            sorted(
+                (
+                    relation
+                    for relation in held.values()
+                    if relation[0].endpoint_a.assembly_id not in withheld
+                    and relation[0].endpoint_b.assembly_id not in withheld
+                ),
+                key=lambda relation: (
+                    relation[0].endpoint_a.record_id,
+                    relation[0].endpoint_a.version,
+                    relation[0].endpoint_b.record_id,
+                    relation[0].endpoint_b.version,
+                    relation[0].recorded_at_us,
+                    relation[0].relation_candidate_id,
+                ),
+            ),
+        ),
+        frozenset(withheld),
+    )
+
+
+def read_authorized_conflict_components(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    label_grant: EvidenceLabelGrant,
+    eligible_endpoints: tuple[RelationEndpoint, ...],
+) -> ConflictReadResult:
+    """Return warned components and authorization-safe generic withholdings.
+
+    The eligible endpoint values are identities only. They are re-authorized under
+    the caller's grant and pinned instant before relation rows are read. Both the
+    eligible and material graph sets have hard bounds, and only exact visible pairs
+    can enter a component. A latest assessed conflict produces a material warning;
+    an unresolved structural overlap produces a neutral warning; a latest assessed
+    non-material relation suppresses the candidate. A relation to an endpoint that
+    does not reauthorize withholds the visible endpoint without returning the hidden
+    identity, relation type or count.
+    """
+
+    if label_grant.workspace_id != workspace_id:
+        raise StorageError("the context conflict grant does not match the workspace")
+    requested: dict[str, RelationEndpoint] = {}
+    for endpoint in eligible_endpoints:
+        prior = requested.setdefault(endpoint.assembly_id, endpoint)
+        if prior != endpoint:
+            raise StorageError("a context endpoint identity is inconsistent")
+    if len(requested) > MAX_CONTEXT_CONFLICT_ELIGIBLE_ENDPOINTS:
+        raise ContextConflictLimitExceeded(
+            "the context conflict eligible endpoint set exceeds its bound"
+        )
+    if not requested:
+        # A single visible endpoint can still have an inaccessible unsafe peer.
+        return ConflictReadResult((), frozenset())
+
+    record_ids = tuple(sorted({endpoint.record_id for endpoint in requested.values()}))
+    with read_snapshot(connection):
+        visible: dict[str, RelationEndpoint] = {}
+        for view in _DISCOVERY_VIEWS:
+            frontier = read_authorized_memory_frontier(
+                connection,
+                workspace_id=workspace_id,
+                resolution_instant_us=resolution_instant_us,
+                view=view,
+                label_grant=label_grant,
+                domain_scope=_DOMAIN,
+                record_ids=record_ids,
+            )
+            for version in frontier.versions:
+                endpoint = RelationEndpoint(
+                    version.assembly_id,
+                    version.record_id,
+                    version.version_id,
+                    version.content_digest,
+                )
+                if requested.get(endpoint.assembly_id) == endpoint:
+                    prior = visible.setdefault(endpoint.assembly_id, endpoint)
+                    if prior != endpoint:  # pragma: no cover - exact identity key
+                        raise StorageError(
+                            "an exact context endpoint changed within one read snapshot"
+                        )
+
+        candidates, withheld_endpoint_ids = _read_context_relation_candidates(
+            connection,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            label_grant=label_grant,
+            visible=visible,
+        )
+        withheld_endpoint_ids = frozenset(
+            {*withheld_endpoint_ids, *(set(requested) - set(visible))}
+        )
+    if not candidates:
+        return ConflictReadResult((), withheld_endpoint_ids)
+
+    participating = {
+        endpoint.assembly_id
+        for candidate, _status in candidates
+        for endpoint in (candidate.endpoint_a, candidate.endpoint_b)
+    }
+    if len(participating) > MAX_CONTEXT_CONFLICT_ENDPOINTS:
+        raise ContextConflictLimitExceeded(
+            "the material context conflict endpoint set exceeds its bound"
+        )
+
+    parent = {assembly_id: assembly_id for assembly_id in visible}
+
+    def find(assembly_id: str) -> str:
+        while parent[assembly_id] != assembly_id:
+            parent[assembly_id] = parent[parent[assembly_id]]
+            assembly_id = parent[assembly_id]
+        return assembly_id
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        first, second = sorted((left_root, right_root))
+        parent[second] = first
+
+    for candidate, _status in candidates:
+        left = candidate.endpoint_a.assembly_id
+        right = candidate.endpoint_b.assembly_id
+        union(left, right)
+
+    groups: dict[str, list[RelationEndpoint]] = {}
+    for assembly_id in participating:
+        groups.setdefault(find(assembly_id), []).append(visible[assembly_id])
+    status_by_root: dict[str, str] = {}
+    for candidate, status in candidates:
+        root = find(candidate.endpoint_a.assembly_id)
+        if status == "unresolved" or root not in status_by_root:
+            status_by_root[root] = status
+    components = [
+        ConflictComponent(
+            endpoints=tuple(
+                sorted(
+                    endpoints,
+                    key=lambda endpoint: (
+                        endpoint.record_id,
+                        endpoint.version,
+                        endpoint.assembly_id,
+                    ),
+                )
+            ),
+            status=status_by_root[root],
+        )
+        for root, endpoints in groups.items()
+        if len(endpoints) >= 2
+    ]
+    components.sort(
+        key=lambda component: tuple(
+            (endpoint.record_id, endpoint.version, endpoint.assembly_id)
+            for endpoint in component.endpoints
+        )
+    )
+    return ConflictReadResult(tuple(components), withheld_endpoint_ids)
+
+
 def read_authorized_relation_candidates(
     connection: sqlite3.Connection,
     *,
@@ -1441,13 +1860,21 @@ __all__ = [
     "DEFAULT_SCAN_RECORD_BUDGET",
     "DETECTOR_VERSION",
     "MAX_CANDIDATE_BUDGET",
+    "MAX_CONTEXT_CONFLICT_EDGES",
+    "MAX_CONTEXT_CONFLICT_ELIGIBLE_ENDPOINTS",
+    "MAX_CONTEXT_CONFLICT_ENDPOINTS",
+    "MAX_CONTEXT_RELATION_ROWS_PER_BATCH",
     "MAX_SCAN_RECORD_BUDGET",
+    "ConflictComponent",
+    "ConflictReadResult",
+    "ContextConflictLimitExceeded",
     "DiscoveryProcessingResult",
     "DiscoveryRun",
     "RelationCandidate",
     "RelationEndpoint",
     "enqueue_discovery",
     "process_oldest_queued_run",
+    "read_authorized_conflict_components",
     "read_authorized_relation_candidates",
     "read_authorized_relation_candidates_for_anchor",
     "read_oldest_queued_run",
