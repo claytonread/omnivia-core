@@ -436,6 +436,17 @@
       "sha256": "1e001828c81494c86e6c8a6fb0fa157a480d99f6af7848e225919555bbc34dd9",
       "introduced_commit": "403c02c706393054110355f0c39b58418d44f7d9",
       "accepted_commit": null
+    },
+    {
+      "number": 57,
+      "filename": "0057_engineering_relation_assessments.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 56,
+      "sha256": "464975d081d01cb756b4e012e767edf1ff28471816ac0ef543385100eb76707b",
+      "introduced_commit": "309b7c815d730c885032aae155368413502453fc",
+      "accepted_commit": null
     }
   ]
 }
