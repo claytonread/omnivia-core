@@ -173,7 +173,7 @@ def test_the_two_profiles_are_exactly_fourteen_and_twenty_tools() -> None:
 
 
 def test_the_authoring_profile_is_the_restricted_fourteen_plus_six() -> None:
-    """Concatenation, not a second listing of the shared ten: the profiles cannot
+    """Concatenation, not a second listing of the shared fourteen: the profiles cannot
     drift in a tool name, a title or a description they both advertise."""
     restricted = manifest.exposure_manifest("restricted")
     assert manifest.exposure_manifest("authoring")[:14] == restricted
@@ -390,13 +390,13 @@ def test_an_operation_outside_the_catalogue_cannot_be_admitted() -> None:
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
 def test_the_never_exposed_operations_are_absent(profile: str, operation: str) -> None:
     """Absent from both inventories and unreachable by tool name in either: the
-    widest profile is still a curated fifteen, not "everything but the worst"."""
+    widest profile is still a curated twenty, not "everything but the worst"."""
     exposed = manifest.exposure_manifest(profile)
     assert operation not in {entry.operation for entry in exposed}
     assert manifest.exposed_by_tool_name(operation.replace(".", "_"), profile) is None
 
 
-def test_every_catalogue_operation_outside_the_fifteen_is_unreachable() -> None:
+def test_every_catalogue_operation_outside_the_curated_profile_is_unreachable() -> None:
     """Stated over the whole catalogue rather than over a named list, so an
     operation registered after this was written is absent by default and has to
     be added to `EXPECTED_AUTHORING` to become callable."""
