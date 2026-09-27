@@ -53,8 +53,9 @@ _OWNED_CHECKPOINTS: Final = (
 #: The default checkpoint payload cap: 256 KiB of canonical UTF-8 (spec §9.2).
 CHECKPOINT_PAYLOAD_CAP_BYTES: Final = 262144
 
-#: The default session lease: 24 hours, refreshed by re-registration through the
-#: trusted adapter. Enforcement of expiry lands with the binding-refresh slice.
+#: The default session lease: 24 hours. Append and close refuse once the lease
+#: has expired against the mutation's own settlement instant. Lease refresh and
+#: revocation belong to a later lifecycle slice.
 SESSION_LEASE_SECONDS: Final = 24 * 60 * 60
 
 
@@ -63,7 +64,8 @@ class SessionNotFound(LookupError):
 
 
 class SessionNotActive(RuntimeError):
-    """The continuity session exists but is not `active`."""
+    """The continuity session exists but is not writable: not `active`, or its
+    lease expired at or before this mutation's settlement instant."""
 
 
 class SequencePreconditionFailed(RuntimeError):
@@ -158,13 +160,22 @@ def read_session(
     }
 
 
-def _require_active_session(
+def _require_writable_session(
     connection: sqlite3.Connection,
+    settlement: Any,
     *,
     workspace_id: str,
     session_id: str,
     principal_id: str,
 ) -> dict[str, Any]:
+    """The session, if it is owned, `active`, and its lease has not expired.
+
+    The lease is compared against `settlement.settled_at_us`, the server's own
+    settlement instant for this fenced mutation, never a caller-supplied time.
+    An expired lease is refused the same way an inactive session is -- no new
+    response code, and no `expired` state is persisted here; the row's `state`
+    stays exactly what it was.
+    """
     session = read_session(
         connection,
         workspace_id=workspace_id,
@@ -175,6 +186,8 @@ def _require_active_session(
         raise SessionNotFound(session_id)
     if session["state"] != "active":
         raise SessionNotActive(session["state"])
+    if session["lease_expires_at_us"] <= settlement.settled_at_us:
+        raise SessionNotActive("expired")
     return session
 
 
@@ -200,10 +213,13 @@ def append_checkpoint(
     refused and the caller deliberately reconciles. The payload is stored whole
     or not at all: an oversized payload raises before anything is written. A
     session `principal_id` does not own is `SessionNotFound`, checked here under
-    the fence whatever the caller checked before.
+    the fence whatever the caller checked before. A session whose lease expired
+    at or before `settlement.settled_at_us` is `SessionNotActive`, checked before
+    the sequence precondition and before any row is written.
     """
-    session = _require_active_session(
+    session = _require_writable_session(
         connection,
+        settlement,
         workspace_id=workspace_id,
         session_id=session_id,
         principal_id=principal_id,
@@ -276,10 +292,15 @@ def close_session(
     The expected sequence is a mutation precondition against the session's last
     acknowledged checkpoint: a caller that watched another writer advance the
     session re-reads and re-decides rather than replacing the newer checkpoint.
-    Only `principal_id`'s own session closes; any other is `SessionNotFound`.
+    Only `principal_id`'s own session closes; any other is `SessionNotFound`. A
+    session whose lease expired at or before `settlement.settled_at_us` is
+    `SessionNotActive`, checked before the sequence precondition, before the
+    final checkpoint (if any) and before the session's state is written -- the
+    close is refused whole, exactly as the checkpoint-only path is.
     """
-    session = _require_active_session(
+    session = _require_writable_session(
         connection,
+        settlement,
         workspace_id=workspace_id,
         session_id=session_id,
         principal_id=principal_id,
