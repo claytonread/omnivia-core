@@ -1651,6 +1651,37 @@ def test_malformed_or_unanchored_dependency_manifests_are_refused(
     ).fetchone()[0] == governed
 
 
+def test_oversized_multibyte_observation_is_refused_without_partial_content(
+    workspace: Workspace,
+) -> None:
+    """AC-031: the 64 KiB cap counts UTF-8 bytes and never truncates on save."""
+    connection = workspace.holder.connection
+    tables = (
+        "omnivia_governed_records",
+        "omnivia_governed_version_assemblies",
+        "omnivia_governed_provenance_events",
+        "omnivia_governed_version_seals",
+        "omnivia_engineering_preview_projection",
+    )
+    before = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in tables
+    }
+    payload = _observation(None, evidence=False)
+    payload["content"]["additional_context"] = "🧪" * 20_000
+
+    code, message, retry = workspace.refused("memory.create", payload)
+
+    assert code == "invalid_request"
+    assert retry == "non_retryable"
+    assert "65536-byte payload cap" in message
+    assert "🧪" not in message
+    assert {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in tables
+    } == before
+
+
 @pytest.mark.parametrize("wrong", [[], {}, ["git_commit"], {"complete": 1}])
 def test_closed_vocabularies_refuse_wrong_types(wrong: Any) -> None:
     for field in ("snapshot_kind", "capture_status"):
