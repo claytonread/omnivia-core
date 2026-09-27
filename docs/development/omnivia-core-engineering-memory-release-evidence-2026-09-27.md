@@ -20,7 +20,7 @@ One row per shipped capability. "Producer" is the code path that writes authorit
 
 ## Performance qualification
 
-Current report: `benchmarks/reports/engineering-memory/lane-10000.json`. The 100k run is in progress. These are diagnostic measurements on the producing machine, not §20.2 release qualification yet: the present fixture lacks multiple worktrees, ACL partitions, conflict groups, cache-state lanes, and a complete environment/commit record. The 10k search and pack p95 measurements exceed the proposed targets; no latency guarantee is claimed.
+Current report: `benchmarks/reports/engineering-memory/lane-10000.json`. There is no valid completed 100k report; the stale rerun was stopped after its code changed, and a fresh run remains pending after the search and pack scale fixes are integrated. These are diagnostic measurements on the producing machine, not §20.2 release qualification yet: the present fixture lacks multiple worktrees, ACL partitions, conflict groups, cache-state and concurrency lanes, and a complete environment/commit record. The 10k search and pack p95 measurements exceed the proposed targets; no latency guarantee is claimed.
 
 ## Migration / rollout evidence
 
@@ -30,7 +30,7 @@ Current report: `benchmarks/reports/engineering-memory/lane-10000.json`. The 100
 
 ## Known exclusions (release-note language)
 
-1. No semantic assessor (P2-08): conflict relation candidates stay structural/lexical; governance remains human.
+1. Context packs do not yet emit known-conflict warnings. Conflict discovery and governed reconciliation remain incomplete; no semantic assessor (P2-08) is enabled.
 2. No automatic repository change-event producer: `current_safe` applicability advances only over recorded source streams.
 3. Single-principal Personal mode; lease/binding-generation fencing recorded but not enforced.
 4. Tokenizer contract remains incomplete: the current engineering renderer reports a deterministic pattern count, explicitly labelled as not a host-model tokenizer. Exact supported-tokenizer counting or an explicitly negotiated byte-only representation is required before claiming §12.4 conformance.
