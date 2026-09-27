@@ -925,6 +925,7 @@ def main(
                 resolver=resolve_credential,
                 authenticated_dispatch=application.dispatch_for_session,
                 bind=http_bind,
+                gate=started.sqlite_gate,
             )
             http.start()
             started.lifecycle.resources.push("http_server", http.stop)

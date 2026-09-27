@@ -142,6 +142,7 @@ import socket
 import ssl
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -791,16 +792,25 @@ class _Handler(BaseHTTPRequestHandler):
         per-request containment the local transport applies per connection: the set of
         ways a caller can be bad is not enumerable from here, and one that escaped
         would reach `handle_error` with the request attached.
+
+        The adapter's `gate`, if any, is held around the `router.route(...)` call
+        alone -- not around the body already read above nor the response written
+        below -- so this is the third entrant to the runner's shared SQLite
+        connection serialized against the serving and lease-renewal threads.
         """
+        gate = self.server_adapter.gate
         try:
             authenticated = self.server_adapter.authenticated_dispatch
-            if session is None or authenticated is None:
-                result = self.server_adapter.router.route(document)
-            else:
-                def dispatch(request: RequestEnvelope) -> ResponseEnvelope:
-                    return authenticated(request, session)
+            with gate if gate is not None else nullcontext():
+                if session is None or authenticated is None:
+                    result = self.server_adapter.router.route(document)
+                else:
+                    def dispatch(request: RequestEnvelope) -> ResponseEnvelope:
+                        return authenticated(request, session)
 
-                result = self.server_adapter.router.route(document, dispatch=dispatch)
+                    result = self.server_adapter.router.route(
+                        document, dispatch=dispatch
+                    )
             payload = canonical_json_bytes(result.to_wire())
         except (ProtocolError, ProbeError, ContractDecodeError, OVC1Error):
             self._refuse(HTTPStatus.BAD_REQUEST)
@@ -986,6 +996,13 @@ class HttpListener:
     principal: str
     resolver: CredentialResolver | None = None
     authenticated_dispatch: AuthenticatedApplicationDispatch | None = None
+    #: The same gate the runner holds around its own use of the shared SQLite
+    #: connection, or `None` for an embedder or test that owns no such connection to
+    #: protect. Held around each complete `router.route(...)` call in `_route` --
+    #: never over reading the request body or writing the response -- so this
+    #: thread and the lease-renewal thread never have SQLite's connection-global
+    #: mutex held by one while the other waits on the GIL inside it.
+    gate: threading.RLock | None = None
     bind: HttpBind = field(default_factory=HttpBind)
     #: The total budget for reading one request, not a per-read one. Named on the
     #: adapter so a test can assert the bound in a second rather than in ten.

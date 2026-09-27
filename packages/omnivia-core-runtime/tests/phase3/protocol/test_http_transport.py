@@ -524,6 +524,66 @@ def test_the_request_deadline_defaults_to_the_local_transport_s_reviewed_value()
     assert server.request_deadline == DEFAULT_TIMEOUT_SECONDS
 
 
+# --- the shared sqlite gate ----------------------------------------------------
+
+
+def test_a_held_gate_blocks_dispatch_until_released_then_serves_cleanly() -> None:
+    """A real lock held outside the serving thread must gate `router.route(...)`.
+
+    Stands in for the runner's own lease-renewal thread, which holds the same
+    `RLock` around its own use of the shared SQLite connection. While *this*
+    thread holds it, the serving thread must be blocked before the router is
+    ever entered -- not merely before its response is sent -- and releasing it
+    must let a normal, valid response through with the listener stoppable
+    afterwards.
+
+    Bounded throughout: the two joins below are watchdogs. If the gate were not
+    held, the request would complete almost immediately and the first assertion
+    would fail; if the implementation deadlocked, the second join times out and
+    fails rather than hanging the suite.
+    """
+    dispatch = CountingDispatch()
+    gate = threading.RLock()
+    server = HttpListener(
+        router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver, gate=gate
+    )
+    server.start()
+    port = int(server.url.rsplit(":", 1)[1])
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        result["status"], result["body"] = _post(
+            port,
+            APPLICATION_PATH,
+            canonical_json_bytes(_request().to_wire()),
+            credential=ACCEPTED_CREDENTIAL,
+        )
+
+    try:
+        gate.acquire()
+        try:
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            # Connecting, parsing the request and checking the credential all run
+            # before the gate is reached and are fast, so a short bounded wait is
+            # enough to know the handler is blocked on the gate rather than that it
+            # simply has not connected yet.
+            worker.join(timeout=0.5)
+            assert worker.is_alive(), "the handler must still be blocked on the gate"
+            assert dispatch.calls == []
+        finally:
+            gate.release()
+
+        worker.join(timeout=10)
+        assert not worker.is_alive(), "the handler never unblocked after release"
+    finally:
+        server.stop()
+
+    assert result["status"] == 200
+    assert result["body"] != b""
+    assert len(dispatch.calls) == 1
+
+
 # --- the bind policy ----------------------------------------------------------
 
 
