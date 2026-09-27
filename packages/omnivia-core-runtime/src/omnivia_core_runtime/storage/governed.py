@@ -104,6 +104,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core.contracts.v1.canonical_json import canonicalize, parse_json_document
 from omnivia_core_runtime.storage.connection import authorised
+from omnivia_core_runtime.storage.sql_in import execute_in_rows
 
 #: 0009's two sealable layers, spelled as its `layer` column spells them. `context_model`
 #: is the third value the column admits and is refused a seal outright, so it can never
@@ -266,18 +267,29 @@ def _read_supersession_facts(
     """
     if governed_record_ids == ():
         return ()
-    record_scope = ""
-    parameters: tuple[object, ...] = (workspace_id, resolution_instant_us)
-    if governed_record_ids is not None:
-        placeholders = ", ".join("?" for _ in governed_record_ids)
-        record_scope = f"  AND r.governed_record_id IN ({placeholders}) "
-        parameters = (
-            workspace_id,
-            *governed_record_ids,
-            resolution_instant_us,
-        )
-    rows = fenced.execute(
-        "SELECT r.workspace_id, r.governed_record_id, r.source_version_id, "
+    if governed_record_ids is None:
+        rows = fenced.execute(
+            "SELECT r.workspace_id, r.governed_record_id, r.source_version_id, "
+            "       r.target_version_id, r.assembly_id, "
+            "       MAX(r.recorded_at_us, t.recorded_at_us), e.reason_code "
+            f"FROM {_SUPERSESSIONS} r "
+            f"JOIN {_SEALS} s ON s.workspace_id = r.workspace_id "
+            "                AND s.assembly_id = r.assembly_id "
+            f"JOIN {_VIEW} t ON t.workspace_id = r.workspace_id "
+            "               AND t.assembly_id = r.assembly_id "
+            "               AND t.governed_record_version_id = r.target_version_id "
+            f"LEFT JOIN {_EVENTS} e ON e.workspace_id = r.workspace_id "
+            "                      AND e.provenance_event_id = r.provenance_event_id "
+            "WHERE r.workspace_id = ? "
+            "  AND MAX(r.recorded_at_us, t.recorded_at_us) <= ? "
+            "ORDER BY r.source_version_id ASC, r.target_version_id ASC, "
+            "         r.assembly_id ASC",
+            (workspace_id, resolution_instant_us),
+        ).fetchall()
+        return tuple(GovernedSupersession(*row) for row in rows)
+    rows = execute_in_rows(
+        fenced,
+        select="SELECT r.workspace_id, r.governed_record_id, r.source_version_id, "
         "       r.target_version_id, r.assembly_id, "
         "       MAX(r.recorded_at_us, t.recorded_at_us), e.reason_code "
         f"FROM {_SUPERSESSIONS} r "
@@ -287,14 +299,15 @@ def _read_supersession_facts(
         "               AND t.assembly_id = r.assembly_id "
         "               AND t.governed_record_version_id = r.target_version_id "
         f"LEFT JOIN {_EVENTS} e ON e.workspace_id = r.workspace_id "
-        "                      AND e.provenance_event_id = r.provenance_event_id "
-        "WHERE r.workspace_id = ? "
-        f"{record_scope}"
-        "  AND MAX(r.recorded_at_us, t.recorded_at_us) <= ? "
-        "ORDER BY r.source_version_id ASC, r.target_version_id ASC, "
-        "         r.assembly_id ASC",
-        parameters,
-    ).fetchall()
+        "                      AND e.provenance_event_id = r.provenance_event_id",
+        where_before="r.workspace_id = ?",
+        in_column="r.governed_record_id",
+        where_after="AND MAX(r.recorded_at_us, t.recorded_at_us) <= ?",
+        leading=(workspace_id,),
+        ids=governed_record_ids,
+        trailing=(resolution_instant_us,),
+        order_key=lambda row: (str(row[2]), str(row[3]), str(row[4])),
+    )
     return tuple(GovernedSupersession(*row) for row in rows)
 
 
@@ -1730,14 +1743,17 @@ def hydrate_authorized_governed_record_values(
         )
     if not assembly_ids:
         return ()
-    placeholders = ", ".join("?" for _ in assembly_ids)
     with authorised(connection, mutations=False, ddl=False) as fenced:
-        rows = fenced.execute(
-            f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW} "
-            f"WHERE workspace_id = ? AND assembly_id IN ({placeholders})",
-            (workspace_id, *assembly_ids),
-        ).fetchall()
-        versions_by_id = {row[1]: GovernedVersion(*row) for row in rows}
+        version_rows = execute_in_rows(
+            fenced,
+            select=f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW}",
+            where_before="workspace_id = ?",
+            in_column="assembly_id",
+            leading=(workspace_id,),
+            ids=assembly_ids,
+            order_key=lambda row: (str(row[1]),),
+        )
+        versions_by_id = {row[1]: GovernedVersion(*row) for row in version_rows}
         if set(versions_by_id) != set(assembly_ids):
             raise ValueError(
                 "authorized governed assembly disappeared from the snapshot"
@@ -1745,18 +1761,22 @@ def hydrate_authorized_governed_record_values(
         record_ids = tuple(
             sorted({version.governed_record_id for version in versions_by_id.values()})
         )
-        record_placeholders = ", ".join("?" for _ in record_ids)
-        transition_rows = fenced.execute(
-            "SELECT workspace_id, transition_id, governed_record_id, "
+        transition_rows = execute_in_rows(
+            fenced,
+            select="SELECT workspace_id, transition_id, governed_record_id, "
             "source_assembly_id, source_record_version_id, target_assembly_id, "
             "target_record_version_id, operation, rationale_json, rationale_digest, "
             "rationale_byte_length, reason_code, reason_comment, actor_id, actor_kind, "
             "audit_ref, settled_at_us "
-            f"FROM {_APPLICATION_TRANSITIONS} WHERE workspace_id = ? "
-            f"AND governed_record_id IN ({record_placeholders}) AND settled_at_us <= ? "
-            "ORDER BY governed_record_id, settled_at_us, transition_id",
-            (workspace_id, *record_ids, resolution_instant_us),
-        ).fetchall()
+            f"FROM {_APPLICATION_TRANSITIONS}",
+            where_before="workspace_id = ?",
+            in_column="governed_record_id",
+            where_after="AND settled_at_us <= ?",
+            leading=(workspace_id,),
+            ids=record_ids,
+            trailing=(resolution_instant_us,),
+            order_key=lambda row: (str(row[2]), int(row[16]), str(row[1])),
+        )
         authorized_support = set(assembly_ids) | set(support_assembly_ids)
         transition_support = {
             str(value) for row in transition_rows for value in (row[3], row[5])
@@ -1764,24 +1784,27 @@ def hydrate_authorized_governed_record_values(
         if not transition_support <= authorized_support:
             raise ValueError("application transition support was not ACL-authorized")
         support_ids = tuple(sorted(authorized_support))
-        support_placeholders = ", ".join("?" for _ in support_ids)
         facts = _read_supersession_facts(
             fenced,
             workspace_id=workspace_id,
             resolution_instant_us=resolution_instant_us,
             governed_record_ids=record_ids,
         )
-        event_rows = fenced.execute(
-            "SELECT workspace_id, assembly_id, governed_record_version_id, "
+        event_rows = execute_in_rows(
+            fenced,
+            select="SELECT workspace_id, assembly_id, governed_record_version_id, "
             "provenance_event_id, provenance_sequence, action, actor_id, actor_kind, "
             "policy_id, occurred_at_us, reason_code, reason_comment, evidence_disposition "
-            f"FROM {_EVENTS} WHERE workspace_id = ? "
-            f"AND assembly_id IN ({support_placeholders}) "
-            "ORDER BY assembly_id, provenance_sequence, provenance_event_id",
-            (workspace_id, *support_ids),
-        ).fetchall()
-        link_rows = fenced.execute(
-            "SELECT l.workspace_id, l.assembly_id, e.governed_record_version_id, "
+            f"FROM {_EVENTS}",
+            where_before="workspace_id = ?",
+            in_column="assembly_id",
+            leading=(workspace_id,),
+            ids=support_ids,
+            order_key=lambda row: (str(row[1]), int(row[4]), str(row[3])),
+        )
+        link_rows = execute_in_rows(
+            fenced,
+            select="SELECT l.workspace_id, l.assembly_id, e.governed_record_version_id, "
             "l.provenance_event_id, e.provenance_sequence, l.link_ordinal, l.evidence_id, "
             "a.source_kind, a.source_native_id, a.source_locator, a.source_retrieved_at_us, "
             "a.ingested_at_us, a.event_at_us, a.observed_at_us, l.normalized_record_id, "
@@ -1790,23 +1813,33 @@ def hydrate_authorized_governed_record_values(
             "AND e.assembly_id=l.assembly_id AND e.provenance_event_id=l.provenance_event_id "
             f"JOIN {_ARTIFACTS} a ON a.workspace_id=l.workspace_id AND a.evidence_id=l.evidence_id "
             f"LEFT JOIN {_SPANS} s ON s.workspace_id=l.workspace_id AND s.evidence_id=l.evidence_id "
-            "AND s.normalized_record_id=l.normalized_record_id AND s.normalized_span_id=l.normalized_span_id "
-            f"WHERE l.workspace_id = ? AND l.assembly_id IN ({support_placeholders}) "
-            "ORDER BY l.assembly_id, e.provenance_sequence, l.provenance_event_id, "
-            "l.link_ordinal, l.evidence_id",
-            (workspace_id, *support_ids),
-        ).fetchall()
-        claim_rows = fenced.execute(
-            "SELECT l.workspace_id, l.assembly_id, l.governed_record_version_id, "
+            "AND s.normalized_record_id=l.normalized_record_id AND s.normalized_span_id=l.normalized_span_id",
+            where_before="l.workspace_id = ?",
+            in_column="l.assembly_id",
+            leading=(workspace_id,),
+            ids=support_ids,
+            order_key=lambda row: (
+                str(row[1]),
+                int(row[4]),
+                str(row[3]),
+                int(row[5]),
+                str(row[6]),
+            ),
+        )
+        claim_rows = execute_in_rows(
+            fenced,
+            select="SELECT l.workspace_id, l.assembly_id, l.governed_record_version_id, "
             "l.operation, l.audit_ref, l.claim_json, l.claim_digest, l.claim_byte_length, "
             "l.claim_ingested_at_us, l.settled_at_us, a.assertion_actor_id, "
             "a.assertion_actor_kind, a.assertion_actor_role "
             f"FROM {_APPLICATION_CLAIMS} l JOIN {_ASSEMBLIES} a "
-            "ON a.workspace_id=l.workspace_id AND a.assembly_id=l.assembly_id "
-            f"WHERE l.workspace_id = ? AND l.assembly_id IN ({support_placeholders}) "
-            "ORDER BY l.assembly_id",
-            (workspace_id, *support_ids),
-        ).fetchall()
+            "ON a.workspace_id=l.workspace_id AND a.assembly_id=l.assembly_id",
+            where_before="l.workspace_id = ?",
+            in_column="l.assembly_id",
+            leading=(workspace_id,),
+            ids=support_ids,
+            order_key=lambda row: (str(row[1]),),
+        )
     versions = tuple(versions_by_id[assembly_id] for assembly_id in assembly_ids)
     selected_versions = {version.governed_record_version_id for version in versions}
     snapshot = _GovernedHydrationSnapshot(
