@@ -1,14 +1,16 @@
 """Engineering source coverage and dependency applicability
-(SPEC-CORE-ENGMEM-001, plan P0-04; spec §6.3, §15; migration 0050).
+(SPEC-CORE-ENGMEM-001, plan P0-04; spec §6.3, §15; migrations 0050 and 0051).
 
 The trusted-source vertical. `engineering.source.record` appends immutable source
 events to a stream its principal owns; the stream's coverage barrier advances
 only along a contiguous, validated predecessor chain; `memory.create` records a
-record version's whole-file dependency set against a recorded baseline; and one
-deterministic evaluator compares that set with an explicitly requested target's
-manifest. Every write runs inside the fenced mutation transaction the
-coordinator opens, and the guard triggers of migration 0050 hold the ownership,
-chain and coverage invariants a second time.
+record version's whole-file dependency set against a recorded baseline, and the
+claim-preserving `knowledge.propose` and `candidate.approve` carry that set
+unchanged to the exact version they mint; and one deterministic evaluator
+compares a version's set with an explicitly requested target's manifest. Every
+write runs inside the fenced mutation transaction the coordinator opens, and the
+guard triggers of migrations 0050 and 0051 hold the ownership, chain, coverage
+and carry invariants a second time.
 
 Rules enforced here:
 
@@ -694,24 +696,129 @@ def record_dependency_set(
         (workspace_id, manifest.snapshot_id, manifest.stream_id, manifest.repository_id),
     ).fetchone() is None:
         raise DependencyBaselineUnavailable(manifest.snapshot_id)
-    for dependency in manifest.dependencies:
+    _seal_dependency_set(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        record_id=record_id,
+        version=version,
+        claims=(
+            manifest.repository_id,
+            manifest.stream_id,
+            manifest.snapshot_id,
+            manifest.producer,
+            manifest.producer_version,
+            manifest.coverage,
+        ),
+        dependencies=[
+            (
+                dependency.selector_type,
+                dependency.selector,
+                dependency.meaning,
+                manifest.producer,
+                dependency.expected_digest,
+            )
+            for dependency in manifest.dependencies
+        ],
+        allocate_identifier=allocate_identifier,
+    )
+
+
+def carry_dependency_set(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    record_id: str,
+    source_version: str,
+    target_version: str,
+    allocate_identifier: Any,
+) -> bool:
+    """Carry a sealed set to the version a claim-preserving transition just minted.
+
+    `knowledge.propose` and `candidate.approve` copy content, claim and evidence
+    byte for byte, so the new exact version repeats the source's baseline,
+    producer, coverage and digest claims under fresh row identities and this
+    settlement's audit, sealed at once. The transition itself attests nothing: a
+    source with no set, or whose stored rows disagree with its seal or its
+    recorded baseline, carries nothing and the new version stays `unknown`, and
+    the evaluator still checks everything on every read. Migration 0051 holds
+    these conditions a second time. Returns whether a set was carried.
+    """
+    row = connection.execute(
+        "SELECT s.repository_id, s.stream_id, s.snapshot_id, s.producer, "
+        "s.producer_version, s.coverage, s.dependency_count, s.audit_ref "
+        "FROM omnivia_engineering_dependency_sets s "
+        "JOIN omnivia_engineering_source_events e "
+        "ON e.workspace_id = s.workspace_id AND e.snapshot_id = s.snapshot_id "
+        "AND e.stream_id = s.stream_id "
+        "JOIN omnivia_engineering_source_streams st "
+        "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
+        "AND st.repository_id = s.repository_id "
+        "WHERE s.workspace_id = ? AND s.record_id = ? AND s.version = ?",
+        (workspace_id, record_id, source_version),
+    ).fetchone()
+    if row is None:
+        return False
+    sealed = int(row[6])
+    # Bounded by the sealed count (at most 64); a missing or extra row, a row under
+    # another audit or a whole-file row without its digest is an inconsistent set.
+    dependencies = connection.execute(
+        "SELECT selector_type, selector, meaning, producer, expected_digest, audit_ref "
+        "FROM omnivia_engineering_dependencies "
+        "WHERE workspace_id = ? AND record_id = ? AND version = ? "
+        "ORDER BY selector_type, selector, meaning LIMIT ?",
+        (workspace_id, record_id, source_version, sealed + 1),
+    ).fetchall()
+    if len(dependencies) != sealed or any(
+        dep[5] != row[7] or (dep[0] == "whole_file" and dep[4] is None)
+        for dep in dependencies
+    ):
+        return False
+    _seal_dependency_set(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        record_id=record_id,
+        version=target_version,
+        claims=row[:6],
+        dependencies=[dep[:5] for dep in dependencies],
+        allocate_identifier=allocate_identifier,
+    )
+    return True
+
+
+def _seal_dependency_set(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    record_id: str,
+    version: str,
+    claims: Sequence[str],
+    dependencies: Sequence[Sequence[str | None]],
+    allocate_identifier: Any,
+) -> None:
+    """Write one version's dependency rows, then the set row that seals them.
+
+    `claims` is the set's (repository, stream, snapshot, producer, producer
+    version, coverage); each dependency is (selector type, selector, meaning,
+    producer, expected digest).
+    """
+    for dependency in dependencies:
         connection.execute(
             "INSERT INTO omnivia_engineering_dependencies "
             "(workspace_id, dependency_id, record_id, version, selector_type, selector, "
-            "meaning, producer, recorded_at_us, audit_ref, expected_digest) "
+            "meaning, producer, expected_digest, recorded_at_us, audit_ref) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 workspace_id,
                 allocate_identifier("edep"),
                 record_id,
                 version,
-                dependency.selector_type,
-                dependency.selector,
-                dependency.meaning,
-                manifest.producer,
+                *dependency,
                 settlement.settled_at_us,
                 settlement.audit_ref,
-                dependency.expected_digest,
             ),
         )
     connection.execute(
@@ -723,13 +830,8 @@ def record_dependency_set(
             workspace_id,
             record_id,
             version,
-            manifest.repository_id,
-            manifest.stream_id,
-            manifest.snapshot_id,
-            manifest.producer,
-            manifest.producer_version,
-            manifest.coverage,
-            len(manifest.dependencies),
+            *claims,
+            len(dependencies),
             settlement.settled_at_us,
             settlement.audit_ref,
         ),

@@ -745,26 +745,110 @@ def test_unqualified_dependency_sets_are_never_matched(workspace: Workspace) -> 
     assert workspace.matched("esnap-a") == [qualified["record_id"]]
 
 
-def test_an_approved_version_does_not_inherit_matched(workspace: Workspace) -> None:
-    """Governance transitions mint new exact versions and no dependency set comes
-    with them, so `current_safe` omits the accepted version rather than inheriting
-    the proposal's `matched` (a known limitation, not a qualification)."""
+def test_an_approved_version_carries_its_qualified_dependency_set(
+    workspace: Workspace,
+) -> None:
+    """`knowledge.propose` and `candidate.approve` copy the observation's content,
+    claim and evidence, so its sealed dependency set travels to each new exact
+    version in the same settlement (migration 0051). Approval proves nothing by
+    itself: every read re-evaluates the carried set at its target, and each
+    version keeps its own partition."""
     workspace.record(_source(1, "esnap-a", FILES_A))
-    record = workspace.observe(_observation(_manifest()))
-    assert workspace.matched("esnap-a") == [record["record_id"]]
-    version = record["version"]
-    for operation in ("knowledge.propose", "candidate.approve"):
-        transitioned = workspace.ok(
+    workspace.record(
+        _source(2, "esnap-b", {**FILES_A, "src/auth.py": AUTH_V2}, predecessor="esnap-a")
+    )
+    workspace.record(
+        _source(
+            3,
+            "esnap-gone",
+            {"src/util.py": UTIL_V1, "README.md": README_V1},
+            predecessor="esnap-b",
+        )
+    )
+    created = workspace.observe(_observation(_manifest()))
+    connection = workspace.holder.connection
+
+    def carried(version: str) -> tuple[Any, ...]:
+        claims = connection.execute(
+            "SELECT repository_id, stream_id, snapshot_id, producer, producer_version, "
+            "coverage, dependency_count FROM omnivia_engineering_dependency_sets "
+            "WHERE version = ?",
+            (version,),
+        ).fetchone()
+        rows = connection.execute(
+            "SELECT selector_type, selector, meaning, producer, expected_digest "
+            "FROM omnivia_engineering_dependencies WHERE version = ? ORDER BY selector",
+            (version,),
+        ).fetchall()
+        return claims, rows
+
+    def served(snapshot_id: str, view: str) -> list[dict[str, str]]:
+        response = workspace.search(snapshot_id, view=view)
+        assert isinstance(response, SuccessResponseEnvelope), response
+        return [
+            {"record_id": p["record_id"], "version": p["version"]}
+            for p in response.to_wire()["result"]["previews"]
+        ]
+
+    def pack(snapshot_id: str) -> dict[str, Any]:
+        return workspace.ok(
+            "engineering.context.build",
+            {
+                "query": "provider",
+                "targets": [{"repository_id": REPOSITORY, "snapshot_id": snapshot_id}],
+                "profile": "investigate",
+                "applicability_mode": "current_safe",
+            },
+        )["pack"]
+
+    def transition(operation: str, record: dict[str, str]) -> dict[str, str]:
+        result = workspace.ok(
             operation,
             {"record_id": record["record_id"], "rationale": {"reason_code": "review"}},
-            mutation_precondition=MutationPrecondition(record_version=version),
+            mutation_precondition=MutationPrecondition(record_version=record["version"]),
         )
-        version = transitioned["updated_record"]["provenance"]["identity"]["version"]
-    accepted = {"record_id": record["record_id"], "version": version}
-    assert accepted["version"] != record["version"]
-    assert workspace.status(accepted, "esnap-a") == "unknown"
-    assert workspace.matched("esnap-a", view="accepted") == []
-    assert workspace.ok("engineering.search", {"query": "provider"})["previews"] != []
+        identity = result["updated_record"]["provenance"]["identity"]
+        return {"record_id": identity["record_id"], "version": identity["version"]}
+
+    proposed = transition("knowledge.propose", created)
+    assert workspace.status(proposed, "esnap-a") == "matched"
+    assert served("esnap-a", "candidates") == [proposed]
+    assert served("esnap-a", "accepted") == []
+    candidate_pack = pack("esnap-a")
+    assert [s["partition"] for s in candidate_pack["sections"]] == ["candidate_findings"]
+    assert [c["record_ref"] for c in candidate_pack["citations"]] == [proposed]
+
+    accepted = transition("candidate.approve", proposed)
+    assert len({created["version"], proposed["version"], accepted["version"]}) == 3
+    # The same baseline, producer, coverage and digest claims on every version.
+    assert carried(created["version"]) == carried(proposed["version"])
+    assert carried(proposed["version"]) == carried(accepted["version"])
+    assert carried(accepted["version"])[0] == (
+        REPOSITORY, STREAM, "esnap-a", "omnivia-dev-indexer", "1.0.0", "complete", 3
+    )
+    assert workspace.status(accepted, "esnap-a") == "matched"
+    assert workspace.status(accepted, "esnap-b") == "potentially_stale"
+    assert workspace.status(accepted, "esnap-gone") == "invalid"
+    assert served("esnap-a", "accepted") == [accepted]
+    assert served("esnap-a", "candidates") == []
+    for snapshot_id in ("esnap-b", "esnap-gone"):
+        assert served(snapshot_id, "accepted") == []
+        unproven = pack(snapshot_id)
+        assert unproven["citations"] == []
+        assert unproven["omissions"] == [
+            {"field": "sections", "reason": "applicability_unproven"}
+        ]
+    accepted_pack = pack("esnap-a")
+    assert [s["partition"] for s in accepted_pack["sections"]] == ["accepted_knowledge"]
+    assert [c["record_ref"] for c in accepted_pack["citations"]] == [accepted]
+    assert accepted_pack["applicability"][0]["status"] == "matched"
+    # Diagnostic reads still list it without claiming applicability.
+    diagnostic = workspace.ok("engineering.search", {"query": "provider"})["previews"]
+    assert [(p["version"], p["applicability"]) for p in diagnostic] == [
+        (accepted["version"], "not_evaluated")
+    ]
+    # Reads wrote nothing.
+    assert workspace.counts()["omnivia_engineering_assessments"] == 0
 
 
 def test_review_evidence_cannot_establish_a_match(workspace: Workspace) -> None:
