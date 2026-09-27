@@ -46,7 +46,11 @@ from omnivia_core_runtime.storage.migrations import (
     load_migrations,
     read_workspace_state,
 )
-from omnivia_core_runtime.storage.retrieval import governed_order_key
+from omnivia_core_runtime.storage.retrieval import (
+    CONFIGURED_LOCAL_OWNER,
+    EvidenceLabelGrant,
+    governed_order_key,
+)
 
 from omnivia_core.contracts.v1 import to_canonical_json
 
@@ -690,6 +694,35 @@ def test_the_cursor_is_bound_to_the_ranked_versions_and_their_content(
     refused = resume()
     assert isinstance(refused, esc.ErrorResponseEnvelope)
     assert refused.error.code == "invalid_request"
+
+
+def test_the_legacy_snapshot_stays_off_the_0053_view_and_the_frontier_stays_on_it(
+    workspace: Workspace,
+) -> None:
+    """The legacy memory snapshot must run on schemas that predate 0053, so it never
+    names the metadata view; the search path's frontier always does."""
+    workspace.observe(esc._observation(None, title="Provider note", evidence=False))
+    connection = workspace.holder.connection
+    kwargs: dict[str, Any] = {
+        "workspace_id": WORKSPACE_ID,
+        "resolution_instant_us": 2**62,
+        "view": "candidates",
+        "label_grant": EvidenceLabelGrant(
+            principal_id=CONFIGURED_LOCAL_OWNER,
+            workspace_id=WORKSPACE_ID,
+            all_labels=True,
+            labels=frozenset(),
+        ),
+    }
+    with Trace(connection) as legacy:
+        snapshot = memory.read_authorized_memory_snapshot(connection, **kwargs)
+    assert snapshot.values
+    assert not any(METADATA_VIEW in statement for statement in legacy.statements)
+    with Trace(connection) as search:
+        frontier = memory.read_authorized_memory_frontier(connection, **kwargs)
+    assert frontier.versions
+    assert any(METADATA_VIEW in statement for statement in search.statements)
+    assert search.body_reads() == []
 
 
 def test_the_snapshot_binds_the_stored_content_digest(workspace: Workspace) -> None:

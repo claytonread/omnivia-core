@@ -575,6 +575,7 @@ def read_authorized_memory_frontier(
     view: str | None,
     label_grant: EvidenceLabelGrant,
     domain_scope: str | None = None,
+    body_free: bool = True,
 ) -> AuthorizedMemoryFrontier:
     """Select identity and ACL facts only: the admitted versions, hydrating nothing.
 
@@ -586,7 +587,16 @@ def read_authorized_memory_frontier(
     the versions considered by a stored identity fact before any label is folded; a
     record never changes domain, so it never changes which versions are admitted
     within it.
+
+    `body_free` selects that metadata view (migration 0053). The legacy memory family
+    passes False to read 0009's full view instead, still selecting no body column, so
+    it runs on schemas that predate 0053.
     """
+    versions = (
+        "omnivia_authoritative_governed_version_metadata"
+        if body_free
+        else "omnivia_authoritative_governed_versions"
+    )
     resolved_view = resolve_governed_record_view(view)
     with read_snapshot(connection):
         domain_filter = "" if domain_scope is None else "AND domain_scope = ? "
@@ -595,7 +605,7 @@ def read_authorized_memory_frontier(
             "governance_disposition, authority_level, valid_from_us, valid_to_us, "
             "recorded_at_us, append_ordinal, correlation_kind, correlation_id, "
             "record_type, domain_scope, content_digest, evidence_disposition "
-            "FROM omnivia_authoritative_governed_version_metadata "
+            f"FROM {versions} "
             f"WHERE workspace_id = ? AND recorded_at_us <= ? {domain_filter}"
             "ORDER BY governed_record_id, recorded_at_us, append_ordinal, assembly_id",
             (
@@ -615,7 +625,7 @@ def read_authorized_memory_frontier(
             "FROM omnivia_record_supersessions r "
             "JOIN omnivia_governed_version_seals s "
             "ON s.workspace_id = r.workspace_id AND s.assembly_id = r.assembly_id "
-            "JOIN omnivia_authoritative_governed_version_metadata t "
+            f"JOIN {versions} t "
             "ON t.workspace_id = r.workspace_id AND t.assembly_id = r.assembly_id "
             "AND t.governed_record_version_id = r.target_version_id "
             "WHERE r.workspace_id = ? "
@@ -877,6 +887,7 @@ def read_authorized_memory_snapshot(
             resolution_instant_us=resolution_instant_us,
             view=view,
             label_grant=label_grant,
+            body_free=False,
         )
         values = hydrate_authorized_governed_record_values(
             connection,
