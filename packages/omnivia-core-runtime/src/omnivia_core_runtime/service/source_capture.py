@@ -36,11 +36,14 @@ import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Final
 
 from omnivia_core.contracts.v1 import is_content_checksum, to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.storage import repository_identity
+from omnivia_core_runtime.storage.decisions import canonical_document
 from omnivia_core_runtime.storage.engineering_source import valid_path
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 from omnivia_core_runtime.workspace.blob_publication import (
@@ -209,6 +212,153 @@ def _existing_capture(
     )
 
 
+def _ensure_blob(runner: ServiceRunner, digest: str, length: int, now_us: int) -> None:
+    """Record one published blob and a verified integrity event; call inside a fence."""
+    assert runner.connection is not None and runner.workspace_id is not None
+    nonce = uuid.uuid4().hex
+    integrity_event_id = f"bie-local-{nonce}"
+    blob = runner.connection.execute(
+        "SELECT content_length_bytes FROM omnivia_blob_objects "
+        "WHERE workspace_id = ? AND content_digest = ?",
+        (runner.workspace_id, digest),
+    ).fetchone()
+    if blob is None:
+        runner.connection.execute(
+            "INSERT INTO omnivia_blob_objects "
+            "(workspace_id, content_digest, content_length_bytes, created_at_us, "
+            "verified_at_us) VALUES (?, ?, ?, ?, ?)",
+            (runner.workspace_id, digest, length, now_us, now_us),
+        )
+    elif int(blob[0]) != length:
+        raise SourceCaptureRefused("the blob identity has a conflicting length")
+
+    integrity_sequence = int(
+        runner.connection.execute(
+            "SELECT COALESCE(MAX(integrity_sequence), 0) + 1 "
+            "FROM omnivia_blob_integrity_events "
+            "WHERE workspace_id = ? AND content_digest = ?",
+            (runner.workspace_id, digest),
+        ).fetchone()[0]
+    )
+    runner.connection.execute(
+        "INSERT INTO omnivia_blob_integrity_events "
+        "(integrity_event_id, workspace_id, content_digest, integrity_sequence, "
+        "outcome, observed_digest, observed_length_bytes, expected_length_bytes, "
+        "inventory_id, checked_at_us) VALUES (?, ?, ?, ?, 'verified', ?, ?, ?, "
+        "NULL, ?)",
+        (
+            integrity_event_id,
+            runner.workspace_id,
+            digest,
+            integrity_sequence,
+            digest,
+            length,
+            length,
+            now_us,
+        ),
+    )
+
+
+def _write_capture(
+    runner: ServiceRunner,
+    *,
+    source_id: str,
+    digest: str,
+    length: int,
+    media_type: str,
+    capture: str = "local_file",
+) -> SourceCaptureResult:
+    assert runner.connection is not None
+    assert runner.identity is not None
+    assert runner.workspace_id is not None
+    assert runner.generation is not None
+
+    nonce = uuid.uuid4().hex
+    staged_source_ref = f"stg-local-{nonce}"
+    evidence_id = f"evd-local-{nonce}"
+    provenance_event_id = f"prv-local-{nonce}"
+    metadata = to_canonical_json({"capture": capture, "source_id": source_id})
+    if len(metadata) > 8192:
+        raise SourceCaptureRefused("source metadata exceeds the accepted bound")
+    metadata_digest = f"sha256:{hashlib.sha256(metadata.encode()).hexdigest()}"
+    now_us = time.time_ns() // 1000
+    _ensure_blob(runner, digest, length, now_us)
+    runner.connection.execute(
+        "INSERT INTO omnivia_staged_sources "
+        "(staged_source_ref, workspace_id, source_kind, declared_checksum, "
+        "content_length_bytes, media_type, source_version, computed_checksum, "
+        "original_metadata_json, original_metadata_digest, staging_outcome, "
+        "blob_workspace_id, blob_content_digest, recorded_at_us) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'verified', ?, ?, ?)",
+        (
+            staged_source_ref,
+            runner.workspace_id,
+            SOURCE_KIND,
+            digest,
+            length,
+            media_type,
+            digest,
+            metadata,
+            metadata_digest,
+            runner.workspace_id,
+            digest,
+            now_us,
+        ),
+    )
+    runner.connection.execute(
+        "INSERT INTO omnivia_evidence_artifacts "
+        "(evidence_id, workspace_id, source_kind, source_native_id, "
+        "source_locator, source_retrieved_at_us, event_at_us, observed_at_us, "
+        "ingested_at_us, recorded_at_us, content_checksum, blob_content_digest, "
+        "media_type, original_metadata_json, original_metadata_digest, "
+        "sensitivity, parser_status, ingestion_status, staged_source_ref, "
+        "import_run_id) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, "
+        "?, ?, ?, 'private', 'not_parsed', 'ingested', ?, NULL)",
+        (
+            evidence_id,
+            runner.workspace_id,
+            SOURCE_KIND,
+            source_id,
+            now_us,
+            now_us,
+            digest,
+            digest,
+            media_type,
+            metadata,
+            metadata_digest,
+            staged_source_ref,
+        ),
+    )
+    runner.connection.execute(
+        "INSERT INTO omnivia_evidence_provenance_events "
+        "(provenance_event_id, evidence_id, workspace_id, provenance_sequence, "
+        "actor_id, actor_kind, action, occurred_at_us, reason_code, reason_comment, "
+        "parser_status, ingestion_status, tombstoned_observation, source_kind, "
+        "source_native_id, audit_ref) VALUES (?, ?, ?, 1, 'core-service', "
+        "'service', 'captured', ?, NULL, NULL, 'not_parsed', 'ingested', 0, ?, ?, "
+        "NULL)",
+        (
+            provenance_event_id,
+            evidence_id,
+            runner.workspace_id,
+            now_us,
+            SOURCE_KIND,
+            source_id,
+        ),
+    )
+
+    return SourceCaptureResult(
+        status="captured",
+        workspace_id=runner.workspace_id,
+        source_id=source_id,
+        evidence_id=evidence_id,
+        content_digest=digest,
+        content_length_bytes=length,
+        media_type=media_type,
+        reason="source captured as immutable workspace evidence",
+    )
+
+
 def _append_capture(
     runner: ServiceRunner,
     *,
@@ -221,138 +371,19 @@ def _append_capture(
     assert runner.identity is not None
     assert runner.workspace_id is not None
     assert runner.generation is not None
-
-    now_us = time.time_ns() // 1000
-    nonce = uuid.uuid4().hex
-    staged_source_ref = f"stg-local-{nonce}"
-    evidence_id = f"evd-local-{nonce}"
-    integrity_event_id = f"bie-local-{nonce}"
-    provenance_event_id = f"prv-local-{nonce}"
-    metadata = to_canonical_json({"capture": "local_file", "source_id": source_id})
-    if len(metadata) > 8192:
-        raise SourceCaptureRefused("source metadata exceeds the accepted bound")
-    metadata_digest = f"sha256:{hashlib.sha256(metadata.encode()).hexdigest()}"
-
     with fenced_transaction(
         runner.connection,
         runner.identity,
         workspace_id=runner.workspace_id,
         fencing_generation=runner.generation,
     ):
-        blob = runner.connection.execute(
-            "SELECT content_length_bytes FROM omnivia_blob_objects "
-            "WHERE workspace_id = ? AND content_digest = ?",
-            (runner.workspace_id, digest),
-        ).fetchone()
-        if blob is None:
-            runner.connection.execute(
-                "INSERT INTO omnivia_blob_objects "
-                "(workspace_id, content_digest, content_length_bytes, created_at_us, "
-                "verified_at_us) VALUES (?, ?, ?, ?, ?)",
-                (runner.workspace_id, digest, length, now_us, now_us),
-            )
-        elif int(blob[0]) != length:
-            raise SourceCaptureRefused("the blob identity has a conflicting length")
-
-        integrity_sequence = int(
-            runner.connection.execute(
-                "SELECT COALESCE(MAX(integrity_sequence), 0) + 1 "
-                "FROM omnivia_blob_integrity_events "
-                "WHERE workspace_id = ? AND content_digest = ?",
-                (runner.workspace_id, digest),
-            ).fetchone()[0]
+        return _write_capture(
+            runner,
+            source_id=source_id,
+            digest=digest,
+            length=length,
+            media_type=media_type,
         )
-        runner.connection.execute(
-            "INSERT INTO omnivia_blob_integrity_events "
-            "(integrity_event_id, workspace_id, content_digest, integrity_sequence, "
-            "outcome, observed_digest, observed_length_bytes, expected_length_bytes, "
-            "inventory_id, checked_at_us) VALUES (?, ?, ?, ?, 'verified', ?, ?, ?, "
-            "NULL, ?)",
-            (
-                integrity_event_id,
-                runner.workspace_id,
-                digest,
-                integrity_sequence,
-                digest,
-                length,
-                length,
-                now_us,
-            ),
-        )
-        runner.connection.execute(
-            "INSERT INTO omnivia_staged_sources "
-            "(staged_source_ref, workspace_id, source_kind, declared_checksum, "
-            "content_length_bytes, media_type, source_version, computed_checksum, "
-            "original_metadata_json, original_metadata_digest, staging_outcome, "
-            "blob_workspace_id, blob_content_digest, recorded_at_us) "
-            "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'verified', ?, ?, ?)",
-            (
-                staged_source_ref,
-                runner.workspace_id,
-                SOURCE_KIND,
-                digest,
-                length,
-                media_type,
-                digest,
-                metadata,
-                metadata_digest,
-                runner.workspace_id,
-                digest,
-                now_us,
-            ),
-        )
-        runner.connection.execute(
-            "INSERT INTO omnivia_evidence_artifacts "
-            "(evidence_id, workspace_id, source_kind, source_native_id, "
-            "source_locator, source_retrieved_at_us, event_at_us, observed_at_us, "
-            "ingested_at_us, recorded_at_us, content_checksum, blob_content_digest, "
-            "media_type, original_metadata_json, original_metadata_digest, "
-            "sensitivity, parser_status, ingestion_status, staged_source_ref, "
-            "import_run_id) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, "
-            "?, ?, ?, 'private', 'not_parsed', 'ingested', ?, NULL)",
-            (
-                evidence_id,
-                runner.workspace_id,
-                SOURCE_KIND,
-                source_id,
-                now_us,
-                now_us,
-                digest,
-                digest,
-                media_type,
-                metadata,
-                metadata_digest,
-                staged_source_ref,
-            ),
-        )
-        runner.connection.execute(
-            "INSERT INTO omnivia_evidence_provenance_events "
-            "(provenance_event_id, evidence_id, workspace_id, provenance_sequence, "
-            "actor_id, actor_kind, action, occurred_at_us, reason_code, reason_comment, "
-            "parser_status, ingestion_status, tombstoned_observation, source_kind, "
-            "source_native_id, audit_ref) VALUES (?, ?, ?, 1, 'core-service', "
-            "'service', 'captured', ?, NULL, NULL, 'not_parsed', 'ingested', 0, ?, ?, "
-            "NULL)",
-            (
-                provenance_event_id,
-                evidence_id,
-                runner.workspace_id,
-                now_us,
-                SOURCE_KIND,
-                source_id,
-            ),
-        )
-
-    return SourceCaptureResult(
-        status="captured",
-        workspace_id=runner.workspace_id,
-        source_id=source_id,
-        evidence_id=evidence_id,
-        content_digest=digest,
-        content_length_bytes=length,
-        media_type=media_type,
-        reason="source captured as immutable workspace evidence",
-    )
 
 
 def capture_local_source(
@@ -815,9 +846,8 @@ def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest
     `complete=False`; a checkout whose listing or HEAD moves across the capture is
     retried up to `MAX_CAPTURE_ATTEMPTS` times and then returned incomplete.
 
-    Groundwork only: nothing is registered, persisted or published here. Registering
-    the checkout as a trusted source and writing manifest rows and blobs remain to be
-    done by a later slice.
+    Nothing is registered, persisted or published here; `capture_working_tree_snapshot`
+    is the service-owned step that does that.
     """
     if not _NO_FOLLOW_WALK:
         raise SourceCaptureRefused(
@@ -841,6 +871,228 @@ def capture_working_tree_manifest(*, checkout_root: Path) -> WorkingTreeManifest
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+SNAPSHOT_RESULT_FORMAT: Final = "omnivia.working-tree-snapshot-result.v1"
+MANIFEST_MEDIA_TYPE: Final = "application/json"
+#: The manifest's evidence source id is ``working-tree-manifest.<snapshot id>`` and must
+#: fit `_IDENTIFIER`'s 128 characters.
+_SNAPSHOT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkingTreeSnapshotResult:
+    """The redacted result of one snapshot capture: identities and digests, no paths."""
+
+    status: str
+    workspace_id: str
+    repository_id: str
+    snapshot_id: str
+    manifest_digest: str
+    manifest_evidence_id: str
+    capture_status: str
+    file_count: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "format": SNAPSHOT_RESULT_FORMAT,
+            "status": self.status,
+            "workspace_id": self.workspace_id,
+            "repository_id": self.repository_id,
+            "snapshot": {"kind": "working_tree", "snapshot_id": self.snapshot_id},
+            "manifest_digest": self.manifest_digest,
+            "manifest_evidence_id": self.manifest_evidence_id,
+            "capture_status": self.capture_status,
+            "file_count": self.file_count,
+        }
+
+
+def _require_bound_checkout(
+    runner: ServiceRunner, *, repository_id: str, checkout_root: Path
+) -> None:
+    """The repository is registered and this installation bound this exact root to it."""
+    assert runner.connection is not None
+    assert runner.identity is not None and runner.workspace_id is not None
+    if (
+        repository_identity.resolve_repository(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            repository_id=repository_id,
+        )
+        is None
+    ):
+        raise SourceCaptureRefused("repository is not registered in this workspace")
+    bound = runner.connection.execute(
+        "SELECT 1 FROM omnivia_engineering_checkouts WHERE workspace_id = ? "
+        "AND repository_id = ? AND installation_id = ? AND checkout_hint = ?",
+        (
+            runner.workspace_id,
+            repository_id,
+            runner.identity.installation_id,
+            os.fspath(checkout_root),
+        ),
+    ).fetchone()
+    if bound is None:
+        raise SourceCaptureRefused(
+            "checkout is not bound to this repository on this installation"
+        )
+
+
+def capture_working_tree_snapshot(
+    *,
+    workspace_root: Path,
+    installation_root: Path,
+    repository_id: str,
+    checkout_root: Path,
+    snapshot_id: str,
+    core_version: str,
+) -> WorkingTreeSnapshotResult:
+    """Persist a `capture_working_tree_manifest` result as an authoritative snapshot.
+
+    A maintenance path, not an application operation: it runs only while a
+    `ServiceRunner` owns the workspace. `repository_id` must already be registered and
+    `checkout_root` must be the exact root this installation bound to it
+    (`omnivia_engineering_checkouts`); nothing is inferred from Git remotes or names, and
+    a mismatch is refused before the checkout is read.
+
+    The manifest and every captured file are frozen and published as content-addressed
+    blobs first; only then does one fenced transaction record the blobs, the manifest as
+    immutable evidence (`source_native_id` ``working-tree-manifest.<snapshot_id>``) and
+    the snapshot row, whose `manifest_digest` is exactly that evidence's blob digest. A
+    failed publication raises before any row is written. The snapshot is kind
+    `working_tree` (the schema allows a base commit only on `git_commit`); the base commit
+    lives in the manifest. `capture_status` is `incomplete` whenever the manifest is.
+
+    Retrying an identical snapshot returns `already_captured` with the same identity;
+    the same `snapshot_id` with different content or repository is refused.
+    """
+    if _IDENTIFIER.fullmatch(repository_id) is None or (
+        _SNAPSHOT_ID.fullmatch(snapshot_id) is None
+    ):
+        raise SourceCaptureRefused("identity is outside the accepted identifier domain")
+    runner = ServiceRunner(
+        ServiceSettings(
+            workspace_root=workspace_root,
+            installation_root=installation_root,
+            core_version=core_version,
+            endpoint=None,
+        )
+    )
+    report = runner.start()
+    try:
+        if not report.ready:
+            raise SourceCaptureRefused(
+                report.reason or "workspace ownership was refused"
+            )
+        assert runner.connection is not None and runner.identity is not None
+        assert runner.workspace_id is not None and runner.generation is not None
+        _require_bound_checkout(
+            runner, repository_id=repository_id, checkout_root=checkout_root
+        )
+        manifest = capture_working_tree_manifest(checkout_root=checkout_root)
+        document = manifest.to_dict()
+        manifest_bytes = canonical_document(document).encode()
+        manifest_digest = f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
+        capture_status = "complete" if manifest.complete else "incomplete"
+        blobs = {f.digest: f.content for f in manifest.files}
+        blobs[manifest_digest] = manifest_bytes
+        for digest, content in blobs.items():
+            publish_blob(runner.layout.blobs_path, digest, content)
+
+        source_id = f"working-tree-manifest.{snapshot_id}"
+        with fenced_transaction(
+            runner.connection,
+            runner.identity,
+            workspace_id=runner.workspace_id,
+            fencing_generation=runner.generation,
+        ):
+            existing = runner.connection.execute(
+                "SELECT repository_id, snapshot_kind, manifest_digest, capture_status "
+                "FROM omnivia_engineering_snapshots "
+                "WHERE workspace_id = ? AND snapshot_id = ?",
+                (runner.workspace_id, snapshot_id),
+            ).fetchone()
+            status = "captured"
+            if existing is not None:
+                if tuple(existing) != (
+                    repository_id,
+                    "working_tree",
+                    manifest_digest,
+                    capture_status,
+                ):
+                    raise SourceCaptureRefused(
+                        "snapshot identity already names different content"
+                    )
+                status = "already_captured"
+                row = runner.connection.execute(
+                    "SELECT evidence_id FROM omnivia_evidence_artifacts "
+                    "WHERE workspace_id = ? AND source_kind = ? "
+                    "AND source_native_id = ? AND blob_content_digest = ?",
+                    (runner.workspace_id, SOURCE_KIND, source_id, manifest_digest),
+                ).fetchone()
+                if row is None:
+                    raise SourceCaptureRefused("the snapshot has no manifest evidence")
+                evidence_id = str(row[0])
+            else:
+                now_us = time.time_ns() // 1000
+                audit_ref = f"aud-local-{uuid.uuid4().hex}"
+                runner.connection.execute(
+                    "INSERT INTO omnivia_application_audit_events "
+                    "(audit_ref, workspace_id, principal_id, operation, purpose, "
+                    "request_id, correlation_id, trace_id, granted_authority_json, "
+                    "outcome_class, error_code, recorded_at_us) VALUES "
+                    "(?, ?, 'core-service', 'engineering.snapshot.capture', "
+                    "'engineering.snapshot', ?, ?, ?, '{}', 'succeeded', NULL, ?)",
+                    (
+                        audit_ref,
+                        runner.workspace_id,
+                        audit_ref,
+                        audit_ref,
+                        audit_ref,
+                        now_us,
+                    ),
+                )
+                for file in manifest.files:
+                    _ensure_blob(runner, file.digest, file.length, now_us)
+                evidence_id = (
+                    _write_capture(
+                        runner,
+                        source_id=source_id,
+                        digest=manifest_digest,
+                        length=len(manifest_bytes),
+                        media_type=MANIFEST_MEDIA_TYPE,
+                        capture="working_tree_manifest",
+                    ).evidence_id
+                    or ""
+                )
+                recorded = repository_identity.record_snapshot(
+                    runner.connection,
+                    SimpleNamespace(audit_ref=audit_ref),
+                    workspace_id=runner.workspace_id,
+                    snapshot_id=snapshot_id,
+                    repository_id=repository_id,
+                    snapshot_kind="working_tree",
+                    manifest=document,
+                    base_commit=None,
+                    capture_status=capture_status,
+                    captured_at_us=now_us,
+                )
+                if (
+                    recorded != manifest_digest
+                ):  # pragma: no cover - same canonical form
+                    raise SourceCaptureRefused("manifest digest is not reproducible")
+        return WorkingTreeSnapshotResult(
+            status=status,
+            workspace_id=runner.workspace_id,
+            repository_id=repository_id,
+            snapshot_id=snapshot_id,
+            manifest_digest=manifest_digest,
+            manifest_evidence_id=evidence_id,
+            capture_status=capture_status,
+            file_count=len(manifest.files),
+        )
+    finally:
+        runner.stop()
+
+
 __all__ = [
     "MAX_CAPTURE_ATTEMPTS",
     "MAX_SOURCE_BYTES",
@@ -853,8 +1105,10 @@ __all__ = [
     "SourceCaptureRefused",
     "SourceCaptureResult",
     "WorkingTreeManifest",
+    "WorkingTreeSnapshotResult",
     "capture_local_source",
     "capture_working_tree_manifest",
+    "capture_working_tree_snapshot",
     "publish_blob",
     "read_checkout_file",
 ]
