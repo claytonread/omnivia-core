@@ -1,8 +1,8 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds twenty-eight operations. This module names six of them in the
-``restricted`` profile and eleven in the ``authoring`` profile. A newly
+holds fifty-four operations. This module names fourteen of them in the
+``restricted`` profile and nineteen in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -15,21 +15,17 @@ selection and enumeration; grant administration; governance decisions;
 unrestricted filesystem path selection; and administrative configuration. None
 of those is a tool a model calls.
 
-**The restricted six.** ``workspace.inspect`` is the attached workspace's own
-descriptor. The other five are V06-3's retrieval and context-pack reads --
-``evidence.search``, ``knowledge.search``, ``memory.search``, ``graph.traverse``
-and ``context_pack.build`` -- which classify themselves ``side_effect="none"``
-and ``audit_category="read"``, and are the operations an agent needs to answer a
-question from a governed workspace. Every identifier below is the catalogue's
-own; none is invented here.
+**The restricted fourteen** are the workspace and governed-memory reads, the
+Engineering Memory reads, continuity handoff, and the four decision tools.
+``decision.evaluate`` is the one side-effecting operation in this profile; it is
+admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring eleven** are those six plus exactly three mutations --
+**The authoring nineteen** are those fourteen plus exactly three mutations --
 ``memory.create``, ``evidence.capture`` and ``import.start`` -- and the two job
 observations, ``job.get`` and ``job.events``, that make an asynchronous import
-followable. The three mutations are the *only* side-effecting operations this
-module can admit, and they are named as a literal set rather than inferred from
-any catalogue property: a fourth mutation cannot arrive by a contract gaining a
-field or an operation changing its audit category.
+followable. These four mutations across both profiles are the *only*
+side-effecting operations this module can admit, and they are named as a literal
+set: another mutation cannot arrive through a contract or audit-category change.
 
 **Which profile a server advertises is decided once, at startup, by
 :mod:`omnivia_core_mcp.configuration`** -- never by a prompt or by a tool call's
@@ -97,8 +93,9 @@ __all__ = [
 #: that actually changed when it is not. ``1.0`` advertised ``workspace.inspect``
 #: alone with no output schema; ``1.1`` was the six-operation read surface;
 #: ``2.0`` is the major bump that adds a second, wider profile and the mutation
-#: wrapper -- a host that cached an ``1.1`` listing has cached the whole surface.
-MANIFEST_VERSION: Final = "2.1"
+#: wrapper; ``2.2`` withdraws the checkpoint append tool until a trusted private
+#: continuity binding exists.
+MANIFEST_VERSION: Final = "2.2"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -116,15 +113,14 @@ _ADMITTED_AUDIT_CATEGORY: Final = "read"
 #: A set of names rather than a rule over catalogue metadata, because a rule
 #: would admit the next operation that happened to satisfy it. Widening the
 #: mutation surface therefore means editing this line, which is the point: there
-#: are twelve other mutations in the catalogue and none of them is reachable by
-#: an agent through any profile this module defines.
+#: are dozens of other mutations in the catalogue and none of them is reachable
+#: by an agent through any profile this module defines.
 ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
     {
         "memory.create",
         "evidence.capture",
         "import.start",
         "decision.evaluate",
-        "continuity.checkpoint.append",
     }
 )
 
@@ -352,8 +348,7 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 )
 
 #: What the `authoring` profile adds, and all it adds: the mutations and the
-#: observations that make the asynchronous ones followable, plus the durable
-#: engineering checkpoint append (SPEC-CORE-ENGMEM-001).
+#: observations that make the asynchronous ones followable.
 #:
 #: The purposes are the service's own -- `memory_authoring` for memory,
 #: `content_ingestion` for both ways content enters a workspace, and
@@ -421,25 +416,10 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
             "Read-only, and not a transport stream."
         ),
     ),
-    ExposedOperation(
-        tool_name="continuity_checkpoint_append",
-        operation="continuity.checkpoint.append",
-        purpose="continuity_checkpoint",
-        title="Append a durable engineering checkpoint",
-        description=(
-            "Append one immutable engineering checkpoint to the caller's bound "
-            "continuity session: objective, working observations, unresolved "
-            "work and suggested next actions, stored whole as L0 evidence with "
-            "a durable receipt. The expected parent sequence makes a competing "
-            "successor an explicit precondition failure. Writes. Takes an outer "
-            "object with the operation input under `input` and a caller-chosen "
-            "`idempotency_key`; replaying the same key with the same input "
-            "returns the original receipt."
-        ),
-    ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then six additions.
+#: The `authoring` profile: the restricted surface, in its order, then five
+#: additions (19 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
@@ -450,8 +430,8 @@ AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #:
 #: Kept under its original name because it is what `omnivia_core_mcp.server` and
 #: the operation-traceability ledger already reach for: a caller written before
-#: profiles existed advertises the read-only six, which is the failure mode this
-#: name should have.
+#: profiles existed advertises the restricted fourteen, which is the failure
+#: mode this name should have.
 EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = RESTRICTED_MANIFEST
 
 _MANIFESTS: Final[dict[str, tuple[ExposedOperation, ...]]] = {
@@ -467,7 +447,7 @@ def _admit(exposed: ExposedOperation) -> OperationMetadata:
     read -- ``side_effect="none"`` *and* ``audit_category="read"``, both, so an
     operation that mutates under a read's audit category or audits as a mutation
     while claiming no side effect is refused either way -- or it is one of the
-    three mutations :data:`ADMITTED_MUTATIONS` names.
+    four mutations :data:`ADMITTED_MUTATIONS` names.
 
     Each refusal is a mistake this module exists to make impossible rather than
     to document: an operation that is not in the landed catalogue at all, and a
@@ -591,10 +571,10 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the eleven deletes or overwrites: the three mutations
+            # None of the nineteen deletes or overwrites: the four mutations
             # create, and supersession and cancellation are not exposed at all.
             destructive_hint=False,
-            # Only where the catalogue proves it. The three mutations declare
+            # Only where the catalogue proves it. The four mutations declare
             # `safe_to_retry=False` -- a repeat is settled by the idempotency
             # key, which is not the same claim as an idempotent call -- so this
             # is false for them and true for the reads, without a line here
