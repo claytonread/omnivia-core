@@ -24,7 +24,7 @@ import test_blobs_staged_sources_and_evidence_migration as m2
 import test_engineering_dependency_carry as carry
 import test_engineering_source_coverage as esc
 from omnivia_core_runtime.ownership.fencing import assert_guards_intact
-from omnivia_core_runtime.storage import engineering_source
+from omnivia_core_runtime.storage import engineering_preview, engineering_source
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     fingerprint_schema,
@@ -267,7 +267,7 @@ def test_0052_differs_from_the_guard_it_replaces_only_by_index_hints() -> None:
 
 
 def test_0052_fresh_and_upgraded_workspaces_reach_one_canonical_schema(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (migration,) = [m for m in load_migrations() if m.version == MIGRATION_VERSION]
 
@@ -289,7 +289,13 @@ def test_0052_fresh_and_upgraded_workspaces_reach_one_canonical_schema(
 
     # Upgraded: a 0051 workspace already holding a sealed set.
     (tmp_path / "upgraded").mkdir()
-    with m2.migration_catalogue_through(MIGRATION_VERSION - 1):
+    with (
+        monkeypatch.context() as older_release,
+        m2.migration_catalogue_through(MIGRATION_VERSION - 1),
+    ):
+        # The release that wrote this workspace predates the preview projection
+        # (0053), so its writers projected nothing.
+        older_release.setattr(engineering_preview, "record_preview", lambda *_a, **_k: None)
         upgraded = Workspace(tmp_path / "upgraded")
         upgraded.record(esc._source(1, "esnap-a", FILES_A))
         created = upgraded.observe(esc._observation(esc._manifest()))
@@ -310,6 +316,26 @@ def test_0052_fresh_and_upgraded_workspaces_reach_one_canonical_schema(
             verified(maintenance)
         finally:
             maintenance.close()
+
+    # A real start migrates the workspace to head before it serves a read or a write,
+    # so 0053's preview projection reaches the pre-upgrade proposal before the
+    # service restarts on it.
+    head = open_database(upgraded.holder.path, OpenMode.EXCLUSIVE_MAINTENANCE)
+    try:
+        state = read_workspace_state(head)
+        assert state is not None
+        applied_to_head = apply_pending_migrations(
+            head,
+            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+            service_instance_id=m2.SERVICE_INSTANCE,
+            fencing_generation=state.fencing_generation,
+            workspace_id=WORKSPACE_ID,
+        )
+        assert [m.version for m in applied_to_head] == [
+            m.version for m in load_migrations() if m.version > MIGRATION_VERSION
+        ]
+    finally:
+        head.close()
 
     # The restarted service seals, carries and evaluates through the replaced guard.
     upgraded.restart()
