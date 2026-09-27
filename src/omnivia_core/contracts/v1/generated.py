@@ -69,6 +69,7 @@ __all__ = [
     "ERROR_CODE_CANCELLED",
     "ERROR_CODE_CAPABILITY_NOT_GRANTED",
     "ERROR_CODE_CONFLICT",
+    "ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT",
     "ERROR_CODE_DEADLINE_EXCEEDED",
     "ERROR_CODE_DEPENDENCY_UNAVAILABLE",
     "ERROR_CODE_IDEMPOTENCY_CONFLICT",
@@ -84,6 +85,7 @@ __all__ = [
     "ERROR_CODE_RATE_LIMITED",
     "ERROR_CODE_SIZE_LIMIT_EXCEEDED",
     "ERROR_CODE_STALE_PROJECTION",
+    "ERROR_CODE_TOKENIZER_UNAVAILABLE",
     "ERROR_CODE_TOKEN_LIMIT_EXCEEDED",
     "ERROR_CODE_UPGRADE_REQUIRED",
     "ERROR_CODE_WORKSPACE_BUSY",
@@ -298,6 +300,7 @@ __all__ = [
     "EngineeringContextBuildResult",
     "EngineeringContextPack",
     "EngineeringContextReceipt",
+    "EngineeringCountingMode",
     "EngineeringCoverage",
     "EngineeringExpandInput",
     "EngineeringExpandResult",
@@ -326,6 +329,7 @@ __all__ = [
     "EngineeringSourceRecordResult",
     "EngineeringSourceStreamCoverage",
     "EngineeringTargetApplicability",
+    "EngineeringTokenizerReference",
     "EngineeringTopicRef",
     "ErrorCode",
     "ErrorResponseEnvelope",
@@ -720,7 +724,9 @@ ERROR_CODE_PROJECTION_UNAVAILABLE: Final = "projection_unavailable"
 ERROR_CODE_STALE_PROJECTION: Final = "stale_projection"
 ERROR_CODE_RATE_LIMITED: Final = "rate_limited"
 ERROR_CODE_SIZE_LIMIT_EXCEEDED: Final = "size_limit_exceeded"
+ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT: Final = "context_budget_insufficient"
 ERROR_CODE_TOKEN_LIMIT_EXCEEDED: Final = "token_limit_exceeded"
+ERROR_CODE_TOKENIZER_UNAVAILABLE: Final = "tokenizer_unavailable"
 ERROR_CODE_DEADLINE_EXCEEDED: Final = "deadline_exceeded"
 ERROR_CODE_CANCELLED: Final = "cancelled"
 ERROR_CODE_DEPENDENCY_UNAVAILABLE: Final = "dependency_unavailable"
@@ -748,7 +754,9 @@ FROZEN_ERROR_CODES: Final[tuple[str, ...]] = (
     ERROR_CODE_STALE_PROJECTION,
     ERROR_CODE_RATE_LIMITED,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+    ERROR_CODE_TOKENIZER_UNAVAILABLE,
     ERROR_CODE_DEADLINE_EXCEEDED,
     ERROR_CODE_CANCELLED,
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
@@ -809,7 +817,9 @@ DEFAULT_RETRY_CLASSIFICATION: Final[Mapping[str, str]] = MappingProxyType(
         ERROR_CODE_STALE_PROJECTION: RETRY_CLASS_RETRYABLE_AFTER_DELAY,
         ERROR_CODE_RATE_LIMITED: RETRY_CLASS_RETRYABLE_AFTER_DELAY,
         ERROR_CODE_SIZE_LIMIT_EXCEEDED: RETRY_CLASS_NON_RETRYABLE,
+        ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_TOKEN_LIMIT_EXCEEDED: RETRY_CLASS_NON_RETRYABLE,
+        ERROR_CODE_TOKENIZER_UNAVAILABLE: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_DEADLINE_EXCEEDED: RETRY_CLASS_RETRYABLE,
         ERROR_CODE_CANCELLED: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_DEPENDENCY_UNAVAILABLE: RETRY_CLASS_RETRYABLE_AFTER_DELAY,
@@ -3133,12 +3143,19 @@ their capabilities; a multi-view response partitions results rather than interle
 without labels.
 """
 
+EngineeringCountingMode: TypeAlias = str
+"""Closed, versioned counting contract for an engineering context build. `byte_only.v1` negotiates
+exact UTF-8 byte accounting without a token estimate. `exact_tokens.v1` requires an exact named
+tokenizer; a service that has not installed it refuses the request rather than estimating.
+"""
+
 @dataclass(frozen=True, slots=True)
 class EngineeringBudget:
-    """Caller-requested bounded budgets for one engineering context build. Byte and token limits
-    are simultaneous limits, not conversions of one another. Effective budgets are the
-    minimum of the request, the granted profile and server hard limits; zero, negative, non-
-    finite, oversized or inconsistent values are rejected.
+    """Caller-requested bounded budgets for one engineering context build. Exact-token mode
+    applies byte and token limits simultaneously, never converting one into the other; byte-
+    only mode omits the token limit entirely. Effective budgets are the minimum of the
+    request, the server-owned profile and server hard limits; zero, negative, non-finite,
+    oversized or inconsistent values are rejected.
     """
 
     model_tokens: int | None = None
@@ -3214,15 +3231,16 @@ class EngineeringBudget:
 @dataclass(frozen=True, slots=True)
 class EngineeringRendering:
     """The complete model-facing rendering of a pack: one canonical UTF-8 string containing
-    section labels, content, authority/applicability warnings and compact citations, counted
-    exactly with the pinned tokenizer. Headers, citation labels, warnings and separators
-    count when they are sent to the model; transport metadata that is not sent is separately
-    byte-capped and lives elsewhere.
+    section labels, content, authority/applicability warnings and compact citations. Legacy
+    v1 reports the pinned pattern-token count and exact UTF-8 byte count; byte-only v2
+    reports only the exact UTF-8 byte count. Headers, citation labels, warnings and
+    separators are part of the measured string; transport metadata that is not sent lives
+    elsewhere.
     """
 
     text: str
     renderer_version: str
-    token_count: int
+    token_count: int | None
     byte_count: int
 
     def to_wire(self) -> dict[str, Any]:
@@ -3234,7 +3252,8 @@ class EngineeringRendering:
         wire: dict[str, Any] = {}
         wire["text"] = self.text
         wire["renderer_version"] = self.renderer_version
-        wire["token_count"] = self.token_count
+        if self.token_count is not None:
+            wire["token_count"] = self.token_count
         wire["byte_count"] = self.byte_count
         return wire
 
@@ -3251,10 +3270,14 @@ class EngineeringRendering:
             _require_field(mapping, "renderer_version", path),
             f"{path}.renderer_version",
         )
-        field_token_count = _decode_int(
-            _require_field(mapping, "token_count", path),
-            f"{path}.token_count",
-        )
+        field_token_count: int | None = None
+        if "token_count" in mapping:
+            raw_token_count = mapping["token_count"]
+            if raw_token_count is None:
+                raise ContractDecodeError(
+                    f"{path}.token_count: null is not a valid value"
+                )
+            field_token_count = _decode_int(raw_token_count, f"{path}.token_count")
         field_byte_count = _decode_int(
             _require_field(mapping, "byte_count", path),
             f"{path}.byte_count",
@@ -6746,6 +6769,50 @@ class EngineeringPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class EngineeringTokenizerReference:
+    """Exact tokenizer identity and version requested for model-token counting. The pair is
+    replay input, never a model-family guess or permission to download a tokenizer.
+    """
+
+    tokenizer_id: Identifier
+    tokenizer_version: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["tokenizer_id"] = self.tokenizer_id
+        wire["tokenizer_version"] = self.tokenizer_version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringTokenizerReference"
+    ) -> EngineeringTokenizerReference:
+        """Decode a wire payload into a EngineeringTokenizerReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_tokenizer_id = _decode_str(
+            _require_field(mapping, "tokenizer_id", path),
+            f"{path}.tokenizer_id",
+        )
+        field_tokenizer_version = _decode_str(
+            _require_field(mapping, "tokenizer_version", path),
+            f"{path}.tokenizer_version",
+        )
+        return cls(
+            tokenizer_id=field_tokenizer_id,
+            tokenizer_version=field_tokenizer_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class EngineeringPackSection:
     """One section of an engineering context pack, carrying its exact content, its citations,
     and one explicit knowledge partition. The partition is the integrity contract: candidate
@@ -6818,7 +6885,7 @@ class EngineeringBudgetOutcome:
     """
 
     effective: EngineeringBudget
-    rendered_tokens: int
+    rendered_tokens: int | None
     rendered_bytes: int
     source_bytes_read: int
     hydrations: int
@@ -6834,7 +6901,8 @@ class EngineeringBudgetOutcome:
         if self.requested is not None:
             wire["requested"] = self.requested.to_wire()
         wire["effective"] = self.effective.to_wire()
-        wire["rendered_tokens"] = self.rendered_tokens
+        if self.rendered_tokens is not None:
+            wire["rendered_tokens"] = self.rendered_tokens
         wire["rendered_bytes"] = self.rendered_bytes
         wire["source_bytes_read"] = self.source_bytes_read
         wire["hydrations"] = self.hydrations
@@ -6862,10 +6930,14 @@ class EngineeringBudgetOutcome:
             _require_field(mapping, "effective", path),
             f"{path}.effective",
         )
-        field_rendered_tokens = _decode_int(
-            _require_field(mapping, "rendered_tokens", path),
-            f"{path}.rendered_tokens",
-        )
+        field_rendered_tokens: int | None = None
+        if "rendered_tokens" in mapping:
+            raw_rendered_tokens = mapping["rendered_tokens"]
+            if raw_rendered_tokens is None:
+                raise ContractDecodeError(
+                    f"{path}.rendered_tokens: null is not a valid value"
+                )
+            field_rendered_tokens = _decode_int(raw_rendered_tokens, f"{path}.rendered_tokens")
         field_rendered_bytes = _decode_int(
             _require_field(mapping, "rendered_bytes", path),
             f"{path}.rendered_bytes",
@@ -13116,6 +13188,8 @@ class EngineeringContextBuildInput:
     checkpoint_refs: tuple[Identifier, ...] | None = None
     budget: EngineeringBudget | None = None
     applicability_mode: EngineeringApplicabilityMode | None = None
+    counting_mode: EngineeringCountingMode | None = None
+    tokenizer: EngineeringTokenizerReference | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -13135,6 +13209,10 @@ class EngineeringContextBuildInput:
             wire["budget"] = self.budget.to_wire()
         if self.applicability_mode is not None:
             wire["applicability_mode"] = self.applicability_mode
+        if self.counting_mode is not None:
+            wire["counting_mode"] = self.counting_mode
+        if self.tokenizer is not None:
+            wire["tokenizer"] = self.tokenizer.to_wire()
         return wire
 
     @classmethod
@@ -13203,6 +13281,25 @@ class EngineeringContextBuildInput:
                 raw_applicability_mode,
                 f"{path}.applicability_mode",
             )
+        field_counting_mode: EngineeringCountingMode | None = None
+        if "counting_mode" in mapping:
+            raw_counting_mode = mapping["counting_mode"]
+            if raw_counting_mode is None:
+                raise ContractDecodeError(
+                    f"{path}.counting_mode: null is not a valid value"
+                )
+            field_counting_mode = _decode_str(raw_counting_mode, f"{path}.counting_mode")
+        field_tokenizer: EngineeringTokenizerReference | None = None
+        if "tokenizer" in mapping:
+            raw_tokenizer = mapping["tokenizer"]
+            if raw_tokenizer is None:
+                raise ContractDecodeError(
+                    f"{path}.tokenizer: null is not a valid value"
+                )
+            field_tokenizer = EngineeringTokenizerReference.from_wire(
+                raw_tokenizer,
+                f"{path}.tokenizer",
+            )
         return cls(
             query=field_query,
             targets=field_targets,
@@ -13211,6 +13308,8 @@ class EngineeringContextBuildInput:
             checkpoint_refs=field_checkpoint_refs,
             budget=field_budget,
             applicability_mode=field_applicability_mode,
+            counting_mode=field_counting_mode,
+            tokenizer=field_tokenizer,
         )
 
 
@@ -16540,12 +16639,13 @@ class EngineeringExpandResult:
 
 @dataclass(frozen=True, slots=True)
 class EngineeringContextPack:
-    """The engineering context pack representation (`format_version` `engineering_context.v1`):
-    a non-persisted deterministic view built from a pinned BuildContext and the authorised
-    frontier. `pack_id` equals the canonical artifact checksum computed after removing
-    exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum
-    is not a bearer token: following any citation requires fresh authorisation, and a
-    previously generated pack may no longer be deliverable after revocation even when its
+    """A non-persisted deterministic engineering context view built from a pinned BuildContext
+    and the authorised frontier. Legacy `engineering_context.v1` retains the pinned pattern-
+    token count. Negotiated `engineering_context.v2` carries exact UTF-8 byte accounting and
+    no token estimate. `pack_id` equals the canonical artifact checksum computed after
+    removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A
+    checksum is not a bearer token: following any citation requires fresh authorisation, and
+    a previously generated pack may no longer be deliverable after revocation even when its
     bytes are reproducible.
     """
 
@@ -23039,6 +23139,7 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "authorization_denied",
             "cancelled",
             "capability_not_granted",
+            "context_budget_insufficient",
             "deadline_exceeded",
             "dependency_unavailable",
             "incompatible_version",
@@ -23051,6 +23152,7 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "size_limit_exceeded",
             "stale_projection",
             "token_limit_exceeded",
+            "tokenizer_unavailable",
             "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
