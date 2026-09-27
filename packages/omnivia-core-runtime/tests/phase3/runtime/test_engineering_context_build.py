@@ -402,6 +402,7 @@ def test_byte_only_profile_limits_reduce_effective_budget_and_omit_tokens(
             "model_bytes": 16384,
             "hydrations": 8,
             "evidence_bytes": 262144,
+            "authorized_candidates": 2000,
         }
         assert pack["budget"]["requested"] == {
             "model_bytes": 50000,

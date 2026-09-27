@@ -253,10 +253,12 @@ BUDGET_CEILING_TOKENS: Final = 16000
 BUDGET_CEILING_BYTES: Final = 65536
 BUDGET_CEILING_HYDRATIONS: Final = 32
 BUDGET_CEILING_EVIDENCE_BYTES: Final = 1_048_576
+BUDGET_CEILING_AUTHORIZED_CANDIDATES: Final = 10_000
 BUDGET_DEFAULT_TOKENS: Final = 4000
 BUDGET_DEFAULT_BYTES: Final = 16384
 BUDGET_DEFAULT_HYDRATIONS: Final = 8
 BUDGET_DEFAULT_EVIDENCE_BYTES: Final = 262_144
+BUDGET_DEFAULT_AUTHORIZED_CANDIDATES: Final = 2_000
 _MESSAGE_BUDGET_INVALID: Final = (
     "the requested budget is not a positive integer at or below its server ceiling"
 )
@@ -266,6 +268,9 @@ _MESSAGE_HYDRATION_BOUND: Final = (
 _MESSAGE_SOURCE_READ_BOUND: Final = (
     "the selected engineering payloads exceed the effective evidence byte budget"
 )
+_MESSAGE_AUTHORIZED_CANDIDATE_BOUND: Final = (
+    "the authorized engineering frontier exceeds its bounded candidate budget"
+)
 _MESSAGE_PAYLOAD_INVALID: Final = (
     "an engineering source payload failed its stored byte-length check"
 )
@@ -273,7 +278,7 @@ _MESSAGE_PAYLOAD_INVALID: Final = (
 CONTEXT_BUILD_SECTION_CAP: Final = 24
 CONTEXT_BUILD_ABSOLUTE_SECTION_CAP: Final = 64
 CONTEXT_BUILD_CHECKPOINT_CAP: Final = 5
-CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-2"
+CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +289,7 @@ class EngineeringBudgetPolicy:
     model_bytes: int
     hydrations: int
     evidence_bytes: int
+    authorized_candidates: int
 
 
 _DEFAULT_ENGINEERING_BUDGET_POLICY: Final = EngineeringBudgetPolicy(
@@ -291,6 +297,7 @@ _DEFAULT_ENGINEERING_BUDGET_POLICY: Final = EngineeringBudgetPolicy(
     model_bytes=BUDGET_DEFAULT_BYTES,
     hydrations=BUDGET_DEFAULT_HYDRATIONS,
     evidence_bytes=BUDGET_DEFAULT_EVIDENCE_BYTES,
+    authorized_candidates=BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
 )
 ENGINEERING_PROFILE_BUDGETS: Final[Mapping[str, EngineeringBudgetPolicy]] = (
     MappingProxyType(
@@ -565,8 +572,8 @@ class EngineeringHandlers:
             granted_workspace="" if granted is None else granted,
         )
 
-    def _effective_budget(self, budget: Any) -> tuple[int, int, int, int]:
-        """The four effective budget fields, each validated before any read.
+    def _effective_budget(self, budget: Any) -> tuple[int, int, int, int, int]:
+        """The five effective budget fields, each validated before any read.
 
         A supplied field must be a positive, non-bool integer at or below its
         server ceiling; anything else -- zero, negative, non-integer, a bool
@@ -587,6 +594,7 @@ class EngineeringHandlers:
                 BUDGET_DEFAULT_BYTES,
                 BUDGET_DEFAULT_HYDRATIONS,
                 BUDGET_DEFAULT_EVIDENCE_BYTES,
+                BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
             )
         return (
             resolve(budget.model_tokens, BUDGET_DEFAULT_TOKENS, BUDGET_CEILING_TOKENS),
@@ -598,6 +606,11 @@ class EngineeringHandlers:
                 budget.evidence_bytes,
                 BUDGET_DEFAULT_EVIDENCE_BYTES,
                 BUDGET_CEILING_EVIDENCE_BYTES,
+            ),
+            resolve(
+                budget.authorized_candidates,
+                BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
+                BUDGET_CEILING_AUTHORIZED_CANDIDATES,
             ),
         )
 
@@ -1628,6 +1641,11 @@ class EngineeringHandlers:
                 if request.budget.evidence_bytes is None
                 else request.budget.evidence_bytes
             )
+            caller_authorized_candidates = (
+                profile_policy.authorized_candidates
+                if request.budget.authorized_candidates is None
+                else request.budget.authorized_candidates
+            )
             effective_tokens = min(
                 caller_tokens,
                 profile_policy.model_tokens,
@@ -1648,6 +1666,11 @@ class EngineeringHandlers:
                 profile_policy.evidence_bytes,
                 BUDGET_CEILING_EVIDENCE_BYTES,
             )
+            effective_authorized_candidates = min(
+                caller_authorized_candidates,
+                profile_policy.authorized_candidates,
+                BUDGET_CEILING_AUTHORIZED_CANDIDATES,
+            )
             if request.counting_mode == ENGINEERING_COUNTING_MODE_EXACT_TOKENS:
                 raise OperationError(
                     ERROR_CODE_TOKENIZER_UNAVAILABLE,
@@ -1664,6 +1687,7 @@ class EngineeringHandlers:
                 effective_bytes,
                 effective_hydrations,
                 effective_evidence_bytes,
+                effective_authorized_candidates,
             ) = self._effective_budget(request.budget)
 
         connection = self._connection()
@@ -1835,7 +1859,18 @@ class EngineeringHandlers:
                         record_ids=record_ids,
                     )
                     previews = self._previews_for_frontier(connection, context, frontier)
-                    authorized_candidate_count += len(previews)
+                    next_authorized_candidate_count = (
+                        authorized_candidate_count + len(previews)
+                    )
+                    if (
+                        next_authorized_candidate_count
+                        > effective_authorized_candidates
+                    ):
+                        raise application_refusal(
+                            ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+                            _MESSAGE_AUTHORIZED_CANDIDATE_BOUND,
+                        )
+                    authorized_candidate_count = next_authorized_candidate_count
                     versions_by_assembly = {
                         version.assembly_id: version for version in frontier.versions
                     }
@@ -1915,22 +1950,19 @@ class EngineeringHandlers:
                             else best_candidates
                         )
                         bucket.append(item)
-                        bucket.sort(key=selection_key)
-                        del bucket[record_capacity:]
                 after_record_id = record_ids[-1]
                 if len(record_ids) < AUTHORIZED_FRONTIER_PAGE_SIZE:
                     break
 
-            selected_previews = best_accepted[:record_capacity]
-            selected_previews.extend(
-                best_candidates[: max(0, record_capacity - len(selected_previews))]
-            )
-            selection_omitted = eligible_count > len(selected_previews)
-            ranked_previews = selected_previews
-            selected_previews = []
+            best_accepted.sort(key=selection_key)
+            best_candidates.sort(key=selection_key)
+            selection_omitted = eligible_count > record_capacity
+            ranked_previews = (*best_accepted, *best_candidates)
             admitted_components: set[tuple[str, str]] = set()
             planned_payload_bytes = 0
             for item in ranked_previews:
+                if len(selected_previews) == record_capacity:
+                    break
                 candidate, _partition, support = item
                 try:
                     plan = plan_authorized_governed_payload(
@@ -2078,6 +2110,9 @@ class EngineeringHandlers:
                         "model_bytes": request.budget.model_bytes,
                         "hydrations": request.budget.hydrations,
                         "evidence_bytes": request.budget.evidence_bytes,
+                        "authorized_candidates": (
+                            request.budget.authorized_candidates
+                        ),
                     }.items()
                     if value is not None
                 }
@@ -2089,6 +2124,7 @@ class EngineeringHandlers:
             counting_mode=request.counting_mode,
             effective_hydrations=effective_hydrations,
             effective_evidence_bytes=effective_evidence_bytes,
+            effective_authorized_candidates=effective_authorized_candidates,
             hydrations=len(values),
             source_bytes_read=payload_budget.source_bytes_read,
             selection_profile=CONTEXT_BUILD_SELECTION_PROFILE,

@@ -69,6 +69,7 @@ class BuildContext:
     counting_mode: str | None = None
     effective_hydrations: int = 8
     effective_evidence_bytes: int = 262_144
+    effective_authorized_candidates: int = 2_000
     hydrations: int = 0
     source_bytes_read: int = 0
     selection_profile: str | None = None
@@ -95,12 +96,25 @@ class WorkingItem:
     unresolved: tuple[str, ...]
 
 
+def _normalize_uncertainties(notice: str, uncertainties: list[str]) -> list[str]:
+    """Notice first, then supplied uncertainties, deduped on first occurrence."""
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in (notice, *uncertainties):
+        if item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return normalized
+
+
 def _render(
-    notice: str, sections: list[dict[str, Any]], labels: Mapping[str, str]
+    notices: list[str], sections: list[dict[str, Any]], labels: Mapping[str, str]
 ) -> str:
-    # The notice is mandatory and first; every heading, label, separator and
-    # citation label below is part of the counted text.
-    parts = ["[uncertainty] " + notice]
+    # Every mandatory uncertainty is rendered first, one block per notice;
+    # every heading, label, separator and citation label below is part of
+    # the counted text.
+    parts = ["[uncertainty] " + notice for notice in notices]
     for section in sections:
         label = f"[{section['partition']}]"
         if section["partition"] == "working_context":
@@ -112,7 +126,7 @@ def _render(
 
 def _enforce_working_context_share(
     *,
-    notice: str,
+    notices: list[str],
     sections: list[dict[str, Any]],
     labels: Mapping[str, str],
     omissions: list[dict[str, Any]],
@@ -141,8 +155,8 @@ def _enforce_working_context_share(
         ]
         if len(without_working) == len(sections):
             return
-        full_text = _render(notice, sections, labels)
-        base_text = _render(notice, without_working, labels)
+        full_text = _render(notices, sections, labels)
+        base_text = _render(notices, without_working, labels)
         working_bytes = len(full_text.encode("utf-8")) - len(base_text.encode("utf-8"))
         working_tokens = (
             None
@@ -215,10 +229,10 @@ def build_pack(
 
     # Copy caller-owned mutable inputs now: later caller-side mutation must
     # never invalidate the checksum already computed over this pack.
-    uncertainties = list(uncertainties)
+    uncertainties = _normalize_uncertainties(notice, uncertainties)
     omissions = [dict(o) for o in omissions]
     _enforce_working_context_share(
-        notice=notice,
+        notices=uncertainties,
         sections=sections,
         labels=labels,
         omissions=omissions,
@@ -226,7 +240,7 @@ def build_pack(
         effective_tokens=ctx.effective_tokens,
     )
     while True:
-        text = _render(notice, sections, labels)
+        text = _render(uncertainties, sections, labels)
         token_count = _token_count(text)
         byte_count = len(text.encode("utf-8"))
         if token_count <= ctx.effective_tokens and byte_count <= ctx.effective_bytes:
@@ -281,6 +295,7 @@ def build_pack(
             {
                 "hydrations": ctx.effective_hydrations,
                 "evidence_bytes": ctx.effective_evidence_bytes,
+                "authorized_candidates": ctx.effective_authorized_candidates,
             }
         )
     if ctx.requested_budget is not None:
@@ -376,10 +391,10 @@ def build_pack_byte_only(
             }
         )
 
-    uncertainties = list(uncertainties)
+    uncertainties = _normalize_uncertainties(notice, uncertainties)
     omissions = [dict(omission) for omission in omissions]
     _enforce_working_context_share(
-        notice=notice,
+        notices=uncertainties,
         sections=sections,
         labels=labels,
         omissions=omissions,
@@ -387,7 +402,7 @@ def build_pack_byte_only(
         effective_tokens=None,
     )
     while True:
-        text = _render(notice, sections, labels)
+        text = _render(uncertainties, sections, labels)
         byte_count = len(text.encode("utf-8"))
         if byte_count <= ctx.effective_bytes:
             break
@@ -445,6 +460,10 @@ def build_pack_byte_only(
         "source_bytes_read": ctx.source_bytes_read,
         "hydrations": ctx.hydrations,
     }
+    if ctx.selection_profile is not None:
+        budget["effective"]["authorized_candidates"] = (
+            ctx.effective_authorized_candidates
+        )
     if ctx.requested_budget is not None:
         budget["requested"] = dict(ctx.requested_budget)
 

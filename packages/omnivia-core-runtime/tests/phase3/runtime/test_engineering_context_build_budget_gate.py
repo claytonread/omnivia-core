@@ -297,7 +297,7 @@ def test_large_high_priority_body_is_skipped_and_a_smaller_group_is_hydrated(
         str(row[0]): (str(row[1]), int(row[2]) + int(row[3])) for row in payload_rows
     }
     large_assembly, large_bytes = payload_by_record[large_record_id]
-    _small_assembly, small_bytes = payload_by_record[small_record_id]
+    small_assembly, small_bytes = payload_by_record[small_record_id]
     assert large_bytes > small_bytes
 
     with Trace(workspace.holder.connection) as trace:
@@ -307,7 +307,7 @@ def test_large_high_priority_body_is_skipped_and_a_smaller_group_is_hydrated(
                 "query": "needle",
                 "targets": [],
                 "profile": "investigate",
-                "budget": {"evidence_bytes": small_bytes},
+                "budget": {"hydrations": 1, "evidence_bytes": small_bytes},
             },
         )["pack"]
 
@@ -316,9 +316,13 @@ def test_large_high_priority_body_is_skipped_and_a_smaller_group_is_hydrated(
     ]
     assert pack["budget"]["source_bytes_read"] == small_bytes
     assert pack["budget"]["hydrations"] == 1
-    assert {item["reason"] for item in pack["omissions"]} == {"source_budget"}
+    assert {item["reason"] for item in pack["omissions"]} == {
+        "selection_limit",
+        "source_budget",
+    }
     assert any("source-read" in uncertainty for uncertainty in pack["uncertainties"])
     assert not any(large_assembly in statement for statement in trace.body_reads())
+    assert any(small_assembly in statement for statement in trace.body_reads())
 
 
 def test_a_non_engineering_domain_body_is_never_hydrated_or_counted(
@@ -392,6 +396,9 @@ def test_a_successful_small_build_reports_the_exact_hydration_count(
         {"hydrations": False},
         {"evidence_bytes": 0},
         {"evidence_bytes": 1048577},
+        {"authorized_candidates": 0},
+        {"authorized_candidates": 10001},
+        {"authorized_candidates": False},
     ],
 )
 def test_an_invalid_budget_field_refuses_before_any_frontier_read(
@@ -422,6 +429,7 @@ def test_valid_budgets_at_their_ceiling_are_accepted(workspace: Workspace) -> No
                 "model_bytes": 65536,
                 "hydrations": 32,
                 "evidence_bytes": 1048576,
+                "authorized_candidates": 10000,
             },
         },
     )
@@ -430,6 +438,7 @@ def test_valid_budgets_at_their_ceiling_are_accepted(workspace: Workspace) -> No
         "model_bytes": 65536,
         "hydrations": 32,
         "evidence_bytes": 1048576,
+        "authorized_candidates": 10000,
     }
 
 
@@ -444,7 +453,91 @@ def test_default_effective_budget_fields_are_reported(workspace: Workspace) -> N
         "model_bytes": handlers.BUDGET_DEFAULT_BYTES,
         "hydrations": handlers.BUDGET_DEFAULT_HYDRATIONS,
         "evidence_bytes": handlers.BUDGET_DEFAULT_EVIDENCE_BYTES,
+        "authorized_candidates": handlers.BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
     }
+
+
+@pytest.mark.parametrize("mode", ["diagnostic", "current_safe"])
+def test_default_authorized_candidate_limit_fails_closed_before_hydration(
+    workspace: Workspace,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    monkeypatch.setattr(handlers, "BUDGET_DEFAULT_AUTHORIZED_CANDIDATES", 2)
+    _observe_many(workspace, 3)
+    payload: dict[str, Any] = {
+        "query": "item",
+        "targets": [],
+        "profile": "investigate",
+        "applicability_mode": mode,
+    }
+    if mode == "current_safe":
+        workspace.record(esc._source(1, "esnap-a", esc.FILES_A))
+        payload["targets"] = [
+            {"repository_id": esc.REPOSITORY, "snapshot_id": "esnap-a"}
+        ]
+
+    with Trace(workspace.holder.connection) as trace:
+        code, message, _retry = workspace.refused(
+            "engineering.context.build", payload
+        )
+
+    assert code == "size_limit_exceeded"
+    assert message == (
+        "the authorized engineering frontier exceeds its bounded candidate budget"
+    )
+    assert trace.body_reads() == []
+
+
+def test_requested_authorized_candidate_limit_is_enforced(
+    workspace: Workspace,
+) -> None:
+    _observe_many(workspace, 3)
+    with Trace(workspace.holder.connection) as trace:
+        code, _message, _retry = workspace.refused(
+            "engineering.context.build",
+            {
+                "query": "item",
+                "targets": [],
+                "profile": "investigate",
+                "budget": {"authorized_candidates": 2},
+            },
+        )
+    assert code == "size_limit_exceeded"
+    assert trace.body_reads() == []
+
+
+@pytest.mark.parametrize(
+    ("counting_mode", "expected_code"),
+    [(None, "token_limit_exceeded"), ("byte_only.v1", "context_budget_insufficient")],
+)
+def test_multiple_mandatory_uncertainties_that_cannot_fit_map_to_typed_error(
+    workspace: Workspace,
+    counting_mode: str | None,
+    expected_code: str,
+) -> None:
+    _observe_many(workspace, 2)
+    notice = (
+        "Target applicability is not evaluated in this build; every "
+        "applicability statement is `not_evaluated`."
+    )
+    payload: dict[str, Any] = {
+        "query": "item",
+        "targets": [],
+        "profile": "investigate",
+        "budget": {
+            "model_bytes": len(f"[uncertainty] {notice}".encode()),
+            "hydrations": 1,
+        },
+    }
+    if counting_mode is not None:
+        payload["counting_mode"] = counting_mode
+
+    code, message, retry = workspace.refused("engineering.context.build", payload)
+
+    assert code == expected_code
+    assert message == "the minimum safe engineering context does not fit the effective budget"
+    assert retry == "non_retryable"
 
 
 # --- current_safe coverage still refuses before the frontier ------------------------

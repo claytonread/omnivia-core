@@ -16,6 +16,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT,
     ERROR_CODE_TOKENIZER_UNAVAILABLE,
     OPERATION_CATALOGUE,
+    ContractDecodeError,
     ContractSemanticError,
     EngineeringBudget,
     EngineeringBudgetOutcome,
@@ -75,7 +76,7 @@ def _v2_golden_pack() -> dict[str, Any]:
 def test_generated_round_trip_preserves_each_negotiated_counting_shape() -> None:
     byte_only = _base_input() | {
         "counting_mode": "byte_only.v1",
-        "budget": {"model_bytes": 16384},
+        "budget": {"model_bytes": 16384, "authorized_candidates": 2000},
     }
     exact = _base_input() | {
         "counting_mode": "exact_tokens.v1",
@@ -141,6 +142,17 @@ def test_negotiated_semantics_reject_unknown_members_the_decoder_would_ignore() 
         "budget": {"model_bytes": 1024, "future_limit": 5},
     }
     with pytest.raises(ContractSemanticError):
+        decode_engineering_context_build_input(payload)
+
+
+@pytest.mark.parametrize("value", [0, 10_001, True])
+def test_authorized_candidate_budget_rejects_invalid_values(value: object) -> None:
+    payload = _base_input() | {
+        "counting_mode": "byte_only.v1",
+        "budget": {"model_bytes": 1024, "authorized_candidates": value},
+    }
+    assert list(_validator("EngineeringContextBuildInput").iter_errors(payload))
+    with pytest.raises((ContractDecodeError, ContractSemanticError)):
         decode_engineering_context_build_input(payload)
 
 
@@ -315,6 +327,7 @@ def test_generated_typescript_exports_the_counting_contract() -> None:
     assert "export interface EngineeringTokenizerReference" in source
     assert "counting_mode?: EngineeringCountingMode;" in source
     assert "tokenizer?: EngineeringTokenizerReference;" in source
+    assert "readonly authorized_candidates?: number;" in source
     assert "readonly token_count: number;" in source
     assert "readonly rendered_tokens: number;" in source
     assert (

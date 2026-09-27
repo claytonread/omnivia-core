@@ -396,3 +396,101 @@ def test_applicability_is_matched_when_a_record_survives() -> None:
     ctx = dataclasses.replace(CTX, source_coverage=_COVERED)
     pack = _build(ctx, records=(ACCEPTED,))
     assert {a["status"] for a in pack["applicability"]} == {"matched"}
+
+
+SECOND_NOTICE = "Second finding is unverified."
+
+
+def test_mandatory_uncertainties_are_deduped_and_ordered_notice_first() -> None:
+    pack = build_pack(
+        CTX,
+        (ACCEPTED,),
+        (),
+        notice=NOTICE,
+        uncertainties=[SECOND_NOTICE, NOTICE, SECOND_NOTICE, "Third."],
+        omissions=[],
+    )
+    assert pack["uncertainties"] == [NOTICE, SECOND_NOTICE, "Third."]
+    text = pack["rendering"]["text"]
+    assert text.count(f"[uncertainty] {NOTICE}") == 1
+    assert text.count(f"[uncertainty] {SECOND_NOTICE}") == 1
+    assert text.count("[uncertainty] Third.") == 1
+    assert (
+        text.index(f"[uncertainty] {NOTICE}")
+        < text.index(f"[uncertainty] {SECOND_NOTICE}")
+        < text.index("[uncertainty] Third.")
+    )
+
+
+def test_v1_exact_counts_include_every_mandatory_uncertainty() -> None:
+    pack = build_pack(
+        CTX,
+        (ACCEPTED,),
+        (),
+        notice=NOTICE,
+        uncertainties=[SECOND_NOTICE],
+        omissions=[],
+    )
+    text = pack["rendering"]["text"]
+    assert pack["rendering"]["token_count"] == _tokens(text)
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert pack["budget"]["rendered_tokens"] == _tokens(text)
+    assert pack["budget"]["rendered_bytes"] == len(text.encode("utf-8"))
+    assert SECOND_NOTICE in text
+
+
+def test_v2_exact_byte_count_includes_every_mandatory_uncertainty() -> None:
+    pack = build_pack_byte_only(
+        V2_CTX,
+        (ACCEPTED,),
+        (),
+        notice=NOTICE,
+        uncertainties=[SECOND_NOTICE],
+        omissions=[],
+    )
+    text = pack["rendering"]["text"]
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert pack["budget"]["rendered_bytes"] == len(text.encode("utf-8"))
+    assert SECOND_NOTICE in text
+
+
+def test_notices_alone_exceeding_the_budget_raise_mandatory_too_large() -> None:
+    # A budget sized exactly for the single-notice rendering (no sections,
+    # nothing droppable) cannot also fit a second mandatory notice.
+    single_notice_bytes = _build(records=())["rendering"]["byte_count"]
+    with pytest.raises(MandatoryContextTooLarge):
+        build_pack(
+            dataclasses.replace(CTX, effective_bytes=single_notice_bytes),
+            (),
+            (),
+            notice=NOTICE,
+            uncertainties=[SECOND_NOTICE],
+            omissions=[],
+        )
+    with pytest.raises(MandatoryContextTooLarge):
+        build_pack_byte_only(
+            dataclasses.replace(V2_CTX, effective_bytes=single_notice_bytes),
+            (),
+            (),
+            notice=NOTICE,
+            uncertainties=[SECOND_NOTICE],
+            omissions=[],
+        )
+
+
+def test_v1_one_notice_golden_is_unchanged() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v1_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert to_canonical_json(_build()) == expected
+    assert (
+        _build()["pack_id"]
+        == "sha256:270959fb56b2e5f863e521ee67dfe4c27409e9175fe0b94761e558165d4550f8"
+    )
+
+
+def test_v2_one_notice_golden_is_unchanged() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v2_byte_only_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert to_canonical_json(_build_v2()) == expected

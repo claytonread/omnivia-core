@@ -1129,6 +1129,11 @@ export interface EngineeringBudget {
    * hard ceiling 1048576.
    */
   readonly evidence_bytes?: number;
+  /**
+   * Maximum authorized preview candidates examined for the build; the proposed default is 2000
+   * and the hard ceiling 10000.
+   */
+  readonly authorized_candidates?: number;
 }
 
 /**

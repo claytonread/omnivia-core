@@ -32,6 +32,7 @@ ENGINEERING_HARD_LIMIT_MODEL_TOKENS: Final = 16_000
 ENGINEERING_HARD_LIMIT_MODEL_BYTES: Final = 65_536
 ENGINEERING_HARD_LIMIT_HYDRATIONS: Final = 32
 ENGINEERING_HARD_LIMIT_EVIDENCE_BYTES: Final = 1_048_576
+ENGINEERING_HARD_LIMIT_AUTHORIZED_CANDIDATES: Final = 10_000
 
 _INPUT_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -47,7 +48,13 @@ _INPUT_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _BUDGET_KEYS: Final[frozenset[str]] = frozenset(
-    {"model_tokens", "model_bytes", "hydrations", "evidence_bytes"}
+    {
+        "model_tokens",
+        "model_bytes",
+        "hydrations",
+        "evidence_bytes",
+        "authorized_candidates",
+    }
 )
 _TOKENIZER_KEYS: Final[frozenset[str]] = frozenset(
     {"tokenizer_id", "tokenizer_version"}
@@ -143,6 +150,11 @@ def _validate_budget(budget: EngineeringBudget) -> None:
             ENGINEERING_HARD_LIMIT_EVIDENCE_BYTES,
             "EngineeringContextBuildInput.budget.evidence_bytes",
         ),
+        (
+            budget.authorized_candidates,
+            ENGINEERING_HARD_LIMIT_AUTHORIZED_CANDIDATES,
+            "EngineeringContextBuildInput.budget.authorized_candidates",
+        ),
     ):
         if value is not None:
             _require_positive_limit(value, maximum, label)
@@ -234,6 +246,7 @@ __all__ = [
     "ENGINEERING_COUNTING_MODES",
     "ENGINEERING_COUNTING_MODE_BYTE_ONLY",
     "ENGINEERING_COUNTING_MODE_EXACT_TOKENS",
+    "ENGINEERING_HARD_LIMIT_AUTHORIZED_CANDIDATES",
     "ENGINEERING_HARD_LIMIT_EVIDENCE_BYTES",
     "ENGINEERING_HARD_LIMIT_HYDRATIONS",
     "ENGINEERING_HARD_LIMIT_MODEL_BYTES",

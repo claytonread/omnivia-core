@@ -3162,6 +3162,7 @@ class EngineeringBudget:
     model_bytes: int | None = None
     hydrations: int | None = None
     evidence_bytes: int | None = None
+    authorized_candidates: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -3178,6 +3179,8 @@ class EngineeringBudget:
             wire["hydrations"] = self.hydrations
         if self.evidence_bytes is not None:
             wire["evidence_bytes"] = self.evidence_bytes
+        if self.authorized_candidates is not None:
+            wire["authorized_candidates"] = self.authorized_candidates
         return wire
 
     @classmethod
@@ -3220,11 +3223,23 @@ class EngineeringBudget:
                     f"{path}.evidence_bytes: null is not a valid value"
                 )
             field_evidence_bytes = _decode_int(raw_evidence_bytes, f"{path}.evidence_bytes")
+        field_authorized_candidates: int | None = None
+        if "authorized_candidates" in mapping:
+            raw_authorized_candidates = mapping["authorized_candidates"]
+            if raw_authorized_candidates is None:
+                raise ContractDecodeError(
+                    f"{path}.authorized_candidates: null is not a valid value"
+                )
+            field_authorized_candidates = _decode_int(
+                raw_authorized_candidates,
+                f"{path}.authorized_candidates",
+            )
         return cls(
             model_tokens=field_model_tokens,
             model_bytes=field_model_bytes,
             hydrations=field_hydrations,
             evidence_bytes=field_evidence_bytes,
+            authorized_candidates=field_authorized_candidates,
         )
 
 
