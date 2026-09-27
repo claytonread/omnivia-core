@@ -107,9 +107,9 @@ def build_pack(
     uncertainties: list[str],
     omissions: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    ordered = sorted(
-        records, key=lambda r: (_PARTITION_RANK[r.partition], r.record_id, r.version)
-    )
+    # Stable: groups by partition without disturbing the frozen authorized
+    # selection order (relevance/priority) within a partition.
+    ordered = sorted(records, key=lambda r: _PARTITION_RANK[r.partition])
     sections: list[dict[str, Any]] = []
     citations: list[dict[str, Any]] = []
     for ordinal, record in enumerate(ordered, 1):
@@ -147,7 +147,10 @@ def build_pack(
             }
         )
 
-    omissions = list(omissions)
+    # Copy caller-owned mutable inputs now: later caller-side mutation must
+    # never invalidate the checksum already computed over this pack.
+    uncertainties = list(uncertainties)
+    omissions = [dict(o) for o in omissions]
     mandatory_text = _render(
         notice, [s for s in sections if s["partition"] not in DROP_ORDER], labels
     )
@@ -181,9 +184,11 @@ def build_pack(
         reproducibility["applicability_evaluator"] = ctx.applicability_evaluator
         reproducibility["source_coverage"] = [dict(c) for c in ctx.source_coverage]
 
-    # `matched` only when current_safe proved every included record; nothing is
-    # claimed about an empty pack.
-    status = "matched" if ctx.source_coverage and records else "not_evaluated"
+    # `matched` only when current_safe proved at least one record that
+    # actually survived into the rendered pack; a pack left with no cited
+    # sections (every candidate dropped for budget, or none selected) makes
+    # no applicability claim.
+    status = "matched" if ctx.source_coverage and citations else "not_evaluated"
     pack: dict[str, Any] = {
         "format_version": "engineering_context.v1",
         "normalized_request": normalized_request,

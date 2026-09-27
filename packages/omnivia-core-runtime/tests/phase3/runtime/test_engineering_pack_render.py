@@ -141,3 +141,36 @@ def test_an_oversized_optional_section_is_dropped_whole() -> None:
 def test_a_mandatory_rendering_that_cannot_fit_is_refused() -> None:
     with pytest.raises(MandatoryContextTooLarge):
         _build(dataclasses.replace(CTX, effective_tokens=1))
+
+
+def test_authorized_selection_order_survives_within_a_partition() -> None:
+    # Two candidates in the same partition: the frozen upstream order
+    # (relevance/priority), not record_id, must decide render order.
+    first = PackRecord("rec-z", 1, "candidate_findings", "First", "picked first")
+    second = PackRecord("rec-a", 1, "candidate_findings", "Second", "picked second")
+    pack = _build(records=(ACCEPTED, first, second))
+    assert [c["record_ref"]["record_id"] for c in pack["citations"]] == [
+        "rec-b",
+        "rec-z",
+        "rec-a",
+    ]
+
+
+_COVERED = (
+    {"snapshot_id": "esnap-a", "stream_id": "s", "sequence": 1, "manifest_digest": "d"},
+)
+
+
+def test_applicability_is_not_evaluated_when_every_candidate_is_dropped() -> None:
+    ctx = dataclasses.replace(CTX, source_coverage=_COVERED)
+    big = PackRecord("rec-z", 1, "candidate_findings", "Big", "word " * 5000)
+    pack = _build(ctx, records=(big,))
+    assert pack["sections"] == []
+    assert pack["citations"] == []
+    assert {a["status"] for a in pack["applicability"]} == {"not_evaluated"}
+
+
+def test_applicability_is_matched_when_a_record_survives() -> None:
+    ctx = dataclasses.replace(CTX, source_coverage=_COVERED)
+    pack = _build(ctx, records=(ACCEPTED,))
+    assert {a["status"] for a in pack["applicability"]} == {"matched"}
