@@ -416,6 +416,79 @@ def test_read_checkout_file_refuses_unsupported_host(
     )
 
 
+# --- is_trusted_local_checkout_root -------------------------------------------------
+
+
+def test_trusted_checkout_root_accepts_a_real_directory(tmp_path: Path) -> None:
+    root = tmp_path / "real"
+    root.mkdir()
+    assert source_capture.is_trusted_local_checkout_root(os.fspath(root))
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_trusted_checkout_root_refuses_a_symlinked_leaf(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks")
+    assert not source_capture.is_trusted_local_checkout_root(os.fspath(link))
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_trusted_checkout_root_refuses_a_symlinked_ancestor(tmp_path: Path) -> None:
+    """A symlink anywhere above the named leaf is refused, not only at the leaf
+    itself: an earlier version checked only the final path's own `lstat`, which a
+    symlinked parent directory passed even though later path-based operations
+    would follow it.
+    """
+    real_parent = tmp_path / "real-parent"
+    (real_parent / "checkout").mkdir(parents=True)
+    linked_parent = tmp_path / "linked-parent"
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks")
+    checkout_root = linked_parent / "checkout"
+    assert not source_capture.is_trusted_local_checkout_root(os.fspath(checkout_root))
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_trusted_checkout_root_refuses_a_symlinked_ancestor_without_descriptor_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `lstat`-walk fallback used on a host without descriptor support still
+    refuses an ancestor symlink, rather than only checking the leaf.
+    """
+    real_parent = tmp_path / "real-parent-2"
+    (real_parent / "checkout").mkdir(parents=True)
+    linked_parent = tmp_path / "linked-parent-2"
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks")
+    checkout_root = linked_parent / "checkout"
+    monkeypatch.setattr(source_capture, "_NO_FOLLOW_WALK", False)
+    assert not source_capture.is_trusted_local_checkout_root(os.fspath(checkout_root))
+
+
+def test_trusted_checkout_root_refuses_missing_and_relative(tmp_path: Path) -> None:
+    (tmp_path / "checkout").mkdir()
+    assert not source_capture.is_trusted_local_checkout_root(
+        os.fspath(tmp_path) + "/./checkout"
+    )
+    assert not source_capture.is_trusted_local_checkout_root("/" + "a" * 513)
+    assert not source_capture.is_trusted_local_checkout_root(
+        os.fspath(tmp_path / "does-not-exist")
+    )
+    assert not source_capture.is_trusted_local_checkout_root("relative/path")
+    assert not source_capture.is_trusted_local_checkout_root(
+        os.fspath(tmp_path / ".." / "escape")
+    )
+
+
 # --- capture_working_tree_manifest -------------------------------------------------
 
 _GIT_ENV = {

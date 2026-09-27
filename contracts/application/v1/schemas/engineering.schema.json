@@ -1705,6 +1705,82 @@
         "recorded_at",
         "audit_reference"
       ]
+    },
+    "EngineeringRepositoryRegisterInput": {
+      "title": "EngineeringRepositoryRegisterInput",
+      "description": "Input for `engineering.repository.register`: an explicitly authorized local operator binds one exact, installation-local checkout directory to one logical repository identity. Not a model-facing tool: it is reachable only through the accepted local client/CLI, under the distinct `engineering:repository` scope and `engineering.repository` capability, and is refused over every other route. `repository_id` is the caller's own stable logical identity -- never inferred from `display_name`, from the checkout's own git remote or configuration, or from any other repository-supplied hint -- and two registrations may share a `display_name` by design (label-only lookup stays ambiguous). `checkout_root` is validated server-side as a real, installation-local directory with no traversal or symlink escape; it is stored only as this installation's own checkout mapping and never appears in a governed observation, a manifest or an error message. The workspace and installation are the authenticated caller's own and can never be supplied by the payload. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable logical repository identity, chosen by the operator and never derived from a path, a label or a repository-supplied hint."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "A human-readable label. Two unrelated repositories may share one; label-only resolution stays ambiguous by design.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "provider_hint": {
+          "type": "string",
+          "description": "Optional free-text note about the repository's hosting provider. Never used to establish identity or authority.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "checkout_root": {
+          "type": "string",
+          "description": "The exact, absolute, installation-local filesystem path of the trusted checkout to bind. Validated server-side as a real directory with no traversal or symlink escape; never echoed back, stored in portable content, or quoted in an error.",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "repository_id",
+        "display_name",
+        "checkout_root"
+      ]
+    },
+    "EngineeringRepositoryRegisterResult": {
+      "title": "EngineeringRepositoryRegisterResult",
+      "description": "Result of `engineering.repository.register`: the repository and checkout identities, and whether this delivery newly registered the repository, idempotently repeated an identical registration, or audited a moved checkout. The installation-local path is never echoed back.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The bound repository."
+        },
+        "checkout_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "This installation's opaque checkout-mapping identity."
+        },
+        "repository_disposition": {
+          "type": "string",
+          "description": "`registered` for a newly recorded repository identity, `already_registered` when this exact identity was already recorded.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "checkout_disposition": {
+          "type": "string",
+          "description": "`bound` for a new checkout mapping, `already_bound` when this exact mapping already pointed here, `rebound` when this installation's mapping for this exact path moved to this repository, audited.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "audit_reference": {
+          "type": "string",
+          "description": "Audit reference for this delivery.",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "repository_id",
+        "checkout_id",
+        "repository_disposition",
+        "checkout_disposition",
+        "audit_reference"
+      ]
     }
   }
 }

@@ -454,6 +454,94 @@ _FILE_FLAGS: Final = (
 )
 
 
+def _open_component(name: bytes, flags: int, directory: int | None) -> int | None:
+    """Open one name relative to a held directory, or `None`; the OS error is dropped.
+
+    Dropped, not chained: an ``OSError`` quotes the name, and for the root that is a
+    local absolute path. The caller raises after this returns, outside any handler.
+    """
+    try:
+        return os.open(name, flags, dir_fd=directory)
+    except (OSError, ValueError):
+        return None
+
+
+def _directory_chain_is_real_by_descriptor(path: Path) -> bool:
+    """Whether every component of `path`, root to leaf, opens as a real, non-symlinked
+    directory when each is opened relative to the descriptor of the one before it.
+
+    Never by a composed path: a later component's open can never be fooled by a rename
+    of an earlier one's name, and `O_NOFOLLOW` on each single-component open refuses a
+    symlink at that exact hop, ancestor or leaf alike.
+    """
+    directory: int | None = None
+    held: list[int] = []
+    try:
+        for part in path.parts:
+            descriptor = _open_component(os.fsencode(part), _DIRECTORY_FLAGS, directory)
+            if descriptor is None:
+                return False
+            held.append(descriptor)
+            directory = descriptor
+        return True
+    finally:
+        for descriptor in held:
+            os.close(descriptor)
+
+
+def _directory_chain_is_real_by_lstat(path: Path) -> bool:
+    """The weaker fallback for a host that cannot open by descriptor (`_NO_FOLLOW_WALK`
+    is false, e.g. Windows): each prefix from root to leaf is `lstat`ed in turn and must
+    be a real directory, never a symlink. Racier than the descriptor walk -- a swap
+    between two of these calls is not caught -- but still refuses every symlink,
+    ancestor or leaf, that is in place at the time of this check.
+    """
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            status = os.lstat(current)
+        except OSError:
+            return False
+        if not stat.S_ISDIR(status.st_mode):
+            return False
+    return True
+
+
+def is_trusted_local_checkout_root(value: str) -> bool:
+    """Whether `value` is safe to register as an exact, installation-local checkout root.
+
+    Pure and read-only: it reads nothing beneath the named path -- registration binds an
+    operator's own claim about a directory, never anything the directory itself asserts,
+    so no config file, remote or other hint inside it is ever consulted. `value` must be
+    an absolute path in canonical form (no `.` or `..` segment) naming a real directory,
+    and no component of it, from the filesystem root down to the leaf, may be a symlink:
+    a relative path, a `..`-bearing one, a missing path, and one with a symlink anywhere
+    in its ancestry (not only as the final component) are all refused.
+
+    Checked by opening each component by descriptor without following it
+    (`_directory_chain_is_real_by_descriptor`) on a host that supports it; a host that
+    cannot establish that (no `dir_fd`, `O_NOFOLLOW` or `O_DIRECTORY`) falls back to a
+    per-component `lstat` walk rather than trusting only the leaf.
+
+    This is a point-in-time check, not a standing guarantee: it says nothing about a
+    later swap of the same path, which is why every later read of a bound checkout
+    reopens it by descriptor without following a link, rather than trusting this once.
+    """
+    if not value or "\x00" in value or len(value) > 512:
+        return False
+    path = Path(value)
+    if (
+        not path.is_absolute()
+        or os.path.normpath(value) != value
+        or any(part in (".", "..") for part in path.parts)
+    ):
+        return False
+    if _NO_FOLLOW_WALK:
+        return _directory_chain_is_real_by_descriptor(path)
+    return _directory_chain_is_real_by_lstat(path)
+
+
 @dataclass(frozen=True, slots=True)
 class CheckoutFile:
     """The bytes of one trusted-checkout file and the digest they were verified against."""
@@ -469,18 +557,6 @@ class _SourceChanged(SourceCaptureRefused):
 
 class _SourceOversized(SourceCaptureRefused):
     """The file is larger than `MAX_SOURCE_BYTES`."""
-
-
-def _open_component(name: bytes, flags: int, directory: int | None) -> int | None:
-    """Open one name relative to a held directory, or `None`; the OS error is dropped.
-
-    Dropped, not chained: an ``OSError`` quotes the name, and for the root that is a
-    local absolute path. The caller raises after this returns, outside any handler.
-    """
-    try:
-        return os.open(name, flags, dir_fd=directory)
-    except (OSError, ValueError):
-        return None
 
 
 def _identity(name: bytes, directory: int | None) -> tuple[int, int] | None:
@@ -1122,6 +1198,7 @@ __all__ = [
     "capture_local_source",
     "capture_working_tree_manifest",
     "capture_working_tree_snapshot",
+    "is_trusted_local_checkout_root",
     "publish_blob",
     "read_checkout_file",
 ]
