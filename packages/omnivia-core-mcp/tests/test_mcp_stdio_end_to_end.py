@@ -36,7 +36,7 @@ the probe then runs whichever `omnivia_core_mcp` is installed rather than the on
 under test, and the failure looks like a stale one-tool manifest rather than like
 a harness bug. `_environment()` is what stops that.
 
-**One session calls all six, and "all six" is read off the manifest.**
+**One session calls all fourteen, and "all fourteen" is read off the manifest.**
 :data:`ARGUMENTS` is keyed by tool name and is asserted to be exactly
 `EXPOSURE_MANIFEST`'s tool names in order, so a seventh tool cannot be exposed
 without an end-to-end call for it: the coverage check fails first.
@@ -142,11 +142,7 @@ ARGUMENTS: dict[str, dict[str, Any]] = {
     "decision_status": {},
 }
 
-#: The tools the authoring profile adds, smallest call each. The checkpoint
-#: append needs a bound continuity session; none exists here, so the call
-#: answers the handler's own typed `not_found` — which is the point of the
-#: assertion: the tool is real and dispatches, and the refusal is the
-#'s, not the transport's.
+#: The tools the authoring profile adds, smallest call each.
 AUTHORING_ARGUMENTS: dict[str, dict[str, Any]] = {
     "memory_create": {
         "input": {
@@ -164,16 +160,6 @@ AUTHORING_ARGUMENTS: dict[str, dict[str, Any]] = {
             },
         },
         "idempotency_key": "mcp-authoring-memory-002",
-    },
-    "continuity_checkpoint_append": {
-        "input": {
-            "session_id": "eng-session-e2e-1",
-            "payload": {
-                "objective": "Investigate the seeded fixture",
-                "checkpoint_kind": "periodic",
-            },
-        },
-        "idempotency_key": "continuity-append-e2e-1",
     },
 }
 
@@ -248,7 +234,6 @@ ALL_PURPOSES = (
 #: the wider profile's tools claim. Every one is the service's own.
 AUTHORING_PURPOSES = (
     *ALL_PURPOSES,
-    "continuity_checkpoint",
     "memory_authoring",
     "content_ingestion",
     "job_observation",
@@ -509,7 +494,7 @@ def test_every_advertised_tool_is_read_only_and_closed(
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.1"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.2"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -517,13 +502,13 @@ def test_every_advertised_tool_is_read_only_and_closed(
     assert inspect["input_schema"]["required"] == []
 
 
-# --- one session calls all six ------------------------------------------------
+# --- one session calls all fourteen -------------------------------------------
 
 
 def test_the_session_calls_exactly_the_advertised_fourteen(
     observed: dict[str, Any],
 ) -> None:
-    """The coverage check, and the reason a seventh tool cannot land untested.
+    """The coverage check, and the reason a fifteenth tool cannot land untested.
 
     Order and membership, against the manifest rather than against a literal, so
     this file cannot drift into calling thirteen of fourteen and passing.
@@ -862,7 +847,7 @@ def test_a_root_nobody_configured_refuses_before_anything_is_started(
 def test_a_purpose_outside_the_configuration_refuses_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """The same six tools are listed; only the granted purpose is callable.
+    """The same fourteen tools are listed; only the granted purpose is callable.
 
     `tools/list` stays deterministic -- it is not filtered by authority, which
     would make one host's listing differ from another's -- so the model can see
@@ -921,7 +906,7 @@ CAPTURED_SOURCE = "mcp-authoring-note-1"
 
 
 def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """The five calls, bound to the dedicated principal the installation issued.
+    """The five additions' calls, bound to the dedicated principal the installation issued.
 
     A function rather than a constant because one of them names an actor, and the
     only actor an installed session may name is the principal its bearer resolves
@@ -989,19 +974,6 @@ def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
         ),
         ("job_get", {"job_id": "job-not-in-this-workspace"}),
         ("job_events", {"job_id": "job-not-in-this-workspace"}),
-        (
-            "continuity_checkpoint_append",
-            {
-                "input": {
-                    "session_id": "eng-session-e2e-1",
-                    "payload": {
-                        "objective": "Investigate the seeded fixture",
-                        "checkpoint_kind": "periodic",
-                    },
-                },
-                "idempotency_key": "continuity-append-e2e-1",
-            },
-        ),
     ]
 
 
@@ -1074,7 +1046,7 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
-def test_an_admitted_authoring_session_lists_twenty_and_calls_every_new_tool(
+def test_an_admitted_authoring_session_lists_nineteen_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
@@ -1089,7 +1061,7 @@ def test_an_admitted_authoring_session_lists_twenty_and_calls_every_new_tool(
 
     What each call proves, in one session:
 
-    * the listing is the eleven, in manifest order, and the three mutations
+    * the listing is the nineteen, in manifest order, and the four mutations
       advertise the closed wrapper with the read hints inverted;
     * `evidence_capture` writes -- the content travels in the call, with no path,
       URL or credential anywhere in it -- and the artifact is then findable
@@ -1425,11 +1397,11 @@ def test_a_lost_capture_response_replays_after_a_real_service_restart(
 
 
 def test_the_authoring_calls_cover_every_tool_the_profile_adds() -> None:
-    """The coverage check for the wider profile, matching the one the six have.
+    """The coverage check for the wider profile, matching the restricted fourteen.
 
     By set rather than by order, because :func:`authoring_calls` is ordered by
     what the calls depend on -- the capture before the memory that cites it --
-    and not by the manifest. A twelfth tool still cannot land without an
+    and not by the manifest. A twentieth tool still cannot land without an
     end-to-end call.
     """
     assert {name for name, _ in authoring_calls("mcp-coverage-principal")} == {
@@ -1506,7 +1478,7 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     """R004-07: stdout is protocol-only, proved against a server trying to break it.
 
     The probe writes to `sys.stdout` twice from inside a live handler, on every
-    call -- six of them now. If any reached the wire the session below would fail
+    call -- fourteen of them now. If any reached the wire the session below would fail
     to parse a frame; instead every call completes and the strings are nowhere in
     what the client received.
 

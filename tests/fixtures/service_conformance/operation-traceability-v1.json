@@ -20,7 +20,7 @@
       "mapping_source": {
         "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
         "symbol": "EXPOSURE_MANIFEST",
-        "manifest_version": "2.1"
+        "manifest_version": "2.2"
       },
       "exposed": [
         {
@@ -98,10 +98,6 @@
         {
           "operation": "job.events",
           "tool": "job_events"
-        },
-        {
-          "operation": "continuity.checkpoint.append",
-          "tool": "continuity_checkpoint_append"
         }
       ],
       "omitted": [
@@ -219,6 +215,10 @@
         },
         {
           "operation": "continuity.session.register",
+          "reason": "mutation"
+        },
+        {
+          "operation": "continuity.checkpoint.append",
           "reason": "mutation"
         },
         {
