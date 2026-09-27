@@ -110,6 +110,13 @@ from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     ServiceBinding,
 )
+from omnivia_core_runtime.service.engineering_pack import (
+    BuildContext,
+    MandatoryContextTooLarge,
+    PackRecord,
+    WorkingItem,
+    build_pack,
+)
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
     MutationPreconditionFailed,
@@ -197,11 +204,6 @@ _RESPONSE_RESERVE: Final = 2048
 _MESSAGE_BUDGET: Final = (
     "the minimum safe engineering context does not fit the effective budget"
 )
-#: The pack renderer and its pinned, deterministic token counting method. A
-#: whitespace split is the v1 pinned tokenizer: recomputable by hand from the
-#: rendering, and never reported as anything smarter than it is.
-RENDERER_VERSION: Final = "eng-render-1"
-BUILDER_VERSION: Final = "eng-build-1"
 
 #: Server hard budget ceilings (§12.4). Effective budgets are the minimum of the
 #: caller request and these ceilings; both token and byte caps are simultaneous.
@@ -210,14 +212,6 @@ BUDGET_CEILING_BYTES: Final = 65536
 BUDGET_DEFAULT_TOKENS: Final = 4000
 BUDGET_DEFAULT_BYTES: Final = 16384
 
-#: Section drop order when the rendering exceeds the effective budget: optional
-#: working-context material first, then history. Mandatory notices and accepted
-#: knowledge are never dropped to fit (§12.5).
-_SECTION_DROP_ORDER: Final[tuple[str, ...]] = (
-    "working_context",
-    "history",
-    "candidate_findings",
-)
 _MESSAGE_PRIORITY: Final = (
     "context priority ships contracts first; the preference store lands in a "
     "later engineering-memory package"
@@ -1359,151 +1353,31 @@ class EngineeringHandlers:
                     }
                 )
 
-        sections: list[dict[str, Any]] = []
-        citations: list[dict[str, Any]] = []
-        for ordinal, (record, partition) in enumerate(selected, 1):
-            content = record.content if isinstance(record.content, Mapping) else {}
-            title = str(content.get("title") or record.provenance.identity.record_id)
-            body = str(content.get("summary") or content.get("what") or "")
-            citation_id = f"cite-{ordinal}"
-            sections.append(
-                {
-                    "section_id": f"sec-{ordinal}",
-                    "kind": "decision_summary",
-                    "partition": partition,
-                    "content": f"{title}. {body}".strip(),
-                    "citation_ids": [citation_id],
-                }
-            )
-            citations.append(
-                {
-                    "citation_id": citation_id,
-                    "record_ref": {
-                        "record_id": record.provenance.identity.record_id,
-                        "version": record.provenance.identity.version,
-                    },
-                }
-            )
-        for ordinal, item in enumerate(working, len(sections) + 1):
-            sections.append(
-                {
-                    "section_id": f"sec-{ordinal}",
-                    "kind": "working_context",
-                    "partition": "working_context",
-                    "content": (
-                        f"{item['objective']} Unresolved: "
-                        + "; ".join(str(u) for u in item["unresolved"])
-                    ).strip(),
-                    "citation_ids": [],
-                }
-            )
-
         omissions: list[dict[str, Any]] = []
         if covered:
-            uncertainties = [
-                (
-                    "current_safe: every cited record is proven `matched` at every "
-                    "target by whole-file dependency digests recorded by a trusted "
-                    "source; records whose applicability is unknown, potentially stale "
-                    "or invalid are omitted."
-                ),
-            ]
+            notice = (
+                "current_safe: every cited record is proven `matched` at every "
+                "target by whole-file dependency digests recorded by a trusted "
+                "source; records whose applicability is unknown, potentially stale "
+                "or invalid are omitted."
+            )
             if unproven:
                 omissions.append({"field": "sections", "reason": "applicability_unproven"})
         else:
-            uncertainties = [
-                "Target applicability is not evaluated in this build; every applicability statement is `not_evaluated`.",
-            ]
-
-        def render(
-            pack_sections: list[dict[str, Any]],
-            pack_citations: list[dict[str, Any]],
-        ) -> str:
-            # The uncertainty notice is mandatory: it is rendered before any
-            # optional content and is never dropped to fit a budget (§12.5).
-            notice = "[uncertainty] " + uncertainties[0]
-            parts = [notice]
-            for section in pack_sections:
-                label = f"[{section['partition']}]"
-                cites = " ".join(f"[{c}]" for c in section["citation_ids"])
-                parts.append(f"{label} {section['content']} {cites}".strip())
-            return "\n\n".join(parts)
-
-        # Budget reconciliation: drop optional sections lowest-priority first,
-        # bounded by the section count; mandatory notices are never dropped.
-        while True:
-            text = render(sections, citations)
-            token_count = len(text.split())
-            byte_count = len(text.encode("utf-8"))
-            if token_count <= effective_tokens and byte_count <= effective_bytes:
-                break
-            droppable = [
-                index
-                for index, section in enumerate(sections)
-                if section["partition"] in _SECTION_DROP_ORDER
-            ]
-            if not droppable or len(sections) <= 1:
-                raise OperationError(
-                    ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
-                    _MESSAGE_BUDGET,
-                    retry_class=DEFAULT_RETRY_CLASSIFICATION[
-                        ERROR_CODE_TOKEN_LIMIT_EXCEEDED
-                    ],
-                )
-            drop = droppable[-1]
-            dropped = sections.pop(drop)
-            omissions.append(
-                {"field": dropped["section_id"], "reason": "budget"}
+            notice = (
+                "Target applicability is not evaluated in this build; every "
+                "applicability statement is `not_evaluated`."
             )
-            if len(omissions) > len(_SECTION_DROP_ORDER) * 64:
-                raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_BUDGET)
 
-        rendering = {
-            "text": text,
-            "renderer_version": RENDERER_VERSION,
-            "token_count": token_count,
-            "byte_count": byte_count,
-        }
-        budget: dict[str, Any] = {
-            "effective": {"model_tokens": effective_tokens, "model_bytes": effective_bytes},
-        }
-        if request.budget is not None:
-            budget["requested"] = {
-                key: value
-                for key, value in {
-                    "model_tokens": request.budget.model_tokens,
-                    "model_bytes": request.budget.model_bytes,
-                    "hydrations": request.budget.hydrations,
-                    "evidence_bytes": request.budget.evidence_bytes,
-                }.items()
-                if value is not None
-            }
-        budget["rendered_tokens"] = token_count
-        budget["rendered_bytes"] = byte_count
-        budget["source_bytes_read"] = 0
-        budget["hydrations"] = 0
-        # A statement about the pack's records: `matched` only when current_safe
-        # proved every included record at that target; nothing is claimed about
-        # an empty pack.
-        status = "matched" if covered and selected else "not_evaluated"
-        applicability = [
-            {"snapshot": target.to_wire(), "status": status}
-            for target in request.targets
-        ]
-        normalized_request: dict[str, Any] = {
-            "query": request.query,
-            "profile": request.profile,
-        }
-        reproducibility: dict[str, Any] = {
-            "builder_version": BUILDER_VERSION,
-            "renderer_version": RENDERER_VERSION,
-            "artifact_canonicalization": "rfc8785",
-            "resolution_instant_us": resolved_at_us,
-        }
-        if covered:
-            normalized_request["applicability_mode"] = mode
-            reproducibility["applicability_evaluator"] = EVALUATOR_VERSION
-            reproducibility["source_coverage"] = [
+        build_context = BuildContext(
+            resolved_at_us=resolved_at_us,
+            workspace_id=context.workspace_id,
+            principal_id=context.principal,
+            query=request.query,
+            profile=request.profile,
+            mode=mode,
+            targets=tuple(target.to_wire() for target in request.targets),
+            source_coverage=tuple(
                 {
                     "snapshot_id": target.snapshot_id,
                     "stream_id": target.stream_id,
@@ -1511,32 +1385,61 @@ class EngineeringHandlers:
                     "manifest_digest": target.manifest_digest,
                 }
                 for target in covered
-            ]
-
-        pack: dict[str, Any] = {
-            "format_version": "engineering_context.v1",
-            "normalized_request": normalized_request,
-            "targets": [target.to_wire() for target in request.targets],
-            "profile": request.profile,
-            "sections": sections,
-            "citations": citations,
-            "conflicts": [],
-            "uncertainties": uncertainties,
-            "omissions": omissions,
-            "rendering": rendering,
-            "budget": budget,
-            "applicability": applicability,
-            "authorization_context": {
-                "workspace_id": context.workspace_id,
-                "principal_id": context.principal,
-            },
-            "reproducibility": reproducibility,
-            "fresh_authorization_required": True,
-        }
-        canonical = to_canonical_json(pack)
-        pack_id = "sha256:" + __import__("hashlib").sha256(
-            canonical.encode("utf-8")
-        ).hexdigest()
-        pack["pack_id"] = pack_id
-        pack["reproducibility"]["artifact_checksum"] = pack_id
+            ),
+            requested_budget=(
+                None
+                if request.budget is None
+                else {
+                    key: value
+                    for key, value in {
+                        "model_tokens": request.budget.model_tokens,
+                        "model_bytes": request.budget.model_bytes,
+                        "hydrations": request.budget.hydrations,
+                        "evidence_bytes": request.budget.evidence_bytes,
+                    }.items()
+                    if value is not None
+                }
+            ),
+            effective_tokens=effective_tokens,
+            effective_bytes=effective_bytes,
+            projection_version=PROJECTION_VERSION,
+            applicability_evaluator=EVALUATOR_VERSION,
+        )
+        try:
+            pack = build_pack(
+                build_context,
+                tuple(
+                    PackRecord(
+                        record_id=record.provenance.identity.record_id,
+                        version=record.provenance.identity.version,
+                        partition=partition,
+                        title=str(
+                            record.content.get("title")
+                            or record.provenance.identity.record_id
+                        ),
+                        body=str(
+                            record.content.get("summary") or record.content.get("what") or ""
+                        ),
+                    )
+                    for record, partition in selected
+                ),
+                tuple(
+                    WorkingItem(
+                        checkpoint_id=item["checkpoint_id"],
+                        sequence=item["sequence"],
+                        objective=item["objective"],
+                        unresolved=tuple(str(u) for u in item["unresolved"]),
+                    )
+                    for item in working
+                ),
+                notice=notice,
+                uncertainties=[notice],
+                omissions=omissions,
+            )
+        except MandatoryContextTooLarge as error:
+            raise OperationError(
+                ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+                _MESSAGE_BUDGET,
+                retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_TOKEN_LIMIT_EXCEEDED],
+            ) from error
         return {"pack": pack}

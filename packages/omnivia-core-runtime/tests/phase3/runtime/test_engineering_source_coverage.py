@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1357,7 +1358,7 @@ def test_pack_partitions_accepted_knowledge_from_candidate_findings(
     # finding is dropped; one token less refuses rather than drop it.
     parts = pack["rendering"]["text"].split("\n\n")
     (knowledge,) = [part for part in parts if part.startswith("[accepted_knowledge]")]
-    minimum = len((parts[0] + " " + knowledge).split())
+    minimum = len(re.findall(r"[^\W_]+|[^\s]", parts[0] + " " + knowledge))
     fitted = build(budget={"model_tokens": minimum})
     assert partitions(fitted) == {accepted["record_id"]: "accepted_knowledge"}
     assert [o["reason"] for o in fitted["omissions"]] == ["budget", "budget"]
