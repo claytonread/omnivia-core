@@ -297,9 +297,9 @@ def _require_current_binding(
     ``execute_mutation`` deliberately resolves a committed replay before it
     calls the record-version reader.  That is correct for a lost response, but
     the binding generation is authority rather than a record precondition and
-    must govern replays too.  Migration 0048 makes the generation immutable, so
-    this read cannot race a generation change in the current lifecycle model;
-    the fenced write still checks it again before a new mutation settles.
+    must govern replays too.  This read rejects a binding already stale when
+    dispatch begins.  The fenced domain write checks it again before any new
+    mutation settles.
     """
     try:
         session = storage.read_bound_session(
@@ -313,6 +313,8 @@ def _require_current_binding(
         raise _as_operation_error(error) from error
     if session is None:
         raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+    if session["state"] in {"expired", "revoked"}:
+        raise _as_operation_error(SessionNotActive(str(session["state"])))
 
 
 @dataclass(frozen=True)
@@ -346,6 +348,16 @@ class ContinuityHandlers:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection, identity, guard = self._authority()
         association = context.authorization.continuity_association
+        association_precondition = None
+        if association is not None:
+            association_precondition = (
+                storage.read_association_registration_precondition(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    principal_id=context.principal,
+                    association_key=association.storage_key,
+                )
+            )
         equivalence_input: Mapping[str, Any] = request.to_wire()
         if association is not None:
             # Idempotency keys are principal/workspace scoped by the public
@@ -388,23 +400,21 @@ class ContinuityHandlers:
             binding_generation = 1
             host_session_ref = request.host_session_ref
             if association is not None:
-                binding_generation = storage.next_association_binding_generation(
-                    fenced,
-                    workspace_id=context.workspace_id,
-                    principal_id=context.principal,
-                    association_key=association.storage_key,
-                )
                 host_session_ref = storage.associated_host_session_ref(
                     association.storage_key,
                     request.host_session_ref,
                 )
-            storage.register_session(
+            binding_generation = storage.register_session(
                 fenced,
                 settlement,
                 workspace_id=context.workspace_id,
                 session_id=session_id,
                 principal_id=context.principal,
                 binding_generation=binding_generation,
+                association_key=(
+                    None if association is None else association.storage_key
+                ),
+                association_precondition=association_precondition,
                 host_session_ref=host_session_ref,
                 checkout_hint=request.checkout_hint,
                 repository_target=(
@@ -413,13 +423,21 @@ class ContinuityHandlers:
                 ),
                 registered_at_us=now_us,
             )
+            stored_session = storage.read_session(
+                fenced,
+                workspace_id=context.workspace_id,
+                session_id=session_id,
+                principal_id=context.principal,
+            )
+            if stored_session is None:
+                raise SessionNotFound(session_id)
             session_wire: dict[str, Any] = {
                 "session_id": session_id,
                 "principal_id": context.principal,
                 "workspace_id": context.workspace_id,
                 "binding_generation": binding_generation,
                 "lease_expires_at": _timestamp(
-                    now_us + storage.SESSION_LEASE_SECONDS * 1_000_000
+                    int(stored_session["lease_expires_at_us"])
                 ),
                 "state": "active",
             }
@@ -465,7 +483,11 @@ class ContinuityHandlers:
             equivalence=equivalence,
             clock=self.clock,
         )
-        _require_current_binding(connection, context, continuity_binding)
+        _require_current_binding(
+            connection,
+            context,
+            continuity_binding,
+        )
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -509,10 +531,27 @@ class ContinuityHandlers:
                 return False
             return True
 
+        def replay_authority(fenced: sqlite3.Connection) -> None:
+            _require_current_binding(
+                fenced,
+                context,
+                continuity_binding,
+            )
+
         def precondition(fenced: Any) -> str:
             return _session_version(fenced, context, continuity_binding)
 
-        outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
+        outcome = self._execute(
+            context,
+            connection,
+            identity,
+            grant,
+            equivalence,
+            mutate,
+            valid_result,
+            precondition,
+            replay_authority,
+        )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- continuity.session.close ---------------------------------------------
@@ -543,7 +582,11 @@ class ContinuityHandlers:
             equivalence=equivalence,
             clock=self.clock,
         )
-        _require_current_binding(connection, context, continuity_binding)
+        _require_current_binding(
+            connection,
+            context,
+            continuity_binding,
+        )
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -585,10 +628,27 @@ class ContinuityHandlers:
                 return False
             return True
 
+        def replay_authority(fenced: sqlite3.Connection) -> None:
+            _require_current_binding(
+                fenced,
+                context,
+                continuity_binding,
+            )
+
         def precondition(fenced: Any) -> str:
             return _session_version(fenced, context, continuity_binding)
 
-        outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
+        outcome = self._execute(
+            context,
+            connection,
+            identity,
+            grant,
+            equivalence,
+            mutate,
+            valid_result,
+            precondition,
+            replay_authority,
+        )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- continuity.handoff.read -----------------------------------------------
@@ -681,6 +741,7 @@ class ContinuityHandlers:
         mutate: Any,
         valid_result: Any,
         precondition: Any = None,
+        replay_authority: Any = None,
     ) -> Any:
         try:
             return execute_mutation(
@@ -690,6 +751,7 @@ class ContinuityHandlers:
                 context=context.authorization,
                 equivalence=equivalence,
                 precondition=precondition,
+                replay_authority=replay_authority,
                 mutate=mutate,
                 validate_result=valid_result,
                 clock=self.clock,

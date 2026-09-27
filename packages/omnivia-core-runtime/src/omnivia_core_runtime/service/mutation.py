@@ -43,7 +43,9 @@ lease and fencing generation validated on entry and again immediately before com
 domain mutation and 0007's durable audit, claim and outcome and 0013's execution record
 written in one SQLite transaction; a stored answer on honest replay, proved against its
 own digest and re-canonicalized before it is served, without re-running the mutation; a
-typed conflict when one idempotency scope is reused for a different canonical request;
+domain-supplied authority check before a replay when revocation must also govern stored
+answers; a typed conflict when one idempotency scope is reused for a different canonical
+request;
 and one rollback covering all of it on any error.
 
 What this module deliberately does not do: it registers no operation, wires no
@@ -686,6 +688,12 @@ class MutationSettlementContext:
 #: never interprets the token, so any total ordering-free opaque string works.
 PreconditionReader = Callable[[sqlite3.Connection], str | None]
 
+#: Revalidate non-record authority before serving an otherwise honest replay.
+#: Unlike a record-version precondition, this check applies to the stored answer:
+#: revocation must stop a replay even though idempotency deliberately bypasses the
+#: domain mutation and its ordinary record precondition.
+ReplayAuthorityCheck = Callable[[sqlite3.Connection], None]
+
 #: The domain mutation itself, run on the fenced connection inside the transaction that
 #: also writes the durable facts. Its returned mapping is the operation's result.
 DomainMutation = Callable[
@@ -725,6 +733,7 @@ def execute_mutation(
     equivalence: IdempotencyEquivalence,
     compatible_equivalences: tuple[IdempotencyEquivalence, ...] = (),
     precondition: PreconditionReader | None = None,
+    replay_authority: ReplayAuthorityCheck | None = None,
     mutate: DomainMutation,
     validate_result: ResultValidator,
     clock: Clock,
@@ -741,8 +750,9 @@ def execute_mutation(
        again immediately before COMMIT, so authority lost mid-transaction fails rather
        than commits;
     3. an existing claim in this idempotency scope is resolved first -- an equal digest
-       is answered from the stored outcome without running `mutate` at all, and a
-       different digest is a typed conflict;
+       first passes any supplied replay-authority check, then is answered from the
+       stored outcome without running `mutate` at all; a different digest is a typed
+       conflict;
     4. the precondition is read and compared *before* the domain mutation, for the
        operations whose catalogue metadata requires one; for the operations it does not,
        there is no precondition to bind and no reader is called;
@@ -854,6 +864,8 @@ def execute_mutation(
             claim_id, stored_digest, original_audit_ref = existing
             if stored_digest not in accepted_fingerprints:
                 raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
+            if replay_authority is not None:
+                replay_authority(fenced)
             # An honest replay runs no domain code, but it does spend the fresh grant it
             # was presented with: the row below is what makes that durable, so the grant
             # cannot later authorize a mutation that would actually write something.

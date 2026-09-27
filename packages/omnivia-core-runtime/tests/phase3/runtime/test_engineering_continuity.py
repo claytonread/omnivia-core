@@ -31,8 +31,10 @@ from typing import Any
 
 import pytest
 import test_application_audit_idempotency_migration as m1
+import test_blobs_staged_sources_and_evidence_migration as m2
 import test_engineering_source_coverage as sc
 import test_v06_5_s0_mutation_foundation as s0
+from omnivia_core_runtime.ownership.fencing import StaleGeneration, fenced_transaction
 from omnivia_core_runtime.service.application import (
     ENGINEERING_FAMILY_PURPOSES,
     authorize_application_request,
@@ -67,7 +69,19 @@ from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.transport import LocalSocketServer, endpoint_for_path
 from omnivia_core_runtime.storage import continuity as continuity_storage
+from omnivia_core_runtime.storage.connection import (
+    OpenMode,
+    foreign_key_check,
+    integrity_check,
+    open_database,
+)
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
+from omnivia_core_runtime.storage.migrations import (
+    applied_migrations,
+    apply_pending_migrations,
+    load_migrations,
+    read_workspace_state,
+)
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_AUTHORIZATION_DENIED,
@@ -609,6 +623,8 @@ OTHER = engineering_family_session(
 #: Everything a continuity mutation settles; a refusal must leave all of it alone.
 _SETTLED_TABLES = (
     "omnivia_engineering_sessions",
+    "omnivia_engineering_session_lifecycle",
+    "omnivia_engineering_session_authority",
     "omnivia_engineering_checkpoints",
     "omnivia_idempotency_claims",
     "omnivia_application_audit_events",
@@ -670,6 +686,46 @@ def _settled(workspace: Any) -> list[list[Any]]:
         connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
         for table in _SETTLED_TABLES
     ]
+
+
+def _settle_internal_lifecycle(
+    workspace: Any,
+    *,
+    audit_ref: str,
+    settled_at_us: int,
+    mutate: Any,
+) -> Any:
+    """Run one service-owned lifecycle transition under the real writer fence."""
+    holder = workspace.holder
+    settlement = SimpleNamespace(
+        audit_ref=audit_ref,
+        settled_at_us=settled_at_us,
+    )
+    with fenced_transaction(
+        holder.connection,
+        holder.identity,
+        workspace_id=sc.WORKSPACE_ID,
+        fencing_generation=holder.generation,
+    ) as fenced:
+        fenced.execute(
+            "INSERT INTO omnivia_application_audit_events "
+            "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
+            "correlation_id, trace_id, granted_authority_json, outcome_class, "
+            "error_code, recorded_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', "
+            "'succeeded', NULL, ?)",
+            (
+                audit_ref,
+                sc.WORKSPACE_ID,
+                OWNER.principal_id,
+                "continuity.lifecycle.internal",
+                "continuity_session",
+                f"req-{audit_ref}",
+                f"cor-{audit_ref}",
+                f"trc-{audit_ref}",
+                settled_at_us,
+            ),
+        )
+        return mutate(fenced, settlement)
 
 
 def test_production_local_association_survives_processes_and_restart(
@@ -1102,6 +1158,884 @@ def test_rebinding_one_association_fences_its_stale_session_before_replay(
         session,
     )
     assert isinstance(current, SuccessResponseEnvelope), current
+
+
+def test_association_reconnect_records_history_and_one_current_authority(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-reconnect")
+    first_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            101,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-reconnect-1",
+        ),
+        association,
+    )
+    second_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            102,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-reconnect-2",
+        ),
+        association,
+    )
+    assert isinstance(first_response, SuccessResponseEnvelope), first_response
+    assert isinstance(second_response, SuccessResponseEnvelope), second_response
+    first = first_response.to_wire()["result"]["session"]
+    second = second_response.to_wire()["result"]["session"]
+    assert first["session_id"] != second["session_id"]
+    assert [first["binding_generation"], second["binding_generation"]] == [2, 3]
+
+    connection = workspace.holder.connection
+    assert connection.execute(
+        "SELECT current_session_id, binding_generation, state "
+        "FROM omnivia_engineering_session_authority"
+    ).fetchall() == [(second["session_id"], 3, "active")]
+    assert connection.execute(
+        "SELECT event_type, binding_generation, state "
+        "FROM omnivia_engineering_session_lifecycle "
+        "WHERE session_id = ? ORDER BY event_sequence",
+        (first["session_id"],),
+    ).fetchall() == [("registered", 2, "active"), ("superseded", 2, "revoked")]
+    assert connection.execute(
+        "SELECT event_type, binding_generation, state, prior_session_id "
+        "FROM omnivia_engineering_session_lifecycle "
+        "WHERE session_id = ? ORDER BY event_sequence",
+        (second["session_id"],),
+    ).fetchall() == [("registered", 3, "active", first["session_id"])]
+
+    with pytest.raises(sqlite3.DatabaseError, match="rotates by exactly one generation"), (
+        fenced_transaction(
+            connection,
+            workspace.holder.identity,
+            workspace_id=sc.WORKSPACE_ID,
+            fencing_generation=workspace.holder.generation,
+        )
+    ) as fenced:
+        fenced.execute(
+            "UPDATE omnivia_engineering_session_authority "
+            "SET current_session_id = ?, binding_generation = ?, state = 'revoked' "
+            "WHERE workspace_id = ? AND principal_id = ? AND association_key = ?",
+            (
+                first["session_id"],
+                first["binding_generation"],
+                sc.WORKSPACE_ID,
+                OWNER.principal_id,
+                association.continuity_association.storage_key,
+            ),
+        )
+    assert connection.execute(
+        "SELECT current_session_id, binding_generation, state "
+        "FROM omnivia_engineering_session_authority"
+    ).fetchall() == [(second["session_id"], 3, "active")]
+
+    with pytest.raises(continuity_storage.SessionBindingMismatch):
+        continuity_storage.read_bound_session(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            session_id=first["session_id"],
+            principal_id=OWNER.principal_id,
+            binding_generation=2,
+        )
+
+
+def test_service_owned_renewal_rotates_exactly_one_generation_and_fences_old_binding(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-renew")
+    response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            103,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-renew-register",
+        ),
+        association,
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    registered = response.to_wire()["result"]["session"]
+    key = association.continuity_association.storage_key
+    connection = workspace.holder.connection
+    old_lease = int(
+        connection.execute(
+            "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+            "WHERE session_id = ?",
+            (registered["session_id"],),
+        ).fetchone()[0]
+    )
+
+    for generation, expected_error in (
+        (4, "advance by exactly one"),
+        (3, "requires matching append-only history"),
+    ):
+        with pytest.raises(sqlite3.DatabaseError, match=expected_error), (
+            fenced_transaction(
+                connection,
+                workspace.holder.identity,
+                workspace_id=sc.WORKSPACE_ID,
+                fencing_generation=workspace.holder.generation,
+            )
+        ) as fenced:
+            fenced.execute(
+                "UPDATE omnivia_engineering_sessions "
+                "SET binding_generation = ?, lease_expires_at_us = ? "
+                "WHERE workspace_id = ? AND session_id = ?",
+                (
+                    generation,
+                    old_lease + 1,
+                    sc.WORKSPACE_ID,
+                    registered["session_id"],
+                ),
+            )
+    assert connection.execute(
+        "SELECT binding_generation, lease_expires_at_us "
+        "FROM omnivia_engineering_sessions WHERE session_id = ?",
+        (registered["session_id"],),
+    ).fetchone() == (2, old_lease)
+
+    renewed = _settle_internal_lifecycle(
+        workspace,
+        audit_ref="audit-lifecycle-renew",
+        settled_at_us=old_lease - 1,
+        mutate=lambda fenced, settlement: continuity_storage.renew_associated_session(
+            fenced,
+            settlement,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            association_key=key,
+            session_id=registered["session_id"],
+            binding_generation=2,
+        ),
+    )
+    assert renewed["binding_generation"] == 3
+    assert renewed["lease_expires_at_us"] > old_lease
+    assert connection.execute(
+        "SELECT binding_generation, state, lease_expires_at_us "
+        "FROM omnivia_engineering_session_authority"
+    ).fetchone() == (3, "active", renewed["lease_expires_at_us"])
+    assert connection.execute(
+        "SELECT event_type, binding_generation FROM "
+        "omnivia_engineering_session_lifecycle WHERE session_id = ? "
+        "ORDER BY event_sequence",
+        (registered["session_id"],),
+    ).fetchall() == [("registered", 2), ("renewed", 3)]
+
+    with pytest.raises(continuity_storage.SessionBindingMismatch):
+        continuity_storage.read_bound_session(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            session_id=registered["session_id"],
+            principal_id=OWNER.principal_id,
+            binding_generation=2,
+        )
+
+
+def test_revoke_is_idempotent_and_blocks_delayed_append_close_but_preserves_handoff(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-revoke")
+    registered_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            104,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-revoke-register",
+        ),
+        association,
+    )
+    assert isinstance(registered_response, SuccessResponseEnvelope), registered_response
+    registered = registered_response.to_wire()["result"]["session"]
+    binding = TrustedContinuityBinding.from_registration(
+        ContinuitySessionBinding.from_wire(registered)
+    )
+    bound = _with_binding(association, binding)
+    append_request = _production_envelope(
+        105,
+        "continuity.checkpoint.append",
+        _append_input(registered["session_id"]),
+        key="idem-lifecycle-revoke-append",
+        version="seq-0",
+    )
+    appended = workspace.surface.dispatch_for_session(append_request, bound)
+    assert isinstance(appended, SuccessResponseEnvelope), appended
+    checkpoint_id = appended.to_wire()["result"]["receipt"]["checkpoint_id"]
+    connection = workspace.holder.connection
+    lease = int(
+        connection.execute(
+            "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+            "WHERE session_id = ?",
+            (registered["session_id"],),
+        ).fetchone()[0]
+    )
+    key = association.continuity_association.storage_key
+
+    def revoke_twice(fenced: Any, settlement: Any) -> Any:
+        first = continuity_storage.revoke_associated_session(
+            fenced,
+            settlement,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            association_key=key,
+            session_id=registered["session_id"],
+            binding_generation=2,
+        )
+        second = continuity_storage.revoke_associated_session(
+            fenced,
+            settlement,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            association_key=key,
+            session_id=registered["session_id"],
+            binding_generation=2,
+        )
+        assert first == second
+        return second
+
+    _settle_internal_lifecycle(
+        workspace,
+        audit_ref="audit-lifecycle-revoke",
+        settled_at_us=lease - 1,
+        mutate=revoke_twice,
+    )
+    assert connection.execute(
+        "SELECT event_type FROM omnivia_engineering_session_lifecycle "
+        "WHERE session_id = ? ORDER BY event_sequence",
+        (registered["session_id"],),
+    ).fetchall() == [("registered",), ("revoked",)]
+    before = _settled(workspace)
+
+    delayed_append = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            106,
+            "continuity.checkpoint.append",
+            _append_input(registered["session_id"]),
+            key="idem-lifecycle-delayed-append",
+            version="seq-1",
+        ),
+        bound,
+    )
+    delayed_close = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            107,
+            "continuity.session.close",
+            _close_input(registered["session_id"], expected_sequence=1),
+            key="idem-lifecycle-delayed-close",
+            version="seq-1",
+        ),
+        bound,
+    )
+    assert isinstance(delayed_append, ErrorResponseEnvelope), delayed_append
+    assert isinstance(delayed_close, ErrorResponseEnvelope), delayed_close
+    assert delayed_append.error.code == ERROR_CODE_CONFLICT
+    assert delayed_close.error.code == ERROR_CODE_CONFLICT
+    assert _settled(workspace) == before
+
+    replay = workspace.surface.dispatch_for_session(append_request, bound)
+    assert isinstance(replay, ErrorResponseEnvelope), replay
+    assert replay.error.code == ERROR_CODE_CONFLICT
+    assert _settled(workspace) == before
+
+    handoff = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            108,
+            "continuity.handoff.read",
+            {"checkpoint_id": checkpoint_id},
+        ),
+        bound,
+    )
+    assert isinstance(handoff, SuccessResponseEnvelope), handoff
+
+
+def test_unassociated_prefix_mimic_remains_generation_one_and_can_close(
+    workspace: Any,
+) -> None:
+    associated = _associated_session("lifecycle-prefix-mimic")
+    forged_host_ref = continuity_storage.associated_host_session_ref(
+        associated.continuity_association.storage_key,
+        None,
+    )
+    registered_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            114,
+            "continuity.session.register",
+            _register_input(host_session_ref=forged_host_ref),
+            key="idem-lifecycle-prefix-mimic-register",
+        ),
+        OWNER,
+    )
+    assert isinstance(registered_response, SuccessResponseEnvelope), registered_response
+    registered = registered_response.to_wire()["result"]["session"]
+    assert registered["binding_generation"] == 1
+    bound = _with_binding(
+        OWNER,
+        TrustedContinuityBinding.from_registration(
+            ContinuitySessionBinding.from_wire(registered)
+        ),
+    )
+
+    appended = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            115,
+            "continuity.checkpoint.append",
+            _append_input(registered["session_id"]),
+            key="idem-lifecycle-prefix-mimic-append",
+            version="seq-0",
+        ),
+        bound,
+    )
+    assert isinstance(appended, SuccessResponseEnvelope), appended
+    closed = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            116,
+            "continuity.session.close",
+            _close_input(registered["session_id"], expected_sequence=1),
+            key="idem-lifecycle-prefix-mimic-close",
+            version="seq-1",
+        ),
+        bound,
+    )
+    assert isinstance(closed, SuccessResponseEnvelope), closed
+    assert workspace.holder.connection.execute(
+        "SELECT event_type, association_key FROM "
+        "omnivia_engineering_session_lifecycle WHERE session_id = ? "
+        "ORDER BY event_sequence",
+        (registered["session_id"],),
+    ).fetchall() == [("registered", None), ("closed", None)]
+
+
+def test_delayed_registration_cannot_supersede_newer_settled_authority(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-registration-race")
+    first_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            117,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-registration-race-first",
+        ),
+        association,
+    )
+    assert isinstance(first_response, SuccessResponseEnvelope), first_response
+    first = first_response.to_wire()["result"]["session"]
+    key = association.continuity_association.storage_key
+    stale_precondition = (
+        continuity_storage.read_association_registration_precondition(
+            workspace.holder.connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            association_key=key,
+        )
+    )
+    registered_at_us = int(
+        workspace.holder.connection.execute(
+            "SELECT registered_at_us FROM omnivia_engineering_sessions "
+            "WHERE session_id = ?",
+            (first["session_id"],),
+        ).fetchone()[0]
+    )
+
+    newer_generation = _settle_internal_lifecycle(
+        workspace,
+        audit_ref="audit-lifecycle-registration-race-newer",
+        settled_at_us=registered_at_us + 1,
+        mutate=lambda fenced, settlement: continuity_storage.register_session(
+            fenced,
+            settlement,
+            workspace_id=sc.WORKSPACE_ID,
+            session_id="esess-registration-race-newer",
+            principal_id=OWNER.principal_id,
+            association_key=key,
+            association_precondition=stale_precondition,
+            host_session_ref=continuity_storage.associated_host_session_ref(
+                key, "newer"
+            ),
+            checkout_hint=None,
+            repository_target=None,
+            registered_at_us=registered_at_us + 1,
+        ),
+    )
+    assert newer_generation == 3
+    before_stale = _settled(workspace)
+
+    with pytest.raises(
+        continuity_storage.SessionBindingMismatch,
+        match="advanced before registration settled",
+    ):
+        _settle_internal_lifecycle(
+            workspace,
+            audit_ref="audit-lifecycle-registration-race-stale",
+            settled_at_us=registered_at_us + 2,
+            mutate=lambda fenced, settlement: continuity_storage.register_session(
+                fenced,
+                settlement,
+                workspace_id=sc.WORKSPACE_ID,
+                session_id="esess-registration-race-stale",
+                principal_id=OWNER.principal_id,
+                association_key=key,
+                association_precondition=stale_precondition,
+                host_session_ref=continuity_storage.associated_host_session_ref(
+                    key, "stale"
+                ),
+                checkout_hint=None,
+                repository_target=None,
+                registered_at_us=registered_at_us + 2,
+            ),
+        )
+    assert _settled(workspace) == before_stale
+    assert workspace.holder.connection.execute(
+        "SELECT current_session_id, binding_generation, state "
+        "FROM omnivia_engineering_session_authority"
+    ).fetchall() == [("esess-registration-race-newer", 3, "active")]
+
+
+def test_long_renewal_can_reconnect_without_shortening_the_lease(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-long-renew")
+    first_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            118,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-long-renew-register",
+        ),
+        association,
+    )
+    assert isinstance(first_response, SuccessResponseEnvelope), first_response
+    first = first_response.to_wire()["result"]["session"]
+    connection = workspace.holder.connection
+    old_lease = int(
+        connection.execute(
+            "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+            "WHERE session_id = ?",
+            (first["session_id"],),
+        ).fetchone()[0]
+    )
+    key = association.continuity_association.storage_key
+    renewed = _settle_internal_lifecycle(
+        workspace,
+        audit_ref="audit-lifecycle-long-renew",
+        settled_at_us=old_lease - 1,
+        mutate=lambda fenced, settlement: continuity_storage.renew_associated_session(
+            fenced,
+            settlement,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            association_key=key,
+            session_id=first["session_id"],
+            binding_generation=2,
+            lease_seconds=7 * 24 * 60 * 60,
+        ),
+    )
+
+    replacement_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            119,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-long-renew-reconnect",
+        ),
+        association,
+    )
+    assert isinstance(replacement_response, SuccessResponseEnvelope), replacement_response
+    replacement = replacement_response.to_wire()["result"]["session"]
+    assert replacement["binding_generation"] == 4
+    replacement_lease = int(
+        connection.execute(
+            "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+            "WHERE session_id = ?",
+            (replacement["session_id"],),
+        ).fetchone()[0]
+    )
+    assert replacement_lease > renewed["lease_expires_at_us"]
+
+
+def test_guarded_direct_session_insert_always_appends_registration_history(
+    workspace: Any,
+) -> None:
+    settled_at_us = 1_900_000_000_000_000
+
+    def insert(fenced: Any, settlement: Any) -> None:
+        fenced.execute(
+            "INSERT INTO omnivia_engineering_sessions "
+            "(workspace_id, session_id, principal_id, state, binding_generation, "
+            "lease_expires_at_us, host_session_ref, checkout_hint, "
+            "repository_target_json, registered_at_us, closed_at_us, "
+            "last_checkpoint_sequence, last_checkpoint_id, audit_ref) "
+            "VALUES (?, 'esess-direct-history', ?, 'active', 1, ?, 'opaque', "
+            "NULL, NULL, ?, NULL, NULL, NULL, ?)",
+            (
+                sc.WORKSPACE_ID,
+                OWNER.principal_id,
+                settled_at_us + 1,
+                settled_at_us,
+                settlement.audit_ref,
+            ),
+        )
+
+    _settle_internal_lifecycle(
+        workspace,
+        audit_ref="audit-lifecycle-direct-history",
+        settled_at_us=settled_at_us,
+        mutate=insert,
+    )
+    assert workspace.holder.connection.execute(
+        "SELECT event_sequence, event_type, association_key, binding_generation, "
+        "state, settled_at_us, audit_ref FROM "
+        "omnivia_engineering_session_lifecycle WHERE session_id = ?",
+        ("esess-direct-history",),
+    ).fetchall() == [
+        (
+            1,
+            "registered",
+            None,
+            1,
+            "active",
+            settled_at_us,
+            "audit-lifecycle-direct-history",
+        )
+    ]
+
+
+def test_workspace_generation_change_rolls_back_a_delayed_checkpoint(
+    workspace: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    association = _associated_session("lifecycle-workspace-fence")
+    registered_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            112,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-workspace-register",
+        ),
+        association,
+    )
+    assert isinstance(registered_response, SuccessResponseEnvelope), registered_response
+    registered = registered_response.to_wire()["result"]["session"]
+    bound = _with_binding(
+        association,
+        TrustedContinuityBinding.from_registration(
+            ContinuitySessionBinding.from_wire(registered)
+        ),
+    )
+    before = _settled(workspace)
+    original = continuity_storage.append_checkpoint
+
+    def append_then_lose_workspace_authority(*args: Any, **kwargs: Any) -> Any:
+        written = original(*args, **kwargs)
+        args[0].execute(
+            "UPDATE omnivia_workspace_state SET fencing_generation = ? "
+            "WHERE singleton = 1",
+            (workspace.holder.generation + 1,),
+        )
+        return written
+
+    monkeypatch.setattr(
+        continuity_storage,
+        "append_checkpoint",
+        append_then_lose_workspace_authority,
+    )
+    with pytest.raises((StaleGeneration, sqlite3.DatabaseError)):
+        workspace.surface.dispatch_for_session(
+            _production_envelope(
+                113,
+                "continuity.checkpoint.append",
+                _append_input(registered["session_id"]),
+                key="idem-lifecycle-workspace-delayed-append",
+                version="seq-0",
+            ),
+            bound,
+        )
+
+    assert _settled(workspace) == before
+    assert workspace.holder.connection.execute(
+        "SELECT fencing_generation FROM omnivia_workspace_state WHERE singleton = 1"
+    ).fetchone() == (workspace.holder.generation,)
+    assert workspace.holder.connection.in_transaction is False
+
+
+def test_expiry_boundary_is_terminal_but_a_new_session_may_reconnect(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-expire")
+    first_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            109,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-expire-register",
+        ),
+        association,
+    )
+    assert isinstance(first_response, SuccessResponseEnvelope), first_response
+    first = first_response.to_wire()["result"]["session"]
+    connection = workspace.holder.connection
+    lease = int(
+        connection.execute(
+            "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+            "WHERE session_id = ?",
+            (first["session_id"],),
+        ).fetchone()[0]
+    )
+    key = association.continuity_association.storage_key
+    with pytest.raises(continuity_storage.SessionNotActive, match="expired"):
+        _settle_internal_lifecycle(
+            workspace,
+            audit_ref="audit-lifecycle-boundary-renew",
+            settled_at_us=lease,
+            mutate=lambda fenced, settlement: continuity_storage.renew_associated_session(
+                fenced,
+                settlement,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                association_key=key,
+                session_id=first["session_id"],
+                binding_generation=2,
+            ),
+        )
+    assert connection.execute(
+        "SELECT COUNT(*) FROM omnivia_application_audit_events WHERE audit_ref = ?",
+        ("audit-lifecycle-boundary-renew",),
+    ).fetchone() == (0,)
+    assert connection.execute(
+        "SELECT event_type FROM omnivia_engineering_session_lifecycle "
+        "WHERE session_id = ? ORDER BY event_sequence",
+        (first["session_id"],),
+    ).fetchall() == [("registered",)]
+
+    _settle_internal_lifecycle(
+        workspace,
+        audit_ref="audit-lifecycle-expire",
+        settled_at_us=lease,
+        mutate=lambda fenced, settlement: continuity_storage.expire_associated_session(
+            fenced,
+            settlement,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            association_key=key,
+            session_id=first["session_id"],
+            binding_generation=2,
+        ),
+    )
+
+    with pytest.raises(continuity_storage.SessionNotActive):
+        _settle_internal_lifecycle(
+            workspace,
+            audit_ref="audit-lifecycle-expired-renew",
+            settled_at_us=lease + 1,
+            mutate=lambda fenced, settlement: continuity_storage.renew_associated_session(
+                fenced,
+                settlement,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                association_key=key,
+                session_id=first["session_id"],
+                binding_generation=2,
+            ),
+        )
+
+    with pytest.raises(sqlite3.DatabaseError), fenced_transaction(
+        workspace.holder.connection,
+        workspace.holder.identity,
+        workspace_id=sc.WORKSPACE_ID,
+        fencing_generation=workspace.holder.generation,
+    ) as fenced:
+        fenced.execute(
+            "UPDATE omnivia_engineering_sessions SET state = 'active' "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (sc.WORKSPACE_ID, first["session_id"]),
+        )
+
+    second_response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            110,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-expire-reconnect",
+        ),
+        association,
+    )
+    assert isinstance(second_response, SuccessResponseEnvelope), second_response
+    second = second_response.to_wire()["result"]["session"]
+    assert second["session_id"] != first["session_id"]
+    assert second["binding_generation"] == 3
+    assert connection.execute(
+        "SELECT state FROM omnivia_engineering_sessions WHERE session_id = ?",
+        (first["session_id"],),
+    ).fetchone() == ("expired",)
+
+
+def test_lifecycle_history_and_authority_are_protected_from_update_and_delete(
+    workspace: Any,
+) -> None:
+    association = _associated_session("lifecycle-immutable")
+    response = workspace.surface.dispatch_for_session(
+        _production_envelope(
+            111,
+            "continuity.session.register",
+            _register_input(),
+            key="idem-lifecycle-immutable-register",
+        ),
+        association,
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    session_id = response.to_wire()["result"]["session"]["session_id"]
+
+    for statement in (
+        (
+            "UPDATE omnivia_engineering_session_lifecycle SET state = 'revoked' "
+            "WHERE session_id = ?"
+        ),
+        "DELETE FROM omnivia_engineering_session_lifecycle WHERE session_id = ?",
+        (
+            "UPDATE omnivia_engineering_session_authority "
+            "SET updated_at_us = updated_at_us + 1 WHERE current_session_id = ?"
+        ),
+        "DELETE FROM omnivia_engineering_session_authority WHERE current_session_id = ?",
+    ):
+        with pytest.raises(sqlite3.DatabaseError), fenced_transaction(
+            workspace.holder.connection,
+            workspace.holder.identity,
+            workspace_id=sc.WORKSPACE_ID,
+            fencing_generation=workspace.holder.generation,
+        ) as fenced:
+            fenced.execute(statement, (session_id,))
+
+
+def test_0060_upgrade_preserves_legacy_history_and_fences_it_on_reconnect(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pre-lifecycle.sqlite"
+    m1.materialise_phase0_baseline(path)
+    with m2.migration_catalogue_through(59):
+        m1.bootstrap_and_migrate(path, workspace_id=sc.WORKSPACE_ID)
+    predecessor = m1.take_ownership(path, workspace_id=sc.WORKSPACE_ID)
+    association = _associated_session("lifecycle-upgrade")
+    association_key = association.continuity_association.storage_key
+    registered_at_us = 1_900_000_000_000_000
+    lease_expires_at_us = (
+        registered_at_us + continuity_storage.SESSION_LEASE_SECONDS * 1_000_000
+    )
+    try:
+        with fenced_transaction(
+            predecessor.connection,
+            predecessor.identity,
+            workspace_id=sc.WORKSPACE_ID,
+            fencing_generation=predecessor.generation,
+        ) as fenced:
+            fenced.execute(
+                "INSERT INTO omnivia_application_audit_events "
+                "(audit_ref, workspace_id, principal_id, operation, purpose, "
+                "request_id, correlation_id, trace_id, granted_authority_json, "
+                "outcome_class, error_code, recorded_at_us) "
+                "VALUES ('audit-pre-0060', ?, ?, 'continuity.session.register', "
+                "'continuity_session', 'req-pre-0060', 'cor-pre-0060', "
+                "'trc-pre-0060', '{}', 'succeeded', NULL, ?)",
+                (sc.WORKSPACE_ID, OWNER.principal_id, registered_at_us),
+            )
+            fenced.execute(
+                "INSERT INTO omnivia_engineering_sessions "
+                "(workspace_id, session_id, principal_id, state, binding_generation, "
+                "lease_expires_at_us, host_session_ref, checkout_hint, "
+                "repository_target_json, registered_at_us, closed_at_us, "
+                "last_checkpoint_sequence, last_checkpoint_id, audit_ref) "
+                "VALUES (?, 'esess-pre-0060', ?, 'active', 2, ?, ?, NULL, NULL, ?, "
+                "NULL, NULL, NULL, 'audit-pre-0060')",
+                (
+                    sc.WORKSPACE_ID,
+                    OWNER.principal_id,
+                    lease_expires_at_us,
+                    continuity_storage.associated_host_session_ref(
+                        association_key, "legacy-host-reference"
+                    ),
+                    registered_at_us,
+                ),
+            )
+    finally:
+        predecessor.connection.close()
+
+    migration = next(item for item in load_migrations() if item.version == 60)
+    assert migration.name == "0060_engineering_continuity_lifecycle.sql"
+    with m2.migration_catalogue_through(60):
+        maintenance = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+        try:
+            state = read_workspace_state(maintenance)
+            assert state is not None
+            applied = apply_pending_migrations(
+                maintenance,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=m1.SERVICE_INSTANCE,
+                fencing_generation=state.fencing_generation,
+                workspace_id=sc.WORKSPACE_ID,
+            )
+            assert [item.version for item in applied] == [60]
+        finally:
+            maintenance.close()
+
+    holder = m1.take_ownership(path, workspace_id=sc.WORKSPACE_ID)
+    upgraded = SimpleNamespace(holder=holder)
+    try:
+        assert applied_migrations(holder.connection)[60] == migration.checksum
+        assert holder.connection.execute(
+            "SELECT event_type, association_key, binding_generation, state, audit_ref "
+            "FROM omnivia_engineering_session_lifecycle WHERE session_id = ?",
+            ("esess-pre-0060",),
+        ).fetchall() == [("legacy_imported", None, 2, "active", "audit-pre-0060")]
+        assert holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_session_authority"
+        ).fetchone() == (0,)
+        association_precondition = (
+            continuity_storage.read_association_registration_precondition(
+                holder.connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                association_key=association_key,
+            )
+        )
+
+        generation = _settle_internal_lifecycle(
+            upgraded,
+            audit_ref="audit-post-0060",
+            settled_at_us=registered_at_us + 1,
+            mutate=lambda fenced, settlement: continuity_storage.register_session(
+                fenced,
+                settlement,
+                workspace_id=sc.WORKSPACE_ID,
+                session_id="esess-post-0060",
+                principal_id=OWNER.principal_id,
+                association_key=association_key,
+                association_precondition=association_precondition,
+                host_session_ref=continuity_storage.associated_host_session_ref(
+                    association_key, "new-host-reference"
+                ),
+                checkout_hint=None,
+                repository_target=None,
+                registered_at_us=registered_at_us + 1,
+            ),
+        )
+        assert generation == 3
+        assert holder.connection.execute(
+            "SELECT event_type, association_key, state FROM "
+            "omnivia_engineering_session_lifecycle WHERE session_id = ? "
+            "ORDER BY event_sequence",
+            ("esess-pre-0060",),
+        ).fetchall() == [
+            ("legacy_imported", None, "active"),
+            ("superseded", association_key, "revoked"),
+        ]
+        assert holder.connection.execute(
+            "SELECT current_session_id, binding_generation, state FROM "
+            "omnivia_engineering_session_authority"
+        ).fetchall() == [("esess-post-0060", 3, "active")]
+        assert integrity_check(holder.connection) == []
+        assert foreign_key_check(holder.connection) == []
+    finally:
+        holder.connection.close()
 
 
 def test_continuity_operations_require_a_server_established_binding(

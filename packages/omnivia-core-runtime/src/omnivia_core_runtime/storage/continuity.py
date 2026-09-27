@@ -7,10 +7,12 @@ migration 0048 carries make an unguarded write impossible, and the workspace
 writer generation is enforced there — the session's own binding generation is
 recorded on the row and enforced by the callers of this module.
 
-The record families are migrations 0048 only: `omnivia_engineering_sessions`
-(operational binding bookkeeping) and `omnivia_engineering_checkpoints`
-(immutable L0 evidence, strictly append-only, contiguous per-session sequence).
-This module is the only writer; handlers never spell SQL against these tables.
+Migration 0048 owns `omnivia_engineering_sessions` and the immutable checkpoint
+chain.  Migration 0060 adds append-only lifecycle history plus one current
+authority pointer for each trusted adapter association.  The pointer is the
+server-side fence that makes an older registration response historical after a
+renewal or reconnect.  This module is the only writer; handlers never spell SQL
+against these tables.
 
 A session belongs to the principal that registered it. Every read here names
 that principal in its SQL, and append and close re-read the session that way
@@ -30,12 +32,15 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
 
 _SESSIONS_TABLE: Final = "omnivia_engineering_sessions"
 _CHECKPOINTS_TABLE: Final = "omnivia_engineering_checkpoints"
+_LIFECYCLE_TABLE: Final = "omnivia_engineering_session_lifecycle"
+_AUTHORITY_TABLE: Final = "omnivia_engineering_session_authority"
 
 #: Checkpoints whose session belongs to one principal; binds (workspace, principal).
 #: Every checkpoint read goes through it, so another principal's payload is never
@@ -50,12 +55,13 @@ _OWNED_CHECKPOINTS: Final = (
 CHECKPOINT_PAYLOAD_CAP_BYTES: Final = 262144
 
 #: The default session lease: 24 hours. Append and close refuse once the lease
-#: has expired against the mutation's own settlement instant. Lease refresh and
-#: revocation belong to a later lifecycle slice.
+#: has expired against the mutation's own settlement instant.  Service-owned
+#: renew/revoke/expiry primitives below rotate or terminate the trusted binding.
 SESSION_LEASE_SECONDS: Final = 24 * 60 * 60
 
 _ASSOCIATION_REF_PREFIX: Final = "core-association.v1:"
 _ASSOCIATION_GENERATION_FLOOR: Final = 2
+_MAX_SQLITE_INTEGER: Final = 9_223_372_036_854_775_807
 
 
 class SessionNotFound(LookupError):
@@ -83,13 +89,69 @@ class PayloadTooLarge(RuntimeError):
     """The canonical checkpoint payload exceeds the 256 KiB cap."""
 
 
+@dataclass(frozen=True)
+class AssociationRegistrationPrecondition:
+    """The complete settled association state a reconnect observed.
+
+    Registration carries this server-read token into the fenced transaction.  A
+    renewal, termination, reconnect, or legacy-row insertion changes at least one
+    field, so an older request cannot arrive later and rotate newer authority.
+    """
+
+    latest_generation: int
+    current_session_id: str | None
+    authority_generation: int | None
+    authority_state: str | None
+    authority_lease_expires_at_us: int | None
+    authority_updated_at_us: int | None
+    authority_audit_ref: str | None
+
+
 def _association_prefix(association_key: str) -> str:
+    digest = association_key.removeprefix("sha256:")
     if (
         not association_key.startswith("sha256:")
         or len(association_key) != len("sha256:") + 64
+        or any(character not in "0123456789abcdef" for character in digest)
     ):
         raise ValueError("continuity association key is not a sha256 digest")
     return f"{_ASSOCIATION_REF_PREFIX}{association_key}:"
+
+
+def _association_key_from_ref(host_session_ref: str | None) -> str | None:
+    """Recover only the one-way server association key from stored correlation.
+
+    The opaque host correlation remains unreadable.  Rows written before trusted
+    association support, including values that merely resemble the prefix, do not
+    become authority unless the complete bounded digest form is present.
+    """
+    if host_session_ref is None or not host_session_ref.startswith(
+        _ASSOCIATION_REF_PREFIX
+    ):
+        return None
+    tail = host_session_ref[len(_ASSOCIATION_REF_PREFIX) :]
+    key, separator, correlation = tail.partition(":sha256:")
+    if separator:
+        # The association key itself contains the first colon.  Partitioning at
+        # the correlation marker leaves ``sha256:<hex>`` in ``key``.
+        candidate = key
+        if len(correlation) != 64 or any(
+            character not in "0123456789abcdef" for character in correlation
+        ):
+            return None
+    else:
+        key, separator, correlation = tail.partition(":none")
+        candidate = key
+        if correlation:
+            return None
+    try:
+        if not separator or not host_session_ref.startswith(
+            _association_prefix(candidate)
+        ):
+            return None
+    except ValueError:
+        return None
+    return candidate
 
 
 def associated_host_session_ref(
@@ -110,14 +172,14 @@ def associated_host_session_ref(
     return _association_prefix(association_key) + correlation
 
 
-def next_association_binding_generation(
+def read_association_registration_precondition(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     principal_id: str,
     association_key: str,
-) -> int:
-    """Allocate the next generation for one trusted adapter association.
+) -> AssociationRegistrationPrecondition:
+    """Read the state a later fenced registration must compare exactly.
 
     Generation one is reserved for legacy/unassociated registrations.  This is
     the no-migration discriminator that prevents a historical caller-chosen host
@@ -138,7 +200,111 @@ def next_association_binding_generation(
         ),
     ).fetchone()
     latest = None if row is None else row[0]
-    return _ASSOCIATION_GENERATION_FLOOR if latest is None else int(latest) + 1
+    latest_generation = (
+        _ASSOCIATION_GENERATION_FLOOR - 1 if latest is None else int(latest)
+    )
+    authority = _read_association_authority(
+        connection,
+        workspace_id=workspace_id,
+        principal_id=principal_id,
+        association_key=association_key,
+    )
+    return AssociationRegistrationPrecondition(
+        latest_generation=latest_generation,
+        current_session_id=(
+            None if authority is None else str(authority["session_id"])
+        ),
+        authority_generation=(
+            None if authority is None else int(authority["binding_generation"])
+        ),
+        authority_state=None if authority is None else str(authority["state"]),
+        authority_lease_expires_at_us=(
+            None if authority is None else int(authority["lease_expires_at_us"])
+        ),
+        authority_updated_at_us=(
+            None if authority is None else int(authority["updated_at_us"])
+        ),
+        authority_audit_ref=(
+            None if authority is None else str(authority["audit_ref"])
+        ),
+    )
+
+
+def _read_association_authority(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        f"SELECT current_session_id, binding_generation, state, "
+        "lease_expires_at_us, updated_at_us, audit_ref "
+        f"FROM {_AUTHORITY_TABLE} WHERE workspace_id = ? "
+        "AND principal_id = ? AND association_key = ?",
+        (workspace_id, principal_id, association_key),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "session_id": row[0],
+        "binding_generation": int(row[1]),
+        "state": row[2],
+        "lease_expires_at_us": int(row[3]),
+        "updated_at_us": int(row[4]),
+        "audit_ref": row[5],
+    }
+
+
+def _next_lifecycle_sequence(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    session_id: str,
+) -> int:
+    row = connection.execute(
+        f"SELECT MAX(event_sequence) FROM {_LIFECYCLE_TABLE} "
+        "WHERE workspace_id = ? AND session_id = ?",
+        (workspace_id, session_id),
+    ).fetchone()
+    latest = None if row is None else row[0]
+    return 1 if latest is None else int(latest) + 1
+
+
+def _append_lifecycle_event(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    session_id: str,
+    event_type: str,
+    association_key: str | None,
+    binding_generation: int,
+    state: str,
+    lease_expires_at_us: int,
+    prior_session_id: str | None = None,
+) -> None:
+    connection.execute(
+        f"INSERT INTO {_LIFECYCLE_TABLE} "
+        "(workspace_id, session_id, event_sequence, event_type, association_key, "
+        "binding_generation, state, lease_expires_at_us, settled_at_us, "
+        "prior_session_id, audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            workspace_id,
+            session_id,
+            _next_lifecycle_sequence(
+                connection, workspace_id=workspace_id, session_id=session_id
+            ),
+            event_type,
+            association_key,
+            int(binding_generation),
+            state,
+            int(lease_expires_at_us),
+            int(settlement.settled_at_us),
+            prior_session_id,
+            settlement.audit_ref,
+        ),
+    )
 
 
 def read_associated_session(
@@ -148,32 +314,30 @@ def read_associated_session(
     principal_id: str,
     association_key: str,
 ) -> dict[str, Any] | None:
-    """Resolve the unique newest settled binding for an authenticated adapter.
+    """Resolve the single settled authority for an authenticated adapter.
 
-    No selector from the operation payload participates.  A duplicate newest
-    generation is ambiguous and fails closed.
+    No selector from the operation payload participates.  The authority table's
+    primary key makes one association resolve to at most one current session.
     """
-    prefix = _association_prefix(association_key)
-    rows = connection.execute(
-        f"SELECT session_id, principal_id, state, binding_generation, "
-        "lease_expires_at_us, host_session_ref, checkout_hint, "
-        "repository_target_json, registered_at_us, closed_at_us, "
-        "last_checkpoint_sequence, last_checkpoint_id "
-        f"FROM {_SESSIONS_TABLE} WHERE workspace_id = ? AND principal_id = ? "
-        "AND binding_generation >= ? "
-        "AND substr(host_session_ref, 1, ?) = ? "
-        "ORDER BY binding_generation DESC, session_id ASC LIMIT 2",
-        (
-            workspace_id,
-            principal_id,
-            _ASSOCIATION_GENERATION_FLOOR,
-            len(prefix),
-            prefix,
-        ),
-    ).fetchall()
-    if not rows or (len(rows) > 1 and rows[0][3] == rows[1][3]):
+    _association_prefix(association_key)
+    row = connection.execute(
+        f"SELECT s.session_id, s.principal_id, s.state, s.binding_generation, "
+        "s.lease_expires_at_us, s.host_session_ref, s.checkout_hint, "
+        "s.repository_target_json, s.registered_at_us, s.closed_at_us, "
+        "s.last_checkpoint_sequence, s.last_checkpoint_id "
+        f"FROM {_AUTHORITY_TABLE} a JOIN {_SESSIONS_TABLE} s "
+        "ON s.workspace_id = a.workspace_id "
+        "AND s.session_id = a.current_session_id "
+        "WHERE a.workspace_id = ? AND a.principal_id = ? "
+        "AND a.association_key = ? "
+        "AND s.principal_id = a.principal_id "
+        "AND s.binding_generation = a.binding_generation "
+        "AND s.state = a.state "
+        "AND s.lease_expires_at_us = a.lease_expires_at_us",
+        (workspace_id, principal_id, association_key),
+    ).fetchone()
+    if row is None:
         return None
-    row = rows[0]
     return {
         "session_id": row[0],
         "principal_id": row[1],
@@ -207,12 +371,133 @@ def register_session(
     session_id: str,
     principal_id: str,
     binding_generation: int = 1,
+    association_key: str | None = None,
+    association_precondition: AssociationRegistrationPrecondition | None = None,
     host_session_ref: str | None,
     checkout_hint: str | None,
     repository_target: Mapping[str, Any] | None,
     registered_at_us: int,
-) -> None:
-    """Insert one `active` session binding. Identity is immutable once written."""
+) -> int:
+    """Insert one active binding and settle its lifecycle authority atomically.
+
+    Unassociated generation-one registrations retain the accepted v1 behavior.
+    A trusted association ignores a caller-computed generation.  It compares the
+    complete server-read association precondition, derives the next value under
+    the fenced write, supersedes every older active association row, and moves
+    the single current pointer only after the new row and history exist.
+    """
+    prior_session_id: str | None = None
+    authority: dict[str, Any] | None = None
+    if association_key is None:
+        if association_precondition is not None:
+            raise SessionBindingMismatch(
+                "an unassociated registration cannot carry association authority"
+            )
+        if int(binding_generation) != 1:
+            raise SessionBindingMismatch(
+                "an unassociated continuity binding must use generation one"
+            )
+        settled_generation = 1
+    else:
+        prefix = _association_prefix(association_key)
+        if association_precondition is None:
+            raise SessionBindingMismatch(
+                "continuity registration requires a settled association precondition"
+            )
+        observed_precondition = read_association_registration_precondition(
+            connection,
+            workspace_id=workspace_id,
+            principal_id=principal_id,
+            association_key=association_key,
+        )
+        if observed_precondition != association_precondition:
+            raise SessionBindingMismatch(
+                "continuity association advanced before registration settled"
+            )
+        if observed_precondition.latest_generation >= _MAX_SQLITE_INTEGER:
+            raise SessionBindingMismatch("continuity binding generation is exhausted")
+        settled_generation = observed_precondition.latest_generation + 1
+        authority = _read_association_authority(
+            connection,
+            workspace_id=workspace_id,
+            principal_id=principal_id,
+            association_key=association_key,
+        )
+        if authority is not None:
+            prior_session_id = str(authority["session_id"])
+            if settled_generation != int(authority["binding_generation"]) + 1:
+                raise SessionBindingMismatch(
+                    "continuity association history is not contiguous"
+                )
+        else:
+            prior = connection.execute(
+                f"SELECT session_id FROM {_SESSIONS_TABLE} "
+                "WHERE workspace_id = ? AND principal_id = ? "
+                "AND binding_generation >= ? "
+                "AND substr(host_session_ref, 1, ?) = ? "
+                "ORDER BY binding_generation DESC, session_id ASC LIMIT 1",
+                (
+                    workspace_id,
+                    principal_id,
+                    _ASSOCIATION_GENERATION_FLOOR,
+                    len(prefix),
+                    prefix,
+                ),
+            ).fetchone()
+            prior_session_id = None if prior is None else str(prior[0])
+
+        # Pre-0060 databases can contain several active association rows and no
+        # trusted current pointer.  Fence every one before the replacement row
+        # is installed; their history remains readable and explicitly superseded.
+        active_rows = connection.execute(
+            f"SELECT session_id, binding_generation, lease_expires_at_us "
+            f"FROM {_SESSIONS_TABLE} WHERE workspace_id = ? AND principal_id = ? "
+            "AND state = 'active' AND binding_generation >= ? "
+            "AND substr(host_session_ref, 1, ?) = ? "
+            "ORDER BY binding_generation, session_id",
+            (
+                workspace_id,
+                principal_id,
+                _ASSOCIATION_GENERATION_FLOOR,
+                len(prefix),
+                prefix,
+            ),
+        ).fetchall()
+        for old_session_id, old_generation, old_lease in active_rows:
+            _append_lifecycle_event(
+                connection,
+                settlement,
+                workspace_id=workspace_id,
+                session_id=str(old_session_id),
+                event_type="superseded",
+                association_key=association_key,
+                binding_generation=int(old_generation),
+                state="revoked",
+                lease_expires_at_us=int(old_lease),
+                prior_session_id=None,
+            )
+            changed = connection.execute(
+                f"UPDATE {_SESSIONS_TABLE} SET state = 'revoked' "
+                "WHERE workspace_id = ? AND session_id = ? AND principal_id = ? "
+                "AND binding_generation = ? AND state = 'active'",
+                (
+                    workspace_id,
+                    old_session_id,
+                    principal_id,
+                    old_generation,
+                ),
+            )
+            if changed.rowcount != 1:
+                raise SessionBindingMismatch(
+                    "continuity association changed during registration"
+                )
+
+    lease_expires_at_us = int(registered_at_us) + SESSION_LEASE_SECONDS * 1_000_000
+    if association_key is not None and authority is not None:
+        lease_expires_at_us = max(
+            lease_expires_at_us,
+            int(authority["lease_expires_at_us"]) + 1,
+        )
     connection.execute(
         f"INSERT INTO {_SESSIONS_TABLE} "
         "(workspace_id, session_id, principal_id, state, binding_generation, "
@@ -224,8 +509,8 @@ def register_session(
             workspace_id,
             session_id,
             principal_id,
-            int(binding_generation),
-            int(registered_at_us) + SESSION_LEASE_SECONDS * 1_000_000,
+            settled_generation,
+            lease_expires_at_us,
             host_session_ref,
             checkout_hint,
             None if repository_target is None else canonical_document(dict(repository_target)),
@@ -233,6 +518,70 @@ def register_session(
             settlement.audit_ref,
         ),
     )
+    # Migration 0060's AFTER INSERT trigger writes the registered history row.
+    # Keeping that coupling in SQLite means every guarded session insertion has
+    # lifecycle history, including a future service writer that bypasses this
+    # helper.  ``prior_session_id`` is derived there from the still-current
+    # authority pointer; retain this assertion so code and trigger agree.
+    history = connection.execute(
+        f"SELECT prior_session_id FROM {_LIFECYCLE_TABLE} "
+        "WHERE workspace_id = ? AND session_id = ? AND event_sequence = 1 "
+        "AND event_type = 'registered'",
+        (workspace_id, session_id),
+    ).fetchone()
+    if history is None or history[0] != prior_session_id:
+        raise SessionBindingMismatch(
+            "continuity registration history did not settle atomically"
+        )
+    if association_key is not None:
+        authority = _read_association_authority(
+            connection,
+            workspace_id=workspace_id,
+            principal_id=principal_id,
+            association_key=association_key,
+        )
+        if authority is None:
+            connection.execute(
+                f"INSERT INTO {_AUTHORITY_TABLE} "
+                "(workspace_id, principal_id, association_key, current_session_id, "
+                "binding_generation, state, lease_expires_at_us, updated_at_us, "
+                "audit_ref) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+                (
+                    workspace_id,
+                    principal_id,
+                    association_key,
+                    session_id,
+                    settled_generation,
+                    lease_expires_at_us,
+                    int(settlement.settled_at_us),
+                    settlement.audit_ref,
+                ),
+            )
+        else:
+            changed = connection.execute(
+                f"UPDATE {_AUTHORITY_TABLE} SET current_session_id = ?, "
+                "binding_generation = ?, state = 'active', lease_expires_at_us = ?, "
+                "updated_at_us = ?, audit_ref = ? WHERE workspace_id = ? "
+                "AND principal_id = ? AND association_key = ? "
+                "AND current_session_id = ? AND binding_generation = ?",
+                (
+                    session_id,
+                    settled_generation,
+                    lease_expires_at_us,
+                    int(settlement.settled_at_us),
+                    settlement.audit_ref,
+                    workspace_id,
+                    principal_id,
+                    association_key,
+                    authority["session_id"],
+                    authority["binding_generation"],
+                ),
+            )
+            if changed.rowcount != 1:
+                raise SessionBindingMismatch(
+                    "continuity association changed during registration"
+                )
+    return settled_generation
 
 
 def read_session(
@@ -294,6 +643,28 @@ def read_bound_session(
         return None
     if session["binding_generation"] != binding_generation:
         raise SessionBindingMismatch("continuity binding generation is stale")
+    association_key: str | None = None
+    if binding_generation >= _ASSOCIATION_GENERATION_FLOOR:
+        association_key = _association_key_from_ref(session["host_session_ref"])
+        if association_key is None:
+            raise SessionBindingMismatch(
+                "continuity binding has no trusted association authority"
+            )
+        authority = _read_association_authority(
+            connection,
+            workspace_id=workspace_id,
+            principal_id=principal_id,
+            association_key=association_key,
+        )
+        if (
+            authority is None
+            or authority["session_id"] != session_id
+            or authority["binding_generation"] != binding_generation
+            or authority["state"] != session["state"]
+            or authority["lease_expires_at_us"] != session["lease_expires_at_us"]
+        ):
+            raise SessionBindingMismatch("continuity binding is no longer current")
+    session["association_key"] = association_key
     return session
 
 
@@ -328,6 +699,252 @@ def _require_writable_session(
     if session["lease_expires_at_us"] <= settlement.settled_at_us:
         raise SessionNotActive("expired")
     return session
+
+
+def renew_associated_session(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+    session_id: str,
+    binding_generation: int,
+    lease_seconds: int = SESSION_LEASE_SECONDS,
+) -> dict[str, Any]:
+    """Rotate one current live association to generation ``n + 1``.
+
+    This is a service-owned primitive rather than a model-facing operation.  Its
+    caller must already be inside the authoritative fenced mutation and supply
+    the trusted association key.  The old generation, a terminal state, or the
+    exact expiry boundary all fail before either summary row changes.
+    """
+    _association_prefix(association_key)
+    if type(lease_seconds) is not int or lease_seconds <= 0:
+        raise ValueError("continuity lease duration must be a positive integer")
+    session = read_bound_session(
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
+        binding_generation=binding_generation,
+    )
+    if session is None:
+        raise SessionNotFound(session_id)
+    if session.get("association_key") != association_key:
+        raise SessionBindingMismatch("continuity association does not match binding")
+    if session["state"] != "active":
+        raise SessionNotActive(session["state"])
+    if session["lease_expires_at_us"] <= settlement.settled_at_us:
+        raise SessionNotActive("expired")
+    if binding_generation >= _MAX_SQLITE_INTEGER:
+        raise SessionBindingMismatch("continuity binding generation is exhausted")
+    next_generation = binding_generation + 1
+    next_lease = max(
+        int(settlement.settled_at_us) + lease_seconds * 1_000_000,
+        int(session["lease_expires_at_us"]) + 1,
+    )
+    _append_lifecycle_event(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        event_type="renewed",
+        association_key=association_key,
+        binding_generation=next_generation,
+        state="active",
+        lease_expires_at_us=next_lease,
+    )
+    changed = connection.execute(
+        f"UPDATE {_SESSIONS_TABLE} SET binding_generation = ?, "
+        "lease_expires_at_us = ? WHERE workspace_id = ? AND session_id = ? "
+        "AND principal_id = ? AND binding_generation = ? AND state = 'active' "
+        "AND lease_expires_at_us > ?",
+        (
+            next_generation,
+            next_lease,
+            workspace_id,
+            session_id,
+            principal_id,
+            binding_generation,
+            int(settlement.settled_at_us),
+        ),
+    )
+    if changed.rowcount != 1:
+        raise SessionBindingMismatch("continuity binding changed during renewal")
+    pointer = connection.execute(
+        f"UPDATE {_AUTHORITY_TABLE} SET binding_generation = ?, "
+        "lease_expires_at_us = ?, updated_at_us = ?, audit_ref = ? "
+        "WHERE workspace_id = ? AND principal_id = ? AND association_key = ? "
+        "AND current_session_id = ? AND binding_generation = ? AND state = 'active'",
+        (
+            next_generation,
+            next_lease,
+            int(settlement.settled_at_us),
+            settlement.audit_ref,
+            workspace_id,
+            principal_id,
+            association_key,
+            session_id,
+            binding_generation,
+        ),
+    )
+    if pointer.rowcount != 1:
+        raise SessionBindingMismatch("continuity authority changed during renewal")
+    renewed = read_session(
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
+    )
+    if renewed is None:  # pragma: no cover - protected by the same transaction
+        raise SessionNotFound(session_id)
+    return renewed
+
+
+def _terminate_associated_session(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+    session_id: str,
+    binding_generation: int,
+    terminal_state: str,
+) -> dict[str, Any]:
+    if terminal_state not in {"expired", "revoked"}:
+        raise ValueError("unsupported continuity terminal state")
+    _association_prefix(association_key)
+    session = read_session(
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
+    )
+    if session is None:
+        raise SessionNotFound(session_id)
+    if session["binding_generation"] != binding_generation:
+        raise SessionBindingMismatch("continuity binding generation is stale")
+    if _association_key_from_ref(session["host_session_ref"]) != association_key:
+        raise SessionBindingMismatch("continuity association does not match binding")
+    authority = _read_association_authority(
+        connection,
+        workspace_id=workspace_id,
+        principal_id=principal_id,
+        association_key=association_key,
+    )
+    if (
+        authority is None
+        or authority["session_id"] != session_id
+        or authority["binding_generation"] != binding_generation
+    ):
+        raise SessionBindingMismatch("continuity binding is no longer current")
+    if session["state"] == terminal_state:
+        return session
+    if session["state"] != "active":
+        raise SessionNotActive(session["state"])
+    if terminal_state == "expired" and int(settlement.settled_at_us) < int(
+        session["lease_expires_at_us"]
+    ):
+        raise SessionNotActive("lease_not_expired")
+    _append_lifecycle_event(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        event_type=terminal_state,
+        association_key=association_key,
+        binding_generation=binding_generation,
+        state=terminal_state,
+        lease_expires_at_us=int(session["lease_expires_at_us"]),
+    )
+    changed = connection.execute(
+        f"UPDATE {_SESSIONS_TABLE} SET state = ? WHERE workspace_id = ? "
+        "AND session_id = ? AND principal_id = ? AND binding_generation = ? "
+        "AND state = 'active'",
+        (
+            terminal_state,
+            workspace_id,
+            session_id,
+            principal_id,
+            binding_generation,
+        ),
+    )
+    if changed.rowcount != 1:
+        raise SessionBindingMismatch("continuity binding changed during termination")
+    pointer = connection.execute(
+        f"UPDATE {_AUTHORITY_TABLE} SET state = ?, updated_at_us = ?, audit_ref = ? "
+        "WHERE workspace_id = ? AND principal_id = ? AND association_key = ? "
+        "AND current_session_id = ? AND binding_generation = ? AND state = 'active'",
+        (
+            terminal_state,
+            int(settlement.settled_at_us),
+            settlement.audit_ref,
+            workspace_id,
+            principal_id,
+            association_key,
+            session_id,
+            binding_generation,
+        ),
+    )
+    if pointer.rowcount != 1:
+        raise SessionBindingMismatch("continuity authority changed during termination")
+    terminated = read_session(
+        connection,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        principal_id=principal_id,
+    )
+    if terminated is None:  # pragma: no cover - protected by the same transaction
+        raise SessionNotFound(session_id)
+    return terminated
+
+
+def revoke_associated_session(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+    session_id: str,
+    binding_generation: int,
+) -> dict[str, Any]:
+    """Atomically revoke the exact current trusted binding; repeated revoke is safe."""
+    return _terminate_associated_session(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        principal_id=principal_id,
+        association_key=association_key,
+        session_id=session_id,
+        binding_generation=binding_generation,
+        terminal_state="revoked",
+    )
+
+
+def expire_associated_session(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    association_key: str,
+    session_id: str,
+    binding_generation: int,
+) -> dict[str, Any]:
+    """Materialize expiry only at or after the server-owned lease boundary."""
+    return _terminate_associated_session(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        principal_id=principal_id,
+        association_key=association_key,
+        session_id=session_id,
+        binding_generation=binding_generation,
+        terminal_state="expired",
+    )
 
 
 def append_checkpoint(
@@ -479,6 +1096,18 @@ def close_session(
             payload=final_checkpoint,
             recorded_at_us=closed_at_us,
         )
+    association_key = session.get("association_key")
+    _append_lifecycle_event(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        event_type="closed",
+        association_key=association_key,
+        binding_generation=binding_generation,
+        state="closed",
+        lease_expires_at_us=int(session["lease_expires_at_us"]),
+    )
     updated = connection.execute(
         f"UPDATE {_SESSIONS_TABLE} SET state = 'closed', closed_at_us = ? "
         "WHERE workspace_id = ? AND session_id = ? AND principal_id = ? "
@@ -493,6 +1122,24 @@ def close_session(
     )
     if updated.rowcount != 1:
         raise SessionBindingMismatch("continuity binding changed during close")
+    if association_key is not None:
+        pointer = connection.execute(
+            f"UPDATE {_AUTHORITY_TABLE} SET state = 'closed', updated_at_us = ?, "
+            "audit_ref = ? WHERE workspace_id = ? AND principal_id = ? "
+            "AND association_key = ? AND current_session_id = ? "
+            "AND binding_generation = ? AND state = 'active'",
+            (
+                int(settlement.settled_at_us),
+                settlement.audit_ref,
+                workspace_id,
+                principal_id,
+                association_key,
+                session_id,
+                binding_generation,
+            ),
+        )
+        if pointer.rowcount != 1:
+            raise SessionBindingMismatch("continuity authority changed during close")
     return {
         "session_id": session_id,
         "state": "closed",
@@ -528,7 +1175,15 @@ def read_checkpoint(
         "SELECT c.checkpoint_id, c.session_id, c.sequence, c.parent_checkpoint_id, "
         "c.checkpoint_kind, c.payload_json, c.content_digest, c.recorded_at_us "
         f"{_OWNED_CHECKPOINTS} AND s.session_id = ? "
-        "AND s.binding_generation = ? AND " + key,
+        "AND s.binding_generation = ? "
+        "AND (s.binding_generation = 1 OR EXISTS ("
+        f"SELECT 1 FROM {_AUTHORITY_TABLE} a "
+        "WHERE a.workspace_id = s.workspace_id "
+        "AND a.principal_id = s.principal_id "
+        "AND a.current_session_id = s.session_id "
+        "AND a.binding_generation = s.binding_generation "
+        "AND a.state = s.state "
+        "AND a.lease_expires_at_us = s.lease_expires_at_us)) AND " + key,
         (
             workspace_id,
             principal_id,
