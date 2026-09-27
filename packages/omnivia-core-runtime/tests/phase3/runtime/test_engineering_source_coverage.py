@@ -902,18 +902,18 @@ def test_current_safe_never_reveals_label_denied_records_to_another_reader(
     evaluated: list[str] = []
     ranked: list[str] = []
     evaluate = engineering_source.evaluate_applicability
-    rank = handlers.rank_governed
+    rank = handlers.rank_previews
 
     def spy_evaluate(connection: Any, **kwargs: Any) -> str:
         evaluated.append(kwargs["record_id"])
         return evaluate(connection, **kwargs)
 
-    def spy_rank(frontier: Any, *args: Any, **kwargs: Any) -> Any:
-        ranked.extend(c.record.provenance.identity.record_id for c in frontier.candidates)
-        return rank(frontier, *args, **kwargs)
+    def spy_rank(candidates: Any, *args: Any, **kwargs: Any) -> Any:
+        ranked.extend(c.record_id for c in candidates)
+        return rank(candidates, *args, **kwargs)
 
     monkeypatch.setattr(engineering_source, "evaluate_applicability", spy_evaluate)
-    monkeypatch.setattr(handlers, "rank_governed", spy_rank)
+    monkeypatch.setattr(handlers, "rank_previews", spy_rank)
     reader = engineering_family_session(
         principal_id="reader",
         installation_id=s0.INSTALLATION_ID,
@@ -991,13 +991,13 @@ def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
     denied_ids = {hidden_candidate["record_id"], hidden_accepted["record_id"]}
 
     ranked: list[str] = []
-    rank = handlers.rank_governed
+    rank = handlers.rank_previews
 
-    def spy_rank(frontier: Any, *args: Any, **kwargs: Any) -> Any:
-        ranked.extend(c.record.provenance.identity.record_id for c in frontier.candidates)
-        return rank(frontier, *args, **kwargs)
+    def spy_rank(candidates: Any, *args: Any, **kwargs: Any) -> Any:
+        ranked.extend(c.record_id for c in candidates)
+        return rank(candidates, *args, **kwargs)
 
-    monkeypatch.setattr(handlers, "rank_governed", spy_rank)
+    monkeypatch.setattr(handlers, "rank_previews", spy_rank)
     reader = engineering_family_session(
         principal_id="reader",
         installation_id=s0.INSTALLATION_ID,
@@ -1598,10 +1598,11 @@ def test_pending_is_decided_before_the_frontier_is_read(
     def untouchable(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("the frontier was read before coverage decided")
 
-    # The handler holds no unauthorized governed reader; this is its only one.
+    # The handler holds no unauthorized governed reader; these are its only two.
     assert not hasattr(handlers, "read_governed_record_values")
     monkeypatch.setattr(handlers, "read_authorized_memory_snapshot", untouchable)
-    monkeypatch.setattr(handlers, "rank_governed", untouchable)
+    monkeypatch.setattr(handlers, "read_authorized_previews", untouchable)
+    monkeypatch.setattr(handlers, "rank_previews", untouchable)
     target = {"repository_id": REPOSITORY, "snapshot_id": "esnap-c"}
     assert workspace.refused(
         "engineering.search",
@@ -1642,7 +1643,8 @@ def test_current_safe_pack_targets_are_non_empty_and_bounded(
         patched.setattr(engineering_source, "covered_snapshot", untouchable)
         patched.setattr(engineering_source, "evaluate_applicability", untouchable)
         patched.setattr(handlers, "read_authorized_memory_snapshot", untouchable)
-        patched.setattr(handlers, "rank_governed", untouchable)
+        patched.setattr(handlers, "read_authorized_previews", untouchable)
+        patched.setattr(handlers, "rank_previews", untouchable)
         assert workspace.refused(
             "engineering.context.build", {**build, "targets": []}
         )[0] == "invalid_request"
