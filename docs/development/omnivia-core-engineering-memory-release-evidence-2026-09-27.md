@@ -1,6 +1,6 @@
 # OmniVia Core — Engineering Memory release evidence manifest (§22.5)
 
-**Date:** 2026-09-27 · **Contract version:** `x-omnivia-contract-version: 1.3` · **Migration head:** 0053 · **Branch:** `main`
+**Date:** 2026-09-27 · **Contract version:** `x-omnivia-contract-version: 1.3` · **Migration head at PR #137 base:** 0053 · **Status:** draft on `codex/core-engineering-consumer-proof`; update against the final release commit before publication.
 
 One row per shipped capability. "Producer" is the code path that writes authoritative state; "consumer" is the code path that reads it. A row with no production writer and consumer would not be listed. Test evidence names real test files; OS evidence is the CI platform matrix each PR ran (ubuntu/macos/windows lanes where listed).
 
@@ -20,7 +20,7 @@ One row per shipped capability. "Producer" is the code path that writes authorit
 
 ## Performance qualification
 
-Reports: `benchmarks/reports/engineering-memory/lane-10000.json`, `lane-100000.json` (machine, corpus seed, sample counts and p50/p95/p99 recorded per operation inside each report). These are §20.2 qualification *measurements on the producing machine* — labelled as measurements, not guarantees. Targets (p95 preview ≤ 300 ms, p95 4k-token pack ≤ 1 s, p95 checkpoint commit ≤ 200 ms) are compared against the 100k lane in the consolidated status note.
+Current report: `benchmarks/reports/engineering-memory/lane-10000.json`. The 100k run is in progress. These are diagnostic measurements on the producing machine, not §20.2 release qualification yet: the present fixture lacks multiple worktrees, ACL partitions, conflict groups, cache-state lanes, and a complete environment/commit record. The 10k search and pack p95 measurements exceed the proposed targets; no latency guarantee is claimed.
 
 ## Migration / rollout evidence
 
@@ -33,4 +33,4 @@ Reports: `benchmarks/reports/engineering-memory/lane-10000.json`, `lane-100000.j
 1. No semantic assessor (P2-08): conflict relation candidates stay structural/lexical; governance remains human.
 2. No automatic repository change-event producer: `current_safe` applicability advances only over recorded source streams.
 3. Single-principal Personal mode; lease/binding-generation fencing recorded but not enforced.
-4. Tokenizer contract: the pinned tokenizer is the one configured server-side; `tokenizer_unavailable` is returned rather than a heuristic count.
+4. Tokenizer contract remains incomplete: the current engineering renderer reports a deterministic pattern count, explicitly labelled as not a host-model tokenizer. Exact supported-tokenizer counting or an explicitly negotiated byte-only representation is required before claiming §12.4 conformance.

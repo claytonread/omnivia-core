@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-27 · **Spec:** `SPEC-CORE-ENGMEM-001` v1.0 (2026-09-25) · **Plan:** `omnivia-core-engineering-memory-implementation-plan-2026-09-26.md`
 
-## Delivery sequence (all merged to `main`)
+## Delivery sequence
 
 | PR | Scope | Spec packages |
 |---|---|---|
@@ -12,14 +12,17 @@
 | #131 | MCP exposure: engineering reads in the restricted manifest, checkpoint append in authoring; installed profiles + traceability | P0-07 (consumer half) |
 | #132 | Context budget contract work | P0-05 |
 | #133 | Pack correctness conformance | P0-05 |
-| PR-H2 (this change) | CLI vertical proof, migration/restore evidence, performance qualification lanes, release evidence manifest | P0-07 (closeout) |
+| #135 | Immutable working-tree source capture | P0-01 (capture foundation) |
+| #134 (open) | Installed CLI search, expansion and context-pack qualification | P0-07 (consumer proof) |
+| #136 (open) | Trusted repository/checkout registration | P0-01 (registration) |
+| #137 (this PR, open) | CLI continuity proof, migration/restore evidence, performance measurements and release evidence draft | P0-07 (qualification work) |
 
 ## What exists on `main` today
 
 - **Ten engineering operations** in the frozen catalogue: `continuity.session.register`, `continuity.checkpoint.append`, `continuity.session.close`, `continuity.handoff.read`, `engineering.search`, `engineering.expand`, `engineering.context.build`, `context.priority.set`, `engineering.review.record`, `engineering.source.record`.
 - **Seven migrations** (0047–0053): repository identity, continuity, applicability, source coverage, dependency carry, dependency lookup, preview projection.
 - **MCP exposure** through the curated manifest (restricted + authoring profiles), generated exposure schemas, traceability ledger.
-- **CLI surface**: ten generic application commands over `omnivia-core-client`, proven end-to-end by the new vertical test against a managed-start service.
+- **CLI surface**: ten generic application commands over `omnivia-core-client`. This PR adds a managed-start installed-CLI vertical test; it is not merged evidence yet.
 - **199 engineering tests** across 12 runtime test files, plus MCP stdio e2e + architecture gates, plus the env-gated qualification lane.
 
 ## PR-H2 evidence (this change)
@@ -28,6 +31,18 @@
 2. **Migration/restore** (`test_engineering_restore.py`): verified backup → restore → row-identical engineering tables (checkpoints by digest+sequence, sessions, snapshots) and the observation still readable at its exact version through the production surface (AC-063 storage half).
 3. **Qualification lanes** (`test_engineering_qualification.py`, env-gated): 10k and 100k-observation synthetic corpora; p50/p95/p99 for `engineering.search`, `engineering.context.build`, `continuity.checkpoint.append`; reports written to `benchmarks/reports/engineering-memory/lane-<n>.json`.
 4. **Release evidence manifest**: `omnivia-core-engineering-memory-release-evidence-2026-09-27.md`.
+
+## Performance qualification (measured 2026-09-27, this machine)
+
+Lane 10 000 observations (`benchmarks/reports/engineering-memory/lane-10000.json`, seed 78.6 s):
+
+| Operation | p50 | p95 | p99 | §20.2 target (p95) | Verdict |
+|---|---:|---:|---:|---:|---|
+| `engineering.search` (preview, 100 samples) | 650 ms | 725 ms | 810 ms | ≤ 300 ms | **over target** |
+| `engineering.context.build` (investigate, 30 samples) | 2.96 s | 3.30 s | 3.33 s | ≤ 1 s | **over target** |
+| `continuity.checkpoint.append` (100 samples) | 1.05 ms | 1.5 ms | 8.6 ms | ≤ 200 ms | inside target |
+
+The search gap is structural: the preview path scores the full admitted candidate set in Python per query (no SQL-side top-k), so latency scales with corpus size. Pack construction inherits the frontier scan. These are measurements, not release guarantees. The 100 000-observation lane is still running, and the fixture needs the worktree, ACL, conflict, cache-state and environment dimensions required by spec §20.2 before it can serve as release qualification.
 
 ## Honest limitations (carried into the release note)
 
