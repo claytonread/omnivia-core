@@ -1225,8 +1225,10 @@ def test_heartbeat_failure_after_deadline_refuses_on_the_same_tick(
             "omnivia_core_runtime.service.runner.heartbeat", late_failure
         )
         clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
-        with pytest.raises(RuntimeError, match="renewal deadline"):
+        with pytest.raises(RuntimeError, match="renewal deadline") as raised:
             runner.renew_lease_if_due()
+        assert raised.value.__context__ is None
+        assert raised.value.__cause__ is None
     finally:
         runner.stop()
 
