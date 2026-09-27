@@ -28,7 +28,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationError
-from omnivia_core_runtime.storage import engineering_source
+from omnivia_core_runtime.storage import engineering_preview, engineering_source
 from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
 )
@@ -521,6 +521,13 @@ def apply_governance_transition(
             settlement.settled_at_us,
         ),
     )
+    if claim.domain_scope == _ENGINEERING_DOMAIN:
+        # Every exact version an engineering observation reaches has its own
+        # bounded preview, written with it: the copy governance mints is projected
+        # like the proposal it copies.
+        engineering_preview.record_preview(
+            connection, workspace_id=workspace_id, assembly_id=assembly_id
+        )
     connection.execute(
         "INSERT INTO omnivia_application_claim_lineage "
         "(workspace_id, assembly_id, governed_record_version_id, operation, audit_ref, "

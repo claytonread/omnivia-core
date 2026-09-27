@@ -20,12 +20,19 @@ Retrieval security shape, inherited from the knowledge family and the plan:
    purpose come from the authorised context, never from the payload;
 2. the authorised frontier is frozen *before* any scoring: the candidate set is
    the workspace's engineering observations under the requested view, read at
-   one resolution instant, and `rank_governed` sees nothing else — no corpus
+   one resolution instant, and `rank_previews` sees nothing else — no corpus
    statistics and no restricted document reach the rank (§11.3). The ranker's
    own relevance signal is a stated occurrence count computed from the
    frontier's members and nothing else;
-3. previews are bounded renderings (≤480 code points) of stored content; a
-   full body is never hydrated into the response (§11.1);
+3. previews are bounded projections (≤480 code points and ≤2 KiB each, ≤64 KiB
+   per response) stored beside each version by migration 0053. The governed
+   views read only authorised identities, evidence links, stored digests and
+   those projection rows: no `content_json` or `claim_json` is read to rank,
+   filter, page, check `current_safe` applicability or render, so a full body is
+   never hydrated on this path (§11.1, AC-033). A version the grant admits with
+   no projection row is `projection_unavailable`, one with a stale row is
+   `stale_projection`; neither falls back to the body. Exact reads and expansion
+   are where a body is hydrated;
 4. a hypothesis observation is never served under the `accepted` view, even
    after governance accepts it (§8.2);
 5. continuations are the established MAC'd tokens, bound to the request
@@ -43,12 +50,14 @@ Retrieval security shape, inherited from the knowledge family and the plan:
    or ranking, never downgraded. For covered targets the shared evaluator in
    `storage.engineering_source` then checks each admitted candidate's exact
    dependency set directly, before scoring, and only proven `matched` records
-   are served. In both modes the governed frontier is read through
-   `storage.memory.read_authorized_memory_snapshot` under the effective caller's
-   evidence-label grant, so a denied version is never hydrated;
+   are served. In both modes search reads the governed frontier through
+   `storage.engineering_preview.read_authorized_previews`, which folds the
+   effective caller's evidence-label grant from identities and links before it
+   reads any projection row, so a denied version is never previewed;
    exact references (the expand anchor and its supersession endpoints, the
-   priority and review targets) resolve under that same grant, so a hidden
-   version is indistinguishable from a nonexistent one;
+   priority and review targets) and the pack builder hydrate through
+   `storage.memory.read_authorized_memory_snapshot` under that same grant, so a
+   hidden version is indistinguishable from a nonexistent one;
 8. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
    knowledge (§12.3). Search and the `resume` pack read only checkpoints of
@@ -63,7 +72,6 @@ same fenced, audited, idempotent mutation seam as every other write here.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import time
 from collections.abc import Mapping
@@ -77,9 +85,12 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
+    ERROR_CODE_PROJECTION_UNAVAILABLE,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    ERROR_CODE_STALE_PROJECTION,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
     GOVERNANCE_STATE_ACCEPTED,
+    RETRY_CLASS_RETRYABLE_AFTER_DELAY,
     ContextPrioritySetInput,
     ContextPrioritySetResult,
     ContractDecodeError,
@@ -98,6 +109,13 @@ from omnivia_core_runtime.ownership.identity import Clock, SystemClock
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     ServiceBinding,
+)
+from omnivia_core_runtime.service.engineering_pack import (
+    BuildContext,
+    MandatoryContextTooLarge,
+    PackRecord,
+    WorkingItem,
+    build_pack,
 )
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
@@ -119,6 +137,15 @@ from omnivia_core_runtime.service.pagination import (
 from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import engineering_source as source_storage
+from omnivia_core_runtime.storage.engineering_preview import (
+    PREVIEW_MAX_CODEPOINTS,
+    PROJECTION_VERSION,
+    PreviewCandidate,
+    PreviewProjectionStale,
+    PreviewProjectionUnavailable,
+    rank_previews,
+    read_authorized_previews,
+)
 from omnivia_core_runtime.storage.governed import read_governed_supersessions
 from omnivia_core_runtime.storage.memory import (
     IdentifierAllocator,
@@ -126,11 +153,8 @@ from omnivia_core_runtime.storage.memory import (
     read_authorized_memory_snapshot,
 )
 from omnivia_core_runtime.storage.retrieval import (
-    GOVERNED_FRONTIER_FILTERS,
-    GovernedCandidate,
-    GovernedFrontier,
+    EvidenceLabelGrant,
     local_owner_label_grant,
-    rank_governed,
 )
 
 _MESSAGE_INVALID: Final = "the request payload is not valid for this engineering operation"
@@ -138,6 +162,12 @@ _MESSAGE_NO_STORAGE: Final = (
     "this service instance is not serving authoritative storage"
 )
 _MESSAGE_NOT_FOUND: Final = "the requested engineering record was not found"
+_MESSAGE_PROJECTION_UNAVAILABLE: Final = (
+    "the engineering preview projection has no row for a version this search admits"
+)
+_MESSAGE_STALE_PROJECTION: Final = (
+    "the engineering preview projection is not current for a version this search admits"
+)
 _MESSAGE_PRECONDITION: Final = (
     "the engineering target moved under this request; re-read and re-decide"
 )
@@ -163,17 +193,17 @@ _TOKEN_KEYS: Final[frozenset[str]] = frozenset({"b", "o", "s", "t", "v"})
 SEARCH_DEFAULT_LIMIT: Final = 20
 SEARCH_MAX_LIMIT: Final = 100
 
-#: The complete rendered preview cap: 480 code points (§11.1).
-PREVIEW_MAX_CODEPOINTS: Final = 480
+#: The hard maximum of one search response: 64 KiB of canonical JSON (§11.1). A
+#: page that would exceed it is cut short and continues, never truncated
+#: mid-preview. `_RESPONSE_RESERVE` is held back for what surrounds the previews:
+#: the page token (about 230 bytes), the coverage block, the JSON around them and
+#: the response envelope (about 750 bytes), so the whole frame stays inside the cap.
+RESPONSE_MAX_BYTES: Final = 65536
+_RESPONSE_RESERVE: Final = 2048
 
 _MESSAGE_BUDGET: Final = (
     "the minimum safe engineering context does not fit the effective budget"
 )
-#: The pack renderer and its pinned, deterministic token counting method. A
-#: whitespace split is the v1 pinned tokenizer: recomputable by hand from the
-#: rendering, and never reported as anything smarter than it is.
-RENDERER_VERSION: Final = "eng-render-1"
-BUILDER_VERSION: Final = "eng-build-1"
 
 #: Server hard budget ceilings (§12.4). Effective budgets are the minimum of the
 #: caller request and these ceilings; both token and byte caps are simultaneous.
@@ -182,14 +212,6 @@ BUDGET_CEILING_BYTES: Final = 65536
 BUDGET_DEFAULT_TOKENS: Final = 4000
 BUDGET_DEFAULT_BYTES: Final = 16384
 
-#: Section drop order when the rendering exceeds the effective budget: optional
-#: working-context material first, then history. Mandatory notices and accepted
-#: knowledge are never dropped to fit (§12.5).
-_SECTION_DROP_ORDER: Final[tuple[str, ...]] = (
-    "working_context",
-    "history",
-    "candidate_findings",
-)
 _MESSAGE_PRIORITY: Final = (
     "context priority ships contracts first; the preference store lands in a "
     "later engineering-memory package"
@@ -231,31 +253,50 @@ def _applicability_pending() -> OperationError:
     return application_refusal(ERROR_CODE_DEPENDENCY_UNAVAILABLE, APPLICABILITY_PENDING)
 
 
+def _proven_version(
+    connection: Any,
+    workspace_id: str,
+    record_id: str,
+    version: str,
+    evidence_available: bool,
+    targets: list[source_storage.CoveredSnapshot],
+) -> bool:
+    """Whether the evaluator proves `matched` for this exact version at every target.
+
+    Evidence counts only as the version's own resolved evidence: a proposal saved
+    with `evidence_disposition` other than `available`, or with no source, stays
+    unqualified however well its digests line up. The check names an exact version
+    and reads no content, so it needs no hydrated record.
+    """
+    return all(
+        source_storage.evaluate_applicability(
+            connection,
+            workspace_id=workspace_id,
+            record_id=record_id,
+            version=version,
+            evidence_available=evidence_available,
+            target=target,
+        )
+        == "matched"
+        for target in targets
+    )
+
+
 def _proven_matched(
     connection: Any,
     workspace_id: str,
     record: Any,
     targets: list[source_storage.CoveredSnapshot],
 ) -> bool:
-    """Whether the evaluator proves `matched` for this exact version at every target.
-
-    Evidence counts only as the record's own resolved evidence: a proposal saved
-    with `evidence_disposition` other than `available`, or with no source, stays
-    unqualified however well its digests line up.
-    """
+    """`_proven_version` for a hydrated record, as the pack builder holds one."""
     provenance = record.provenance
-    evidence = provenance.evidence_disposition == "available" and bool(provenance.sources)
-    return all(
-        source_storage.evaluate_applicability(
-            connection,
-            workspace_id=workspace_id,
-            record_id=provenance.identity.record_id,
-            version=provenance.identity.version,
-            evidence_available=evidence,
-            target=target,
-        )
-        == "matched"
-        for target in targets
+    return _proven_version(
+        connection,
+        workspace_id,
+        provenance.identity.record_id,
+        provenance.identity.version,
+        provenance.evidence_disposition == "available" and bool(provenance.sources),
+        targets,
     )
 
 
@@ -277,67 +318,50 @@ def _bounded(value: str, limit: int = PREVIEW_MAX_CODEPOINTS) -> tuple[str, bool
     return value[:limit], True
 
 
-def _plain(value: Any) -> Any:
-    """Decode the contract's immutable containers into JSON-serialisable ones."""
-    if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
-    return value
+def _render_preview(candidate: PreviewCandidate) -> dict[str, Any]:
+    """One admitted version as a search preview, from its projection row alone.
 
-
-def _observation_preview(record: Any) -> dict[str, Any] | None:
-    """Render one governed engineering record as a preview, or None to skip.
-
-    A record whose content is not a mapping cannot render honestly and is
-    skipped rather than served with invented fields.
+    The title and preview text are the projection's bounded fields; nothing is
+    read from, or cut out of, the version's body. An optional field the projection
+    does not hold is absent rather than invented.
     """
-    content = record.content
-    if not isinstance(content, Mapping):
-        return None
-    identity = record.provenance.identity
-    title, title_truncated = _bounded(
-        str(content.get("title") or identity.record_id), 200
-    )
-    body: str = ""
-    for key in ("summary", "what", "learned"):
-        value = content.get(key)
-        if isinstance(value, str) and value:
-            body = value
-            break
-    body, truncated = _bounded(body)
-    if not body:
-        body = title
     preview: dict[str, Any] = {
-        "record_id": identity.record_id,
-        "version": identity.version,
-        "title": title,
-        "preview": body,
-        "truncated": truncated or title_truncated,
-        "governance_state": identity.governance_state,
+        "record_id": candidate.record_id,
+        "version": candidate.version,
+        "title": candidate.title,
+        "preview": candidate.preview,
+        "truncated": candidate.truncated,
+        "governance_state": candidate.governance_state,
         "applicability": "not_evaluated",
-        "evidence_available": bool(record.provenance.sources),
+        "evidence_available": candidate.evidence_available,
     }
-    kind = content.get("kind")
-    if isinstance(kind, str) and kind:
-        preview["observation_kind"] = kind
-    basis = content.get("assertion_basis")
-    if isinstance(basis, str) and basis:
-        preview["assertion_basis"] = basis
-    topic = content.get("topic_ref")
-    if isinstance(topic, Mapping):
-        proposed_key = topic.get("proposed_key")
-        if isinstance(proposed_key, str) and proposed_key:
-            preview["topic_key"] = proposed_key
-    applicability = content.get("applicability")
-    if isinstance(applicability, Mapping):
-        repository_id = applicability.get("repository_id")
-        if isinstance(repository_id, str) and repository_id:
-            preview["repository_id"] = repository_id
-        snapshot_id = applicability.get("snapshot_id")
-        if isinstance(snapshot_id, str) and snapshot_id:
-            preview["snapshot_id"] = snapshot_id
+    for key, value in (
+        ("observation_kind", candidate.observation_kind),
+        ("assertion_basis", candidate.assertion_basis),
+        ("topic_key", candidate.topic_key),
+        ("repository_id", candidate.repository_id),
+        ("snapshot_id", candidate.snapshot_id),
+    ):
+        if value is not None:
+            preview[key] = value
     return preview
+
+
+def _within_response_cap(previews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The leading previews of a page that fit one response, and always at least one.
+
+    A preview is bounded by itself (a title of at most 200 and a text of at most 480
+    code points), so one always fits; the cap is what bounds a page of many.
+    """
+    budget = RESPONSE_MAX_BYTES - _RESPONSE_RESERVE
+    kept: list[dict[str, Any]] = []
+    for preview in previews:
+        cost = len(to_canonical_json(preview).encode("utf-8")) + 1
+        if kept and cost > budget:
+            break
+        budget -= cost
+        kept.append(preview)
+    return kept
 
 
 class EngineeringHandlers:
@@ -373,6 +397,21 @@ class EngineeringHandlers:
             raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
         return connection
 
+    def _label_grant(self, context: OperationContext) -> EvidenceLabelGrant:
+        """The EFFECTIVE caller's evidence-label grant.
+
+        It is the grant of `context.principal`, never of the principal this
+        owner-composed handler was issued for: a session dispatch runs it as another
+        principal. The granted workspace is the server binding's, and a binding with
+        no granted workspace grants no evidence label.
+        """
+        granted = self._binding().workspace_id
+        return local_owner_label_grant(
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+            granted_workspace="" if granted is None else granted,
+        )
+
     def _authorized_values(
         self,
         connection: Any,
@@ -381,28 +420,63 @@ class EngineeringHandlers:
         resolution_instant_us: int,
         view: str,
     ) -> tuple[Any, ...]:
-        """The governed frontier: identities and evidence-label grants are
+        """The governed frontier, hydrated: identities and evidence-label grants are
         resolved first and only admitted versions are hydrated, so a denied version
         never reaches applicability, scoring, the candidate cap or omissions.
 
-        The grant is the EFFECTIVE caller's (`context.principal`), never the
-        principal this owner-composed handler was issued for: a session dispatch
-        runs it as another principal. The granted workspace is the server binding's.
+        Exact references and the pack builder read here; search never does, because
+        a search hydrates no body (see `_preview_candidates`).
         """
-        granted = self._binding().workspace_id
-        grant = local_owner_label_grant(
-            principal_id=context.principal,
-            workspace_id=context.workspace_id,
-            # A binding with no granted workspace grants no evidence label.
-            granted_workspace="" if granted is None else granted,
-        )
         return read_authorized_memory_snapshot(
             connection,
             workspace_id=context.workspace_id,
             resolution_instant_us=resolution_instant_us,
             view=view,
-            label_grant=grant,
+            label_grant=self._label_grant(context),
         ).values
+
+    def _preview_candidates(
+        self,
+        connection: Any,
+        context: OperationContext,
+        *,
+        resolution_instant_us: int,
+        view: str,
+    ) -> tuple[PreviewCandidate, ...]:
+        """The engineering observations the effective caller's grant admits, as
+        bounded previews, or the projection refusal that says why none can be served.
+
+        The frontier is frozen from identities and evidence links first; only the
+        admitted versions' projection rows are then read. A version with no row is
+        `projection_unavailable` and one with a stale row is `stale_projection`, both
+        retryable, and neither is answered from the stored body.
+        """
+        refused: str | None = None
+        try:
+            return read_authorized_previews(
+                connection,
+                workspace_id=context.workspace_id,
+                resolution_instant_us=resolution_instant_us,
+                view=view,
+                label_grant=self._label_grant(context),
+            )
+        except PreviewProjectionUnavailable:
+            refused = ERROR_CODE_PROJECTION_UNAVAILABLE
+        except PreviewProjectionStale:
+            refused = ERROR_CODE_STALE_PROJECTION
+        # Raised after the handlers end, so the storage error's text is never
+        # chained to the refusal (the tree's sentinel-then-raise convention).
+        if refused == ERROR_CODE_STALE_PROJECTION:
+            raise OperationError(
+                ERROR_CODE_STALE_PROJECTION,
+                _MESSAGE_STALE_PROJECTION,
+                retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+            )
+        raise OperationError(
+            ERROR_CODE_PROJECTION_UNAVAILABLE,
+            _MESSAGE_PROJECTION_UNAVAILABLE,
+            retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+        )
 
     def _timestamp_us(self, value: str) -> int:
         import datetime as _dt
@@ -542,7 +616,10 @@ class EngineeringHandlers:
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection = self._connection()
-        limit = SEARCH_DEFAULT_LIMIT if request.limit is None else request.limit
+        limit = SEARCH_DEFAULT_LIMIT
+        if request.limit is not None:
+            # The contract states 100 as the hard maximum of one page.
+            limit = min(request.limit, SEARCH_MAX_LIMIT)
         view = request.view or "accepted"
         mode = request.applicability_mode or "diagnostic"
         if view not in _ENGINEERING_VIEWS or mode not in _APPLICABILITY_MODES:
@@ -607,27 +684,20 @@ class EngineeringHandlers:
                 supplied=supplied,
             )
         else:
-            # Both modes hydrate only versions the effective caller's evidence
-            # grant admits: a denied version never reaches scoring, previews,
-            # totals or the continuation's snapshot digest.
-            values = self._authorized_values(
+            # Both modes read only versions the effective caller's evidence grant
+            # admits, and only their bounded projection rows: a denied version
+            # never reaches scoring, previews, totals or the continuation's
+            # snapshot digest, and no version's body is read at any point.
+            admitted = self._preview_candidates(
                 connection,
                 context,
                 resolution_instant_us=resolved_at_us,
                 view=_GOVERNED_VIEWS[view],
             )
-            candidates: list[GovernedCandidate] = []
+            eligible: list[PreviewCandidate] = []
             evaluated = 0
-            for value in values:
-                record = value.record
-                if record.domain_scope != OBSERVATION_DOMAIN:
-                    continue
-                content = record.content
-                if (
-                    view == "accepted"
-                    and isinstance(content, Mapping)
-                    and content.get("assertion_basis") == "hypothesis"
-                ):
+            for candidate in admitted:
+                if view == "accepted" and candidate.assertion_basis == "hypothesis":
                     # §8.2: a hypothesis stays marked and is excluded from
                     # accepted-facts selection even after governance accepts it.
                     continue
@@ -639,37 +709,23 @@ class EngineeringHandlers:
                         raise application_refusal(
                             ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CURRENT_SAFE_BOUND
                         )
-                    if not _proven_matched(
-                        connection, context.workspace_id, record, [target]
+                    if not _proven_version(
+                        connection,
+                        context.workspace_id,
+                        candidate.record_id,
+                        candidate.version,
+                        candidate.evidence_disposition == "available"
+                        and candidate.evidence_available,
+                        [target],
                     ):
                         continue
-                elif request.repository_target is not None:
-                    if not isinstance(content, Mapping):
-                        continue
-                    applicability = content.get("applicability")
-                    if not isinstance(applicability, Mapping):
-                        continue
-                    if (
-                        applicability.get("repository_id")
-                        != request.repository_target.repository_id
-                    ):
-                        continue
-                candidates.append(
-                    GovernedCandidate(
-                        recorded_at_us=value.recorded_at_us,
-                        record=dataclasses.replace(
-                            record, content=_plain(record.content)
-                        ),
-                    )
-                )
-            frontier = GovernedFrontier(
-                workspace_id=context.workspace_id,
-                candidates=tuple(candidates),
-                filters_applied=GOVERNED_FRONTIER_FILTERS,
-            )
-            ordered = rank_governed(
-                frontier, request.query, order=None, limit=len(frontier.candidates)
-            )
+                elif (
+                    request.repository_target is not None
+                    and candidate.repository_id != request.repository_target.repository_id
+                ):
+                    continue
+                eligible.append(candidate)
+            ordered = rank_previews(eligible, request.query)
             preferred = app_storage.preferred_targets(
                 connection,
                 workspace_id=context.workspace_id,
@@ -680,18 +736,23 @@ class EngineeringHandlers:
                 ordered = tuple(
                     sorted(
                         ordered,
-                        key=lambda record: (
-                            0
-                            if (
-                                record.provenance.identity.record_id,
-                                record.provenance.identity.version,
-                            )
-                            in preferred
-                            else 1,
+                        key=lambda candidate: (
+                            0 if (candidate.record_id, candidate.version) in preferred else 1,
                         ),
                     )
                 )
-            snapshot_digest = token_digest([record.to_wire() for record in ordered])
+            # The snapshot a continuation is bound to: the ranked versions, each by
+            # its stored content digest, under the projection version that
+            # rendered them. It names the content without reading it.
+            snapshot_digest = token_digest(
+                {
+                    "projection_version": PROJECTION_VERSION,
+                    "ordered": [
+                        [candidate.record_id, candidate.version, candidate.content_digest]
+                        for candidate in ordered
+                    ],
+                }
+            )
             start = 0
             if supplied is not None:
                 if supplied.get("s") != snapshot_digest:
@@ -701,10 +762,8 @@ class EngineeringHandlers:
                     raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
                 start = offset
             previews = []
-            for record in ordered[start : start + limit]:
-                rendered = _observation_preview(record)
-                if rendered is None:
-                    continue
+            for candidate in ordered[start : start + limit]:
+                rendered = _render_preview(candidate)
                 if target is not None:
                     rendered["applicability"] = "matched"
                 elif request.repository_target is not None:
@@ -732,6 +791,9 @@ class EngineeringHandlers:
                 previews.append(rendered)
             total = len(ordered)
 
+        # The response stays inside its byte cap: a page that would pass it ends
+        # early and continues from what it held, in either view family.
+        previews = _within_response_cap(previews)
         continuation = None
         if start + len(previews) < total:
             continuation = PROCESS_CONTINUATION_TOKENS.encode(
@@ -1291,151 +1353,31 @@ class EngineeringHandlers:
                     }
                 )
 
-        sections: list[dict[str, Any]] = []
-        citations: list[dict[str, Any]] = []
-        for ordinal, (record, partition) in enumerate(selected, 1):
-            content = record.content if isinstance(record.content, Mapping) else {}
-            title = str(content.get("title") or record.provenance.identity.record_id)
-            body = str(content.get("summary") or content.get("what") or "")
-            citation_id = f"cite-{ordinal}"
-            sections.append(
-                {
-                    "section_id": f"sec-{ordinal}",
-                    "kind": "decision_summary",
-                    "partition": partition,
-                    "content": f"{title}. {body}".strip(),
-                    "citation_ids": [citation_id],
-                }
-            )
-            citations.append(
-                {
-                    "citation_id": citation_id,
-                    "record_ref": {
-                        "record_id": record.provenance.identity.record_id,
-                        "version": record.provenance.identity.version,
-                    },
-                }
-            )
-        for ordinal, item in enumerate(working, len(sections) + 1):
-            sections.append(
-                {
-                    "section_id": f"sec-{ordinal}",
-                    "kind": "working_context",
-                    "partition": "working_context",
-                    "content": (
-                        f"{item['objective']} Unresolved: "
-                        + "; ".join(str(u) for u in item["unresolved"])
-                    ).strip(),
-                    "citation_ids": [],
-                }
-            )
-
         omissions: list[dict[str, Any]] = []
         if covered:
-            uncertainties = [
-                (
-                    "current_safe: every cited record is proven `matched` at every "
-                    "target by whole-file dependency digests recorded by a trusted "
-                    "source; records whose applicability is unknown, potentially stale "
-                    "or invalid are omitted."
-                ),
-            ]
+            notice = (
+                "current_safe: every cited record is proven `matched` at every "
+                "target by whole-file dependency digests recorded by a trusted "
+                "source; records whose applicability is unknown, potentially stale "
+                "or invalid are omitted."
+            )
             if unproven:
                 omissions.append({"field": "sections", "reason": "applicability_unproven"})
         else:
-            uncertainties = [
-                "Target applicability is not evaluated in this build; every applicability statement is `not_evaluated`.",
-            ]
-
-        def render(
-            pack_sections: list[dict[str, Any]],
-            pack_citations: list[dict[str, Any]],
-        ) -> str:
-            # The uncertainty notice is mandatory: it is rendered before any
-            # optional content and is never dropped to fit a budget (§12.5).
-            notice = "[uncertainty] " + uncertainties[0]
-            parts = [notice]
-            for section in pack_sections:
-                label = f"[{section['partition']}]"
-                cites = " ".join(f"[{c}]" for c in section["citation_ids"])
-                parts.append(f"{label} {section['content']} {cites}".strip())
-            return "\n\n".join(parts)
-
-        # Budget reconciliation: drop optional sections lowest-priority first,
-        # bounded by the section count; mandatory notices are never dropped.
-        while True:
-            text = render(sections, citations)
-            token_count = len(text.split())
-            byte_count = len(text.encode("utf-8"))
-            if token_count <= effective_tokens and byte_count <= effective_bytes:
-                break
-            droppable = [
-                index
-                for index, section in enumerate(sections)
-                if section["partition"] in _SECTION_DROP_ORDER
-            ]
-            if not droppable or len(sections) <= 1:
-                raise OperationError(
-                    ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
-                    _MESSAGE_BUDGET,
-                    retry_class=DEFAULT_RETRY_CLASSIFICATION[
-                        ERROR_CODE_TOKEN_LIMIT_EXCEEDED
-                    ],
-                )
-            drop = droppable[-1]
-            dropped = sections.pop(drop)
-            omissions.append(
-                {"field": dropped["section_id"], "reason": "budget"}
+            notice = (
+                "Target applicability is not evaluated in this build; every "
+                "applicability statement is `not_evaluated`."
             )
-            if len(omissions) > len(_SECTION_DROP_ORDER) * 64:
-                raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_BUDGET)
 
-        rendering = {
-            "text": text,
-            "renderer_version": RENDERER_VERSION,
-            "token_count": token_count,
-            "byte_count": byte_count,
-        }
-        budget: dict[str, Any] = {
-            "effective": {"model_tokens": effective_tokens, "model_bytes": effective_bytes},
-        }
-        if request.budget is not None:
-            budget["requested"] = {
-                key: value
-                for key, value in {
-                    "model_tokens": request.budget.model_tokens,
-                    "model_bytes": request.budget.model_bytes,
-                    "hydrations": request.budget.hydrations,
-                    "evidence_bytes": request.budget.evidence_bytes,
-                }.items()
-                if value is not None
-            }
-        budget["rendered_tokens"] = token_count
-        budget["rendered_bytes"] = byte_count
-        budget["source_bytes_read"] = 0
-        budget["hydrations"] = 0
-        # A statement about the pack's records: `matched` only when current_safe
-        # proved every included record at that target; nothing is claimed about
-        # an empty pack.
-        status = "matched" if covered and selected else "not_evaluated"
-        applicability = [
-            {"snapshot": target.to_wire(), "status": status}
-            for target in request.targets
-        ]
-        normalized_request: dict[str, Any] = {
-            "query": request.query,
-            "profile": request.profile,
-        }
-        reproducibility: dict[str, Any] = {
-            "builder_version": BUILDER_VERSION,
-            "renderer_version": RENDERER_VERSION,
-            "artifact_canonicalization": "rfc8785",
-            "resolution_instant_us": resolved_at_us,
-        }
-        if covered:
-            normalized_request["applicability_mode"] = mode
-            reproducibility["applicability_evaluator"] = EVALUATOR_VERSION
-            reproducibility["source_coverage"] = [
+        build_context = BuildContext(
+            resolved_at_us=resolved_at_us,
+            workspace_id=context.workspace_id,
+            principal_id=context.principal,
+            query=request.query,
+            profile=request.profile,
+            mode=mode,
+            targets=tuple(target.to_wire() for target in request.targets),
+            source_coverage=tuple(
                 {
                     "snapshot_id": target.snapshot_id,
                     "stream_id": target.stream_id,
@@ -1443,32 +1385,61 @@ class EngineeringHandlers:
                     "manifest_digest": target.manifest_digest,
                 }
                 for target in covered
-            ]
-
-        pack: dict[str, Any] = {
-            "format_version": "engineering_context.v1",
-            "normalized_request": normalized_request,
-            "targets": [target.to_wire() for target in request.targets],
-            "profile": request.profile,
-            "sections": sections,
-            "citations": citations,
-            "conflicts": [],
-            "uncertainties": uncertainties,
-            "omissions": omissions,
-            "rendering": rendering,
-            "budget": budget,
-            "applicability": applicability,
-            "authorization_context": {
-                "workspace_id": context.workspace_id,
-                "principal_id": context.principal,
-            },
-            "reproducibility": reproducibility,
-            "fresh_authorization_required": True,
-        }
-        canonical = to_canonical_json(pack)
-        pack_id = "sha256:" + __import__("hashlib").sha256(
-            canonical.encode("utf-8")
-        ).hexdigest()
-        pack["pack_id"] = pack_id
-        pack["reproducibility"]["artifact_checksum"] = pack_id
+            ),
+            requested_budget=(
+                None
+                if request.budget is None
+                else {
+                    key: value
+                    for key, value in {
+                        "model_tokens": request.budget.model_tokens,
+                        "model_bytes": request.budget.model_bytes,
+                        "hydrations": request.budget.hydrations,
+                        "evidence_bytes": request.budget.evidence_bytes,
+                    }.items()
+                    if value is not None
+                }
+            ),
+            effective_tokens=effective_tokens,
+            effective_bytes=effective_bytes,
+            projection_version=PROJECTION_VERSION,
+            applicability_evaluator=EVALUATOR_VERSION,
+        )
+        try:
+            pack = build_pack(
+                build_context,
+                tuple(
+                    PackRecord(
+                        record_id=record.provenance.identity.record_id,
+                        version=record.provenance.identity.version,
+                        partition=partition,
+                        title=str(
+                            record.content.get("title")
+                            or record.provenance.identity.record_id
+                        ),
+                        body=str(
+                            record.content.get("summary") or record.content.get("what") or ""
+                        ),
+                    )
+                    for record, partition in selected
+                ),
+                tuple(
+                    WorkingItem(
+                        checkpoint_id=item["checkpoint_id"],
+                        sequence=item["sequence"],
+                        objective=item["objective"],
+                        unresolved=tuple(str(u) for u in item["unresolved"]),
+                    )
+                    for item in working
+                ),
+                notice=notice,
+                uncertainties=[notice],
+                omissions=omissions,
+            )
+        except MandatoryContextTooLarge as error:
+            raise OperationError(
+                ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+                _MESSAGE_BUDGET,
+                retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_TOKEN_LIMIT_EXCEEDED],
+            ) from error
         return {"pack": pack}

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -57,6 +58,45 @@ class AuthorizedMemorySnapshot:
     resolution_instant_us: int
     view: str
     values: tuple[GovernedRecordValue, ...]
+    digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedVersion:
+    """One sealed version an evidence-label grant admits, as identity facts only.
+
+    Every field is an identity, a currentness fact or a stored digest: nothing here
+    is read from `content_json`, `claim_json` or any other body column, so a caller
+    holding only this value has hydrated no content. `has_evidence` is whether the
+    exact version itself links any evidence.
+    """
+
+    assembly_id: str
+    record_id: str
+    version_id: str
+    record_type: str
+    domain_scope: str
+    layer: str
+    governance_disposition: str | None
+    evidence_disposition: str
+    content_digest: str
+    recorded_at_us: int
+    has_evidence: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedMemoryFrontier:
+    """The frozen authorized frontier of one view, before anything is hydrated.
+
+    `versions` are the admitted versions in the resolver's own order;
+    `support_assembly_ids` are the admitted records' whole transition chains, which a
+    later hydration needs and this value does not read.
+    """
+
+    resolution_instant_us: int
+    view: str
+    versions: tuple[AuthorizedVersion, ...]
+    support_assembly_ids: tuple[str, ...]
     digest: str
 
 
@@ -421,6 +461,15 @@ def create_memory_record(
             settlement.settled_at_us,
         ),
     )
+    if claim.domain_scope == _ENGINEERING_DOMAIN:
+        # The bounded preview `engineering.search` serves is written with the
+        # version, so a search never has to read this content to preview it.
+        # Imported at use: engineering_preview reads this module's frontier.
+        from omnivia_core_runtime.storage import engineering_preview
+
+        engineering_preview.record_preview(
+            connection, workspace_id=workspace_id, assembly_id=assembly_id
+        )
     connection.execute(
         "INSERT INTO omnivia_application_claim_lineage "
         "(workspace_id, assembly_id, governed_record_version_id, operation, audit_ref, "
@@ -497,28 +546,73 @@ def create_memory_record(
     return result.to_wire()
 
 
-def read_authorized_memory_snapshot(
+@contextmanager
+def read_snapshot(connection: sqlite3.Connection) -> Iterator[None]:
+    """One read snapshot: begin unless the caller already holds a transaction.
+
+    Commits only a transaction this block began, and rolls it back on any failure, so
+    a caller composing several reads inside its own transaction gets its own snapshot
+    back, unended.
+    """
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        yield
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
+
+
+def read_authorized_memory_frontier(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     resolution_instant_us: int,
     view: str | None,
     label_grant: EvidenceLabelGrant,
-) -> AuthorizedMemorySnapshot:
-    """Select identity and ACL facts first, then hydrate only admitted assemblies."""
+    domain_scope: str | None = None,
+    body_free: bool = True,
+) -> AuthorizedMemoryFrontier:
+    """Select identity and ACL facts only: the admitted versions, hydrating nothing.
+
+    Every statement reads `omnivia_authoritative_governed_version_metadata`, the
+    sealed versions without their body column, so nothing here can name a body. The
+    evidence-label grant is evaluated here, from identities and evidence links, so a
+    caller that reads anything about an admitted version afterwards reads it for a
+    version the grant already admitted. `domain_scope`, when given, narrows
+    the versions considered by a stored identity fact before any label is folded; a
+    record never changes domain, so it never changes which versions are admitted
+    within it.
+
+    `body_free` selects that metadata view (migration 0053). The legacy memory family
+    passes False to read 0009's full view instead, still selecting no body column, so
+    it runs on schemas that predate 0053.
+    """
+    versions = (
+        "omnivia_authoritative_governed_version_metadata"
+        if body_free
+        else "omnivia_authoritative_governed_versions"
+    )
     resolved_view = resolve_governed_record_view(view)
-    owns_transaction = not connection.in_transaction
-    if owns_transaction:
-        connection.execute("BEGIN")
-    try:
+    with read_snapshot(connection):
+        domain_filter = "" if domain_scope is None else "AND domain_scope = ? "
         rows = connection.execute(
             "SELECT assembly_id, governed_record_id, governed_record_version_id, layer, "
             "governance_disposition, authority_level, valid_from_us, valid_to_us, "
-            "recorded_at_us, append_ordinal, correlation_kind, correlation_id "
-            "FROM omnivia_authoritative_governed_versions "
-            "WHERE workspace_id = ? AND recorded_at_us <= ? "
+            "recorded_at_us, append_ordinal, correlation_kind, correlation_id, "
+            "record_type, domain_scope, content_digest, evidence_disposition "
+            f"FROM {versions} "
+            f"WHERE workspace_id = ? AND recorded_at_us <= ? {domain_filter}"
             "ORDER BY governed_record_id, recorded_at_us, append_ordinal, assembly_id",
-            (workspace_id, resolution_instant_us),
+            (
+                workspace_id,
+                resolution_instant_us,
+                *(() if domain_scope is None else (domain_scope,)),
+            ),
         ).fetchall()
         # This first phase may read only identities and the minimum currentness
         # facts required to select the view.  In particular, do not join the
@@ -531,7 +625,7 @@ def read_authorized_memory_snapshot(
             "FROM omnivia_record_supersessions r "
             "JOIN omnivia_governed_version_seals s "
             "ON s.workspace_id = r.workspace_id AND s.assembly_id = r.assembly_id "
-            "JOIN omnivia_authoritative_governed_versions t "
+            f"JOIN {versions} t "
             "ON t.workspace_id = r.workspace_id AND t.assembly_id = r.assembly_id "
             "AND t.governed_record_version_id = r.target_version_id "
             "WHERE r.workspace_id = ? "
@@ -750,32 +844,75 @@ def read_authorized_memory_snapshot(
                 },
             }
         )
+        selected_by_assembly = {str(row[0]): row for row in selected}
+
+        def admitted(assembly_id: str) -> AuthorizedVersion:
+            row = selected_by_assembly[assembly_id]
+            return AuthorizedVersion(
+                assembly_id=assembly_id,
+                record_id=str(row[1]),
+                version_id=str(row[2]),
+                record_type=str(row[12]),
+                domain_scope=str(row[13]),
+                layer=str(row[3]),
+                governance_disposition=None if row[4] is None else str(row[4]),
+                evidence_disposition=str(row[15]),
+                content_digest=str(row[14]),
+                recorded_at_us=int(row[8]),
+                has_evidence=bool(evidence_by_assembly.get(assembly_id)),
+            )
+
+        return AuthorizedMemoryFrontier(
+            resolution_instant_us=resolution_instant_us,
+            view=resolved_view,
+            versions=tuple(admitted(assembly_id) for assembly_id in authorized_ids),
+            support_assembly_ids=authorized_support_ids,
+            digest=_digest(digest_document),
+        )
+
+
+def read_authorized_memory_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    view: str | None,
+    label_grant: EvidenceLabelGrant,
+) -> AuthorizedMemorySnapshot:
+    """Select identity and ACL facts first, then hydrate only admitted assemblies."""
+    with read_snapshot(connection):
+        frontier = read_authorized_memory_frontier(
+            connection,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            view=view,
+            label_grant=label_grant,
+            body_free=False,
+        )
         values = hydrate_authorized_governed_record_values(
             connection,
             workspace_id=workspace_id,
             resolution_instant_us=resolution_instant_us,
-            assembly_ids=authorized_ids,
-            support_assembly_ids=authorized_support_ids,
+            assembly_ids=tuple(version.assembly_id for version in frontier.versions),
+            support_assembly_ids=frontier.support_assembly_ids,
         )
-    except BaseException:
-        if owns_transaction:
-            connection.execute("ROLLBACK")
-        raise
-    if owns_transaction:
-        connection.execute("COMMIT")
     return AuthorizedMemorySnapshot(
         resolution_instant_us=resolution_instant_us,
-        view=resolved_view,
+        view=frontier.view,
         values=values,
-        digest=_digest(digest_document),
+        digest=frontier.digest,
     )
 
 
 __all__ = [
+    "AuthorizedMemoryFrontier",
     "AuthorizedMemorySnapshot",
+    "AuthorizedVersion",
     "IdentifierAllocator",
     "create_memory_record",
     "random_identifier",
+    "read_authorized_memory_frontier",
     "read_authorized_memory_snapshot",
+    "read_snapshot",
     "resolve_memory_claim_evidence",
 ]
