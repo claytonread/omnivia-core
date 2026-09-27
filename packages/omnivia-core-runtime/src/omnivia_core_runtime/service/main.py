@@ -12,7 +12,9 @@ when one is needed, waits for that service to answer a live readiness call, prin
 a versioned result document and exits. `--init` (R004-10) does not serve either: it
 creates the workspace a service can then own, prints its own versioned result, and
 starts nothing. `--capture-source` briefly becomes the fenced workspace owner, commits
-one already-local file as immutable evidence, prints a redacted result, and exits.
+one already-local file as immutable evidence, prints a redacted result, and exits;
+`--import-legacy` does the same for one legacy Engineering Memory note document,
+committing each note as a proposed candidate (`legacy_import`).
 Every other mode here belongs to a process that *is* the service.
 The CLI and, later, the MCP adapter reach both shared paths by launching this
 script -- never by importing the runtime -- so there is one implementation of
@@ -89,6 +91,11 @@ from omnivia_core_runtime.service.installation_bootstrap import (
 )
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
+)
+from omnivia_core_runtime.service.legacy_import import (
+    LegacyImportRefused,
+    LegacyImportResult,
+    import_legacy_notes,
 )
 from omnivia_core_runtime.service.managed_start import (
     ManagedStartStatus,
@@ -508,6 +515,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="captured source media type (default: text/plain)",
     )
     parser.add_argument(
+        "--import-legacy",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "do not serve; while holding normal workspace ownership, import one "
+            "omnivia.engineering-legacy-import.v1 document of legacy Engineering "
+            "Memory notes as proposed candidate records, never accepted knowledge, "
+            "and print a redacted versioned receipt. Idempotent and resumable. The "
+            "document path is never persisted or returned"
+        ),
+    )
+    parser.add_argument(
         "--managed-start-log",
         default=None,
         type=Path,
@@ -742,6 +762,25 @@ def _capture_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_legacy(args: argparse.Namespace) -> int:
+    """Run the service-owned legacy note import with the same redacted output."""
+    try:
+        result = import_legacy_notes(
+            workspace_root=args.workspace,
+            installation_root=args.installation_state,
+            document_path=args.import_legacy,
+            core_version=args.core_version,
+        )
+    except LegacyImportRefused as refused:
+        result = LegacyImportResult(status="refused", reason=str(refused))
+    sys.stdout.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
+    sys.stdout.flush()
+    if not result.accepted:
+        sys.stderr.write(result.reason + "\n")
+        return 1
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -812,10 +851,20 @@ def main(
         # itself, and starts nothing.
         return _init(args)
 
+    if args.capture_source is not None and args.import_legacy is not None:
+        sys.stderr.write(
+            "choose one maintenance mode: --capture-source or --import-legacy\n"
+        )
+        return 2
+
     if args.capture_source is not None:
         # A bounded maintenance process: it owns and fences the workspace exactly
         # like the server, publishes no endpoint and exits after one append.
         return _capture_source(args)
+
+    if args.import_legacy is not None:
+        # The same kind of process, committing one fenced transaction per note.
+        return _import_legacy(args)
 
     if args.managed_start:
         # This process serves nothing and owns nothing. It arbitrates, may start an
