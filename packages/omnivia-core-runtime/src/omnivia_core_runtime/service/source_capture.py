@@ -936,6 +936,18 @@ def _require_bound_checkout(
         )
 
 
+def _existing_identity(
+    runner: ServiceRunner, snapshot_id: str
+) -> tuple[object, ...] | None:
+    assert runner.connection is not None
+    row = runner.connection.execute(
+        "SELECT repository_id, snapshot_kind, manifest_digest, capture_status "
+        "FROM omnivia_engineering_snapshots WHERE workspace_id = ? AND snapshot_id = ?",
+        (runner.workspace_id, snapshot_id),
+    ).fetchone()
+    return None if row is None else tuple(row)
+
+
 def capture_working_tree_snapshot(
     *,
     workspace_root: Path,
@@ -992,6 +1004,14 @@ def capture_working_tree_snapshot(
         manifest_bytes = canonical_document(document).encode()
         manifest_digest = f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
         capture_status = "complete" if manifest.complete else "incomplete"
+        expected = (repository_id, "working_tree", manifest_digest, capture_status)
+        # Refuse a conflicting retry before publishing bytes nothing would reference;
+        # the fenced transaction below re-checks against a race.
+        prior = _existing_identity(runner, snapshot_id)
+        if prior is not None and prior != expected:
+            raise SourceCaptureRefused(
+                "snapshot identity already names different content"
+            )
         blobs = {f.digest: f.content for f in manifest.files}
         blobs[manifest_digest] = manifest_bytes
         for digest, content in blobs.items():
@@ -1004,20 +1024,10 @@ def capture_working_tree_snapshot(
             workspace_id=runner.workspace_id,
             fencing_generation=runner.generation,
         ):
-            existing = runner.connection.execute(
-                "SELECT repository_id, snapshot_kind, manifest_digest, capture_status "
-                "FROM omnivia_engineering_snapshots "
-                "WHERE workspace_id = ? AND snapshot_id = ?",
-                (runner.workspace_id, snapshot_id),
-            ).fetchone()
+            existing = _existing_identity(runner, snapshot_id)
             status = "captured"
             if existing is not None:
-                if tuple(existing) != (
-                    repository_id,
-                    "working_tree",
-                    manifest_digest,
-                    capture_status,
-                ):
+                if existing != expected:
                     raise SourceCaptureRefused(
                         "snapshot identity already names different content"
                     )

@@ -224,6 +224,26 @@ def test_snapshot_retry_is_idempotent_and_conflict_refuses(tmp_path: Path) -> No
     assert other.status == "captured" and other.manifest_digest != first.manifest_digest
 
 
+def test_conflicting_retry_refuses_before_publishing_any_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    env.snapshot("repo-1", root)
+    blob_dir = env.workspace / "blobs" / "sha256"
+    before = sorted(p.name for p in blob_dir.iterdir())
+
+    def unexpected(*_args: object) -> Path:
+        raise AssertionError("publish_blob called for a conflicting retry")
+
+    monkeypatch.setattr(source_capture, "publish_blob", unexpected)
+    (root / "a.py").write_bytes(b"different\n")
+    with pytest.raises(SourceCaptureRefused, match="different content"):
+        env.snapshot("repo-1", root)
+    assert sorted(p.name for p in blob_dir.iterdir()) == before
+
+
 def test_snapshot_refuses_unregistered_and_mismatched_checkout(tmp_path: Path) -> None:
     env = _Env(tmp_path)
     root = _repo(tmp_path)
