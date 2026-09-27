@@ -952,9 +952,11 @@ def main(
             bounded `stop()` -- and ahead of `http_server`'s own unwind even when
             HTTP later defers with `ResourceReleaseBlocked`.
             """
-            server.request_stop()
-            if http is not None:
-                http.request_stop()
+            try:
+                server.request_stop()
+            finally:
+                if http is not None:
+                    http.request_stop()
 
         started.lifecycle.resources.push("transport_admission", _request_transport_stop)
 

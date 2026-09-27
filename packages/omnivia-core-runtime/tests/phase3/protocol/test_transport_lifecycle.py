@@ -21,6 +21,7 @@ from omnivia_core_runtime.ownership.identity import (
 )
 from omnivia_core_runtime.service.lifecycle import (
     ReadinessRequirements,
+    ResourceReleaseBlocked,
     ServiceState,
 )
 from omnivia_core_runtime.service.main import _router_for
@@ -1058,6 +1059,42 @@ def test_a_held_gate_blocks_dispatch_and_service_work_until_released(
     finally:
         client.close()
         server.stop()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_stop_during_gate_wait_does_not_start_a_local_dispatch(
+    socket_path: Path,
+) -> None:
+    dispatcher = RecordingDispatcher()
+    gate = _ObservedGate()
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), dispatcher),  # type: ignore[arg-type]
+        endpoint=LocalEndpoint(EndpointScheme.UNIX, str(socket_path)),
+        gate=gate,  # type: ignore[arg-type]
+        timeout=5.0,
+    )
+    server.start()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        gate._lock.acquire()
+        try:
+            client.settimeout(5.0)
+            client.connect(str(socket_path))
+            client.sendall(encode_frame(_request_payload()))
+            assert gate.waiting.wait(timeout=5), "the handler never reached the gate"
+            with pytest.raises(ResourceReleaseBlocked):
+                server.stop()
+            assert dispatcher.seen == []
+        finally:
+            gate._lock.release()
+        server.stop()
+        assert dispatcher.seen == []
+    finally:
+        client.close()
+        if server._listener is not None:
+            server.stop()
 
 
 @pytest.mark.skipif(

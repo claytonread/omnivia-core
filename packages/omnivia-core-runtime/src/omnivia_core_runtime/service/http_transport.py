@@ -817,15 +817,13 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             authenticated = self.server_adapter.authenticated_dispatch
             with gate if gate is not None else nullcontext():
-                if self.server_adapter.closing.is_set():
-                    # `request_stop` was called, possibly while this handler was
-                    # waiting for the gate above. Either way the check runs
-                    # immediately before the one call that would actually
-                    # dispatch, so a handler that waited out the gate cannot go
-                    # on to admit a new route once closing has begun.
-                    self._refuse(HTTPStatus.SERVICE_UNAVAILABLE)
-                    return
-                if session is None or authenticated is None:
+                # Check immediately before dispatch, including after a wait for
+                # the gate. Send the refusal only after releasing the gate: a
+                # slow peer must not hold up SQLite work while reading a 503.
+                closing = self.server_adapter.closing.is_set()
+                if closing:
+                    result = None
+                elif session is None or authenticated is None:
                     result = self.server_adapter.router.route(document)
                 else:
                     def dispatch(request: RequestEnvelope) -> ResponseEnvelope:
@@ -834,6 +832,9 @@ class _Handler(BaseHTTPRequestHandler):
                     result = self.server_adapter.router.route(
                         document, dispatch=dispatch
                     )
+            if result is None:
+                self._refuse(HTTPStatus.SERVICE_UNAVAILABLE)
+                return
             payload = canonical_json_bytes(result.to_wire())
         except (ProtocolError, ProbeError, ContractDecodeError, OVC1Error):
             self._refuse(HTTPStatus.BAD_REQUEST)
@@ -1093,6 +1094,9 @@ class HttpListener:
         if failed:
             raise HttpTransportError("HTTP transport could not bind")
         assert service is not None
+        # A stopped listener can be started again on the same instance. Clear
+        # the old stop signal only after the new bind has succeeded.
+        self.closing.clear()
         service.adapter = self
         service.tls = tls
         self._service = service

@@ -34,6 +34,7 @@ from omnivia_core_runtime.service.http_transport import (
     HttpListener,
     HttpTls,
     HttpTransportError,
+    _Handler,
     parse_http_endpoint,
 )
 from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked, ResourceStack
@@ -638,6 +639,61 @@ def test_a_held_gate_blocks_dispatch_until_released_then_serves_cleanly() -> Non
     assert len(dispatch.calls) == 1
 
 
+def test_a_closing_refusal_does_not_hold_the_sqlite_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatch = CountingDispatch()
+    gate = _ObservedGate()
+    server = HttpListener(
+        router=_router(dispatch),
+        principal=PRINCIPAL,
+        resolver=_resolver,
+        gate=gate,  # type: ignore[arg-type]
+    )
+    refused = threading.Event()
+    release_refusal = threading.Event()
+    original_refuse = _Handler._refuse
+
+    def held_refusal(handler: Any, status: Any, **kwargs: Any) -> None:
+        refused.set()
+        assert release_refusal.wait(timeout=5), "the refusal was never released"
+        original_refuse(handler, status, **kwargs)
+
+    monkeypatch.setattr(_Handler, "_refuse", held_refusal)
+    server.start()
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        result["status"], result["body"] = _post(
+            int(server.url.rsplit(":", 1)[1]),
+            APPLICATION_PATH,
+            canonical_json_bytes(_request().to_wire()),
+            credential=ACCEPTED_CREDENTIAL,
+        )
+
+    worker = threading.Thread(target=call, daemon=True)
+    try:
+        gate._lock.acquire()
+        try:
+            worker.start()
+            assert gate.waiting.wait(timeout=5), "the handler never reached the gate"
+            server.request_stop()
+        finally:
+            gate._lock.release()
+        assert refused.wait(timeout=5), "the closing request was not refused"
+        assert gate._lock.acquire(timeout=0.5), (
+            "the HTTP response write retained the SQLite gate"
+        )
+        gate._lock.release()
+    finally:
+        release_refusal.set()
+        worker.join(timeout=5)
+        server.stop()
+    assert not worker.is_alive()
+    assert result["status"] == 503
+    assert dispatch.calls == []
+
+
 # --- the bind policy ----------------------------------------------------------
 
 
@@ -658,6 +714,26 @@ def test_the_default_bind_is_ipv4_loopback_and_serves() -> None:
         server.stop()
 
     assert status == 200
+
+
+def test_http_listener_can_restart_on_the_same_instance() -> None:
+    dispatch = CountingDispatch()
+    server = HttpListener(
+        router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver
+    )
+    for _ in range(2):
+        url = server.start()
+        try:
+            status, _ = _post(
+                int(url.rsplit(":", 1)[1]),
+                APPLICATION_PATH,
+                canonical_json_bytes(_request().to_wire()),
+                credential=ACCEPTED_CREDENTIAL,
+            )
+            assert status == 200
+        finally:
+            server.stop()
+    assert len(dispatch.calls) == 2
 
 
 @pytest.mark.skipif(not socket.has_ipv6, reason="requires IPv6")

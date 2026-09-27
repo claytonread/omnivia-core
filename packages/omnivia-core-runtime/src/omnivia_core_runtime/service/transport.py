@@ -929,6 +929,8 @@ class LocalSocketServer:
         if self.service_work is None:
             return
         with self.gate if self.gate is not None else nullcontext():
+            if self._stop is not None and self._stop.is_set():
+                return
             try:
                 self.service_work()
             except Exception:  # noqa: BLE001 - see above
@@ -940,6 +942,10 @@ class LocalSocketServer:
             return
         document = decode_frame(raw)
         with self.gate if self.gate is not None else nullcontext():
+            # A stop may be requested while the frame read or gate wait is in
+            # progress. Never begin a fresh dispatch after that signal.
+            if self._stop is not None and self._stop.is_set():
+                return
             if is_local_control(document):
                 # Answered here and nothing below runs. A control is not a request and
                 # not a probe: it names its own kind, so it is never handed to a
