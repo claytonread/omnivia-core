@@ -1,0 +1,35 @@
+{
+  "lane": "engineering-memory-qualification",
+  "recorded_at": "2026-09-27T09:14:55.262483+00:00",
+  "environment": {
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "cpu_count": 18
+  },
+  "corpus_observations": 10000,
+  "seed_seconds": 78.6,
+  "operations": {
+    "engineering.search": {
+      "n": 100,
+      "p50_ms": 650.225,
+      "p95_ms": 725.314,
+      "p99_ms": 810.13,
+      "mean_ms": 659.169
+    },
+    "engineering.context.build": {
+      "n": 30,
+      "p50_ms": 2963.083,
+      "p95_ms": 3298.661,
+      "p99_ms": 3333.706,
+      "mean_ms": 3020.024
+    },
+    "continuity.checkpoint.append": {
+      "n": 100,
+      "p50_ms": 1.05,
+      "p95_ms": 1.548,
+      "p99_ms": 8.607,
+      "mean_ms": 1.348
+    }
+  }
+}

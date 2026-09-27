@@ -157,6 +157,7 @@ from omnivia_core_runtime.storage.engineering_preview import (
     PreviewCandidate,
     PreviewProjectionStale,
     PreviewProjectionUnavailable,
+    preview_search_text,
     rank_previews,
     read_authorized_previews,
 )
@@ -169,6 +170,7 @@ from omnivia_core_runtime.storage.memory import (
 from omnivia_core_runtime.storage.retrieval import (
     EvidenceLabelGrant,
     local_owner_label_grant,
+    normalize_query,
 )
 
 _MESSAGE_INVALID: Final = "the request payload is not valid for this engineering operation"
@@ -728,14 +730,20 @@ class EngineeringHandlers:
             )
             eligible: list[PreviewCandidate] = []
             evaluated = 0
+            needle = normalize_query(request.query) if target is not None else ""
             for candidate in admitted:
                 if view == "accepted" and candidate.assertion_basis == "hypothesis":
                     # §8.2: a hypothesis stays marked and is excluded from
                     # accepted-facts selection even after governance accepts it.
                     continue
                 if target is not None:
-                    # current_safe: the bounded direct check runs before scoring,
-                    # and only a proven `matched` version enters the frontier.
+                    # current_safe: the cap and the bounded direct check are spent
+                    # only by candidates `rank_previews` could ever match -- an
+                    # empty query matches nothing (its own rule), and a candidate
+                    # whose preview text lacks the query is never a match, so
+                    # neither reaches the evaluator or the cap.
+                    if not needle or needle not in preview_search_text(candidate):
+                        continue
                     evaluated += 1
                     if evaluated > CURRENT_SAFE_CANDIDATE_CAP:
                         raise application_refusal(
