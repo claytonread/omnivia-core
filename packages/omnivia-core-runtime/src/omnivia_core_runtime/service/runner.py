@@ -109,6 +109,15 @@ LEASE_RENEWAL_INTERVAL_SECONDS = DEFAULT_LEASE_TTL_SECONDS / 3
 #: TTL, so the instance stops while its lease is still demonstrably current.
 LEASE_RENEWAL_DEADLINE_SECONDS = DEFAULT_LEASE_TTL_SECONDS * 2 / 3
 
+#: Service stderr is operational, not diagnostic-for-a-human-with-the-source: it
+#: must never carry a workspace's own identifiers (a stream id) or an
+#: exception's raw text (a path, a value, a query fragment can all end up in
+#: one). Every tick/startup failure below prints one of these fixed, bounded
+#: codes instead -- enough to page on or grep for, never enough to leak.
+_DIAG_INVALIDATION_SELECT_FAILED = "INVALIDATION_TICK_ERROR: select_failed"
+_DIAG_INVALIDATION_ADVANCE_FAILED = "INVALIDATION_TICK_ERROR: advance_failed"
+_DIAG_INVALIDATION_STARTUP_FAILED = "INVALIDATION_STARTUP_ERROR: recovery_failed"
+
 
 @dataclass(frozen=True)
 class ServiceSettings:
@@ -152,6 +161,14 @@ class StartupReport:
 class ServiceRunner:
     """Owns one workspace for the lifetime of this process."""
 
+    #: The fair keyset cursor `drain_pending_invalidation` resumes its next
+    #: bounded page of lagging streams from (see `engineering_invalidation.
+    #: select_pending_streams`). A class-level default rather than only an
+    #: `__init__` assignment, so the `ServiceRunner.__new__`-built test harness
+    #: (which never calls `__init__`) still reads a real starting cursor
+    #: instead of raising `AttributeError` on first tick.
+    _invalidation_cursor: str | None = None
+
     def __init__(
         self, settings: ServiceSettings, *, clock: Clock | None = None
     ) -> None:
@@ -177,6 +194,7 @@ class ServiceRunner:
         #: acquisition itself until the first renewal. `None` until a lease is held,
         #: so nothing can renew before there is something to renew.
         self._lease_renewed_at: float | None = None
+        self._invalidation_cursor = None
 
     # --- startup -------------------------------------------------------------
 
@@ -614,8 +632,16 @@ class ServiceRunner:
         # worker's output, so catching up slowly costs staleness of the
         # `diagnostic`-mode assessment history, never correctness.
         try:
+            # Bounded over stream count, exactly as `drain_pending_invalidation`'s own
+            # per-tick page is: a workspace with more lagging streams than
+            # `TICK_STREAM_LIMIT` leaves the rest to converge over subsequent ticks
+            # rather than making startup itself unbounded in stream count. Unlike the
+            # tick's own page, this one-shot pass needs no fairness cursor -- there is
+            # no "next startup" for one to carry state into.
             for stream_id in engineering_invalidation.pending_streams(
-                connection, workspace_id=self.workspace_id
+                connection,
+                workspace_id=self.workspace_id,
+                limit=engineering_invalidation.TICK_STREAM_LIMIT,
             ):
                 engineering_invalidation.drain_invalidation(
                     connection,
@@ -625,8 +651,10 @@ class ServiceRunner:
                     fencing_generation=self.generation,
                     now_us=now_us,
                 )
-        except Exception:  # noqa: BLE001,S110 - best-effort catch-up, not a readiness gate
-            pass
+        except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+            import sys as _s
+
+            print(_DIAG_INVALIDATION_STARTUP_FAILED, file=_s.stderr)
         return True
 
     # --- keeping the lease current -------------------------------------------
@@ -672,7 +700,8 @@ class ServiceRunner:
         return True
 
     def drain_pending_invalidation(self) -> None:
-        """One bounded engineering-invalidation step for every stream that lags.
+        """One bounded engineering-invalidation step for each of up to
+        `TICK_STREAM_LIMIT` lagging streams, fairly selected.
 
         Called from the same main serve loop poll as `renew_lease_if_due` --
         the only scheduler seam this service has (see `main._serve_until_stopped`).
@@ -680,11 +709,14 @@ class ServiceRunner:
         (`EngineeringHandlers._drain_invalidation`) each drain a stream once, up
         to `DRAIN_STEP_LIMIT` bounded steps; neither runs again on its own, so a
         backlog beyond either bound would otherwise sit forever in an
-        otherwise-idle service. One `advance_invalidation` step per pending
-        stream keeps this poll itself bounded exactly as `advance_invalidation`
-        already bounds one step's own work, and the tick repeats every 250ms
-        while the service is up, so a backlog of any size eventually converges
-        without another source write or a restart.
+        otherwise-idle service. `select_pending_streams` bounds *this* pass over
+        the workspace's own stream count the same way `advance_invalidation`
+        already bounds one step's own work, and carries `self._invalidation_cursor`
+        forward tick to tick so a persistently failing low-sort stream occupies
+        at most one page per sweep rather than crowding every later stream out
+        of every tick. The tick repeats every 250ms while the service is up, so
+        a backlog of any size -- in stream count or in one stream's own events
+        -- eventually converges without another source write or a restart.
 
         Best-effort, like the other two call sites: this worker's assessment
         history is diagnostic-only bookkeeping that `current_safe` never reads
@@ -692,11 +724,13 @@ class ServiceRunner:
         every read -- so a failure here costs staleness of that history, never
         correctness, and is never folded into readiness. It is still surfaced
         rather than silently absorbed, so a persistent failure is diagnosable
-        from the service's own output instead of only from a growing backlog.
-        One stream's failure does not block another's turn this tick; a stale
-        fencing generation stops the whole pass at once, since every remaining
-        stream would refuse identically and the loop's own lease check is what
-        decides whether this instance keeps serving at all.
+        from the service's own output instead of only from a growing backlog --
+        through a fixed, bounded diagnostic code, never a source identifier or
+        raw exception text service stderr must not carry. One stream's failure
+        does not block another's turn this tick; a stale fencing generation
+        stops the whole pass at once, since every remaining stream would refuse
+        identically and the loop's own lease check is what decides whether this
+        instance keeps serving at all.
         """
         if self.connection is None or self.identity is None or self.generation is None:
             return
@@ -706,15 +740,16 @@ class ServiceRunner:
 
         now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
         try:
-            streams = engineering_invalidation.pending_streams(
-                self.connection, workspace_id=self.workspace_id
+            streams, next_cursor = engineering_invalidation.select_pending_streams(
+                self.connection,
+                workspace_id=self.workspace_id,
+                limit=engineering_invalidation.TICK_STREAM_LIMIT,
+                after=self._invalidation_cursor,
             )
-        except Exception as error:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
-            print(
-                f"INVALIDATION_TICK_ERROR: pending_streams {type(error).__name__}: {error}",
-                file=_s.stderr,
-            )
+        except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+            print(_DIAG_INVALIDATION_SELECT_FAILED, file=_s.stderr)
             return
+        self._invalidation_cursor = next_cursor
         for stream_id in streams:
             try:
                 engineering_invalidation.advance_invalidation(
@@ -730,12 +765,8 @@ class ServiceRunner:
                 # would refuse identically, and the poll's own lease check
                 # (run just before this, every tick) is what stops serving.
                 break
-            except Exception as error:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
-                print(
-                    f"INVALIDATION_TICK_ERROR: stream={stream_id!r} "
-                    f"{type(error).__name__}: {error}",
-                    file=_s.stderr,
-                )
+            except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+                print(_DIAG_INVALIDATION_ADVANCE_FAILED, file=_s.stderr)
 
     # --- shutdown ------------------------------------------------------------
 

@@ -118,6 +118,13 @@ DEPENDENT_BATCH_LIMIT: Final = source_storage.PENDING_WINDOW
 #: bounded rather than draining an arbitrarily long backlog in one call.
 DRAIN_STEP_LIMIT: Final = source_storage.PENDING_WINDOW
 
+#: How many lagging streams one bounded selection (one service tick, or the
+#: startup catch-up pass) may pick up. Reuses the same existing window rather
+#: than inventing a second bound: both exist to keep one bounded pass over an
+#: unbounded backlog -- of a stream's own events there, of the workspace's own
+#: streams here -- finite.
+TICK_STREAM_LIMIT: Final = source_storage.PENDING_WINDOW
+
 _BASIS_DETERMINISTIC: Final = "deterministic"
 
 
@@ -252,19 +259,63 @@ def _evidence_available(
     return str(row[0]) == "available" and int(row[1]) > 0
 
 
-def pending_streams(connection: sqlite3.Connection, *, workspace_id: str) -> tuple[str, ...]:
-    """Every stream of this workspace whose invalidation watermark lags coverage.
+def pending_streams(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    limit: int | None = None,
+    after: str | None = None,
+) -> tuple[str, ...]:
+    """Stream ids of this workspace whose invalidation watermark lags coverage.
 
-    A read; it writes nothing and takes no fence. Ordered by stream id so a
-    caller's repeated passes visit streams in a stable order.
+    A read; it writes nothing and takes no fence. Ordered by stream id, and --
+    like `_affected_dependents`'s own page -- a *keyset* over that order:
+    `after`, when given, resumes strictly past it rather than skipping a row
+    count into a result a later call re-queries fresh, and `limit`, when
+    given, bounds how many stream ids one call returns. Both default to
+    unbounded (`None`) so a caller that wants every lagging stream at once
+    still gets exactly that.
     """
-    rows = connection.execute(
+    keyset = ""
+    params: list[Any] = [workspace_id]
+    if after is not None:
+        keyset = "AND stream_id > ? "
+        params.append(after)
+    query = (
         "SELECT stream_id FROM omnivia_engineering_source_streams "
         "WHERE workspace_id = ? AND processed_sequence < covered_sequence "
-        "ORDER BY stream_id",
-        (workspace_id,),
-    ).fetchall()
+        f"{keyset}"
+        "ORDER BY stream_id"
+    )
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    rows = connection.execute(query, params).fetchall()
     return tuple(str(row[0]) for row in rows)
+
+
+def select_pending_streams(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    limit: int,
+    after: str | None,
+) -> tuple[tuple[str, ...], str | None]:
+    """One fair, bounded page of lagging streams, and where the next page resumes.
+
+    Wraps back to the start of the keyset once `after` is at or past every
+    currently-lagging stream, so a persistently failing low-sort stream
+    occupies at most one page per sweep of the workspace's streams rather than
+    permanently crowding out every stream that sorts after it. The returned
+    cursor is the last stream id this page selected (`None` once a sweep has
+    wrapped with nothing left to select), for a caller to pass back in as
+    `after` on its next call.
+    """
+    page = pending_streams(connection, workspace_id=workspace_id, limit=limit, after=after)
+    if not page and after is not None:
+        page = pending_streams(connection, workspace_id=workspace_id, limit=limit, after=None)
+    next_after = page[-1] if page else None
+    return page, next_after
 
 
 def advance_invalidation(
@@ -470,9 +521,11 @@ def drain_invalidation(
 __all__ = [
     "DEPENDENT_BATCH_LIMIT",
     "DRAIN_STEP_LIMIT",
+    "TICK_STREAM_LIMIT",
     "InvalidationProgress",
     "InvalidationWorkerFault",
     "advance_invalidation",
     "drain_invalidation",
     "pending_streams",
+    "select_pending_streams",
 ]

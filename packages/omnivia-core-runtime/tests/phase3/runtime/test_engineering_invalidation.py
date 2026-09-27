@@ -642,12 +642,7 @@ def test_drain_pending_invalidation_converges_a_multi_event_backlog_across_ticks
     # locks, a socket lease): `drain_pending_invalidation` only ever reads
     # these five attributes, all of which `Workspace`'s own harness already
     # holds.
-    runner = ServiceRunner.__new__(ServiceRunner)
-    runner.connection = workspace.holder.connection
-    runner.identity = workspace.holder.identity
-    runner.generation = workspace.holder.generation
-    runner.workspace_id = WORKSPACE_ID
-    runner.clock = FakeClock()
+    runner = _runner(workspace)
 
     for _ in range(4):
         assert _progress(workspace)[1] < 5
@@ -661,3 +656,146 @@ def test_drain_pending_invalidation_converges_a_multi_event_backlog_across_ticks
         "esnap-d",
         "esnap-e",
     }
+
+
+def _runner(workspace: Workspace) -> ServiceRunner:
+    """The same construction-only harness `drain_pending_invalidation` above
+    uses: `__new__` skips the full startup sequence, since this method only
+    ever reads the five attributes `Workspace`'s own harness already holds."""
+    runner = ServiceRunner.__new__(ServiceRunner)
+    runner.connection = workspace.holder.connection
+    runner.identity = workspace.holder.identity
+    runner.generation = workspace.holder.generation
+    runner.workspace_id = WORKSPACE_ID
+    runner.clock = FakeClock()
+    return runner
+
+
+def test_a_backlog_past_the_per_stream_step_bound_converges_across_startup_and_later_ticks(
+    workspace: Workspace,
+) -> None:
+    """A single stream's backlog past `DRAIN_STEP_LIMIT` (64) events is exactly
+    what startup recovery's one bounded `drain_invalidation` call cannot finish
+    in one pass -- it is bounded per call by design (module docstring). The
+    fix here bounds startup's *stream count*, not this existing per-stream
+    step bound, so this proves the pre-existing bound and the tick-based
+    hand-off still compose correctly at a backlog this large."""
+    workspace.record(esc._source(1, "esnap-0", FILES_A))
+    _drain(workspace)  # catch up through event 1 before piling on a backlog
+
+    total_events = inv.DRAIN_STEP_LIMIT + 5
+    predecessor = "esnap-0"
+    for sequence in range(2, total_events + 1):
+        snapshot_id = f"esnap-{sequence}"
+        workspace.record(esc._source(sequence, snapshot_id, FILES_A, predecessor=predecessor))
+        predecessor = snapshot_id
+    assert _progress(workspace) == (total_events, 1, None)
+
+    # Startup recovery's own one-shot, bounded-by-`DRAIN_STEP_LIMIT` pass over
+    # this one stream: it cannot reach the end of a backlog this large in a
+    # single call.
+    startup_progress = _drain(workspace)
+    assert startup_progress is not None
+    assert startup_progress.processed_sequence == 1 + inv.DRAIN_STEP_LIMIT
+    assert not startup_progress.caught_up
+
+    # Subsequent ticks -- one bounded `advance_invalidation` step per tick for
+    # this one lagging stream -- converge exactly the remainder, with no
+    # further source write and no restart.
+    runner = _runner(workspace)
+    remaining = total_events - (1 + inv.DRAIN_STEP_LIMIT)
+    for _ in range(remaining):
+        assert _progress(workspace)[1] < total_events
+        runner.clock.advance_wall(1.0)
+        runner.drain_pending_invalidation()
+
+    assert _progress(workspace) == (total_events, total_events, None)
+
+
+def test_bounded_per_tick_stream_selection_is_fair_despite_one_stream_repeatedly_failing(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`select_pending_streams` caps one tick to `TICK_STREAM_LIMIT` streams and
+    carries its keyset cursor forward tick to tick. Capped here to exactly one
+    stream per tick to make the cap and the fairness it buys observable: a
+    persistently failing low-sort stream (`estream-a`) must not prevent
+    later-sorting streams from getting their own turn on later ticks, and must
+    itself keep getting a turn each sweep rather than being dropped."""
+    monkeypatch.setattr(inv, "TICK_STREAM_LIMIT", 1)
+
+    streams = ("estream-a", "estream-b", "estream-c")
+    for stream_id in streams:
+        workspace.record(esc._source(1, f"{stream_id}-1", FILES_A, stream=stream_id))
+        _drain(workspace, stream_id=stream_id)  # baseline only, no backlog yet
+        workspace.record(
+            esc._source(2, f"{stream_id}-2", FILES_A, predecessor=f"{stream_id}-1", stream=stream_id)
+        )
+        assert _progress(workspace, stream_id=stream_id) == (2, 1, None)
+
+    original_advance = inv.advance_invalidation
+    failures: list[str] = []
+
+    def flaky_advance(*args: Any, stream_id: str, **kwargs: Any) -> Any:
+        if stream_id == "estream-a":
+            failures.append(stream_id)
+            raise RuntimeError("boom")
+        return original_advance(*args, stream_id=stream_id, **kwargs)
+
+    monkeypatch.setattr(inv, "advance_invalidation", flaky_advance)
+
+    runner = _runner(workspace)
+    for _ in range(3):
+        runner.clock.advance_wall(1.0)
+        runner.drain_pending_invalidation()
+
+    # Three ticks, one stream each: the always-failing lowest-sort stream took
+    # exactly one of them, and the other two each took one of the remaining
+    # streams -- neither later stream was starved by the failing one.
+    assert len(failures) == 1
+    assert _progress(workspace, stream_id="estream-a") == (2, 1, None)
+    assert _progress(workspace, stream_id="estream-b") == (2, 2, None)
+    assert _progress(workspace, stream_id="estream-c") == (2, 2, None)
+
+    # A fourth tick wraps the fair cursor back to the start of the sweep and
+    # gives the failing stream another turn -- it is not dropped forever.
+    runner.clock.advance_wall(1.0)
+    runner.drain_pending_invalidation()
+    assert len(failures) == 2
+    assert _progress(workspace, stream_id="estream-a") == (2, 1, None)
+
+
+def test_tick_error_output_never_leaks_a_stream_id_or_raw_exception_text(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Service stderr on a tick failure must be a fixed, bounded diagnostic
+    code -- never the stream id or the exception's own text, both of which
+    can carry a workspace's source identifiers."""
+    secret_stream_id = "estream-do-not-print-me"
+    workspace.record(esc._source(1, "esnap-a", FILES_A, stream=secret_stream_id))
+    workspace.record(
+        esc._source(2, "esnap-b", FILES_A, predecessor="esnap-a", stream=secret_stream_id)
+    )
+    runner = _runner(workspace)
+
+    def leaky_advance(*args: Any, stream_id: str, **kwargs: Any) -> Any:
+        raise RuntimeError(f"leaked secret detail about {stream_id} at /private/path")
+
+    monkeypatch.setattr(inv, "advance_invalidation", leaky_advance)
+    runner.drain_pending_invalidation()
+    captured = capsys.readouterr()
+    assert secret_stream_id not in captured.err
+    assert "leaked secret detail" not in captured.err
+    assert "/private/path" not in captured.err
+    assert "INVALIDATION_TICK_ERROR: advance_failed" in captured.err
+
+    monkeypatch.undo()
+
+    def leaky_select(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(f"leaked secret detail about {secret_stream_id}")
+
+    monkeypatch.setattr(inv, "select_pending_streams", leaky_select)
+    runner.drain_pending_invalidation()
+    captured = capsys.readouterr()
+    assert secret_stream_id not in captured.err
+    assert "leaked secret detail" not in captured.err
+    assert "INVALIDATION_TICK_ERROR: select_failed" in captured.err
