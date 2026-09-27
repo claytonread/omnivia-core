@@ -1,8 +1,11 @@
 """Bounded service-owned production of captured engineering source events.
 
 The executor shares the live ``ServiceRunner`` connection, lease and fencing
-generation. It first attempts only chain-proven recovery of sealed captures left by a
-crash, then may capture one registered checkout from local registration state.
+generation. Each bounded pass coordinates one execution budget across two lanes:
+chain-proven recovery of sealed captures left by a crash, and capture of a
+registered checkout from local registration state. While one executor remains
+live, neither lane may starve the other across bounded passes; see
+``run_pending`` for the fairness rule.
 Filesystem paths stay inside the trusted capture primitive and never enter an
 application request or result.
 """
@@ -64,6 +67,19 @@ class _CommitPlan:
     predecessor_snapshot_id: str | None
 
 
+@dataclass(slots=True)
+class _Tally:
+    """Mutable running counts for a pass, shared across lane calls.
+
+    Mutating in place (instead of returning counts) means partial progress
+    from a lane survives even if that lane raises mid-loop.
+    """
+
+    inspected: int = 0
+    captured: int = 0
+    committed: int = 0
+
+
 @dataclass
 class EngineeringSourceCaptureExecutor:
     """Produce captured source events on the live service's sole owning thread."""
@@ -75,6 +91,7 @@ class EngineeringSourceCaptureExecutor:
     _next_poll: float = 0.0
     _checkout_cursor: str | None = None
     _seal_cursor: tuple[int, str] | None = None
+    _pending_turn: bool = True
 
     def run_pending(
         self,
@@ -82,7 +99,21 @@ class EngineeringSourceCaptureExecutor:
         budget: int = DEFAULT_EXECUTION_BUDGET,
         force: bool = False,
     ) -> SourceProducerPass:
-        """Run at most ``budget`` recovery/capture units and never drain forever."""
+        """Run at most ``budget`` recovery/capture units and never drain forever.
+
+        The budget is split across two lanes so neither can starve the other:
+        pending-seal recovery and live-checkout capture. For ``budget >= 2``,
+        pending recovery is capped at ``budget - 1`` so at least one unit is
+        always available to checkout capture when it has work; the reserved
+        unit is handed back to pending if checkout turns out to have none.
+        For ``budget == 1`` there is no unit to reserve, so lane priority
+        alternates every pass instead (``_pending_turn``, in-memory only -- a
+        restart resets it, but the following pass still reaches the other
+        lane). If a preferred lane has no work, the other lane may use the
+        unit rather than idling. Durable rotation across restarts needs
+        scheduler schema; this in-memory scheme is the migration-free
+        safeguard.
+        """
 
         if budget <= 0:
             return SourceProducerPass(inspected=0, captured=0, committed=0)
@@ -90,92 +121,24 @@ class EngineeringSourceCaptureExecutor:
         if not force and now < self._next_poll:
             return SourceProducerPass(inspected=0, captured=0, committed=0)
         self._next_poll = now + max(self.poll_interval_seconds, 0.0)
-        inspected = captured = committed = 0
+
+        if budget == 1:
+            pending_first = self._pending_turn
+            self._pending_turn = not self._pending_turn
+        else:
+            pending_first = True
+
+        tally = _Tally()
         try:
-            # Read one bounded candidate batch once. The in-memory cursor prevents a
-            # refused oldest seal from consuming every later pass. Durable rotation
-            # across restarts needs scheduler schema; this is the migration-free
-            # safeguard.
-            for repository_id, snapshot_id, stream_id in self._pending_seals(
-                limit=budget
-            ):
-                if inspected >= budget:
-                    break
-                inspected += 1
-                try:
-                    self._commit(repository_id, snapshot_id, stream_id)
-                except SourceCaptureRefused:
-                    continue
-                committed += 1
-
-            while inspected < budget:
-                checkout = self._next_checkout()
-                if checkout is None:
-                    break
-                repository_id, checkout_id, checkout_hint = checkout
-                inspected += 1
-
-                assert self.runner.workspace_id is not None
-                assert self.runner.identity is not None
-                stream_id = _derived(
-                    "src-stream",
-                    self.runner.workspace_id,
-                    repository_id,
-                    self.runner.identity.installation_id,
-                    checkout_id,
-                )
-                # A stream with a gap may only accept the missing sealed predecessor.
-                # Capturing another head would leave more unusable seals behind. The
-                # observed frontier is revalidated at commit time so a concurrent
-                # append or gap fails this attempt closed rather than misattaching.
-                expected_frontier = self._stream_accepts_new_head(
-                    repository_id, stream_id
-                )
-                if expected_frontier is None:
-                    continue
-
-                def renew_lease() -> bool:
-                    return self.runner.renew_lease_if_due()
-
-                renew_lease()
-                manifest = capture_working_tree_manifest(
-                    checkout_root=Path(checkout_hint), heartbeat=renew_lease
-                )
-                renew_lease()
-                manifest_digest = manifest.manifest_digest
-                snapshot_id = _derived(
-                    "src-snapshot",
-                    self.runner.workspace_id,
-                    repository_id,
-                    self.runner.identity.installation_id,
-                    checkout_id,
-                    manifest_digest,
-                )
-                if self._snapshot_already_committed(snapshot_id):
-                    continue
-                result = capture_working_tree_snapshot_owned(
-                    self.runner,
-                    repository_id=repository_id,
-                    checkout_root=Path(checkout_hint),
-                    snapshot_id=snapshot_id,
-                    manifest=manifest,
-                    renew_lease=renew_lease,
-                )
-                captured += int(result.status == "captured")
-                try:
-                    self._commit(
-                        repository_id,
-                        snapshot_id,
-                        stream_id,
-                        expected_frontier=expected_frontier,
-                    )
-                except SourceCaptureRefused:
-                    # The seal stays durable. A later pass may use it only if durable
-                    # chain metadata names it, or may re-observe the checkout and bind
-                    # that fresh capture to the then-current frontier.
-                    continue
-                else:
-                    committed += 1
+            first_cap = budget - 1 if budget >= 2 else budget
+            if pending_first:
+                self._run_pending_lane(tally, limit=first_cap)
+                self._run_checkout_lane(tally, limit=budget - tally.inspected)
+                if tally.inspected < budget:
+                    self._run_pending_lane(tally, limit=budget - tally.inspected)
+            else:
+                self._run_checkout_lane(tally, limit=first_cap)
+                self._run_pending_lane(tally, limit=budget - tally.inspected)
         except (StorageError, sqlite3.Error):
             # Lost ownership and SQLite contention belong to this service pass, not
             # to a capture. Durable headers/events remain the recovery truth.
@@ -185,8 +148,97 @@ class EngineeringSourceCaptureExecutor:
             # durable failure verdict is invented; the next bounded poll retries.
             pass
         return SourceProducerPass(
-            inspected=inspected, captured=captured, committed=committed
+            inspected=tally.inspected, captured=tally.captured, committed=tally.committed
         )
+
+    def _run_pending_lane(self, tally: _Tally, *, limit: int) -> None:
+        """Attempt at most ``limit`` pending-seal recoveries."""
+
+        if limit <= 0:
+            return
+        # Read one bounded candidate batch once. The in-memory cursor prevents a
+        # refused oldest seal from consuming every later pass. Durable rotation
+        # across restarts needs scheduler schema; this is the migration-free
+        # safeguard.
+        for repository_id, snapshot_id, stream_id in self._pending_seals(limit=limit):
+            tally.inspected += 1
+            try:
+                self._commit(repository_id, snapshot_id, stream_id)
+            except SourceCaptureRefused:
+                continue
+            tally.committed += 1
+
+    def _run_checkout_lane(self, tally: _Tally, *, limit: int) -> None:
+        """Attempt at most ``limit`` fresh registered-checkout captures."""
+
+        consumed = 0
+        while consumed < limit:
+            checkout = self._next_checkout()
+            if checkout is None:
+                break
+            repository_id, checkout_id, checkout_hint = checkout
+            tally.inspected += 1
+            consumed += 1
+
+            assert self.runner.workspace_id is not None
+            assert self.runner.identity is not None
+            stream_id = _derived(
+                "src-stream",
+                self.runner.workspace_id,
+                repository_id,
+                self.runner.identity.installation_id,
+                checkout_id,
+            )
+            # A stream with a gap may only accept the missing sealed predecessor.
+            # Capturing another head would leave more unusable seals behind. The
+            # observed frontier is revalidated at commit time so a concurrent
+            # append or gap fails this attempt closed rather than misattaching.
+            expected_frontier = self._stream_accepts_new_head(repository_id, stream_id)
+            if expected_frontier is None:
+                continue
+
+            def renew_lease() -> bool:
+                return self.runner.renew_lease_if_due()
+
+            renew_lease()
+            manifest = capture_working_tree_manifest(
+                checkout_root=Path(checkout_hint), heartbeat=renew_lease
+            )
+            renew_lease()
+            manifest_digest = manifest.manifest_digest
+            snapshot_id = _derived(
+                "src-snapshot",
+                self.runner.workspace_id,
+                repository_id,
+                self.runner.identity.installation_id,
+                checkout_id,
+                manifest_digest,
+            )
+            if self._snapshot_already_committed(snapshot_id):
+                continue
+            result = capture_working_tree_snapshot_owned(
+                self.runner,
+                repository_id=repository_id,
+                checkout_root=Path(checkout_hint),
+                snapshot_id=snapshot_id,
+                manifest=manifest,
+                renew_lease=renew_lease,
+            )
+            tally.captured += int(result.status == "captured")
+            try:
+                self._commit(
+                    repository_id,
+                    snapshot_id,
+                    stream_id,
+                    expected_frontier=expected_frontier,
+                )
+            except SourceCaptureRefused:
+                # The seal stays durable. A later pass may use it only if durable
+                # chain metadata names it, or may re-observe the checkout and bind
+                # that fresh capture to the then-current frontier.
+                continue
+            else:
+                tally.committed += 1
 
     def _pending_seals(self, *, limit: int) -> tuple[tuple[str, str, str], ...]:
         connection, workspace_id, installation_id = self._owned_facts()

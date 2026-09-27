@@ -800,9 +800,13 @@ def test_producer_skips_an_old_unusable_seal_and_fills_the_contiguous_gap(
             runner=runner, application=application, principal_id=principal
         )
         skipped = executor.run_pending(budget=1, force=True)
+        live_turn = executor.run_pending(budget=1, force=True)
         outcome = executor.run_pending(budget=1, force=True)
 
         assert skipped == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert live_turn == engineering_source_capture_execution.SourceProducerPass(
             inspected=1, captured=0, committed=0
         )
         assert outcome == engineering_source_capture_execution.SourceProducerPass(
@@ -951,8 +955,15 @@ def test_producer_never_promotes_a_stale_poison_seal_to_the_stream_head(
             inspected=1, captured=0, committed=0
         )
 
-        # Pass 2: the cursor has advanced past the poison, so the exact
-        # sealed predecessor for sequence 2 is found and the gap closes.
+        # Pass 2 alternates to the live lane, which refuses to capture a new
+        # head while the stream has a gap.
+        live_turn = pass_one.run_pending(budget=1, force=True)
+        assert live_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+
+        # Pass 3 returns to recovery. The cursor has advanced past the poison,
+        # so the exact sealed predecessor for sequence 2 closes the gap.
         filled = pass_one.run_pending(budget=1, force=True)
         assert filled == engineering_source_capture_execution.SourceProducerPass(
             inspected=1, captured=0, committed=1
@@ -964,8 +975,8 @@ def test_producer_never_promotes_a_stale_poison_seal_to_the_stream_head(
         restarted = EngineeringSourceCaptureExecutor(
             runner=runner, application=application, principal_id=principal
         )
-        pass_three = restarted.run_pending(budget=1, force=True)
-        assert pass_three == engineering_source_capture_execution.SourceProducerPass(
+        post_restart = restarted.run_pending(budget=1, force=True)
+        assert post_restart == engineering_source_capture_execution.SourceProducerPass(
             inspected=1, captured=0, committed=0
         )
         assert (
@@ -1002,6 +1013,266 @@ def test_producer_never_promotes_a_stale_poison_seal_to_the_stream_head(
         assert stream_row() == (4, 4)
     finally:
         runner.stop()
+
+
+def test_producer_fairly_splits_recovery_and_live_capture_across_restart(
+    tmp_path: Path,
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+
+    first = env.snapshot("repo-1", root, "captured-base-1")
+    (root / "a.py").write_bytes(b"poison-a\n")
+    poison_a = env.snapshot("repo-1", root, "captured-a-poison")
+    (root / "a.py").write_bytes(b"poison-b\n")
+    poison_b = env.snapshot("repo-1", root, "captured-b-poison")
+
+    connection = sqlite3.connect(env.workspace / "workspace.sqlite")
+    try:
+        workspace_id = str(
+            connection.execute(
+                "SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1"
+            ).fetchone()[0]
+        )
+        installation_id, checkout_id = map(
+            str,
+            connection.execute(
+                "SELECT installation_id, checkout_id "
+                "FROM omnivia_engineering_snapshot_captures "
+                "WHERE snapshot_id = ?",
+                (first.snapshot_id,),
+            ).fetchone(),
+        )
+    finally:
+        connection.close()
+    stream_id = engineering_source_capture_execution._derived(
+        "src-stream", workspace_id, "repo-1", installation_id, checkout_id
+    )
+
+    def payload(
+        sequence: int,
+        snapshot_id: str,
+        manifest_digest: str,
+        predecessor: str | None = None,
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "repository_id": "repo-1",
+            "stream_id": stream_id,
+            "sequence": sequence,
+            "snapshot_id": snapshot_id,
+            "expected_manifest_digest": manifest_digest,
+        }
+        if predecessor is not None:
+            result["predecessor"] = {
+                "sequence": sequence - 1,
+                "snapshot_id": predecessor,
+            }
+        return result
+
+    assert isinstance(
+        env.commit(
+            payload(1, first.snapshot_id, first.manifest_digest),
+            key="fair-base",
+            request_id="fair-base",
+        ),
+        SuccessResponseEnvelope,
+    )
+
+    def application_for(runner: ServiceRunner) -> object:
+        assert runner.workspace_id is not None and runner.identity is not None
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        return build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+
+    # With one unit, the first pass inspects recovery and the next pass must
+    # alternate to the changed checkout. The fresh capture, rather than either
+    # poison seal, becomes sequence 2.
+    (root / "a.py").write_bytes(b"fresh-two\n")
+    runner = env._runner()
+    try:
+        executor = EngineeringSourceCaptureExecutor(
+            runner=runner,
+            application=application_for(runner),
+            principal_id="local-user",
+        )
+        recovery_turn = executor.run_pending(budget=1, force=True)
+        live_turn = executor.run_pending(budget=1, force=True)
+        assert recovery_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert live_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=1, committed=1
+        )
+        assert recovery_turn.inspected <= 1 and live_turn.inspected <= 1
+        assert runner.connection is not None
+        first_events = runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in first_events] == [1, 2]
+        assert first_events[1][1] not in {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }
+        fresh_two_id = str(first_events[1][1])
+        assert first_events[1][2] == first.snapshot_id
+
+        # With two unmatched seals still pending, a two-unit pass may spend
+        # only one unit on recovery. Its reserved live unit observes another
+        # checkout change and appends sequence 3.
+        (root / "a.py").write_bytes(b"fresh-three\n")
+        split = executor.run_pending(budget=2, force=True)
+        assert split == engineering_source_capture_execution.SourceProducerPass(
+            inspected=2, captured=1, committed=1
+        )
+        assert split.inspected <= 2
+        first_events = runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in first_events] == [1, 2, 3]
+        fresh_three_id = str(first_events[2][1])
+        assert fresh_three_id not in {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }
+        assert first_events[2][2] == fresh_two_id
+    finally:
+        runner.stop()
+
+    # A service restart resets the in-memory turn to recovery. Even so, the
+    # subsequent one-unit pass must reach the changed checkout and append
+    # sequence 4 rather than retrying pending seals forever.
+    (root / "a.py").write_bytes(b"fresh-four\n")
+    restarted_runner = env._runner()
+    try:
+        restarted = EngineeringSourceCaptureExecutor(
+            runner=restarted_runner,
+            application=application_for(restarted_runner),
+            principal_id="local-user",
+        )
+        after_restart_recovery = restarted.run_pending(budget=1, force=True)
+        after_restart_live = restarted.run_pending(budget=1, force=True)
+        assert after_restart_recovery == (
+            engineering_source_capture_execution.SourceProducerPass(
+                inspected=1, captured=0, committed=0
+            )
+        )
+        assert after_restart_live == (
+            engineering_source_capture_execution.SourceProducerPass(
+                inspected=1, captured=1, committed=1
+            )
+        )
+        assert restarted_runner.connection is not None
+        before_gap = restarted_runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (restarted_runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in before_gap] == [1, 2, 3, 4]
+        fresh_four_id = str(before_gap[3][1])
+        assert fresh_four_id not in {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }
+        assert before_gap[3][2] == fresh_three_id
+    finally:
+        restarted_runner.stop()
+
+    # Build a durable gap after the service stops. Its exact predecessor is
+    # later in the same pending order as both poison seals.
+    (root / "a.py").write_bytes(b"gap-five\n")
+    gap_five = env.snapshot("repo-1", root, "captured-z-gap-5")
+    (root / "a.py").write_bytes(b"gap-six\n")
+    gap_six = env.snapshot("repo-1", root, "captured-z-gap-6")
+    announced = env.commit(
+        payload(
+            6,
+            gap_six.snapshot_id,
+            gap_six.manifest_digest,
+            predecessor=gap_five.snapshot_id,
+        ),
+        key="fair-gap-six",
+        request_id="fair-gap-six",
+    )
+    assert isinstance(announced, SuccessResponseEnvelope)
+    assert announced.result["coverage"] == {
+        "state": "pending",
+        "covered_sequence": 4,
+        "announced_sequence": 6,
+    }
+    (root / "a.py").write_bytes(b"fresh-four\n")
+
+    # A second restart again resets the turn. Alternation lets the recovery
+    # cursor cross both poisons and reach the exact gap predecessor while live
+    # turns remain bounded. One more recovery turn wraps the cursor and proves
+    # an old poison still cannot become the next head.
+    gap_runner = env._runner()
+    try:
+        gap_executor = EngineeringSourceCaptureExecutor(
+            runner=gap_runner,
+            application=application_for(gap_runner),
+            principal_id="local-user",
+        )
+        passes = [gap_executor.run_pending(budget=1, force=True) for _ in range(7)]
+        assert all(result.inspected <= 1 for result in passes)
+        assert passes[0] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert passes[1] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert passes[4] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=1
+        )
+        assert passes[6] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+
+        assert gap_runner.connection is not None
+        events = gap_runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (gap_runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in events] == [1, 2, 3, 4, 5, 6]
+        assert events[1][1] == fresh_two_id
+        assert events[2][1] == fresh_three_id
+        assert events[3][1] == fresh_four_id
+        assert events[4] == (5, gap_five.snapshot_id, fresh_four_id)
+        assert events[5] == (6, gap_six.snapshot_id, gap_five.snapshot_id)
+        assert not {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }.intersection(str(row[1]) for row in events)
+        assert gap_runner.connection.execute(
+            "SELECT covered_sequence, announced_sequence "
+            "FROM omnivia_engineering_source_streams "
+            "WHERE workspace_id = ? AND stream_id = ?",
+            (gap_runner.workspace_id, stream_id),
+        ).fetchone() == (6, 6)
+    finally:
+        gap_runner.stop()
 
 
 def test_producer_lost_reply_recovers_without_a_duplicate_event(tmp_path: Path) -> None:
