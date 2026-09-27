@@ -75,13 +75,22 @@ from omnivia_core_runtime.storage.connection import (
     integrity_check,
     open_database,
 )
+from omnivia_core_runtime.storage.continuity import (
+    CheckpointMetadata,
+    PayloadLengthMismatch,
+    list_checkpoint_metadata,
+    read_checkpoints,
+    read_selected_checkpoints,
+)
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
+from omnivia_core_runtime.storage.memory import read_snapshot
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
     apply_pending_migrations,
     load_migrations,
     read_workspace_state,
 )
+from omnivia_core_runtime.storage.payload_budget import PayloadReadBudget
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_AUTHORIZATION_DENIED,
@@ -3219,6 +3228,20 @@ def test_the_resume_pack_reads_only_the_callers_checkpoints(workspace: Any) -> N
 
     before = pack(OWNER)
     assert objectives(before) == [f"Owner step {n}" for n in (6, 5, 4, 3, 2)]
+    assert len(before["sections"]) <= 24
+    expected_checkpoint_bytes = sum(
+        int(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT length(CAST(c.payload_json AS BLOB)) "
+            "FROM omnivia_engineering_checkpoints c "
+            "JOIN omnivia_engineering_sessions s "
+            "ON s.workspace_id = c.workspace_id AND s.session_id = c.session_id "
+            "WHERE c.workspace_id = ? AND s.principal_id = ? "
+            "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT 5",
+            (sc.WORKSPACE_ID, OWNER.principal_id),
+        )
+    )
+    assert before["budget"]["source_bytes_read"] == expected_checkpoint_bytes
 
     _session_with(workspace, OTHER, [f"XYZZY step {n}" for n in range(1, 6)])
 
@@ -3229,3 +3252,271 @@ def test_the_resume_pack_reads_only_the_callers_checkpoints(workspace: Any) -> N
     theirs = pack(OTHER)
     assert objectives(theirs) == [f"XYZZY step {n}" for n in (5, 4, 3, 2, 1)]
     assert "Owner step" not in json.dumps(theirs)
+
+
+def test_resume_payload_budget_omits_checkpoint_before_json_is_selected(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["A checkpoint larger than one byte"])
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        pack = workspace.ok(
+            "engineering.context.build",
+            {
+                "query": "provider",
+                "targets": [],
+                "profile": "resume",
+                "budget": {"evidence_bytes": 1},
+            },
+            session=OWNER,
+        )["pack"]
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+    assert pack["budget"]["source_bytes_read"] == 0
+    assert not any(
+        section["partition"] == "working_context" for section in pack["sections"]
+    )
+    assert {item["reason"] for item in pack["omissions"]} == {"source_budget"}
+    assert not any(
+        "SELECT c.checkpoint_id, c.sequence, c.payload_json" in statement
+        for statement in statements
+    )
+
+
+def test_resume_skips_oversized_lower_priority_checkpoint_before_body_read(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["大🙂" * 800, "Recent small checkpoint"])
+    checkpoint_rows = read_checkpoints(
+        workspace.holder.connection,
+        workspace_id=sc.WORKSPACE_ID,
+        principal_id=OWNER.principal_id,
+    )
+    checkpoint_by_objective = {
+        str(json.loads(str(row[2]))["objective"]): (str(row[0]), len(str(row[2]).encode("utf-8")))
+        for row in checkpoint_rows
+    }
+    oversized_id, _oversized_bytes = checkpoint_by_objective["大🙂" * 800]
+    small_id, small_bytes = checkpoint_by_objective["Recent small checkpoint"]
+
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        pack = workspace.ok(
+            "engineering.context.build",
+            {"query": "provider", "targets": [], "profile": "resume"},
+            session=OWNER,
+        )["pack"]
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+
+    working = [
+        section
+        for section in pack["sections"]
+        if section["partition"] == "working_context"
+    ]
+    assert [section["content"].partition(" Unresolved:")[0] for section in working] == [
+        "Recent small checkpoint"
+    ]
+    assert pack["budget"]["source_bytes_read"] == small_bytes
+    assert {item["reason"] for item in pack["omissions"]} == {
+        "working_context_share"
+    }
+    body_selects = [
+        statement
+        for statement in statements
+        if "c.payload_json" in statement
+        and "octet_length" not in statement
+        and "length(CAST(" not in statement
+    ]
+    assert any(small_id in statement for statement in body_selects)
+    assert not any(oversized_id in statement for statement in body_selects)
+
+
+# --- checkpoint metadata and selected-read planning seams --------------------------
+
+#: Non-ASCII on purpose: a checkpoint metadata byte length that only an exact
+#: UTF-8 encode -- not `len()` on the Python string -- would get right.
+_MULTILINGUAL_OBJECTIVE = "調査結果 🔍 Investigation continue"
+
+
+def _never_selects_bare_column(statements: list[str], column: str) -> bool:
+    """Whether `column` appears in `statements` only wrapped by the byte-length
+    projection (`octet_length(...)` or `length(CAST(... AS BLOB))`), never as a
+    bare selected value SQLite would return to the caller."""
+    for statement in statements:
+        index = 0
+        while True:
+            index = statement.find(column, index)
+            if index == -1:
+                break
+            before = statement[:index].rstrip()
+            if not before.endswith(("octet_length(", "CAST(")):
+                return False
+            index += len(column)
+    return True
+
+
+def test_list_checkpoint_metadata_matches_read_checkpoints_order_and_meters_no_body(
+    workspace: Any,
+) -> None:
+    session_id = _session_with(
+        workspace, OWNER, [_MULTILINGUAL_OBJECTIVE, "second step", "third step"]
+    )
+    connection = workspace.holder.connection
+
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        with read_snapshot(connection):
+            metadata = list_checkpoint_metadata(
+                connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                payload_budget=PayloadReadBudget(limit=10_000_000),
+            )
+    finally:
+        connection.set_trace_callback(None)
+
+    bodies = read_checkpoints(
+        connection, workspace_id=sc.WORKSPACE_ID, principal_id=OWNER.principal_id
+    )
+    assert [entry.checkpoint_id for entry in metadata] == [row[0] for row in bodies]
+    expected = {
+        str(row[0]): len(str(row[2]).encode("utf-8")) for row in bodies
+    }
+    assert {entry.checkpoint_id: entry.payload_byte_length for entry in metadata} == (
+        expected
+    )
+    # Every stored checkpoint carries the exact metered length even though the
+    # canonical payload JSON escapes the multibyte objective to plain ASCII.
+    assert {row[2] for row in bodies}
+    assert all(str(row[2]).isascii() for row in bodies)
+    assert _never_selects_bare_column(statements, "c.payload_json")
+    assert session_id  # the session exists; nothing else about it matters here
+
+
+def test_read_selected_checkpoints_fetches_only_requested_ids_in_caller_order(
+    workspace: Any,
+) -> None:
+    _session_with(
+        workspace, OWNER, [f"Step {n}" for n in range(1, 6)]
+    )
+    connection = workspace.holder.connection
+    budget = PayloadReadBudget(limit=10_000_000)
+    with read_snapshot(connection):
+        metadata = list_checkpoint_metadata(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            payload_budget=budget,
+        )
+        assert len(metadata) == 5
+        # A reordered, non-contiguous, bounded subset -- not the newest-first order
+        # the metadata itself came back in.
+        chosen = (metadata[3], metadata[0], metadata[2])
+        excluded = {metadata[1].checkpoint_id, metadata[4].checkpoint_id}
+
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        try:
+            rows = read_selected_checkpoints(
+                connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                selected=chosen,
+                payload_budget=budget,
+            )
+        finally:
+            connection.set_trace_callback(None)
+
+    assert [row[0] for row in rows] == [entry.checkpoint_id for entry in chosen]
+    assert excluded.isdisjoint(row[0] for row in rows)
+    assert budget.source_bytes_read == sum(
+        entry.payload_byte_length for entry in chosen
+    )
+    body_selects = [s for s in statements if "c.payload_json" in s and "octet_length" not in s]
+    assert len(body_selects) == 1
+
+
+def test_selected_checkpoint_stale_metadata_fails_closed_before_any_body_select(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["Only step"])
+    connection = workspace.holder.connection
+    budget = PayloadReadBudget(limit=10_000_000)
+    with read_snapshot(connection):
+        (real,) = list_checkpoint_metadata(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            payload_budget=budget,
+        )
+
+        for tampered in (
+            CheckpointMetadata(
+                checkpoint_id=real.checkpoint_id,
+                sequence=real.sequence,
+                payload_byte_length=real.payload_byte_length + 1,
+            ),
+            CheckpointMetadata(
+                checkpoint_id=real.checkpoint_id,
+                sequence=real.sequence + 1,
+                payload_byte_length=real.payload_byte_length,
+            ),
+        ):
+            statements: list[str] = []
+            connection.set_trace_callback(statements.append)
+            try:
+                with pytest.raises(PayloadLengthMismatch):
+                    read_selected_checkpoints(
+                        connection,
+                        workspace_id=sc.WORKSPACE_ID,
+                        principal_id=OWNER.principal_id,
+                        selected=(tampered,),
+                        payload_budget=PayloadReadBudget(limit=10_000_000),
+                    )
+            finally:
+                connection.set_trace_callback(None)
+            assert not any(
+                "c.payload_json" in s and "octet_length" not in s
+                for s in statements
+            )
+
+        # The unauthorized name is never `read_checkpoints`-visible-but-rejected;
+        # a wholly unknown id fails closed identically.
+        with pytest.raises(PayloadLengthMismatch):
+            read_selected_checkpoints(
+                connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                selected=(
+                    CheckpointMetadata(
+                        checkpoint_id="eck-nowhere",
+                        sequence=1,
+                        payload_byte_length=2,
+                    ),
+                ),
+                payload_budget=PayloadReadBudget(limit=10_000_000),
+            )
+
+
+def test_checkpoint_planning_requires_one_active_read_snapshot(workspace: Any) -> None:
+    connection = workspace.holder.connection
+    assert not connection.in_transaction
+    with pytest.raises(ValueError, match="active read snapshot"):
+        list_checkpoint_metadata(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            payload_budget=PayloadReadBudget(limit=10_000_000),
+        )
+    with pytest.raises(ValueError, match="active read snapshot"):
+        read_selected_checkpoints(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            selected=(),
+            payload_budget=PayloadReadBudget(limit=10_000_000),
+        )

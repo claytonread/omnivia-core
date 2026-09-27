@@ -2819,6 +2819,7 @@
         "authorization_denied",
         "cancelled",
         "capability_not_granted",
+        "context_budget_insufficient",
         "deadline_exceeded",
         "dependency_unavailable",
         "incompatible_version",
@@ -2831,6 +2832,7 @@
         "size_limit_exceeded",
         "stale_projection",
         "token_limit_exceeded",
+        "tokenizer_unavailable",
         "upgrade_required",
         "workspace_migration_required",
         "workspace_not_granted"

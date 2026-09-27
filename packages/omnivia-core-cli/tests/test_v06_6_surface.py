@@ -4,7 +4,7 @@
 have raised before a test ran. These assert it from the outside anyway, and
 assert the parts import-time validation cannot: the *order* the commands are
 declared in, the exact purpose each command declares, the exact probe set, and
-every one of the twenty-six exit codes by value rather than by coverage.
+every one of the twenty-eight exit codes by value rather than by coverage.
 
 The last test is the one that is about more than data. The surface must be
 importable by a client that has installed neither the runtime nor the MCP
@@ -117,6 +117,7 @@ EXPECTED_EXITS = {
     "workspace_migration_required": 4,
     "incompatible_version": 4,
     "upgrade_required": 4,
+    "tokenizer_unavailable": 4,
     "conflict": 5,
     "mutation_precondition_failed": 5,
     "idempotency_conflict": 5,
@@ -132,6 +133,7 @@ EXPECTED_EXITS = {
     "internal_recoverable": 7,
     "not_found": 8,
     "size_limit_exceeded": 8,
+    "context_budget_insufficient": 8,
     "token_limit_exceeded": 8,
     "internal_non_recoverable": 1,
 }
@@ -190,7 +192,7 @@ def test_each_frozen_error_code_maps_to_its_exit_code(
 
 def test_the_exit_map_covers_the_frozen_error_codes_exactly() -> None:
     assert set(EXIT_CODES) == set(FROZEN_ERROR_CODES)
-    assert len(EXPECTED_EXITS) == 26
+    assert len(EXPECTED_EXITS) == 28
 
 
 def test_an_unknown_error_code_exits_one() -> None:

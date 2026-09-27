@@ -74,6 +74,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
@@ -104,6 +105,10 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core.contracts.v1.canonical_json import canonicalize, parse_json_document
 from omnivia_core_runtime.storage.connection import authorised
+from omnivia_core_runtime.storage.payload_budget import (
+    PayloadLengthMismatch,
+    PayloadReadBudget,
+)
 
 #: 0009's two sealable layers, spelled as its `layer` column spells them. `context_model`
 #: is the third value the column admits and is refused a seal outright, so it can never
@@ -1717,6 +1722,7 @@ def hydrate_authorized_governed_record_values(
     resolution_instant_us: int,
     assembly_ids: tuple[str, ...],
     support_assembly_ids: tuple[str, ...] = (),
+    payload_budget: PayloadReadBudget | None = None,
 ) -> tuple[GovernedRecordValue, ...]:
     """Hydrate an already ACL-authorized assembly set inside the caller's snapshot.
 
@@ -1732,6 +1738,52 @@ def hydrate_authorized_governed_record_values(
         return ()
     placeholders = ", ".join("?" for _ in assembly_ids)
     with authorised(connection, mutations=False, ddl=False) as fenced:
+        content_length_projection = (
+            "0"
+            if payload_budget is None
+            else payload_budget.byte_length_sql(fenced, "content_json")
+        )
+        content_metadata_rows = fenced.execute(
+            "SELECT assembly_id, governed_record_id, "
+            f"{content_length_projection} FROM {_ASSEMBLIES} "
+            f"WHERE workspace_id = ? AND assembly_id IN ({placeholders})",
+            (workspace_id, *assembly_ids),
+        ).fetchall()
+        if {str(row[0]) for row in content_metadata_rows} != set(assembly_ids):
+            raise ValueError(
+                "authorized governed assembly disappeared from the snapshot"
+            )
+        record_ids = tuple(sorted({str(row[1]) for row in content_metadata_rows}))
+        record_placeholders = ", ".join("?" for _ in record_ids)
+        transition_metadata_rows = fenced.execute(
+            "SELECT transition_id, source_assembly_id, target_assembly_id, "
+            "rationale_byte_length "
+            f"FROM {_APPLICATION_TRANSITIONS} WHERE workspace_id = ? "
+            f"AND governed_record_id IN ({record_placeholders}) AND settled_at_us <= ? "
+            "ORDER BY governed_record_id, settled_at_us, transition_id",
+            (workspace_id, *record_ids, resolution_instant_us),
+        ).fetchall()
+        authorized_support = set(assembly_ids) | set(support_assembly_ids)
+        transition_support = {
+            str(value) for row in transition_metadata_rows for value in (row[1], row[2])
+        }
+        if not transition_support <= authorized_support:
+            raise ValueError("application transition support was not ACL-authorized")
+        support_ids = tuple(sorted(authorized_support))
+        support_placeholders = ", ".join("?" for _ in support_ids)
+        claim_length_rows: list[tuple[Any, ...]] = []
+        if payload_budget is not None:
+            claim_length_rows = fenced.execute(
+                "SELECT assembly_id, claim_byte_length "
+                f"FROM {_APPLICATION_CLAIMS} WHERE workspace_id = ? "
+                f"AND assembly_id IN ({support_placeholders}) ORDER BY assembly_id",
+                (workspace_id, *support_ids),
+            ).fetchall()
+            payload_budget.precheck(
+                [int(row[2]) for row in content_metadata_rows]
+                + [int(row[3]) for row in transition_metadata_rows]
+                + [int(row[1]) for row in claim_length_rows]
+            )
         rows = fenced.execute(
             f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW} "
             f"WHERE workspace_id = ? AND assembly_id IN ({placeholders})",
@@ -1742,10 +1794,6 @@ def hydrate_authorized_governed_record_values(
             raise ValueError(
                 "authorized governed assembly disappeared from the snapshot"
             )
-        record_ids = tuple(
-            sorted({version.governed_record_id for version in versions_by_id.values()})
-        )
-        record_placeholders = ", ".join("?" for _ in record_ids)
         transition_rows = fenced.execute(
             "SELECT workspace_id, transition_id, governed_record_id, "
             "source_assembly_id, source_record_version_id, target_assembly_id, "
@@ -1757,14 +1805,22 @@ def hydrate_authorized_governed_record_values(
             "ORDER BY governed_record_id, settled_at_us, transition_id",
             (workspace_id, *record_ids, resolution_instant_us),
         ).fetchall()
-        authorized_support = set(assembly_ids) | set(support_assembly_ids)
-        transition_support = {
-            str(value) for row in transition_rows for value in (row[3], row[5])
-        }
-        if not transition_support <= authorized_support:
-            raise ValueError("application transition support was not ACL-authorized")
-        support_ids = tuple(sorted(authorized_support))
-        support_placeholders = ", ".join("?" for _ in support_ids)
+        if payload_budget is not None:
+            content_lengths = {
+                str(row[0]): int(row[2]) for row in content_metadata_rows
+            }
+            transition_lengths = {
+                str(row[0]): int(row[3]) for row in transition_metadata_rows
+            }
+            for row in rows:
+                payload_budget.consume(str(row[13]), content_lengths[str(row[1])])
+            for row in transition_rows:
+                expected = transition_lengths[str(row[1])]
+                if expected != int(row[10]):
+                    raise PayloadLengthMismatch(
+                        "transition rationale byte metadata changed"
+                    )
+                payload_budget.consume(str(row[8]), expected)
         facts = _read_supersession_facts(
             fenced,
             workspace_id=workspace_id,
@@ -1807,6 +1863,19 @@ def hydrate_authorized_governed_record_values(
             "ORDER BY l.assembly_id",
             (workspace_id, *support_ids),
         ).fetchall()
+        if payload_budget is not None:
+            claim_lengths = {str(row[0]): int(row[1]) for row in claim_length_rows}
+            if {str(row[1]) for row in claim_rows} != set(claim_lengths):
+                raise PayloadLengthMismatch(
+                    "claim byte metadata changed inside the read snapshot"
+                )
+            for row in claim_rows:
+                expected = claim_lengths[str(row[1])]
+                if expected != int(row[7]):
+                    raise PayloadLengthMismatch(
+                        "claim byte metadata changed inside the read snapshot"
+                    )
+                payload_budget.consume(str(row[5]), expected)
     versions = tuple(versions_by_id[assembly_id] for assembly_id in assembly_ids)
     selected_versions = {version.governed_record_version_id for version in versions}
     snapshot = _GovernedHydrationSnapshot(
@@ -1827,6 +1896,137 @@ def hydrate_authorized_governed_record_values(
         for version, record in zip(
             versions, _hydrate_governed_records(snapshot), strict=True
         )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class GovernedPayloadComponents:
+    """Immutable, identity-keyed byte-length components for planning a governed
+    payload admission before any body SELECT.
+
+    Every mapping is keyed by the stored row's own identity -- assembly id for
+    `content_byte_lengths` and `claim_byte_lengths`, transition id for
+    `transition_rationale_byte_lengths` -- so a support row named by two selected
+    versions of one record's closures appears exactly once. A caller sums a
+    mapping's values to cost it, never a per-record contribution: the shared
+    identity collapses to one entry however many closures name it.
+    """
+
+    content_byte_lengths: Mapping[str, int]
+    transition_rationale_byte_lengths: Mapping[str, int]
+    claim_byte_lengths: Mapping[str, int]
+
+
+_EMPTY_GOVERNED_PAYLOAD_COMPONENTS: Final = GovernedPayloadComponents(
+    content_byte_lengths=MappingProxyType({}),
+    transition_rationale_byte_lengths=MappingProxyType({}),
+    claim_byte_lengths=MappingProxyType({}),
+)
+
+
+def plan_authorized_governed_payload(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    authorized_support: Mapping[str, tuple[str, ...]],
+    payload_budget: PayloadReadBudget,
+) -> GovernedPayloadComponents:
+    """Byte-metadata only for an already ACL-authorized selected set, before any
+    payload body is read.
+
+    `authorized_support`'s keys *are* the exact selected assembly ids, each
+    mapped to that record's own authorized support assembly ids -- a shape that
+    cannot mix one selected version's support into another's, unlike a single
+    flat support set shared across every selected id.
+
+    Reads `content_json`'s byte length through `payload_budget.byte_length_sql`,
+    and `rationale_byte_length`/`claim_byte_length` as the stored columns they
+    already are -- never `content_json`, `rationale_json` or `claim_json`
+    themselves. Every transition's two endpoints are checked against its own
+    record's combined selected/support closure, and one outside it fails
+    closed rather than silently widening what the caller authorized.
+    """
+    if not connection.in_transaction:
+        raise ValueError(
+            "governed payload planning requires the caller's active read snapshot"
+        )
+    if not authorized_support:
+        return _EMPTY_GOVERNED_PAYLOAD_COMPONENTS
+    assembly_ids = tuple(authorized_support)
+    placeholders = ", ".join("?" for _ in assembly_ids)
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        length_sql = payload_budget.byte_length_sql(fenced, "content_json")
+        content_rows = fenced.execute(
+            "SELECT assembly_id, governed_record_id, "
+            f"{length_sql} FROM {_ASSEMBLIES} "
+            f"WHERE workspace_id = ? AND assembly_id IN ({placeholders})",
+            (workspace_id, *assembly_ids),
+        ).fetchall()
+        if {str(row[0]) for row in content_rows} != set(assembly_ids):
+            raise ValueError(
+                "authorized governed assembly disappeared from the snapshot"
+            )
+        record_id_by_assembly = {str(row[0]): str(row[1]) for row in content_rows}
+        record_closure: dict[str, set[str]] = {}
+        for assembly_id, support_ids in authorized_support.items():
+            closure = record_closure.setdefault(
+                record_id_by_assembly[assembly_id], set()
+            )
+            closure.add(assembly_id)
+            closure.update(support_ids)
+        support_ids = tuple(sorted(set.union(*record_closure.values())))
+        support_placeholders = ", ".join("?" for _ in support_ids)
+        support_rows = fenced.execute(
+            "SELECT assembly_id, governed_record_id "
+            f"FROM {_ASSEMBLIES} WHERE workspace_id = ? "
+            f"AND assembly_id IN ({support_placeholders})",
+            (workspace_id, *support_ids),
+        ).fetchall()
+        support_record_by_assembly = {
+            str(row[0]): str(row[1]) for row in support_rows
+        }
+        if set(support_record_by_assembly) != set(support_ids):
+            raise ValueError("authorized governed support disappeared from the snapshot")
+        if any(
+            support_record_by_assembly[assembly_id] != record_id
+            for record_id, closure in record_closure.items()
+            for assembly_id in closure
+        ):
+            raise ValueError("governed support crossed an authorized record closure")
+        record_ids = tuple(sorted(record_closure))
+        record_placeholders = ", ".join("?" for _ in record_ids)
+        transition_rows = fenced.execute(
+            "SELECT transition_id, governed_record_id, source_assembly_id, "
+            "target_assembly_id, rationale_byte_length "
+            f"FROM {_APPLICATION_TRANSITIONS} WHERE workspace_id = ? "
+            f"AND governed_record_id IN ({record_placeholders}) "
+            "AND settled_at_us <= ? "
+            "ORDER BY governed_record_id, settled_at_us, transition_id",
+            (workspace_id, *record_ids, resolution_instant_us),
+        ).fetchall()
+        for row in transition_rows:
+            closure = record_closure[str(row[1])]
+            if str(row[2]) not in closure or str(row[3]) not in closure:
+                raise ValueError(
+                    "application transition support was not ACL-authorized"
+                )
+        claim_rows = fenced.execute(
+            "SELECT assembly_id, claim_byte_length "
+            f"FROM {_APPLICATION_CLAIMS} WHERE workspace_id = ? "
+            f"AND assembly_id IN ({support_placeholders}) ORDER BY assembly_id",
+            (workspace_id, *support_ids),
+        ).fetchall()
+    return GovernedPayloadComponents(
+        content_byte_lengths=MappingProxyType(
+            {str(row[0]): int(row[2]) for row in content_rows}
+        ),
+        transition_rationale_byte_lengths=MappingProxyType(
+            {str(row[0]): int(row[4]) for row in transition_rows}
+        ),
+        claim_byte_lengths=MappingProxyType(
+            {str(row[0]): int(row[1]) for row in claim_rows}
+        ),
     )
 
 
@@ -1868,10 +2068,12 @@ def read_governed_records(
 __all__ = [
     "LAYER_CANDIDATE",
     "LAYER_GOVERNED",
+    "GovernedPayloadComponents",
     "GovernedRecordValue",
     "GovernedSupersession",
     "GovernedVersion",
     "hydrate_authorized_governed_record_values",
+    "plan_authorized_governed_payload",
     "read_governed_record_values",
     "read_governed_records",
     "read_governed_supersessions",

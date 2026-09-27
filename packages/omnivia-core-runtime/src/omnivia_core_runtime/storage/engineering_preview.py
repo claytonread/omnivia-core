@@ -47,6 +47,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.memory import (
+    AuthorizedMemoryFrontier,
     AuthorizedVersion,
     read_authorized_memory_frontier,
     read_snapshot,
@@ -154,9 +155,30 @@ def read_authorized_previews(
             domain_scope=OBSERVATION_DOMAIN,
             record_ids=record_ids,
         )
-        held = _read_rows(
-            connection, workspace_id, [version.assembly_id for version in frontier.versions]
+        return read_previews_for_frontier(
+            connection, workspace_id=workspace_id, frontier=frontier
         )
+
+
+def read_previews_for_frontier(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    frontier: AuthorizedMemoryFrontier,
+) -> tuple[PreviewCandidate, ...]:
+    """Read projections for exactly one already-authorized frozen frontier.
+
+    The caller owns the read snapshot.  This function performs no authorization
+    lookup and opens no transaction; its only projection keys are the admitted
+    assembly ids in ``frontier``.  The bounded projection is the complete search
+    surface, so terms that occur only beyond its first 480 code points do not
+    match without a later exact expansion.
+    """
+    if not connection.in_transaction:
+        raise ValueError("preview reads require the caller's active read snapshot")
+    held = _read_rows(
+        connection, workspace_id, [version.assembly_id for version in frontier.versions]
+    )
     candidates: list[PreviewCandidate] = []
     absent = stale = False
     for version in frontier.versions:
@@ -333,6 +355,7 @@ __all__ = [
     "preview_search_text",
     "rank_previews",
     "read_authorized_previews",
+    "read_previews_for_frontier",
     "rebuild_missing_previews",
     "record_preview",
 ]

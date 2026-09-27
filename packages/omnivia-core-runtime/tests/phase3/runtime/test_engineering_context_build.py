@@ -21,11 +21,18 @@ import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.service.application import authorize_application_request
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
+from omnivia_core_runtime.storage.context_pack import (
+    CONTEXT_PACK_TOKENIZER_ID,
+    CONTEXT_PACK_TOKENIZER_VERSION,
+)
 from omnivia_core_runtime.storage.memory import create_memory_record
 from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
 from omnivia_core.contracts.v1 import (
+    ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT,
+    ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+    ERROR_CODE_TOKENIZER_UNAVAILABLE,
     get_operation_metadata,
 )
 
@@ -169,6 +176,22 @@ def _build(holder: Any, **overrides: Any) -> Any:
     return handlers.engineering_context_build(context)
 
 
+def _without_storage(operation_input: dict[str, Any]) -> Any:
+    handlers = EngineeringHandlers(
+        service=SimpleNamespace(),
+        binding=s0.BINDING,
+    )
+    return handlers.engineering_context_build(_context(None, operation_input))
+
+
+def _base_input() -> dict[str, Any]:
+    return {
+        "query": "authentication provider",
+        "targets": [{"snapshot_id": "esnap-a", "snapshot_kind": "git_commit"}],
+        "profile": "investigate",
+    }
+
+
 def test_a_pack_is_built_with_exact_counts_and_a_self_verifying_checksum(
     tmp_path: Any,
 ) -> None:
@@ -266,5 +289,155 @@ def test_service_build_replays_under_a_frozen_frontier_and_differs_by_instant(
         monkeypatch.setattr(time, "time_ns", lambda: now + 5_000)
         assert _build(holder)["pack"]["pack_id"] != first["pack_id"]
         assert first["reproducibility"]["tokenizer_id"]
+    finally:
+        holder.connection.close()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {
+            "counting_mode": "byte_only.v1",
+            "budget": {"model_bytes": 1024, "model_tokens": 100},
+        },
+        {
+            "counting_mode": "byte_only.v1",
+            "budget": {"model_bytes": 1024},
+            "tokenizer": {"tokenizer_id": "tok", "tokenizer_version": "v1"},
+        },
+        {"counting_mode": "byte_only.v1", "budget": {}},
+        {"counting_mode": "byte_only.v1", "budget": {"model_bytes": 0}},
+        {"counting_mode": "byte_only.v1", "budget": {"model_bytes": -1}},
+        {"counting_mode": "byte_only.v1", "budget": {"model_bytes": "1024"}},
+        {"counting_mode": "future.v9", "budget": {"model_bytes": 1024}},
+        {
+            "counting_mode": "exact_tokens.v1",
+            "budget": {"model_tokens": 100, "model_bytes": 1024},
+            "tokenizer": {
+                "tokenizer_id": "not a valid identifier",
+                "tokenizer_version": "v1",
+            },
+        },
+        {
+            "counting_mode": "exact_tokens.v1",
+            "budget": {"model_bytes": 1024},
+            "tokenizer": {"tokenizer_id": "tok", "tokenizer_version": "v1"},
+        },
+        {
+            "counting_mode": "byte_only.v1",
+            "budget": {"model_bytes": 1024},
+            "profile": "caller-invented",
+        },
+        {
+            "counting_mode": "byte_only.v1",
+            "budget": {"model_bytes": 65537},
+        },
+        {
+            "counting_mode": "byte_only.v1",
+            "budget": {"model_bytes": 1024},
+            "ignored_limit": 1,
+        },
+        {"tokenizer": {"tokenizer_id": "tok", "tokenizer_version": "v1"}},
+    ],
+)
+def test_invalid_counting_inputs_fail_before_storage(
+    override: dict[str, Any],
+) -> None:
+    operation_input = _base_input()
+    operation_input.update(override)
+    with pytest.raises(OperationError) as invalid:
+        _without_storage(operation_input)
+    assert invalid.value.code == ERROR_CODE_INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    ("tokenizer_id", "tokenizer_version"),
+    [
+        ("model-tokenizer", "v1"),
+        (CONTEXT_PACK_TOKENIZER_ID, CONTEXT_PACK_TOKENIZER_VERSION),
+    ],
+)
+def test_exact_tokenizer_is_unavailable_before_any_storage_access(
+    tokenizer_id: str,
+    tokenizer_version: str,
+) -> None:
+    operation_input = _base_input()
+    operation_input.update(
+        {
+            "counting_mode": "exact_tokens.v1",
+            "applicability_mode": "current_safe",
+            "budget": {"model_tokens": 4000, "model_bytes": 16384},
+            "tokenizer": {
+                "tokenizer_id": tokenizer_id,
+                "tokenizer_version": tokenizer_version,
+            },
+        }
+    )
+    with pytest.raises(OperationError) as unavailable:
+        _without_storage(operation_input)
+    assert unavailable.value.code == ERROR_CODE_TOKENIZER_UNAVAILABLE
+    assert unavailable.value.retry_class == "non_retryable"
+    assert unavailable.value.message == (
+        "the requested exact tokenizer is not available in this service"
+    )
+    assert tokenizer_id not in unavailable.value.message
+
+
+def test_byte_only_profile_limits_reduce_effective_budget_and_omit_tokens(
+    tmp_path: Any,
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        pack = _build(
+            holder,
+            counting_mode="byte_only.v1",
+            budget={
+                "model_bytes": 50000,
+                "hydrations": 16,
+                "evidence_bytes": 524288,
+            },
+        )["pack"]
+        assert pack["format_version"] == "engineering_context.v2"
+        assert pack["budget"]["effective"] == {
+            "model_bytes": 16384,
+            "hydrations": 8,
+            "evidence_bytes": 262144,
+            "authorized_candidates": 2000,
+        }
+        assert pack["budget"]["requested"] == {
+            "model_bytes": 50000,
+            "hydrations": 16,
+            "evidence_bytes": 524288,
+        }
+        assert pack["rendering"]["byte_count"] == len(
+            pack["rendering"]["text"].encode("utf-8")
+        )
+        encoded = json.dumps(pack, sort_keys=True)
+        for forbidden in (
+            "model_tokens",
+            "rendered_tokens",
+            "token_count",
+            "tokenizer_id",
+            "tokenizer_version",
+        ):
+            assert forbidden not in encoded
+    finally:
+        holder.connection.close()
+
+
+def test_byte_only_minimum_safe_context_uses_the_new_typed_error(tmp_path: Any) -> None:
+    holder = _owned(tmp_path)
+    try:
+        with pytest.raises(OperationError) as insufficient:
+            _build(
+                holder,
+                counting_mode="byte_only.v1",
+                budget={"model_bytes": 1},
+            )
+        assert insufficient.value.code == ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT
+        assert insufficient.value.retry_class == "non_retryable"
+        assert insufficient.value.message == (
+            "the minimum safe engineering context does not fit the effective budget"
+        )
     finally:
         holder.connection.close()

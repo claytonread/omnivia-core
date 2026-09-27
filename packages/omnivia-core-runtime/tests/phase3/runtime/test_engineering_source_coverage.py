@@ -532,6 +532,26 @@ def test_the_source_coverage_vertical_through_the_production_surface(
     assert safe["applicability"][0]["status"] == "matched"
     assert safe["normalized_request"]["applicability_mode"] == "current_safe"
     assert safe["reproducibility"]["source_coverage"][0]["sequence"] == 4
+    manifest_bytes = int(
+        workspace.holder.connection.execute(
+            "SELECT SUM(length(CAST(manifest_json AS BLOB))) "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND snapshot_id IN (?, ?)",
+            (WORKSPACE_ID, "esnap-a", "esnap-c"),
+        ).fetchone()[0]
+    )
+    selected_payload = workspace.holder.connection.execute(
+        "SELECT length(CAST(a.content_json AS BLOB)), l.claim_byte_length "
+        "FROM omnivia_governed_version_assemblies a "
+        "JOIN omnivia_application_claim_lineage l "
+        "ON l.workspace_id = a.workspace_id AND l.assembly_id = a.assembly_id "
+        "WHERE a.workspace_id = ? AND a.governed_record_id = ? "
+        "AND a.governed_record_version_id = ?",
+        (WORKSPACE_ID, record["record_id"], record["version"]),
+    ).fetchone()
+    assert safe["budget"]["source_bytes_read"] == (
+        manifest_bytes + int(selected_payload[0]) + int(selected_payload[1])
+    )
     # Reads write nothing: every stored assessment is the invalidation worker's
     # own durable output (migration 0059), one per covered event that actually
     # changed a required dependency of this record -- esnap-b turning the
@@ -1424,6 +1444,112 @@ def test_pack_partitions_accepted_knowledge_from_candidate_findings(
         hypothesis["record_id"]: "candidate_findings",
         candidate["record_id"]: "candidate_findings",
     }
+    exact_refs = {
+        (citation["record_ref"]["record_id"], citation["record_ref"]["version"])
+        for citation in pack["citations"]
+    }
+    selected_assemblies = {
+        str(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT assembly_id, governed_record_id, governed_record_version_id "
+            "FROM omnivia_governed_version_assemblies WHERE workspace_id = ?",
+            (WORKSPACE_ID,),
+        )
+        if (str(row[1]), str(row[2])) in exact_refs
+    }
+    selected_record_ids = sorted({record_id for record_id, _version in exact_refs})
+    transition_rows = workspace.holder.connection.execute(
+        "SELECT source_assembly_id, target_assembly_id, rationale_byte_length "
+        "FROM omnivia_application_governance_transitions "
+        f"WHERE workspace_id = ? AND governed_record_id IN "
+        f"({', '.join('?' for _ in selected_record_ids)})",
+        (WORKSPACE_ID, *selected_record_ids),
+    ).fetchall()
+    support_assemblies = selected_assemblies | {
+        str(value) for row in transition_rows for value in row[:2]
+    }
+    content_bytes = sum(
+        int(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT length(CAST(content_json AS BLOB)) "
+            "FROM omnivia_governed_version_assemblies "
+            f"WHERE workspace_id = ? AND assembly_id IN "
+            f"({', '.join('?' for _ in selected_assemblies)})",
+            (WORKSPACE_ID, *sorted(selected_assemblies)),
+        )
+    )
+    claim_bytes = int(
+        workspace.holder.connection.execute(
+            "SELECT COALESCE(SUM(claim_byte_length), 0) "
+            "FROM omnivia_application_claim_lineage "
+            f"WHERE workspace_id = ? AND assembly_id IN "
+            f"({', '.join('?' for _ in support_assemblies)})",
+            (WORKSPACE_ID, *sorted(support_assemblies)),
+        ).fetchone()[0]
+    )
+    rationale_bytes = sum(int(row[2]) for row in transition_rows)
+    expected_source_bytes = content_bytes + claim_bytes + rationale_bytes
+    assert pack["budget"]["source_bytes_read"] == expected_source_bytes
+
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        constrained = workspace.ok(
+            "engineering.context.build",
+            {
+                "query": "provider",
+                "targets": [],
+                "profile": "investigate",
+                "budget": {"evidence_bytes": expected_source_bytes - 1},
+            },
+        )["pack"]
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+    constrained_refs = {
+        (citation["record_ref"]["record_id"], citation["record_ref"]["version"])
+        for citation in constrained["citations"]
+    }
+    omitted_refs = exact_refs - constrained_refs
+    assert constrained_refs
+    assert omitted_refs
+    assert constrained["budget"]["source_bytes_read"] <= expected_source_bytes - 1
+    assert {item["reason"] for item in constrained["omissions"]} == {
+        "source_budget"
+    }
+    omitted_assemblies = {
+        str(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT assembly_id, governed_record_id, governed_record_version_id "
+            "FROM omnivia_governed_version_assemblies WHERE workspace_id = ?",
+            (WORKSPACE_ID,),
+        )
+        if (str(row[1]), str(row[2])) in omitted_refs
+    }
+    body_reads = [
+        statement
+        for statement in statements
+        if any(
+            column in statement
+            for column in ("content_json", "claim_json", "rationale_json")
+        )
+        and "octet_length(" not in statement
+        and "length(CAST(" not in statement
+    ]
+    assert not any(
+        assembly_id in statement
+        for assembly_id in omitted_assemblies
+        for statement in body_reads
+    )
+    fixed_instant = 1_800_000_000_000_000_000
+    monkeypatch.setattr(handlers.time, "time_ns", lambda: fixed_instant)
+    normal_pages = build()
+    monkeypatch.setattr(handlers, "AUTHORIZED_FRONTIER_PAGE_SIZE", 1)
+    single_record_pages = build()
+    assert single_record_pages == normal_pages
+    assert (
+        single_record_pages["reproducibility"]["authorized_frontier_digest"]
+        == normal_pages["reproducibility"]["authorized_frontier_digest"]
+    )
     assert partitions(build(profile="implement")) == {
         accepted["record_id"]: "accepted_knowledge",
         hypothesis["record_id"]: "candidate_findings",
@@ -1452,9 +1578,18 @@ def test_pack_partitions_accepted_knowledge_from_candidate_findings(
     }
     pack = build(**safe)
     assert partitions(pack) == {candidate["record_id"]: "candidate_findings"}
-    assert pack["omissions"] == [{"field": "sections", "reason": "applicability_unproven"}]
+    assert pack["omissions"] == [
+        {"field": "sections", "reason": "applicability_unproven"}
+    ]
     # Were the accepted version proven, it would render as accepted knowledge.
-    monkeypatch.setattr(handlers, "_proven_matched", lambda *_args: True)
+    monkeypatch.setattr(
+        handlers,
+        "_proven_matched",
+        lambda *_args, **_kwargs: pytest.fail(
+            "post-hydration applicability must not authorize pack selection"
+        ),
+    )
+    monkeypatch.setattr(handlers, "_proven_version", lambda *_args, **_kwargs: True)
     assert partitions(build(**safe)) == {
         accepted["record_id"]: "accepted_knowledge",
         hypothesis["record_id"]: "candidate_findings",
@@ -1803,6 +1938,43 @@ def test_query_matching_candidates_beyond_the_cap_still_refuse(
             "repository_target": {"repository_id": REPOSITORY, "snapshot_id": "esnap-a"},
         },
     )[0] == "size_limit_exceeded"
+
+
+def test_current_safe_manifest_bytes_are_prechecked_and_reported_exactly(
+    workspace: Workspace,
+) -> None:
+    workspace.record(_source(1, "esnap-a", FILES_A))
+    request = {
+        "query": "no matching record",
+        "profile": "implement",
+        "applicability_mode": "current_safe",
+        "targets": [{"repository_id": REPOSITORY, "snapshot_id": "esnap-a"}],
+    }
+    expected = int(
+        workspace.holder.connection.execute(
+            "SELECT length(CAST(manifest_json AS BLOB)) "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND snapshot_id = ?",
+            (WORKSPACE_ID, "esnap-a"),
+        ).fetchone()[0]
+    )
+    pack = workspace.ok("engineering.context.build", request)["pack"]
+    assert pack["budget"]["source_bytes_read"] == expected
+
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        refusal = workspace.refused(
+            "engineering.context.build",
+            {**request, "budget": {"evidence_bytes": 1}},
+        )
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+    assert refusal[0] == "size_limit_exceeded"
+    assert not any(
+        "SELECT manifest_json FROM omnivia_engineering_source_events" in statement
+        for statement in statements
+    )
 
 
 def test_label_denied_matches_skip_the_cap_while_unproven_admits_spend_it(

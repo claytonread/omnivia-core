@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 150
+    assert len(corpus) == 152
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "8060b1588748bf22fc12f8de76e9c0a4ccd3ce4cfd9b7c9c23dcc1a2ac828caf"
+        "7e26f7107d738eca73fd51184c09e3dec9353fa773d175401a0b0348584d2421"
     )
 
 
@@ -1619,6 +1619,272 @@ def test_the_canonical_maximum_item_count_is_enforced() -> None:
     assert conformance._validate_against_schema(["a", "b", "c"], schema, schemas, "x") == [
         "x: more than maxItems 2"
     ]
+
+
+def test_the_canonical_conditional_composition_keywords_are_enforced() -> None:
+    """The bounded evaluator applies allOf, if/then, and not together."""
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    schema = {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string"},
+            "bytes": {"type": "integer"},
+            "tokenizer": {"type": "string"},
+        },
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"mode": {"const": "byte"}},
+                    "required": ["mode"],
+                },
+                "then": {
+                    "required": ["bytes"],
+                    "not": {"required": ["tokenizer"]},
+                },
+            }
+        ],
+    }
+    validate = conformance._validate_against_schema
+    assert validate({"mode": "legacy"}, schema, schemas, "x") == []
+    assert validate({"mode": "byte", "bytes": 10}, schema, schemas, "x") == []
+    assert validate({"mode": "byte"}, schema, schemas, "x") == [
+        "x: missing required field(s) ['bytes']"
+    ]
+    assert validate(
+        {"mode": "byte", "bytes": 10, "tokenizer": "forbidden"},
+        schema,
+        schemas,
+        "x",
+    ) == ["x: must not satisfy the excluded schema"]
+
+
+def test_the_canonical_evaluator_still_refuses_every_unlisted_keyword() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    with pytest.raises(
+        ContractSemanticError,
+        match=r"canonical schema uses unsupported keyword\(s\).*exclusiveMinimum",
+    ):
+        conformance._validate_against_schema(
+            2,
+            {"type": "integer", "exclusiveMinimum": 1},
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"not": {"exclusiveMinimum": 1}},
+        {"if": {"exclusiveMinimum": 1}, "then": {"const": 999}},
+        {"oneOf": [{"exclusiveMinimum": 1}, {"const": 2}]},
+        {"allOf": [{"exclusiveMinimum": 1}]},
+        {"not": {"allOf": [{"exclusiveMinimum": 1}]}},
+    ],
+)
+def test_nested_composition_cannot_swallow_an_unsupported_keyword(
+    schema: dict[str, object],
+) -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    with pytest.raises(
+        ContractSemanticError,
+        match=r"canonical schema uses unsupported keyword\(s\).*exclusiveMinimum",
+    ):
+        conformance._validate_against_schema(
+            2,
+            schema,
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "schema"),
+    [
+        (
+            2,
+            {
+                "if": {"const": 1},
+                "then": {"exclusiveMinimum": 1},
+            },
+        ),
+        (
+            {},
+            {
+                "type": "object",
+                "properties": {
+                    "optional": {"exclusiveMinimum": 1},
+                },
+            },
+        ),
+        (
+            [],
+            {
+                "type": "array",
+                "items": {"exclusiveMinimum": 1},
+            },
+        ),
+        (
+            {},
+            {
+                "type": "object",
+                "$defs": {
+                    "FutureConstraint": {"exclusiveMinimum": 1},
+                },
+            },
+        ),
+    ],
+)
+def test_schema_preflight_checks_unselected_and_unvisited_subschemas(
+    value: object, schema: dict[str, object]
+) -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    with pytest.raises(
+        ContractSemanticError,
+        match=r"canonical schema uses unsupported keyword\(s\).*exclusiveMinimum",
+    ):
+        conformance._validate_against_schema(
+            value,
+            schema,
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+@pytest.mark.parametrize(
+    ("subschema", "message"),
+    [
+        ({"type": "mystery"}, "declares unknown type"),
+        ({"format": "mystery"}, "declares unsupported format"),
+        ({"required": "field"}, "required must be an array of unique strings"),
+        ({"pattern": 1}, "pattern must be a string"),
+        ({"minimum": "one"}, "minimum must be a finite number"),
+        ({"minLength": True}, "minLength must be a non-negative integer"),
+        ({"uniqueItems": 1}, "uniqueItems must be a boolean"),
+        ({"enum": []}, "enum must be a non-empty array"),
+        ({"const": {1: "not-json"}}, "literal must be JSON"),
+    ],
+)
+def test_schema_preflight_validates_supported_keyword_values_in_absent_properties(
+    subschema: dict[object, object], message: str
+) -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"optional": subschema},
+    }
+    with pytest.raises(ContractSemanticError, match=message):
+        conformance._validate_against_schema(
+            {},
+            schema,
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+def test_schema_preflight_recognizes_the_pattern_authoritative_uri_annotation() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    assert conformance._validate_against_schema(
+        "https://core.example",
+        {"type": "string", "format": "uri", "pattern": r"^https://[^/]+$"},
+        conformance._CanonicalSchemas(),
+        "x",
+    ) == []
+
+
+def test_schema_preflight_follows_references_before_value_validation() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    ref = (
+        "https://contracts.omnivia.dev/application/v1/"
+        "preflight-test.schema.json#/$defs/Root"
+    )
+    schemas._documents["preflight-test"] = {
+        "$defs": {
+            "Root": {
+                "type": "object",
+                "properties": {
+                    "optional": {"exclusiveMinimum": 1},
+                },
+            }
+        }
+    }
+    with pytest.raises(
+        ContractSemanticError,
+        match=r"canonical schema uses unsupported keyword\(s\).*exclusiveMinimum",
+    ):
+        conformance._validate_against_schema({}, {"$ref": ref}, schemas, "x")
+
+
+def test_schema_preflight_rejects_reference_cycles_before_value_validation() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    prefix = (
+        "https://contracts.omnivia.dev/application/v1/"
+        "preflight-cycle.schema.json#/$defs/"
+    )
+    schemas._documents["preflight-cycle"] = {
+        "$defs": {
+            "A": {"$ref": prefix + "B"},
+            "B": {"$ref": prefix + "A"},
+        }
+    }
+    with pytest.raises(ContractSemanticError, match="reference cycle"):
+        conformance._validate_against_schema(
+            {},
+            {"$ref": prefix + "A"},
+            schemas,
+            "x",
+        )
+
+
+@pytest.mark.parametrize(
+    ("schema", "message"),
+    [
+        ({"oneOf": []}, "oneOf must contain schemas"),
+        ({"allOf": []}, "allOf must contain schemas"),
+        ({"if": []}, "if must contain a schema"),
+        ({"if": {}, "then": []}, "then must contain a schema"),
+        ({"not": []}, "not must contain a schema"),
+    ],
+)
+def test_malformed_composition_nodes_are_schema_errors(
+    schema: dict[str, object], message: str
+) -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    with pytest.raises(ContractSemanticError, match=message):
+        conformance._validate_against_schema(
+            2,
+            schema,
+            conformance._CanonicalSchemas(),
+            "x",
+        )
+
+
+def test_composition_instance_mismatches_remain_findings() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    schemas = conformance._CanonicalSchemas()
+    validate = conformance._validate_against_schema
+    assert validate(2, {"oneOf": [{"const": 1}, {"const": 2}]}, schemas, "x") == []
+    assert validate(2, {"if": {"const": 1}, "then": {"const": 999}}, schemas, "x") == []
+    assert validate(2, {"not": {"const": 1}}, schemas, "x") == []
+    assert validate(
+        2,
+        {"allOf": [{"type": "integer"}, {"minimum": 3}]},
+        schemas,
+        "x",
+    ) == ["x: below minimum 3"]
 
 
 def test_a_request_that_cannot_be_re_encoded_is_rejected(
