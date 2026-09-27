@@ -54,20 +54,24 @@ HOST_CONFIG_FORMATS: Final = {
     "official_python_sdk": "official_python_sdk_stdio",
 }
 HOST_FAMILIES: Final = frozenset(HOST_CONFIG_FORMATS)
-#: The stable ten-tool manifest, sorted as the journey retains it.
+#: The stable fourteen-tool manifest, sorted as the journey retains it.
 HOST_TOOLS: Final = [
     "context_pack_build",
+    "continuity_handoff_read",
     "decision_evaluate",
     "decision_record_get",
     "decision_record_list",
     "decision_status",
+    "engineering_context_build",
+    "engineering_expand",
+    "engineering_search",
     "evidence_search",
     "graph_traverse",
     "knowledge_search",
     "memory_search",
     "workspace_inspect",
 ]
-#: The reads the journey counts populated results for; the four decision tools
+#: The reads the journey counts populated results for; the eight decision and engineering tools
 #: are stubs and are refused, not answered.
 HOST_READ_TOOLS: Final = [
     "context_pack_build",
