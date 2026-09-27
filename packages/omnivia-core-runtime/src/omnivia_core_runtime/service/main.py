@@ -912,6 +912,7 @@ def main(
             mcp_administration=installation_authority,
             service_work=executor.run_pending,
             endpoint=endpoint,
+            gate=started.sqlite_gate,
         )
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)

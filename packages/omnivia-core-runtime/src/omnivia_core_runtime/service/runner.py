@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC
@@ -160,6 +161,11 @@ class ServiceRunner:
         self.lifecycle = ServiceLifecycle()
         self.identity: ServiceInstanceIdentity | None = None
         self.connection: sqlite3.Connection | None = None
+        #: Serializes every use of `connection` across the threads that touch it --
+        #: the serving thread and this thread's own lease renewal -- so SQLite's
+        #: connection-global mutex is never held by one while the other waits on
+        #: the GIL inside it.
+        self.sqlite_gate: threading.RLock = threading.RLock()
         self.generation: int | None = None
         self.workspace_id: str | None = None
         self.workspace_format_ordinal: str | None = None
@@ -634,6 +640,11 @@ class ServiceRunner:
         age = now - self._lease_renewed_at
         if age < LEASE_RENEWAL_INTERVAL_SECONDS:
             return False
+        remaining = LEASE_RENEWAL_DEADLINE_SECONDS - age
+        if not self.sqlite_gate.acquire(timeout=max(remaining, 0)):
+            raise RuntimeError(
+                "could not acquire the sqlite gate before the lease renewal deadline"
+            )
         try:
             heartbeat(self.connection, self.identity, clock=self.clock)
         except LeaseHeld:
@@ -644,6 +655,8 @@ class ServiceRunner:
                 # from the last heartbeat this instance actually wrote.
                 return False
             raise
+        finally:
+            self.sqlite_gate.release()
         self._lease_renewed_at = now
         return True
 

@@ -32,6 +32,7 @@ import re
 import socket
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -647,6 +648,12 @@ class LocalSocketServer:
     router: DocumentRouter | None = None
     authenticated: AuthenticatedDispatch | None = None
     mcp_administration: McpAdministration | None = None
+    #: The same gate the runner holds around its own use of the connection, or
+    #: `None` for an embedder or test that owns no shared connection to protect.
+    #: Held around dispatch and around service work so this thread and the lease
+    #: renewal thread never have SQLite's connection-global mutex held by one
+    #: while the other waits on the GIL inside it.
+    gate: threading.RLock | None = None
     #: Bounded service work to run on this thread, before a request is served and
     #: again after its response is written.
     #:
@@ -911,33 +918,35 @@ class LocalSocketServer:
         """
         if self.service_work is None:
             return
-        try:
-            self.service_work()
-        except Exception:  # noqa: BLE001 - see above
-            return
+        with self.gate if self.gate is not None else nullcontext():
+            try:
+                self.service_work()
+            except Exception:  # noqa: BLE001 - see above
+                return
 
     def _handle(self, channel: _Channel) -> None:
         raw = channel.read_frame()
         if raw is None:
             return
         document = decode_frame(raw)
-        if is_local_control(document):
-            # Answered here and nothing below runs. A control is not a request and
-            # not a probe: it names its own kind, so it is never handed to a
-            # decoder that would have to guess which of the two it meant to be.
-            payload: Mapping[str, Any] = self._control(document)
-        elif self.router is not None:
-            result = self.router.route(document)
-            payload = result.to_wire()
-        else:
-            assert self.dispatcher is not None
-            request = codec.decode_request(document)
-            response = self.dispatcher.dispatch(request)
-            payload = codec.encode_response(response)
+        with self.gate if self.gate is not None else nullcontext():
+            if is_local_control(document):
+                # Answered here and nothing below runs. A control is not a request and
+                # not a probe: it names its own kind, so it is never handed to a
+                # decoder that would have to guess which of the two it meant to be.
+                payload: Mapping[str, Any] = self._control(document)
+            elif self.router is not None:
+                result = self.router.route(document)
+                payload = result.to_wire()
+            else:
+                assert self.dispatcher is not None
+                request = codec.decode_request(document)
+                response = self.dispatcher.dispatch(request)
+                payload = codec.encode_response(response)
         # Reading the frame checked the initial unary boundary, but dispatch may run
         # longer than that quiet window.  Recheck after all router/dispatcher work and
         # immediately before the response write so traffic pipelined during dispatch
-        # cannot receive a valid response.
+        # cannot receive a valid response. Both happen after the gate is released.
         channel.ensure_unary_boundary()
         channel.send_frame(encode_frame(payload))
 
