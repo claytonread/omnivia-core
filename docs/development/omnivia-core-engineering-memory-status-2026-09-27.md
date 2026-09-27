@@ -44,6 +44,10 @@ Lane 10 000 observations (`benchmarks/reports/engineering-memory/lane-10000.json
 
 The search gap is structural: the preview path scores the full admitted candidate set in Python per query (no SQL-side top-k), so latency scales with corpus size. Pack construction inherits the frontier scan. These are measurements, not release guarantees. The 100 000-observation lane is still running, and the fixture needs the worktree, ACL, conflict, cache-state and environment dimensions required by spec §20.2 before it can serve as release qualification.
 
+## Scale-qualification finding: SQLite host-parameter ceiling (found and fixed)
+
+The first 100 000-observation lane failed with `sqlite3.OperationalError: too many SQL variables`: `read_authorized_memory_frontier` folds evidence links, permission labels and governance transitions by `IN (...)` lists sized by the admitted frontier, and a workspace at 100k records crosses SQLite's host-parameter ceiling. Any workspace past tens of thousands of records would fail `memory.search` and `engineering.search` the same way — a genuine production correctness bug at scale, which is exactly the class of finding the §20.2 scale-qualification lane exists to produce. Fixed in `50f4fa7a` by issuing each fold in fixed 512-id chunks and re-sorting the merged rows by the statements' own ORDER BY keys, reproducing the unchunked statement's rows and order exactly; digest-sensitive suites (2 668 corpus/conformance tests, 701 memory/engineering tests) answer identically, and `test_memory_frontier_chunking.py` pins the boundary with a deterministic 540-record frontier. The lane is rerunning against the fix.
+
 ## Honest limitations (carried into the release note)
 
 - Lease expiry and binding-generation fencing are recorded but not enforced (§7.3).
