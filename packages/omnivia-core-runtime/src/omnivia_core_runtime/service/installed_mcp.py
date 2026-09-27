@@ -121,7 +121,7 @@ _MESSAGE_NOT_AUTHENTICATED: Final = (
 # --- the two exact profiles ---------------------------------------------------
 #
 # The operation and the purpose are the MCP exposure manifest's (`manifest.py`,
-# `MANIFEST_VERSION` 2.0) and are restated here because the runtime must not
+# `MANIFEST_VERSION` 2.1) and are restated here because the runtime must not
 # import the MCP package: an agent-facing allow-list is a decision that package
 # owns, and a dependency in this direction would make the service unable to start
 # without it. Everything else about each operation is read from the catalogue.
@@ -133,6 +133,10 @@ _RESTRICTED_OPERATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("memory.search", "knowledge_retrieval"),
     ("graph.traverse", "knowledge_retrieval"),
     ("context_pack.build", "knowledge_retrieval"),
+    ("engineering.search", "engineering_search"),
+    ("engineering.expand", "engineering_expand"),
+    ("engineering.context.build", "engineering_context"),
+    ("continuity.handoff.read", "continuity_handoff"),
     ("decision.evaluate", "decision_evaluation"),
     ("decision.record.get", "decision_record"),
     ("decision.record.list", "decision_record"),
@@ -143,6 +147,7 @@ _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("memory.create", "memory_authoring"),
     ("evidence.capture", "content_ingestion"),
     ("import.start", "content_ingestion"),
+    ("continuity.checkpoint.append", "continuity_checkpoint"),
     ("job.get", "job_observation"),
     ("job.events", "job_observation"),
 )

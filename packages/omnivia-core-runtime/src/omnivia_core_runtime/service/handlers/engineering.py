@@ -1068,27 +1068,24 @@ class EngineeringHandlers:
             "token_count": token_count,
             "byte_count": byte_count,
         }
-        budget = {
-            "requested": (
-                None
-                if request.budget is None
-                else {
-                    key: value
-                    for key, value in {
-                        "model_tokens": request.budget.model_tokens,
-                        "model_bytes": request.budget.model_bytes,
-                        "hydrations": request.budget.hydrations,
-                        "evidence_bytes": request.budget.evidence_bytes,
-                    }.items()
-                    if value is not None
-                }
-            ),
+        budget: dict[str, Any] = {
             "effective": {"model_tokens": effective_tokens, "model_bytes": effective_bytes},
-            "rendered_tokens": token_count,
-            "rendered_bytes": byte_count,
-            "source_bytes_read": 0,
-            "hydrations": 0,
         }
+        if request.budget is not None:
+            budget["requested"] = {
+                key: value
+                for key, value in {
+                    "model_tokens": request.budget.model_tokens,
+                    "model_bytes": request.budget.model_bytes,
+                    "hydrations": request.budget.hydrations,
+                    "evidence_bytes": request.budget.evidence_bytes,
+                }.items()
+                if value is not None
+            }
+        budget["rendered_tokens"] = token_count
+        budget["rendered_bytes"] = byte_count
+        budget["source_bytes_read"] = 0
+        budget["hydrations"] = 0
         applicability = [
             {"snapshot": target.to_wire(), "status": "not_evaluated"}
             for target in request.targets

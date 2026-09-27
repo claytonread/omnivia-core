@@ -151,12 +151,17 @@ from omnivia_core.contracts.v1 import (
     EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     CapabilityRequirement,
     ClientIdentity,
+    ContinuityCheckpointAppendInput,
+    ContinuityHandoffReadInput,
     ContractDecodeError,
     ContractSemanticError,
     DecisionEvaluateInput,
     DecisionRecordGetInput,
     DecisionRecordListInput,
     DecisionStatusInput,
+    EngineeringContextBuildInput,
+    EngineeringExpandInput,
+    EngineeringSearchInput,
     EvidenceCaptureSizeLimitError,
     PrincipalClaim,
     RequestEnvelope,
@@ -302,6 +307,11 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "decision.record.get": DecisionRecordGetInput.from_wire,
     "decision.record.list": DecisionRecordListInput.from_wire,
     "decision.status": DecisionStatusInput.from_wire,
+    "engineering.search": EngineeringSearchInput.from_wire,
+    "engineering.expand": EngineeringExpandInput.from_wire,
+    "engineering.context.build": EngineeringContextBuildInput.from_wire,
+    "continuity.handoff.read": ContinuityHandoffReadInput.from_wire,
+    "continuity.checkpoint.append": ContinuityCheckpointAppendInput.from_wire,
 }
 
 
@@ -1419,8 +1429,8 @@ async def serve(*, session: ConnectedSession) -> None:
 #: are the requirement's own figures, and a build whose manifest has moved fails
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
-    RESTRICTED_PROFILE: 10,
-    AUTHORING_PROFILE: 15,
+    RESTRICTED_PROFILE: 14,
+    AUTHORING_PROFILE: 20,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

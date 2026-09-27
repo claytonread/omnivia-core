@@ -114,6 +114,14 @@ CLOCK_FACTS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("reproducibility", "freshness", "as_of"),
         ("reproducibility", "generated_at"),
     ),
+    # The engineering pack stamps the resolution instant into its
+    # reproducibility block, and pack_id is the canonical digest over the
+    # result *including* that instant, so both move per call (§12.6).
+    "engineering_context_build": (
+        ("pack", "pack_id"),
+        ("pack", "reproducibility", "artifact_checksum"),
+        ("pack", "reproducibility", "resolution_instant_us"),
+    ),
 }
 
 #: Per-principal facts, as paths into a tool's structured content, and the whole
@@ -129,6 +137,11 @@ CLOCK_FACTS: dict[str, tuple[tuple[str, ...], ...]] = {
 #: including every cited record and every section, must still be identical.
 PRINCIPAL_FACTS: dict[str, tuple[tuple[str, ...], ...]] = {
     "context_pack_build": (("reproducibility", "authorization_context", "authority"),),
+    # The engineering pack records the authorised principal in its
+    # authorization_context; the two modes authenticate as two principals.
+    "engineering_context_build": (
+        ("pack", "authorization_context", "principal_id"),
+    ),
 }
 
 
@@ -611,6 +624,11 @@ def test_architecture_gate_mcp_mode_authorized_result_equivalence(
                 assert over[name]["is_error"] is False, over[name]
             else:
                 assert over[name]["is_error"] is True, over[name]
+        if outcome != "success":
+            # A refusal carries no structured content on either lane.
+            assert over_local[name]["structured_content"] is None
+            assert over_remote[name]["structured_content"] is None
+            continue
         assert _without(
             name, over_local[name]["structured_content"], CLOCK_FACTS, PRINCIPAL_FACTS
         ) == _without(
