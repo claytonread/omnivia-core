@@ -1129,6 +1129,7 @@
         "token_count": {
           "type": "integer",
           "description": "Exact token count of `text` under the pinned supported tokenizer.",
+          "x-omnivia-python-init-required": true,
           "minimum": 0
         },
         "byte_count": {
@@ -1160,6 +1161,7 @@
         "rendered_tokens": {
           "type": "integer",
           "description": "Tokens actually rendered model-facing.",
+          "x-omnivia-python-init-required": true,
           "minimum": 0
         },
         "rendered_bytes": {
@@ -1422,18 +1424,15 @@
                 },
                 "required": [
                   "counting_mode"
-                ]
-              },
-              "reproducibility": {
-                "properties": {
-                  "counting_mode": {
-                    "const": "byte_only.v1"
-                  }
-                },
-                "required": [
-                  "counting_mode"
                 ],
                 "allOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "tokenizer"
+                      ]
+                    }
+                  },
                   {
                     "not": {
                       "required": [
@@ -1452,6 +1451,60 @@
                     "not": {
                       "required": [
                         "tokenizer_note"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "token_count"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "reproducibility": {
+                "properties": {
+                  "counting_mode": {
+                    "const": "byte_only.v1"
+                  }
+                },
+                "required": [
+                  "counting_mode"
+                ],
+                "allOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "tokenizer"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "tokenizer_id"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "tokenizer_version"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "tokenizer_note"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "token_count"
                       ]
                     }
                   }

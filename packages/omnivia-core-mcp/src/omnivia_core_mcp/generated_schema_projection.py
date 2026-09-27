@@ -3966,6 +3966,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "rendered_tokens": {
                         "type": "integer",
                         "description": "Tokens actually rendered model-facing.",
+                        "x-omnivia-python-init-required": True,
                         "minimum": 0,
                     },
                     "rendered_bytes": {
@@ -4263,17 +4264,14 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                                     "required": [
                                         "counting_mode",
                                     ],
-                                },
-                                "reproducibility": {
-                                    "properties": {
-                                        "counting_mode": {
-                                            "const": "byte_only.v1",
-                                        },
-                                    },
-                                    "required": [
-                                        "counting_mode",
-                                    ],
                                     "allOf": [
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer",
+                                                ],
+                                            },
+                                        },
                                         {
                                             "not": {
                                                 "required": [
@@ -4292,6 +4290,60 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                                             "not": {
                                                 "required": [
                                                     "tokenizer_note",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "token_count",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                                "reproducibility": {
+                                    "properties": {
+                                        "counting_mode": {
+                                            "const": "byte_only.v1",
+                                        },
+                                    },
+                                    "required": [
+                                        "counting_mode",
+                                    ],
+                                    "allOf": [
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_id",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_version",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_note",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "token_count",
                                                 ],
                                             },
                                         },
@@ -4412,6 +4464,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "token_count": {
                         "type": "integer",
                         "description": "Exact token count of `text` under the pinned supported tokenizer.",
+                        "x-omnivia-python-init-required": True,
                         "minimum": 0,
                     },
                     "byte_count": {

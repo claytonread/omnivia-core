@@ -372,6 +372,36 @@ def _definitions_by_name() -> dict[str, Any]:
 
 BY_NAME = _definitions_by_name()
 CATALOGUE_ANNOTATION = generator.OPERATION_CATALOGUE_ANNOTATION
+PYTHON_INIT_REQUIRED_ANNOTATION = generator.PYTHON_INIT_REQUIRED_ANNOTATION
+
+
+def test_python_init_required_annotation_is_parsed_from_the_schema() -> None:
+    rendering = BY_NAME["EngineeringRendering"]
+    token_count = next(prop for prop in rendering.properties if prop.name == "token_count")
+    byte_count = next(prop for prop in rendering.properties if prop.name == "byte_count")
+    assert token_count.python_init_required is True
+    assert token_count.required is False
+    assert byte_count.python_init_required is False
+    assert byte_count.required is True
+
+
+@pytest.mark.parametrize("value", [None, 1, "true", []])
+def test_python_init_required_annotation_must_be_boolean(value: object) -> None:
+    node = copy.deepcopy(
+        generator.load_schema("engineering")["$defs"]["EngineeringRendering"]
+    )
+    node["properties"]["token_count"][PYTHON_INIT_REQUIRED_ANNOTATION] = value
+    with pytest.raises(generator.UnsupportedSchemaError, match="must be a boolean"):
+        generator.parse_definition("EngineeringRendering", node, "engineering", 0)
+
+
+def test_python_init_required_annotation_is_rejected_when_redundant() -> None:
+    node = copy.deepcopy(
+        generator.load_schema("engineering")["$defs"]["EngineeringRendering"]
+    )
+    node["properties"]["byte_count"][PYTHON_INIT_REQUIRED_ANNOTATION] = True
+    with pytest.raises(generator.UnsupportedSchemaError, match="wire-required property"):
+        generator.parse_definition("EngineeringRendering", node, "engineering", 0)
 
 
 def _operations_document() -> dict[str, Any]:

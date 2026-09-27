@@ -722,6 +722,10 @@ _JSON_TYPES: Final[dict[str, tuple[type, ...]]] = {
 }
 
 
+class _SchemaEvaluationError(ContractSemanticError):
+    """The canonical schema asks the bounded evaluator to do unsupported work."""
+
+
 class _CanonicalSchemas:
     """The packaged canonical schema documents, resolved by reference.
 
@@ -785,7 +789,9 @@ def _validate_against_schema(
     unknown = sorted(set(schema) - _SUPPORTED_SCHEMA_KEYWORDS)
     unknown = [key for key in unknown if not key.startswith("x-")]
     if unknown:
-        return [f"{path}: canonical schema uses unsupported keyword(s) {unknown}"]
+        raise _SchemaEvaluationError(
+            f"{path}: canonical schema uses unsupported keyword(s) {unknown}"
+        )
 
     if "$ref" in schema:
         return _validate_against_schema(value, schemas.resolve(schema["$ref"]), schemas, path)
@@ -794,7 +800,9 @@ def _validate_against_schema(
     if isinstance(declared, str):
         expected = _JSON_TYPES.get(declared)
         if expected is None:
-            return [f"{path}: canonical schema declares unknown type {declared!r}"]
+            raise _SchemaEvaluationError(
+                f"{path}: canonical schema declares unknown type {declared!r}"
+            )
         # bool is an int in Python; JSON keeps them apart and so must this.
         if declared in {"integer", "number"} and isinstance(value, bool):
             return [f"{path}: expected {declared}, got boolean"]
@@ -838,7 +846,9 @@ def _validate_against_schema(
         if not isinstance(branches, list) or not branches or not all(
             isinstance(branch, Mapping) for branch in branches
         ):
-            findings.append(f"{path}: canonical schema oneOf must contain schemas")
+            raise _SchemaEvaluationError(
+                f"{path}: canonical schema oneOf must contain schemas"
+            )
         else:
             matched = [
                 branch
@@ -856,7 +866,9 @@ def _validate_against_schema(
         if not isinstance(branches, list) or not branches or not all(
             isinstance(branch, Mapping) for branch in branches
         ):
-            findings.append(f"{path}: canonical schema allOf must contain schemas")
+            raise _SchemaEvaluationError(
+                f"{path}: canonical schema allOf must contain schemas"
+            )
         else:
             for branch in branches:
                 findings.extend(_validate_against_schema(value, branch, schemas, path))
@@ -864,7 +876,7 @@ def _validate_against_schema(
     if "if" in schema:
         condition = schema["if"]
         if not isinstance(condition, Mapping):
-            findings.append(
+            raise _SchemaEvaluationError(
                 f"{path}: canonical schema if must contain a schema"
             )
         elif (
@@ -873,7 +885,9 @@ def _validate_against_schema(
         ):
             consequence = schema["then"]
             if not isinstance(consequence, Mapping):
-                findings.append(f"{path}: canonical schema then must contain a schema")
+                raise _SchemaEvaluationError(
+                    f"{path}: canonical schema then must contain a schema"
+                )
             else:
                 findings.extend(
                     _validate_against_schema(value, consequence, schemas, path)
@@ -882,7 +896,9 @@ def _validate_against_schema(
     if "not" in schema:
         excluded = schema["not"]
         if not isinstance(excluded, Mapping):
-            findings.append(f"{path}: canonical schema not must contain a schema")
+            raise _SchemaEvaluationError(
+                f"{path}: canonical schema not must contain a schema"
+            )
         elif not _validate_against_schema(value, excluded, schemas, path):
             findings.append(f"{path}: must not satisfy the excluded schema")
     return findings
@@ -899,7 +915,9 @@ def _validate_format(value: str, declared: str, path: str) -> list[str]:
     not have.
     """
     if declared != "date-time":
-        return [f"{path}: canonical schema declares unsupported format {declared!r}"]
+        raise _SchemaEvaluationError(
+            f"{path}: canonical schema declares unsupported format {declared!r}"
+        )
     text = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
         datetime.fromisoformat(text)
@@ -1022,7 +1040,7 @@ def _check_envelope_against_the_canonical_schema(
         )
     except ContractSemanticError as error:
         raise AdapterConformanceError(
-            case.id, f"{label}: cannot resolve {schema_ref!r}: {error}"
+            case.id, f"{label}: cannot evaluate canonical schema {schema_ref!r}: {error}"
         ) from error
     if findings:
         raise AdapterConformanceError(
@@ -1082,7 +1100,7 @@ def _check_payload(
         )
     except ContractSemanticError as error:
         raise AdapterConformanceError(
-            case.id, f"{label}: cannot resolve {schema_ref!r}: {error}"
+            case.id, f"{label}: cannot evaluate canonical schema {schema_ref!r}: {error}"
         ) from error
     if schema_findings:
         raise AdapterConformanceError(

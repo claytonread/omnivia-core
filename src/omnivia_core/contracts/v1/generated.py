@@ -3240,8 +3240,8 @@ class EngineeringRendering:
 
     text: str
     renderer_version: str
+    token_count: int | None
     byte_count: int
-    token_count: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -6885,11 +6885,11 @@ class EngineeringBudgetOutcome:
     """
 
     effective: EngineeringBudget
+    rendered_tokens: int | None
     rendered_bytes: int
     source_bytes_read: int
     hydrations: int
     requested: EngineeringBudget | None = None
-    rendered_tokens: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.

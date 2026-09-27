@@ -106,6 +106,7 @@ JSON_OBJECT_DEFINITION = "JsonObject"
 
 #: The canonical operation catalogue, and the definition every entry materializes.
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
+PYTHON_INIT_REQUIRED_ANNOTATION = "x-omnivia-python-init-required"
 OPERATION_METADATA_DEFINITION = "OperationMetadata"
 
 _REF_RE = re.compile(rf"^{re.escape(BASE_URI)}(?P<file>[a-z0-9-]+)\.schema\.json#/\$defs/(?P<name>\w+)$")
@@ -149,6 +150,7 @@ class Property:
     name: str
     type: TypeRef
     required: bool
+    python_init_required: bool
     description: str
 
 
@@ -421,11 +423,22 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
                 "identifiers in every generated language"
             )
         type_ref = parse_type(property_node, property_location)
+        python_init_required = property_node.get(PYTHON_INIT_REQUIRED_ANNOTATION, False)
+        if not isinstance(python_init_required, bool):
+            raise UnsupportedSchemaError(
+                f"{property_location}: {PYTHON_INIT_REQUIRED_ANNOTATION!r} must be a boolean"
+            )
+        if python_init_required and property_name in required:
+            raise UnsupportedSchemaError(
+                f"{property_location}: {PYTHON_INIT_REQUIRED_ANNOTATION!r} is redundant "
+                "for a wire-required property"
+            )
         properties.append(
             Property(
                 name=property_name,
                 type=type_ref,
                 required=property_name in required,
+                python_init_required=python_init_required,
                 description=_description(property_node, property_location),
             )
         )
@@ -1031,11 +1044,18 @@ def emit_python_dataclass(definition: Definition, by_name: dict[str, Definition]
     lines += docstring(definition.description, "    ")
     lines.append("")
 
-    required = [prop for prop in definition.properties if prop.required]
-    optional = [prop for prop in definition.properties if not prop.required]
-    for prop in required:
-        lines.append(f"    {prop.name}: {python_annotation(prop.type, by_name)}")
-    for prop in optional:
+    init_required = [
+        prop for prop in definition.properties if prop.required or prop.python_init_required
+    ]
+    init_optional = [
+        prop for prop in definition.properties if not prop.required and not prop.python_init_required
+    ]
+    for prop in init_required:
+        annotation = python_annotation(prop.type, by_name)
+        if not prop.required:
+            annotation += " | None"
+        lines.append(f"    {prop.name}: {annotation}")
+    for prop in init_optional:
         lines.append(f"    {prop.name}: {python_annotation(prop.type, by_name)} | None = None")
     lines.append("")
 
