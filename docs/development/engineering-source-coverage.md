@@ -533,10 +533,13 @@ had no better answer than `not_evaluated` or a stale legacy row.
 ### Migration pin
 
 Allocation 59 is a candidate owned by Engineering Memory, with predecessor 58.
-Its allocation record is added only after the migration exists at its immutable
-introducing commit, following the repository's two-step migration-pin workflow.
-`accepted_commit` stays null until the normal acceptance process records a
-landing.
+Its normalized SHA-256 is
+`8ddb101c387fd3ac354864a773d81346a8c81f6efef5401872484327cbb59c22`, pinned in
+`contracts/migrations/v1/allocations.json` at introducing commit
+`30a8fc5a9f6f423aa32fe9795b6c1a6a2615fad8` -- the repository's two-step
+migration-pin workflow, since the migration file must exist at a real commit
+before that commit's hash can be recorded. `accepted_commit` stays null until
+the normal acceptance process records a landing.
 
 ## Producer → consumer map
 
