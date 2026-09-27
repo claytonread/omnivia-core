@@ -1682,6 +1682,40 @@ def test_oversized_multibyte_observation_is_refused_without_partial_content(
     } == before
 
 
+def test_authority_workspace_and_reviewer_claims_cannot_escape_the_content_boundary(
+    workspace: Workspace,
+) -> None:
+    """AC-006: outer authority smuggling fails; nested claims remain inert content."""
+    outer = _observation(None, evidence=False)
+    outer.update(
+        {
+            "workspace_id": "ws-attacker",
+            "governance_state": "accepted",
+            "reviewer_id": "reviewer-attacker",
+        }
+    )
+    assert workspace.refused("memory.create", outer)[0] == "invalid_request"
+
+    nested = _observation(None, evidence=False)
+    nested["content"].update(
+        {
+            "workspace_id": "ws-attacker",
+            "governance_state": "accepted",
+            "authority_level": "canonical",
+            "reviewer_id": "reviewer-attacker",
+        }
+    )
+    created = workspace.ok("memory.create", nested)
+    identity = created["record"]["provenance"]["identity"]
+    row = workspace.holder.connection.execute(
+        "SELECT workspace_id, layer, authority_level, governance_disposition "
+        "FROM omnivia_governed_version_assemblies "
+        "WHERE governed_record_id = ? AND governed_record_version_id = ?",
+        (identity["record_id"], identity["version"]),
+    ).fetchone()
+    assert row == (WORKSPACE_ID, "candidate", "proposed", None)
+
+
 @pytest.mark.parametrize("wrong", [[], {}, ["git_commit"], {"complete": 1}])
 def test_closed_vocabularies_refuse_wrong_types(wrong: Any) -> None:
     for field in ("snapshot_kind", "capture_status"):
