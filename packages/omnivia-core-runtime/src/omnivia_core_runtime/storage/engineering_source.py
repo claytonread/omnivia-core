@@ -761,11 +761,14 @@ def carry_dependency_set(
     if row is None:
         return False
     sealed = int(row[6])
-    # Bounded by the sealed count (at most 64); a missing or extra row, a row under
-    # another audit or a whole-file row without its digest is an inconsistent set.
+    # Bounded by the sealed count (at most 64) and, through 0050's version index, by
+    # this version's rows: without statistics the planner otherwise walks the
+    # workspace's dependencies. A missing or extra row, a row under another audit or
+    # a whole-file row without its digest is an inconsistent set.
     dependencies = connection.execute(
         "SELECT selector_type, selector, meaning, producer, expected_digest, audit_ref "
         "FROM omnivia_engineering_dependencies "
+        "INDEXED BY omnivia_idx_engineering_dependencies_version "
         "WHERE workspace_id = ? AND record_id = ? AND version = ? "
         "ORDER BY selector_type, selector, meaning LIMIT ?",
         (workspace_id, record_id, source_version, sealed + 1),
@@ -925,13 +928,15 @@ def evaluate_applicability(
     if baseline is None or baseline.stream_id != target.stream_id:
         return "unknown"
     sealed = int(row[4])
-    # Bounded by the sealed count (at most 64); one row more than sealed, or fewer,
-    # is an inconsistent set and fails closed rather than being evaluated.
+    # Bounded by the sealed count (at most 64) and, through the version index, by
+    # this version's rows; one row more than sealed, or fewer, is an inconsistent
+    # set and fails closed rather than being evaluated.
     dependencies = [
         (str(dep[0]), str(dep[1]), str(dep[2]), None if dep[3] is None else str(dep[3]))
         for dep in connection.execute(
             "SELECT selector_type, selector, meaning, expected_digest "
             "FROM omnivia_engineering_dependencies "
+            "INDEXED BY omnivia_idx_engineering_dependencies_version "
             "WHERE workspace_id = ? AND record_id = ? AND version = ? "
             "ORDER BY selector_type, selector, meaning LIMIT ?",
             (workspace_id, record_id, version, sealed + 1),

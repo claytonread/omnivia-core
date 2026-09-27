@@ -765,21 +765,23 @@ def test_0051_fresh_and_upgraded_workspaces_reach_one_canonical_schema(
         created = upgraded.observe(esc._observation(esc._manifest()))
         assert MIGRATION_VERSION not in applied_migrations(upgraded.holder.connection)
         upgraded.holder.connection.close()
-    maintenance = open_database(upgraded.holder.path, OpenMode.EXCLUSIVE_MAINTENANCE)
-    try:
-        state = read_workspace_state(maintenance)
-        assert state is not None
-        applied = apply_pending_migrations(
-            maintenance,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=m2.SERVICE_INSTANCE,
-            fencing_generation=state.fencing_generation,
-            workspace_id=WORKSPACE_ID,
-        )
-        assert [m.version for m in applied] == [MIGRATION_VERSION]
-        verified(maintenance)
-    finally:
-        maintenance.close()
+    # Exactly 0051 is applied, whatever successors the catalogue holds.
+    with m2.migration_catalogue_through(MIGRATION_VERSION):
+        maintenance = open_database(upgraded.holder.path, OpenMode.EXCLUSIVE_MAINTENANCE)
+        try:
+            state = read_workspace_state(maintenance)
+            assert state is not None
+            applied = apply_pending_migrations(
+                maintenance,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=m2.SERVICE_INSTANCE,
+                fencing_generation=state.fencing_generation,
+                workspace_id=WORKSPACE_ID,
+            )
+            assert [m.version for m in applied] == [MIGRATION_VERSION]
+            verified(maintenance)
+        finally:
+            maintenance.close()
 
     # The restarted service carries the pre-upgrade set through governance.
     upgraded.restart()

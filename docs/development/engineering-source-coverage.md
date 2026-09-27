@@ -2,10 +2,11 @@
 
 Date: 2026-09-27
 
-Branch: `codex/engineering-applicability-evidence`. This is a bounded
+Originated on `codex/engineering-applicability-evidence` and continued on
+`codex/engineering-memory-completion`. This is a bounded
 implementation candidate for review, not a release. It does not claim all
-AC-001 through AC-064 scenarios as complete. Migration 0050 is pinned to its
-reviewed content and introducing commit below.
+AC-001 through AC-064 scenarios as complete. Migrations 0050, 0051 and 0052
+are pinned to their reviewed content and introducing commits below.
 
 This slice delivers one bounded vertical:
 
@@ -19,8 +20,10 @@ This slice delivers one bounded vertical:
 Only whole-file SHA-256 digests are compared. No symbol, span, config key or
 rename is ever resolved.
 
-The vertical covers proposals only. Accepted versions do not yet carry
-dependency sets; see "Deferred and unsupported".
+A proposal's sealed set is carried to the exact versions that the
+claim-preserving `knowledge.propose` and `candidate.approve` mint (migration
+0051), so the same vertical reaches accepted knowledge. No other transition
+carries a set; see "Deferred and unsupported".
 
 ## `engineering.source.record`
 
@@ -302,7 +305,7 @@ covered target. It reads only and writes nothing.
 |---|---|
 | `omnivia_engineering_source_streams` | Stream binding (principal, repository), announced head, covered barrier. Identity is immutable and both sequences only advance. A new stream starts at barrier 0. The old barrier was validated when written and never decreases, so each advance validates only the newly covered range (OLD, NEW]: it must hold exactly NEW − OLD present events and span at most one 64-event pending window. That is one primary-key range scan, independent of the stream's lifetime history. Writers must be the owner's audited `engineering.source.record`. No DELETE. |
 | `omnivia_engineering_source_events` | Immutable event: snapshot (FK to 0047), predecessor link and canonical manifest body. The digest must equal the snapshot row's, and the entry count must match the body. The event must lie within the announced head and agree with stored neighbours. Unique snapshot per workspace. Append-only. |
-| `omnivia_engineering_dependency_sets` | One per exact record version: baseline (a recorded event of the stated stream and repository), producer and version, coverage. It seals exactly its dependency rows, and every whole-file row must carry a digest. It is written only by `memory.create`'s audited mutation. Append-only. |
+| `omnivia_engineering_dependency_sets` | One per exact record version: baseline (a recorded event of the stated stream and repository), producer and version, coverage. It seals exactly its dependency rows, and every whole-file row must carry a digest. It is written only by `memory.create`'s audited mutation, or carried by 0051 (below). Append-only. |
 | `omnivia_engineering_dependencies` (0049) | `ADD COLUMN expected_digest` (nullable, `sha256:` format), an index on (workspace, record, version), and a 0050 insert guard: once a version's set row exists, no further dependency row is accepted for it, so a sealed set never changes. |
 
 Every table has the standard fenced-writer guard trigger, and no existing
@@ -317,12 +320,57 @@ normalized SHA-256 is
 The allocation guard and all 73 allocation tests pass. `accepted_commit` stays
 null until the normal acceptance process records a landing.
 
+## Dependency carry (migrations 0051 and 0052)
+
+`knowledge.propose` and `candidate.approve` mint a new exact version whose
+content, claim and evidence are byte copies of the engineering observation they
+transition. Inside that same fenced, audited settlement the runtime
+(`storage.engineering_source.carry_dependency_set`) copies the source version's
+sealed set to the new version: same baseline (repository, stream, snapshot),
+producer, producer version, coverage and dependency rows, under fresh row
+identities and the transition's own audit, sealed at once.
+
+- **Qualified sources only:** a source with no set, or whose stored rows
+  disagree with its seal, its audit or its recorded baseline, carries nothing,
+  and the new version stays `unknown`.
+- **Attests nothing:** approval and review never qualify an observation. The
+  evaluator still checks baseline and target coverage and manifests, evidence,
+  stream and repository identity and every digest on each read, so a carried
+  set is served `matched` only when the evaluator proves it, and revocation of
+  the evidence grant still hides it.
+- **Database guard:** 0051 replaces 0050's dependency-set INSERT guard under its
+  own name. It keeps every 0050 check and admits exactly one more writer: a set
+  carried by that transition's own unsettled settlement whose two versions agree
+  on content, claim, evidence disposition and linked evidence, and which repeats
+  the source's consistent sealed set. Every other operation, an insert outside
+  the settlement, and a missing or inconsistent source set is refused. The 0050
+  sealed, UPDATE and DELETE guards apply to a carried set unchanged.
+- **Bounded lookup:** 0052 replaces the same guard again, differing from 0051
+  only in naming 0050's version index for the two exact-version dependency
+  reads, so each is bounded by the 64-dependency cap rather than the
+  workspace's whole dependency table. The runtime's carry and evaluator reads
+  name the same index. What the guard admits and refuses, and every refusal
+  message, are unchanged.
+
+No table, column or index is added, and no existing migration is rewritten.
+
+### Migration pins
+
+| Allocation | File | Predecessor | Introducing commit | Normalized SHA-256 |
+|---|---|---|---|---|
+| 51 | `0051_engineering_dependency_carry.sql` | 50 | `3fcc8d5a9c618b201c9223c19f4b381d555911d9` | `1c80cf1a3141f1aa8758af2f3acb55901017df8a124145a83545a6861d0ca508` |
+| 52 | `0052_engineering_dependency_lookup.sql` | 51 | `4e4a6ed3ef4b1d8ce0145e8ffe52325fde0f80be` | `b4e11f6c8a84753f6b3914d76883e61d2ff487047767d5c656dfab279b4cc1f3` |
+
+Both are candidates owned by Engineering Memory, with `accepted_commit` null
+until the normal acceptance process records a landing.
+
 ## Producer → consumer map
 
 | Producer | Writes | Consumers |
 |---|---|---|
 | `engineering.source.record` (trusted source, `engineering:source`) | repository (first use), stream, 0047 snapshot, source event, head and barrier | `covered_snapshot` (targets and baselines), the evaluator, `current_safe` search and build, the dependency-set trigger |
 | `memory.create` with `dependency_manifest` (contributor) | governed proposal, 0049 dependency rows, dependency set | the evaluator |
+| `knowledge.propose`, `candidate.approve` (claim-preserving governance) | the new exact version's carried dependency rows and set, when the source's set is consistent | the evaluator |
 | Evaluator (read-only) | nothing | `current_safe` search (frontier admission, preview `matched`) and `current_safe` pack build (sections, per-target status, omissions) |
 | `engineering.review.record` (unchanged) | attestation plus conservative assessment | `diagnostic` search only; never the evaluator |
 
@@ -331,17 +379,12 @@ null until the normal acceptance process records a landing.
 None of these is ever served as `matched`. Those that bear on applicability
 evaluate `unknown`; the rest are limitations that this slice leaves as they were.
 
-- **Accepted knowledge:** `knowledge.propose`, `candidate.approve` and
-  `record.supersede` mint new exact versions, and no dependency set travels with
-  them. An approved or otherwise newly minted version has no inherited
-  dependency set and stays `unknown` until it has its own qualified set; no path
-  in this slice records one for it. `current_safe` over the `accepted` view is
-  therefore honestly empty. The same vertical works for proposals
-  (the `candidates` view and the `investigate` profile).
-
-  Carrying or inheriting a dependency set across a governance transition (for
-  example, byte-identical content on approval) needs a decision from Codex. It
-  also touches governance storage, which this slice did not change.
+- **Transitions that do not carry:** only the claim-preserving
+  `knowledge.propose` and `candidate.approve` carry a set. `record.supersede`,
+  `candidate.reject` and any transition that changes content, claim or evidence
+  carry nothing, so the version they mint has no set and stays `unknown` until
+  it has its own qualified set; no path records one for it. An accepted version
+  whose source had no consistent set is likewise `unknown`.
 - **Other selector types:** `symbol`, `config_key`, `source_span`,
   `schema_contract` and `external_evidence` are recorded but not evaluated.
 - **Renames:** there is no rename field. A renamed required file reads as absent
@@ -351,10 +394,13 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
   search still re-assesses legacy rows conservatively and never shows `matched`.
 - **No lineage reasoning:** there is no cross-stream equivalence, ancestry or
   merge-base reasoning. Equal digests in another stream prove nothing here.
-- **Unchanged shortcomings:** these are not worsened and not solved here:
-  - `working_context` (search view and the `resume` pack section) reads the
-    continuity checkpoint index, which carries no evidence labels;
-  - known-conflict warnings are not produced.
+- **Continuity access:** `working_context` (search view and the `resume` pack
+  section) reads the continuity checkpoint index, which carries no evidence
+  labels. Sessions, checkpoints and that index are read only for the effective
+  principal's own sessions. Another principal's session is indistinguishable
+  from a missing one. There is no sharing grant, so continuity is
+  same-principal only.
+- **Known conflicts:** context packs do not yet produce known-conflict warnings.
 - **Search omissions:** `current_safe` search omissions are not counted in the
   result, because the contract has no field for them.
 - **Production wiring fix:** `EngineeringHandlers` is now composed with its
