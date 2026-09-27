@@ -959,6 +959,107 @@ def test_an_invalid_listener_ends_the_accept_loop_at_once_not_spun_on(
     assert not socket_path.exists()
 
 
+class _ObservedGate:
+    """A real `RLock` that publishes the moment a caller begins to wait for it.
+
+    `threading.RLock` gives no hook for "a caller is blocked trying to acquire
+    this", and "still running" alone cannot distinguish a handler blocked on the
+    gate from one stalled anywhere else. `waiting` is set the instant `acquire()`
+    is entered, before it can block, and `entered` is set only once the
+    underlying lock was actually taken -- so this thread's own `waiting` proves
+    the serving thread reached the gate, and a clear `entered` while the real
+    lock is held elsewhere proves it is still refused there.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.waiting = threading.Event()
+        self.entered = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.waiting.set()
+        got = self._lock.acquire(blocking, timeout)
+        if got:
+            self.entered.set()
+        return got
+
+    def release(self) -> None:
+        self.entered.clear()
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_a_held_gate_blocks_dispatch_and_service_work_until_released(
+    socket_path: Path,
+) -> None:
+    """The runner's shared gate has to serialize both of this thread's entrants.
+
+    `LocalSocketServer` uses one `gate` in two places: around `_run_service_work`
+    and around `_handle`'s dispatch. Held here by a stand-in for the runner's own
+    lease-renewal thread, neither may proceed -- proven the same way as the HTTP
+    transport's own gate test, by an event the handler sets the instant it begins
+    to block, not by "still running" alone -- and releasing it must let both
+    complete: the service-work pass, and an application request actually
+    reaching the dispatcher.
+    """
+    dispatcher = RecordingDispatcher()
+    router = _router_for(ProbeFactsRunner(), dispatcher)  # type: ignore[arg-type]
+    gate = _ObservedGate()
+    work_done = threading.Event()
+
+    def service_work() -> None:
+        work_done.set()
+
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    server = LocalSocketServer(
+        router=router,
+        endpoint=endpoint,
+        gate=gate,  # type: ignore[arg-type]
+        service_work=service_work,
+        timeout=5.0,
+    )
+    server.start()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        gate._lock.acquire()
+        try:
+            client.settimeout(5.0)
+            client.connect(str(socket_path))
+            client.sendall(encode_frame(_request_payload()))
+            assert gate.waiting.wait(timeout=5), (
+                "the serving thread never attempted to acquire the gate"
+            )
+            assert not gate.entered.wait(timeout=0.5), (
+                "dispatch or service_work entered the gate while it is held"
+            )
+            assert dispatcher.seen == []
+            assert not work_done.is_set()
+        finally:
+            gate._lock.release()
+
+        assert gate.entered.wait(timeout=5), (
+            "the serving thread never acquired the gate after release"
+        )
+        header = _recv_exact(client, HEADER_BYTES)
+        assert len(header) == HEADER_BYTES
+        length = int.from_bytes(header[len(MAGIC) :], "big")
+        body = _recv_exact(client, length)
+        assert decode_frame(header + body)
+        assert [request.operation for request in dispatcher.seen] == ["memory.get"]
+        assert work_done.wait(timeout=5)
+    finally:
+        client.close()
+        server.stop()
+
+
 @pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
 )

@@ -527,6 +527,43 @@ def test_the_request_deadline_defaults_to_the_local_transport_s_reviewed_value()
 # --- the shared sqlite gate ----------------------------------------------------
 
 
+class _ObservedGate:
+    """A real `RLock` that publishes the moment a caller begins to wait for it.
+
+    `threading.RLock` gives no hook for "a caller is blocked trying to acquire
+    this", and a plain "the worker thread is still alive" join proves only that
+    *something* has not finished -- which is equally true if the handler is
+    blocked on the gate, blocked somewhere else entirely, or simply has not been
+    scheduled yet. `waiting` is set the instant `acquire()` is entered, before it
+    can block, so seeing it set is proof the handler reached this exact call;
+    `entered` is set only once the underlying lock was actually taken, so seeing
+    it clear while another thread holds the real lock is proof the handler is
+    still refused rather than merely slow to report.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.waiting = threading.Event()
+        self.entered = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.waiting.set()
+        got = self._lock.acquire(blocking, timeout)
+        if got:
+            self.entered.set()
+        return got
+
+    def release(self) -> None:
+        self.entered.clear()
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
 def test_a_held_gate_blocks_dispatch_until_released_then_serves_cleanly() -> None:
     """A real lock held outside the serving thread must gate `router.route(...)`.
 
@@ -537,15 +574,24 @@ def test_a_held_gate_blocks_dispatch_until_released_then_serves_cleanly() -> Non
     must let a normal, valid response through with the listener stoppable
     afterwards.
 
-    Bounded throughout: the two joins below are watchdogs. If the gate were not
-    held, the request would complete almost immediately and the first assertion
-    would fail; if the implementation deadlocked, the second join times out and
-    fails rather than hanging the suite.
+    The proof that the handler is blocked *on the gate* -- rather than merely
+    not yet dispatched, which a bare `worker.is_alive()` cannot distinguish from
+    a hang anywhere else in the request -- is `_ObservedGate.waiting`: set the
+    instant the handler's own `acquire()` call begins, before it can block. Only
+    once that is observed does the test trust that `dispatch.calls == []` and a
+    still-blocked `entered` mean what they claim.
+
+    Bounded throughout: every wait below is a watchdog with a timeout, so a
+    regression that never reaches the gate, or one that deadlocks past release,
+    fails this test rather than hanging the suite.
     """
     dispatch = CountingDispatch()
-    gate = threading.RLock()
+    gate = _ObservedGate()
     server = HttpListener(
-        router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver, gate=gate
+        router=_router(dispatch),
+        principal=PRINCIPAL,
+        resolver=_resolver,
+        gate=gate,  # type: ignore[arg-type]
     )
     server.start()
     port = int(server.url.rsplit(":", 1)[1])
@@ -560,20 +606,27 @@ def test_a_held_gate_blocks_dispatch_until_released_then_serves_cleanly() -> Non
         )
 
     try:
-        gate.acquire()
+        gate._lock.acquire()
         try:
             worker = threading.Thread(target=call, daemon=True)
             worker.start()
-            # Connecting, parsing the request and checking the credential all run
-            # before the gate is reached and are fast, so a short bounded wait is
-            # enough to know the handler is blocked on the gate rather than that it
-            # simply has not connected yet.
-            worker.join(timeout=0.5)
+            assert gate.waiting.wait(timeout=5), (
+                "the handler never attempted to acquire the gate"
+            )
+            # The real lock is still held by this thread, so the handler's own
+            # acquire cannot have succeeded -- checked directly rather than
+            # inferred from a short join.
+            assert not gate.entered.wait(timeout=0.5), (
+                "the handler entered the gate while another thread still holds it"
+            )
             assert worker.is_alive(), "the handler must still be blocked on the gate"
             assert dispatch.calls == []
         finally:
-            gate.release()
+            gate._lock.release()
 
+        assert gate.entered.wait(timeout=10), (
+            "the handler never acquired the gate after release"
+        )
         worker.join(timeout=10)
         assert not worker.is_alive(), "the handler never unblocked after release"
     finally:

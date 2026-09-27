@@ -640,21 +640,29 @@ class ServiceRunner:
         age = now - self._lease_renewed_at
         if age < LEASE_RENEWAL_INTERVAL_SECONDS:
             return False
-        remaining = LEASE_RENEWAL_DEADLINE_SECONDS - age
+        deadline = self._lease_renewed_at + LEASE_RENEWAL_DEADLINE_SECONDS
+        remaining = deadline - now
+        if remaining <= 0:
+            raise RuntimeError("the lease renewal deadline has passed")
         if not self.sqlite_gate.acquire(timeout=max(remaining, 0)):
             raise RuntimeError(
                 "could not acquire the sqlite gate before the lease renewal deadline"
             )
         try:
-            heartbeat(self.connection, self.identity, clock=self.clock)
-        except LeaseHeld:
-            raise
-        except Exception:
-            if age < LEASE_RENEWAL_DEADLINE_SECONDS:
-                # Retried on the next 250ms tick, not swallowed: `age` keeps growing
-                # from the last heartbeat this instance actually wrote.
-                return False
-            raise
+            if self.clock.monotonic() >= deadline:
+                raise RuntimeError("the lease renewal deadline has passed")
+            try:
+                heartbeat(self.connection, self.identity, clock=self.clock)
+            except LeaseHeld:
+                raise
+            except Exception:
+                if age < LEASE_RENEWAL_DEADLINE_SECONDS:
+                    # Retried on the next 250ms tick, not swallowed: `age` keeps growing
+                    # from the last heartbeat this instance actually wrote.
+                    return False
+                raise
+            if self.clock.monotonic() >= deadline:
+                raise RuntimeError("the lease renewal deadline has passed")
         finally:
             self.sqlite_gate.release()
         self._lease_renewed_at = now

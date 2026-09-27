@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -1192,7 +1194,7 @@ def test_a_transient_renewal_failure_is_retried_until_the_deadline_then_raises(
         clock.advance_monotonic(
             LEASE_RENEWAL_DEADLINE_SECONDS - LEASE_RENEWAL_DEADLINE_SECONDS / 4
         )
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(RuntimeError, match="renewal deadline"):
             runner.renew_lease_if_due()
 
         expired = read_lease(runner.connection)
@@ -1200,6 +1202,84 @@ def test_a_transient_renewal_failure_is_retried_until_the_deadline_then_raises(
         assert not expired.is_expired(clock), (
             "the instance must stop while its lease is still demonstrably current"
         )
+    finally:
+        runner.stop()
+
+
+def test_lease_renewal_acquisition_is_bounded_by_the_remaining_deadline(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """`sqlite_gate` held elsewhere must not let renewal wait past its own margin.
+
+    Stands in for the deadlock this gate exists to close: the serving thread (or,
+    here, a stand-in thread) holds `sqlite_gate` around its own use of the shared
+    connection while renewal is due. `renew_lease_if_due` must fail closed --
+    raising rather than eventually writing a heartbeat once authority can no
+    longer be demonstrated to have persisted for at most the deadline -- and it
+    must do so bounded by whatever margin is *left*, not by the full deadline.
+
+    That bound is exercised for real: `sqlite_gate` is a genuine `threading.RLock`
+    and `acquire(timeout=...)` measures real wall-clock time, which a fake clock
+    cannot stand in for. What the fake clock buys instead is control over `age`,
+    so the real wait this test spends is the small `remaining` budget left after
+    the jump -- well under a second -- rather than the full
+    `LEASE_RENEWAL_DEADLINE_SECONDS` of actual waiting the naive version of this
+    test would need.
+    """
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    try:
+        before = read_lease(runner.connection) if runner.connection else None
+        assert before is not None
+
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold_the_gate() -> None:
+            runner.sqlite_gate.acquire()
+            held.set()
+            release.wait(timeout=10)
+            runner.sqlite_gate.release()
+
+        holder = threading.Thread(target=hold_the_gate, daemon=True)
+        holder.start()
+        try:
+            assert held.wait(timeout=5), "the stand-in thread never took the gate"
+
+            # Due, and with only a small real-time budget left to acquire against
+            # -- not the full deadline, which is the wait this test avoids.
+            small_remaining = 0.3
+            clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS - small_remaining)
+            started = time.monotonic()
+            with pytest.raises(RuntimeError, match="sqlite gate"):
+                runner.renew_lease_if_due()
+            elapsed = time.monotonic() - started
+            assert elapsed < 5.0, (
+                f"acquisition was not bounded by the remaining deadline: {elapsed:.1f}s"
+            )
+        finally:
+            release.set()
+            holder.join(timeout=5)
+            assert not holder.is_alive()
+
+        # Nothing was written while the gate could not be acquired.
+        during = read_lease(runner.connection)
+        assert during is not None
+        assert during.heartbeat_monotonic == before.heartbeat_monotonic
+
+        # A retry within the remaining margin succeeds once the gate is free.
+        clock.advance_monotonic(small_remaining / 2)
+        assert runner.renew_lease_if_due() is True
+        after = read_lease(runner.connection)
+        assert after is not None
+        assert after.heartbeat_monotonic == clock.monotonic()
+
+        # Releasing the gate after the next deadline cannot revive authority.
+        clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS)
+        with pytest.raises(RuntimeError, match="renewal deadline"):
+            runner.renew_lease_if_due()
     finally:
         runner.stop()
 
