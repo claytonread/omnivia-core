@@ -4269,9 +4269,9 @@ export interface EngineeringSourceRecordResult {
 }
 
 /**
- * Result of the future `engineering.source.capture.commit` mutation (not accepted in this
- * contract version): the committed captured-index event's identities, counts, digests and
- * coverage. It exposes no local path, checkout hint, file list or raw manifest.
+ * Result of `engineering.source.capture.commit`: the committed captured-index event's
+ * identities, counts, digests and coverage. It exposes no local path, checkout hint, file list
+ * or raw manifest.
  */
 export interface EngineeringSourceCaptureCommitResult {
   /**
@@ -7128,15 +7128,14 @@ export interface EngineeringSourceRecordInput {
 }
 
 /**
- * Input for the future `engineering.source.capture.commit` mutation (not accepted in this
- * contract version): it references an already sealed Core capture and derives every other value
- * from the persisted capture header, indexed file evidence and stream state -- never from the
- * payload. It carries only identities, the producer's stream sequence and predecessor, the
- * sealed snapshot identity, and an optional fail-closed precondition digest. It never accepts a
- * checkout path, a repository path, a file path, a manifest body, raw bytes, a command,
- * `checkout_id`, `installation_id`, a workspace, principal, purpose, scope, role or capability
- * field, or a caller-selected capture status, file count, coverage digest or audit identity.
- * Unknown keys are refused.
+ * Input for `engineering.source.capture.commit`: it references an already sealed Core capture
+ * and derives every other value from the persisted capture header, indexed file evidence and
+ * stream state -- never from the payload. It carries only identities, the producer's stream
+ * sequence and predecessor, the sealed snapshot identity, and an optional fail-closed
+ * precondition digest. It never accepts a checkout path, a repository path, a file path, a
+ * manifest body, raw bytes, a command, `checkout_id`, `installation_id`, a workspace, principal,
+ * purpose, scope, role or capability field, or a caller-selected capture status, file count,
+ * coverage digest or audit identity. Unknown keys are refused.
  */
 export interface EngineeringSourceCaptureCommitInput {
   /**
@@ -12253,6 +12252,46 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "mutation_precondition_failed",
       "not_found",
       "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.source.capture.commit",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureCommitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureCommitResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",

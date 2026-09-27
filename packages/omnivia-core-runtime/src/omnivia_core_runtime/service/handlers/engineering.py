@@ -1,6 +1,6 @@
 """The `engineering.*` handlers (SPEC-CORE-ENGMEM-001, plans PR-D/PR-F).
 
-All eleven engineering-memory operations are durable here and in
+All twelve engineering-memory operations are durable here and in
 `handlers.continuity`: the continuity vertical (register/append/close/handoff),
 the retrieval reads (search/expand) served from the governed record store, the
 supersession edge table and the continuity checkpoint index, the non-persisted
@@ -108,6 +108,8 @@ from omnivia_core.contracts.v1 import (
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
+    EngineeringSourceCaptureCommitInput,
+    EngineeringSourceCaptureCommitResult,
     EngineeringSourceRecordInput,
     EngineeringSourceRecordResult,
     idempotency_equivalence,
@@ -260,6 +262,23 @@ _MESSAGE_SOURCE_CONFLICT: Final = (
     "the source record conflicts with an immutable source identity or binding"
 )
 _MESSAGE_SOURCE_FOREIGN: Final = "the source stream is owned by another principal"
+_MESSAGE_CAPTURE_NOT_FOUND: Final = "the requested sealed source capture was not found"
+_MESSAGE_CAPTURE_FOREIGN: Final = (
+    "the sealed source capture is not owned by this authenticated installation"
+)
+_MESSAGE_CAPTURE_PRECONDITION: Final = (
+    "the sealed source capture does not match the expected manifest digest"
+)
+_CAPTURE_COMMIT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "repository_id",
+        "stream_id",
+        "sequence",
+        "predecessor",
+        "snapshot_id",
+        "expected_manifest_digest",
+    }
+)
 _MESSAGE_REPOSITORY_INVALID: Final = (
     "the repository registration request is outside its bounded, validated shape"
 )
@@ -601,6 +620,19 @@ class EngineeringHandlers:
         except source_storage.SourceStreamForeignPrincipal as error:
             raise application_refusal(
                 ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_SOURCE_FOREIGN
+            ) from error
+        except source_storage.CapturedSourceUnauthorized as error:
+            raise application_refusal(
+                ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_CAPTURE_FOREIGN
+            ) from error
+        except source_storage.CapturedSourceNotFound as error:
+            raise application_refusal(
+                ERROR_CODE_NOT_FOUND, _MESSAGE_CAPTURE_NOT_FOUND
+            ) from error
+        except source_storage.CapturedSourcePreconditionFailed as error:
+            raise application_refusal(
+                ERROR_CODE_MUTATION_PRECONDITION_FAILED,
+                _MESSAGE_CAPTURE_PRECONDITION,
             ) from error
         except source_storage.SourceConflict as error:
             raise application_refusal(
@@ -1108,6 +1140,70 @@ class EngineeringHandlers:
         )
 
     # --- engineering.source.record -------------------------------------------------
+
+    def engineering_source_capture_commit(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Commit an already sealed capture without accepting any capture facts."""
+
+        if (
+            not isinstance(context.request.input, Mapping)
+            or not set(context.request.input) <= _CAPTURE_COMMIT_KEYS
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_SOURCE_INVALID)
+        try:
+            decoded = EngineeringSourceCaptureCommitInput.from_wire(
+                context.request.input
+            )
+            request = source_storage.parse_captured_source_commit(
+                context.request.input
+            )
+        except (
+            ContractDecodeError,
+            ContractSemanticError,
+            source_storage.SourceRecordInvalid,
+        ) as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_SOURCE_INVALID
+            ) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import read_guard as _read_guard
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        if identity is None or guard is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            decoded.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            return source_storage.record_captured_source_event(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                installation_id=identity.installation_id,
+                request=request,
+            )
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringSourceCaptureCommitResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, guard, equivalence, mutate, valid_result
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     def engineering_source_record(
         self, context: OperationContext

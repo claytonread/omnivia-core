@@ -64,6 +64,9 @@ from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
+from omnivia_core_runtime.service.engineering_source_capture_execution import (
+    EngineeringSourceCaptureExecutor,
+)
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.handlers.workflow import WorkflowReleaseResolver
 from omnivia_core_runtime.service.http_transport import (
@@ -925,10 +928,16 @@ def main(
             fencing_generation=started.generation,
             clock=started.clock,
         )
+        source_executor = EngineeringSourceCaptureExecutor(
+            runner=started,
+            application=application,
+            principal_id=LOCAL_PRINCIPAL,
+        )
 
         def service_work() -> None:
             executor.run_pending()
             conflict_executor.run_pending()
+            source_executor.run_pending()
 
         server = LocalSocketServer(
             router=router,

@@ -749,7 +749,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the twenty-eight, explicitly, with a mismatch failing closed for each."""
+    """Exactly the twenty-nine, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -777,12 +777,13 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "continuity.session.close",
         "context.priority.set",
         "engineering.review.record",
+        "engineering.source.capture.commit",
         "engineering.source.record",
         "engineering.repository.register",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 28
+    assert len(MUTATION_PURPOSES) == 29
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -1779,6 +1780,7 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "continuity.session.close": "workspace_contributor",
         "context.priority.set": "workspace_contributor",
         "engineering.review.record": "knowledge_reviewer",
+        "engineering.source.capture.commit": "workspace_contributor",
         "engineering.source.record": "workspace_contributor",
         "engineering.repository.register": "workspace_contributor",
     }

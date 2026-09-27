@@ -25,6 +25,16 @@
 - **CLI surface**: ten generic application commands over `omnivia-core-client`; PR #134 added the managed-start installed-CLI vertical test.
 - **Engineering runtime suites**, MCP stdio e2e and architecture gates, plus the env-gated diagnostic qualification lane. This branch's engineering-focused run completed with 338 passed and 1 skipped.
 
+## Captured-source branch delta
+
+This branch adds the accepted `engineering.source.capture.commit` operation and the
+0056 captured-source representation. The trusted capture path seals a rich-manifest
+evidence row plus an immutable path-to-digest index, and the commit handler binds that
+seal to one authenticated installation, registered checkout and source stream. The
+installed service now polls registered local checkouts in bounded passes and resumes a
+sealed-but-uncommitted capture after restart. The mutation remains absent from MCP and
+is available to trusted clients as `engineering capture`.
+
 ## PR-H2 evidence (this change)
 
 1. **CLI vertical** (`test_engineering_cli.py`): the spec §1.1 initial slice — register → append (fenced) → close-with-final-checkpoint → handoff → working-context search → resume pack — through the installed `omnivia` entry point against a real managed-start service; plus the AC-023 stale-predecessor typed refusal.
@@ -52,7 +62,7 @@ The first 100 000-observation lane failed with `sqlite3.OperationalError: too ma
 
 - Lease expiry and binding-generation fencing are recorded but not enforced (§7.3).
 - Single-principal Personal mode only; no validated organisational isolation (§19.4).
-- Applicability is dependency-qualified against recorded source streams; there is no external change-event producer feeding `RepositoryChangeSet` automatically — targets are matched/pending per the recorded coverage, and a real indexer integration remains future work.
+- Applicability is dependency-qualified against recorded source streams. Core now has a bounded local polling producer and crash recovery, but Platform filesystem notifications and Dev semantic parser/indexer adapters remain external integration work.
 - Context packs do not yet emit known-conflict warnings; conflict discovery and governed reconciliation are incomplete release work.
 - Semantic assessment (P2-08) is deliberately not implemented; it waits on the owner gates G-2 (Laya distribution pin) and G-3 (signed-manifest trust anchor).
 - Performance numbers are lane measurements on the development machine that produced them, not qualified release guarantees (§20.2).

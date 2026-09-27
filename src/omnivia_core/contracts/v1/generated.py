@@ -7073,9 +7073,9 @@ class EngineeringSourceRecordResult:
 
 @dataclass(frozen=True, slots=True)
 class EngineeringSourceCaptureCommitResult:
-    """Result of the future `engineering.source.capture.commit` mutation (not accepted in this
-    contract version): the committed captured-index event's identities, counts, digests and
-    coverage. It exposes no local path, checkout hint, file list or raw manifest.
+    """Result of `engineering.source.capture.commit`: the committed captured-index event's
+    identities, counts, digests and coverage. It exposes no local path, checkout hint, file
+    list or raw manifest.
     """
 
     repository_id: Identifier
@@ -13721,15 +13721,14 @@ class EngineeringSourceRecordInput:
 
 @dataclass(frozen=True, slots=True)
 class EngineeringSourceCaptureCommitInput:
-    """Input for the future `engineering.source.capture.commit` mutation (not accepted in this
-    contract version): it references an already sealed Core capture and derives every other
-    value from the persisted capture header, indexed file evidence and stream state -- never
-    from the payload. It carries only identities, the producer's stream sequence and
-    predecessor, the sealed snapshot identity, and an optional fail-closed precondition
-    digest. It never accepts a checkout path, a repository path, a file path, a manifest
-    body, raw bytes, a command, `checkout_id`, `installation_id`, a workspace, principal,
-    purpose, scope, role or capability field, or a caller-selected capture status, file
-    count, coverage digest or audit identity. Unknown keys are refused.
+    """Input for `engineering.source.capture.commit`: it references an already sealed Core
+    capture and derives every other value from the persisted capture header, indexed file
+    evidence and stream state -- never from the payload. It carries only identities, the
+    producer's stream sequence and predecessor, the sealed snapshot identity, and an optional
+    fail-closed precondition digest. It never accepts a checkout path, a repository path, a
+    file path, a manifest body, raw bytes, a command, `checkout_id`, `installation_id`, a
+    workspace, principal, purpose, scope, role or capability field, or a caller-selected
+    capture status, file count, coverage digest or audit identity. Unknown keys are refused.
     """
 
     repository_id: Identifier
@@ -23365,6 +23364,63 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "mutation_precondition_failed",
             "not_found",
             "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="engineering.source.capture.commit",
+        scope=OperationScope(
+            required_scopes=("engineering:source",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceCaptureCommitInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceCaptureCommitResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.source",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",

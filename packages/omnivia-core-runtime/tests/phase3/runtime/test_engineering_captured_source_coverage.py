@@ -1,12 +1,11 @@
-"""Engineering Memory source producer, Stage 1: captured source coverage
+"""Engineering Memory captured-source storage foundation
 (SPEC-CORE-ENGMEM-001, plan P0-04; spec §6.3, §15; migration 0056).
 
 Proves the additive migration, its guards, legacy `flat_v1` compatibility and
-captured-index reads -- never the accepted `engineering.source.capture.commit`
-operation, a CLI/MCP surface, the producer or a writer/recovery loop, all of
-which stay Stage 2. Every row here is assembled directly against the migrated
-schema, under the same fenced mutation transaction the service itself opens,
-because no accepted operation exists yet to assemble one through.
+captured-index reads. Rows are assembled directly against the migrated schema
+under the same fenced mutation transaction the service opens, so this suite can
+exercise individual database guards independently of the accepted application
+operation and installed producer covered by `test_working_tree_snapshot.py`.
 """
 
 from __future__ import annotations

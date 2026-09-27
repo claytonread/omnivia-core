@@ -1,10 +1,8 @@
-"""Engineering Memory source producer, Stage 1: contract types only.
+"""Engineering Memory captured-source application contract.
 
-`EngineeringSourceCaptureCommitInput`/`Result` are the future
+`EngineeringSourceCaptureCommitInput`/`Result` are the accepted
 `engineering.source.capture.commit` mutation's wire shapes (SPEC-CORE-ENGMEM-001,
-plan P0-04; spec §6.3, §15). This stage publishes and generates the two
-definitions but accepts no operation: the catalogue stays at 54 entries and
-carries no `engineering.source.capture.commit` entry.
+plan P0-04; spec §6.3, §15).
 """
 
 from __future__ import annotations
@@ -325,11 +323,32 @@ def test_result_unknown_keys_are_refused() -> None:
     )
 
 
-# --- the operation catalogue stays at 54 entries -----------------------------------
+# --- accepted operation metadata ---------------------------------------------------
 
 
-def test_the_operation_catalogue_stays_at_54_entries_without_capture_commit() -> None:
-    assert len(OPERATION_CATALOGUE) == 54
-    assert "engineering.source.capture.commit" not in {
-        entry.name for entry in OPERATION_CATALOGUE
-    }
+def test_the_operation_catalogue_accepts_capture_commit_as_entry_55() -> None:
+    assert len(OPERATION_CATALOGUE) == 55
+    entry = next(
+        item
+        for item in OPERATION_CATALOGUE
+        if item.name == "engineering.source.capture.commit"
+    )
+    assert entry.scope.scope_kind == "workspace"
+    assert entry.scope.side_effect == "create"
+    assert entry.scope.required_scopes == ("engineering:source",)
+    assert entry.required_capability.id == "engineering.source"
+    assert entry.required_capability.minimum_version == "1.0"
+    assert entry.job.completion_mode == "synchronous"
+    assert not entry.pagination.paginated
+    assert entry.idempotency.required
+    assert not entry.precondition.supports_mutation_precondition
+    assert entry.audit.audited
+    assert {
+        "invalid_request",
+        "not_found",
+        "authorization_denied",
+        "conflict",
+        "mutation_precondition_failed",
+        "size_limit_exceeded",
+        "idempotency_conflict",
+    } <= set(entry.allowed_errors)

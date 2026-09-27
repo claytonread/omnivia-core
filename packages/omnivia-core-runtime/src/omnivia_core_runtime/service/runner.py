@@ -613,7 +613,7 @@ class ServiceRunner:
 
     # --- keeping the lease current -------------------------------------------
 
-    def renew_lease_if_due(self) -> bool:
+    def renew_lease_if_due(self, *, gate_already_held: bool = False) -> bool:
         """Renew this instance's lease when the interval has elapsed.
 
         Returns whether a heartbeat was written, so a caller sees the difference
@@ -631,6 +631,11 @@ class ServiceRunner:
         else -- contention on the shared connection above all -- is tolerated until
         `LEASE_RENEWAL_DEADLINE_SECONDS`, past which this instance can no longer show
         its lease is current and must stop serving. Both are under the TTL.
+
+        ``gate_already_held`` is reserved for bounded service work invoked by
+        ``LocalSocketServer`` while it already holds this runner's gate on the same
+        owning thread. It skips only the duplicate lock acquisition; every deadline,
+        identity and heartbeat check below remains identical.
         """
         assert self.connection is not None
         assert self.identity is not None
@@ -644,7 +649,8 @@ class ServiceRunner:
         remaining = deadline - now
         if remaining <= 0:
             raise RuntimeError("the lease renewal deadline has passed")
-        if not self.sqlite_gate.acquire(timeout=max(remaining, 0)):
+        acquired = gate_already_held
+        if not acquired and not self.sqlite_gate.acquire(timeout=max(remaining, 0)):
             raise RuntimeError(
                 "could not acquire the sqlite gate before the lease renewal deadline"
             )
@@ -667,7 +673,8 @@ class ServiceRunner:
             if self.clock.monotonic() >= deadline:
                 raise RuntimeError("the lease renewal deadline has passed")
         finally:
-            self.sqlite_gate.release()
+            if not gate_already_held:
+                self.sqlite_gate.release()
         self._lease_renewed_at = now
         return True
 

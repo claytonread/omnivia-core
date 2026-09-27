@@ -804,7 +804,7 @@ def build_decision_application_dispatcher(
     )
 
 
-#: The S-engineering family (SPEC-CORE-ENGMEM-001): the ten engineering-memory
+#: The S-engineering family (SPEC-CORE-ENGMEM-001): the engineering-memory
 #: operations — continuity bindings, checkpoints and handoff, engineering preview
 #: retrieval, the priority/review writes and the trusted source record — one session
 #: and one binding. Purposes are the local-owner policy table's own, exactly as the
@@ -873,7 +873,7 @@ def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
 ) -> ApplicationOperationRegistry:
-    """The eleven engineering-memory operations, one registry, catalogue-complete.
+    """The twelve engineering-memory operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
     plan's PR-B producer; retrieval, the pack builder, priorities, reviews, the
@@ -915,6 +915,10 @@ def build_engineering_registry(
         cast(OperationHandler, refusals.engineering_review_record),
     )
     registry.register(
+        "engineering.source.capture.commit",
+        cast(OperationHandler, refusals.engineering_source_capture_commit),
+    )
+    registry.register(
         "engineering.source.record",
         cast(OperationHandler, refusals.engineering_source_record),
     )
@@ -936,7 +940,7 @@ def build_engineering_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the eleven-operation S-engineering family around the existing router."""
+    """Compose the twelve-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
