@@ -37,9 +37,11 @@ from omnivia_core_runtime.service.bootstrap import (
 )
 from omnivia_core_runtime.service.lifecycle import (
     LEGAL_TRANSITIONS,
+    SHUTDOWN_BLOCKED_REASON,
     LifecycleError,
     ReadinessRefused,
     ReadinessRequirements,
+    ResourceReleaseBlocked,
     ResourceStack,
     ServiceLifecycle,
     ServiceState,
@@ -1363,3 +1365,113 @@ def test_a_renewed_lease_is_still_released_exactly_once_in_reverse_order(
     assert final.heartbeat_monotonic == renewed.heartbeat_monotonic
     assert final.fencing_generation == renewed.fencing_generation
     assert discover(installation.runtime_for(WORKSPACE_ID)) is None
+
+
+# --- fail-closed shutdown: a resource that will not release ------------------
+
+
+def test_a_blocked_release_preserves_lower_resources_for_a_retry() -> None:
+    """`ResourceReleaseBlocked` stops the unwind rather than dropping past it.
+
+    Two resources sit beneath the blocked one. They must stay acquired -- not
+    popped, not released -- until a retry actually clears the block, and the
+    retry must resume at the same entry rather than skipping it or restarting
+    the whole stack from the top.
+    """
+    released: list[str] = []
+    stack = ResourceStack()
+    stack.push("lowest", lambda: released.append("lowest"))
+    stack.push("middle", lambda: released.append("middle"))
+    blocked = True
+
+    def flaky_top() -> None:
+        if blocked:
+            raise ResourceReleaseBlocked("still running")
+        released.append("top")
+
+    stack.push("top", flaky_top)
+
+    first = stack.unwind()
+    assert first == []
+    assert stack.names == ["lowest", "middle", "top"]
+    assert released == []
+
+    # A retry while still blocked changes nothing.
+    second = stack.unwind()
+    assert second == []
+    assert stack.names == ["lowest", "middle", "top"]
+
+    blocked = False
+    third = stack.unwind()
+    assert third == ["top", "middle", "lowest"]
+    assert released == ["top", "middle", "lowest"]
+    assert stack.names == []
+
+
+def test_a_blocked_socket_server_release_leaves_sqlite_and_the_lock_held_until_retry(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """A stop that cannot release its top resource must not drop the ones beneath.
+
+    Stands in for `LocalSocketServer.stop()` raising `ResourceReleaseBlocked`
+    while its serving thread is genuinely still running: the runner's own
+    SQLite connection and the lifetime storage lock, pushed underneath it, must
+    still be open and held after the first `stop()`, and the reported reason
+    must say the shutdown is incomplete rather than claim `stopped`. Only once
+    the block clears does a retry finish the unwind in the normal order.
+    """
+    _workspace, _installation, settings = served
+    runner = ServiceRunner(settings, clock=FakeClock())
+    report = runner.start()
+    assert report.ready, report.to_dict()
+
+    connection = runner.connection
+    assert connection is not None
+    blocked = True
+    stop_calls: list[None] = []
+
+    def fake_socket_server_stop() -> None:
+        stop_calls.append(None)
+        if blocked:
+            raise ResourceReleaseBlocked("serving thread still running")
+
+    runner.lifecycle.resources.push("socket_server", fake_socket_server_stop)
+
+    first = runner.stop()
+    assert first.reason == "shutdown incomplete"
+    assert first.released == ()
+    assert runner.lifecycle.state is ServiceState.FAILED
+    assert runner.lifecycle.last_failure == SHUTDOWN_BLOCKED_REASON
+
+    # Still genuinely held: the connection still answers, and a second runner
+    # cannot take the storage lock this one never released.
+    connection.execute("SELECT 1").fetchone()
+    contender = ServiceRunner(settings, clock=FakeClock())
+    try:
+        blocked_report = contender.start()
+        assert not blocked_report.ready
+        assert "storage lock" in blocked_report.reason
+    finally:
+        contender.stop()
+
+    blocked = False
+    second = runner.stop()
+    assert second.reason == "stopped"
+    assert second.released == (
+        "socket_server",
+        "discovery_descriptor",
+        "mutation_guard",
+        "workspace_lease",
+        "exclusive_connection",
+        "lifetime_storage_lock",
+    )
+    assert len(stop_calls) == 2
+    assert runner.lifecycle.state is ServiceState.STOPPED
+
+    # The workspace is genuinely free now.
+    successor = ServiceRunner(settings, clock=FakeClock())
+    try:
+        successor_report = successor.start()
+        assert successor_report.ready, successor_report.to_dict()
+    finally:
+        successor.stop()

@@ -91,7 +91,11 @@ from omnivia_core_runtime.service.operations import (
 )
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
-from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.service.runner import (
+    ServiceRunner,
+    ServiceSettings,
+    StartupReport,
+)
 from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
@@ -566,6 +570,7 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
     non-zero exit says the process did not stop because it was asked to.
     """
     renewal_failed = False
+    stop_report: StartupReport | None = None
     try:
         while not stopping.wait(timeout=0.25):
             try:
@@ -576,7 +581,14 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.
-        runner.stop()
+        stop_report = runner.stop()
+    if stop_report is not None and stop_report.reason == "shutdown incomplete":
+        # A resource -- a listener, most likely, still admitting an in-flight
+        # request -- did not release within its own bound. Fixed message: the
+        # blocked resource's own diagnostics are not this stream's to repeat, and
+        # a later `runner.stop()` retry is what finishes the unwind.
+        sys.stderr.write("stopping: shutdown did not complete; resources remain held\n")
+        return 1
     if renewal_failed:
         # Structural, and built from nothing the failure carried: a lease error
         # quotes workspace, instance and generation identifiers, and this stream is
@@ -916,6 +928,7 @@ def main(
         )
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
+        http: HttpListener | None = None
         if http_bind is not None:
             http = HttpListener(
                 router=router,
@@ -929,6 +942,21 @@ def main(
             )
             http.start()
             started.lifecycle.resources.push("http_server", http.stop)
+
+        def _request_transport_stop() -> None:
+            """Signal both public listeners to stop before either's own unwind.
+
+            Pushed last so it releases first: `request_stop()` is idempotent and
+            nonblocking on both transports, so a stop reaches the local socket
+            server and HTTP listener at once, ahead of either transport's own
+            bounded `stop()` -- and ahead of `http_server`'s own unwind even when
+            HTTP later defers with `ResourceReleaseBlocked`.
+            """
+            server.request_stop()
+            if http is not None:
+                http.request_stop()
+
+        started.lifecycle.resources.push("transport_admission", _request_transport_stop)
 
     report = runner.start(serve=None if args.check_only else serve)
     sys.stdout.write(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")

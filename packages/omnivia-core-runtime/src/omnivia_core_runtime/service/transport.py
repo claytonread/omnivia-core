@@ -47,6 +47,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.ownership.locks import IS_WINDOWS, LockRole, create_lock
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked
 from omnivia_core_runtime.service.local_control import (
     AuthenticatedDispatch,
     LocalControlError,
@@ -868,6 +869,15 @@ class LocalSocketServer:
                 break
             self._active_channel = channel
             self._run_service_work()
+            if self._stop.is_set():
+                # A stop was requested while the service-work pass ran. Closing
+                # here rather than falling through to `_handle` is what keeps a
+                # stop signalled after accept but before dispatch from admitting
+                # one more application dispatch on a connection the resource
+                # stack is about to close underneath.
+                channel.close()
+                self._active_channel = None
+                break
             try:
                 self._handle(channel)
             except Exception:  # noqa: BLE001, S110 - see below
@@ -1015,26 +1025,50 @@ class LocalSocketServer:
             raise LocalControlRefusal(LocalControlError.UNSUPPORTED)
         return self.mcp_administration.administer(control)
 
-    def stop(self) -> None:
-        served = self._listener is not None
+    def request_stop(self) -> None:
+        """Signal the serving thread to stop, without waiting for it.
+
+        Idempotent and nonblocking: safe to call before `start()` (nothing to
+        signal yet), safe to call more than once, and safe to call from a
+        thread other than the one that will eventually call `stop()`. This is
+        the seam `main.serve` pushes onto the resource stack ahead of both
+        transports' own `stop()`, so a stop request reaches the serving thread
+        immediately rather than waiting behind whatever `stop()` unwinds first.
+        """
         if self._stop is not None:
             self._stop.set()
         if self._active_channel is not None:
             self._active_channel.close()
         if self._listener is not None:
+            self._listener.wake()
+
+    def stop(self) -> None:
+        self.request_stop()
+        served = self._listener is not None
+        if self._thread is not None:
             # Woken in bounded attempts rather than joined once for a long time.  A
-            # client can be accepted between the first active-channel check above and
-            # the wake, so each attempt rechecks and closes the channel after giving
+            # client can be accepted between `request_stop`'s own wake and this
+            # loop, so each attempt rechecks and closes the channel after giving
             # the serving thread a short opportunity to publish it.
             for _ in range(20):
-                if self._thread is None or not self._thread.is_alive():
+                if not self._thread.is_alive():
                     break
-                self._listener.wake()
+                if self._listener is not None:
+                    self._listener.wake()
                 self._thread.join(timeout=0.005)
                 if self._active_channel is not None:
                     self._active_channel.close()
                 self._thread.join(timeout=0.005)
-        self._thread = None
+            if self._thread.is_alive():
+                # Still genuinely running, and possibly still holding the shared
+                # sqlite gate. Unlinking the endpoint or closing the listener
+                # underneath it here is exactly the fail-open shutdown this
+                # sentinel exists to refuse: thread, listener and channel are
+                # all retained so a retry picks up from here.
+                raise ResourceReleaseBlocked(
+                    "local service transport serving thread did not stop"
+                )
+            self._thread = None
         cleanup_failed = False
         if served:
             # Unlink the Unix name while the listener that owns it is still open.

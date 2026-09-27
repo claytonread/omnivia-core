@@ -691,10 +691,19 @@ class ServiceRunner:
         return self.lifecycle.transition_to(ServiceState.DRAINING)
 
     def stop(self) -> StartupReport:
-        """Release everything in reverse acquisition order."""
+        """Release everything in reverse acquisition order.
+
+        A blocked release leaves resources held: `lifecycle.resources.names` is
+        non-empty afterward, and the reason says `"shutdown incomplete"` rather
+        than `"stopped"` so a caller does not believe the workspace was let go
+        of while a resource beneath the blocked one -- the storage lock, the
+        exclusive connection -- is still acquired. A later call to `stop()`
+        retries the same unwind.
+        """
         if self.lifecycle.state.advertises_writable:
             self.lifecycle.transition_to(ServiceState.DRAINING)
         released = self.lifecycle.stop()
+        incomplete = bool(self.lifecycle.resources.names)
         return StartupReport(
             ready=False,
             state=self.lifecycle.state.value,
@@ -704,7 +713,7 @@ class ServiceRunner:
                 None if self.identity is None else self.identity.service_instance_id
             ),
             unmet=(),
-            reason="stopped",
+            reason="shutdown incomplete" if incomplete else "stopped",
             released=tuple(released),
         )
 

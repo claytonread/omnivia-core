@@ -36,6 +36,7 @@ from omnivia_core_runtime.service.http_transport import (
     HttpTransportError,
     parse_http_endpoint,
 )
+from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked, ResourceStack
 from omnivia_core_runtime.service.main import build_parser
 from omnivia_core_runtime.service.main import main as service_main
 from omnivia_core_runtime.service.operations import failure, success
@@ -1089,3 +1090,122 @@ def test_the_shared_router_object_is_handed_to_both_transports() -> None:
 def test_the_operation_field_names_the_application_branch() -> None:
     """Pins the constant the route/document agreement is written against."""
     assert OPERATION_FIELD in _request().to_wire()
+
+
+# --- fail-closed shutdown: a dispatch that is genuinely still running --------
+
+
+class _BlockingDispatch:
+    """An application dispatch that blocks until released, and reports entry."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, request: RequestEnvelope) -> ResponseEnvelope:
+        self.entered.set()
+        self.release.wait(timeout=10)
+        return success(request, {"ok": True}, principal=PRINCIPAL)
+
+
+class _FakeSocketServer:
+    """Stands in for `LocalSocketServer` in the `main.serve` admission wiring.
+
+    What is under test here is the ordering and the admission signal --
+    `transport_admission` requesting a stop on both transports before either's
+    own `stop()` unwinds -- not the real accept loop, which is already covered
+    in `test_transport_lifecycle.py`.
+    """
+
+    def __init__(self) -> None:
+        self.request_stop_calls = 0
+        self.stop_calls = 0
+
+    def request_stop(self) -> None:
+        self.request_stop_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+def test_a_blocked_http_dispatch_defers_stop_and_requests_both_listeners_to_stop() -> (
+    None
+):
+    """The `main.serve` admission wiring, reproduced directly.
+
+    `transport_admission` is pushed last, so it releases first: it calls
+    `request_stop()` on both transports before either transport's own `stop()`
+    is unwound. A dispatch that is genuinely still running when `http_server`'s
+    `stop()` is reached must make that `stop()` raise `ResourceReleaseBlocked`
+    within its own short bound rather than hang the unwind -- and everything
+    beneath it, a fake SQLite cleanup included, must stay untouched until a
+    retry, once the dispatch has actually returned, finishes the job.
+    """
+    dispatch = _BlockingDispatch()
+    http = HttpListener(
+        router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver
+    )
+    http.start()
+    socket_server = _FakeSocketServer()
+    sqlite_cleanup_calls: list[None] = []
+
+    stack = ResourceStack()
+    stack.push("lifetime_storage_lock", lambda: sqlite_cleanup_calls.append(None))
+    stack.push("socket_server", socket_server.stop)
+    stack.push("http_server", http.stop)
+
+    def _request_transport_stop() -> None:
+        socket_server.request_stop()
+        http.request_stop()
+
+    stack.push("transport_admission", _request_transport_stop)
+
+    port = int(http.url.rsplit(":", 1)[1])
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        result["status"], result["body"] = _post(
+            port,
+            APPLICATION_PATH,
+            canonical_json_bytes(_request().to_wire()),
+            credential=ACCEPTED_CREDENTIAL,
+        )
+
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    try:
+        assert dispatch.entered.wait(timeout=5), "the dispatch was never reached"
+
+        started = time.monotonic()
+        first = stack.unwind()
+        elapsed = time.monotonic() - started
+
+        assert first == ["transport_admission"]
+        assert stack.names == ["lifetime_storage_lock", "socket_server", "http_server"]
+        assert elapsed < 3.0, (
+            f"the blocked dispatch was not deferred promptly: {elapsed:.1f}s"
+        )
+        assert socket_server.request_stop_calls == 1, (
+            "both listeners must be asked to stop, not only the blocked one"
+        )
+        assert socket_server.stop_calls == 0, "nothing beneath the block may unwind"
+        assert http.closing.is_set()
+        assert sqlite_cleanup_calls == [], "no lower SQLite cleanup while HTTP is blocked"
+
+        dispatch.release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+        second = stack.unwind()
+        assert second == ["http_server", "socket_server", "lifetime_storage_lock"]
+        assert stack.names == []
+        assert socket_server.stop_calls == 1
+        assert sqlite_cleanup_calls == [None]
+    finally:
+        dispatch.release.set()
+        worker.join(timeout=5)
+        if http._service is not None:
+            try:
+                http.stop()
+            except ResourceReleaseBlocked:
+                pass
