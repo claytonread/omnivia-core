@@ -170,7 +170,6 @@ PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
             _RESTRICTED_PURPOSES
             + (
                 "content_ingestion",
-                "continuity_checkpoint",
                 "job_observation",
                 "memory_authoring",
             )

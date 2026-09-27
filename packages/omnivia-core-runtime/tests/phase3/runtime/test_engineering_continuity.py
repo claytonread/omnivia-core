@@ -16,7 +16,14 @@ the `resume` pack. Another principal's are indistinguishable from missing ones.
 from __future__ import annotations
 
 import json
+import socket
 import sqlite3
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from pathlib import Path
+from threading import Barrier, RLock
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,7 +43,12 @@ from omnivia_core_runtime.service.operations import (
     OperationContext,
     OperationError,
 )
+from omnivia_core_runtime.service.ovc1 import HEADER_BYTES, decode_frame, encode_frame
 from omnivia_core_runtime.service.pagination import PROCESS_CONTINUATION_TOKENS
+from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
+from omnivia_core_runtime.service.protocol import DocumentRouter
+from omnivia_core_runtime.service.transport import LocalSocketServer, endpoint_for_path
+from omnivia_core_runtime.storage import continuity as continuity_storage
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
@@ -45,7 +57,11 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    ErrorResponseEnvelope,
     MutationPrecondition,
+    SuccessResponseEnvelope,
+    decode_response,
+    encode_request,
     get_operation_metadata,
 )
 
@@ -68,14 +84,16 @@ def _session(entry: Any) -> AuthenticatedSession:
     return s0.session_for(entry)
 
 
-def _handlers(holder: Any, entry: Any) -> ContinuityHandlers:
+def _handlers(
+    holder: Any, entry: Any, *, clock: Any | None = None
+) -> ContinuityHandlers:
     return ContinuityHandlers(
         service=SimpleNamespace(
             connection=holder.connection, identity=holder.identity
         ),
         session=_session(entry),
         binding=s0.BINDING,
-        clock=s0.clock_at(),
+        clock=s0.clock_at() if clock is None else clock,
     )
 
 
@@ -159,8 +177,9 @@ def _call(
     *,
     stated_version: str | None = None,
     idempotency_key: str | None = None,
+    clock: Any | None = None,
 ) -> Any:
-    handlers = _handlers(holder, entry)
+    handlers = _handlers(holder, entry, clock=clock)
     context = _context(
         holder,
         entry,
@@ -437,6 +456,355 @@ def _settled(workspace: Any) -> list[list[Any]]:
         connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
         for table in _SETTLED_TABLES
     ]
+
+
+def _register_with_lease(holder: Any, lease_delta_us: int) -> str:
+    """Register so the immutable lease ends at `WALL_BASE + lease_delta_us`."""
+    registered_at = s0.WALL_BASE - timedelta(
+        seconds=continuity_storage.SESSION_LEASE_SECONDS
+    ) + timedelta(microseconds=lease_delta_us)
+    session_id = str(
+        _call(
+            holder,
+            REGISTER,
+            "continuity_session_register",
+            _register_input(),
+            clock=s0.clock_at(wall=registered_at),
+        ).result["session"]["session_id"]
+    )
+    assert holder.connection.execute(
+        "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+        "WHERE workspace_id = ? AND session_id = ?",
+        (WORKSPACE_ID, session_id),
+    ).fetchone() == (s0.WALL_BASE_US + lease_delta_us,)
+    return session_id
+
+
+def _settled_holder(holder: Any) -> list[list[Any]]:
+    return [
+        holder.connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
+        for table in _SETTLED_TABLES
+    ]
+
+
+@pytest.mark.parametrize(
+    ("lease_delta_us", "succeeds"),
+    ((1, True), (0, False), (-1, False)),
+    ids=("before-expiry", "at-expiry", "after-expiry"),
+)
+def test_checkpoint_append_uses_the_fenced_settlement_instant_for_lease_expiry(
+    tmp_path: Any, lease_delta_us: int, succeeds: bool
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, lease_delta_us)
+        before = _settled_holder(holder)
+
+        if succeeds:
+            appended = _call(
+                holder,
+                APPEND,
+                "continuity_checkpoint_append",
+                _append_input(session_id),
+                stated_version="seq-0",
+            )
+            assert appended.result["receipt"]["sequence"] == 1
+            assert holder.connection.execute(
+                "SELECT last_checkpoint_sequence FROM omnivia_engineering_sessions "
+                "WHERE workspace_id = ? AND session_id = ?",
+                (WORKSPACE_ID, session_id),
+            ).fetchone() == (1,)
+        else:
+            with pytest.raises(OperationError) as expired:
+                _call(
+                    holder,
+                    APPEND,
+                    "continuity_checkpoint_append",
+                    _append_input(session_id),
+                    stated_version="seq-0",
+                )
+            assert expired.value.code == ERROR_CODE_CONFLICT
+            assert _settled_holder(holder) == before
+    finally:
+        holder.connection.close()
+
+
+@pytest.mark.parametrize("lease_delta_us", (0, -1), ids=("at-expiry", "after-expiry"))
+@pytest.mark.parametrize("with_final_checkpoint", (False, True), ids=("plain", "final"))
+def test_session_close_is_refused_whole_when_its_lease_has_expired(
+    tmp_path: Any, lease_delta_us: int, with_final_checkpoint: bool
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, lease_delta_us)
+        request: dict[str, Any] = {
+            "session_id": session_id,
+            "expected_sequence": 0,
+        }
+        if with_final_checkpoint:
+            request["final_checkpoint"] = {
+                "objective": "This final checkpoint must roll back",
+                "checkpoint_kind": "session_close",
+            }
+        before = _settled_holder(holder)
+
+        with pytest.raises(OperationError) as expired:
+            _call(
+                holder,
+                CLOSE,
+                "continuity_session_close",
+                request,
+                stated_version="seq-0",
+            )
+
+        assert expired.value.code == ERROR_CODE_CONFLICT
+        assert _settled_holder(holder) == before
+        assert holder.connection.execute(
+            "SELECT state, last_checkpoint_sequence, last_checkpoint_id "
+            "FROM omnivia_engineering_sessions "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == ("active", None, None)
+    finally:
+        holder.connection.close()
+
+
+class _SettlementCrossesLeaseClock:
+    """Issue before the lease deadline, then settle after it without sleeping."""
+
+    def __init__(self) -> None:
+        self.wall_reads = 0
+
+    def monotonic(self) -> float:
+        return s0.MONOTONIC_BASE
+
+    def wall_time(self) -> Any:
+        self.wall_reads += 1
+        if self.wall_reads == 1:
+            return s0.WALL_BASE
+        return s0.WALL_BASE + timedelta(microseconds=20)
+
+
+def test_delayed_first_delivery_refuses_when_settlement_crosses_the_lease(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnivia_core_runtime.service.handlers import continuity as handlers
+
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, 10)
+        before = _settled_holder(holder)
+        clock = _SettlementCrossesLeaseClock()
+        original = handlers._session_version
+        observed_before_expiry = False
+
+        def observe_precondition(*args: Any, **kwargs: Any) -> str:
+            nonlocal observed_before_expiry
+            assert clock.wall_reads == 1
+            observed_before_expiry = True
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(handlers, "_session_version", observe_precondition)
+
+        with pytest.raises(OperationError) as expired:
+            _call(
+                holder,
+                APPEND,
+                "continuity_checkpoint_append",
+                _append_input(session_id),
+                stated_version="seq-0",
+                idempotency_key="idem-delayed-first-delivery",
+                clock=clock,
+            )
+
+        assert observed_before_expiry is True
+        assert clock.wall_reads == 2
+        assert expired.value.code == ERROR_CODE_CONFLICT
+        assert _settled_holder(holder) == before
+    finally:
+        holder.connection.close()
+
+
+def test_committed_append_replays_after_expiry_without_a_second_checkpoint(
+    tmp_path: Any,
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, 1)
+        request = _append_input(session_id)
+        first = _call(
+            holder,
+            APPEND,
+            "continuity_checkpoint_append",
+            request,
+            stated_version="seq-0",
+            idempotency_key="idem-append-before-expiry",
+        )
+        after_expiry = s0.clock_at(
+            wall=s0.WALL_BASE + timedelta(microseconds=2)
+        )
+
+        replayed = _call(
+            holder,
+            APPEND,
+            "continuity_checkpoint_append",
+            request,
+            stated_version="seq-0",
+            idempotency_key="idem-append-before-expiry",
+            clock=after_expiry,
+        )
+
+        assert replayed.result["receipt"] == first.result["receipt"]
+        assert replayed.audit_reference == first.audit_reference
+        assert holder.connection.execute(
+            "SELECT COUNT(*), MIN(sequence), MAX(sequence) "
+            "FROM omnivia_engineering_checkpoints "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == (1, 1, 1)
+
+        changed = _append_input(
+            session_id,
+            payload={
+                "objective": "A different request cannot reuse the committed key",
+                "checkpoint_kind": "periodic",
+            },
+        )
+        with pytest.raises(OperationError) as conflict:
+            _call(
+                holder,
+                APPEND,
+                "continuity_checkpoint_append",
+                changed,
+                stated_version="seq-0",
+                idempotency_key="idem-append-before-expiry",
+                clock=after_expiry,
+            )
+        assert conflict.value.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
+    finally:
+        holder.connection.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
+    reason="requires a real Unix socket",
+)
+def test_concurrent_successors_through_real_transport_admit_exactly_one(
+    tmp_path: Any,
+) -> None:
+    """Two client threads race while the real server thread alone owns SQLite."""
+    workspace = sc.Workspace(tmp_path)
+    try:
+        session_id = workspace.ok(
+            "continuity.session.register", _register_input(), key="idem-compete-register"
+        )["session"]["session_id"]
+        requests = [
+            s0.envelope_for(
+                APPEND,
+                operation_input=_append_input(
+                    session_id, expected_parent_sequence=0
+                ),
+                request_id=f"req-competing-{index}",
+                correlation_id=f"cor-competing-{index}",
+                trace_id=f"trc-competing-{index}",
+                workspace_id=sc.WORKSPACE_ID,
+                idempotency_key=f"idem-competing-{index}",
+                mutation_precondition=MutationPrecondition(record_version="seq-0"),
+            )
+            for index in range(2)
+        ]
+
+        router = DocumentRouter(
+            probes=ProbeRouter(
+                facts=lambda: ServiceFacts(
+                    observed_at="2026-09-28T00:00:00Z",
+                    health_status="pass",
+                    readiness_status="pass",
+                    discovery_status="pass",
+                ),
+                capabilities=tuple,
+                clock=lambda: 0,
+            ),
+            dispatch=workspace.surface.dispatch,
+        )
+
+        def receive_exact(client: socket.socket, byte_count: int) -> bytes:
+            chunks: list[bytes] = []
+            while byte_count:
+                chunk = client.recv(byte_count)
+                if not chunk:
+                    raise AssertionError("transport closed before the response completed")
+                chunks.append(chunk)
+                byte_count -= len(chunk)
+            return b"".join(chunks)
+
+        barrier = Barrier(3)
+
+        def compete(address: str, request: Any) -> Any:
+            barrier.wait(timeout=10)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(10)
+                client.connect(address)
+                client.sendall(encode_frame(encode_request(request)))
+                header = receive_exact(client, HEADER_BYTES)
+                body_length = int.from_bytes(header[4:], "big")
+                return decode_response(
+                    decode_frame(header + receive_exact(client, body_length))
+                )
+
+        with tempfile.TemporaryDirectory(prefix="ov-continuity-", dir="/tmp") as directory:
+            endpoint = endpoint_for_path(Path(directory) / "service.sock")
+            with LocalSocketServer(
+                router=router,
+                endpoint=endpoint,
+                gate=RLock(),
+                timeout=10,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(compete, endpoint.address, request)
+                    for request in requests
+                ]
+                barrier.wait(timeout=10)
+                outcomes = [future.result(timeout=30) for future in futures]
+
+        winners = [
+            outcome for outcome in outcomes
+            if isinstance(outcome, SuccessResponseEnvelope)
+        ]
+        losers = [
+            outcome for outcome in outcomes
+            if isinstance(outcome, ErrorResponseEnvelope)
+        ]
+        observed = [outcome.to_wire() for outcome in outcomes]
+        assert len(winners) == 1, observed
+        assert len(losers) == 1, observed
+        assert losers[0].error.code == ERROR_CODE_MUTATION_PRECONDITION_FAILED
+        winning_receipt = winners[0].result["receipt"]
+        assert workspace.holder.connection.execute(
+            "SELECT last_checkpoint_sequence, last_checkpoint_id "
+            "FROM omnivia_engineering_sessions "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (sc.WORKSPACE_ID, session_id),
+        ).fetchone() == (1, winning_receipt["checkpoint_id"])
+        assert workspace.holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_checkpoints "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (sc.WORKSPACE_ID, session_id),
+        ).fetchone() == (1,)
+
+        fresh = workspace.ok(
+            "continuity.checkpoint.append",
+            _append_input(
+                session_id,
+                parent_checkpoint_id=winning_receipt["checkpoint_id"],
+                expected_parent_sequence=1,
+            ),
+            key="idem-after-competing-successors",
+            mutation_precondition=MutationPrecondition(record_version="seq-1"),
+        )
+        assert fresh["receipt"]["sequence"] == 2
+    finally:
+        workspace.holder.connection.close()
 
 
 def _session_with(

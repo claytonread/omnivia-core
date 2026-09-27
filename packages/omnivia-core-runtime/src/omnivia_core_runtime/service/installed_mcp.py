@@ -18,10 +18,10 @@ the day the catalogue moves, and no copy of it can go stale in between.
 **Least privilege is the shape of the data, not a rule about it.** The rights are
 stored one row per right and read back the same way; there is no pattern, no
 prefix, no "all of namespace x", and the schema refuses a `*` or a `?` in a
-granted value outright. A `restricted` principal holds six operations, three
-scopes, six capabilities, two purposes and no role at all, and an `authoring` one
-holds those plus exactly five operations, two scopes, four capabilities, three
-purposes and one role.
+granted value outright. A `restricted` principal holds fourteen operations, six
+scopes, nine capabilities, nine purposes and one role, and an `authoring` one
+holds those plus exactly five operations, two scopes, four capabilities and
+three purposes. It gains no additional role.
 
 **The one role is a grant, not an inference.** R004 section 9.1 requires an
 authoring setup to hold "workspace contributor authority sufficient for
@@ -121,7 +121,7 @@ _MESSAGE_NOT_AUTHENTICATED: Final = (
 # --- the two exact profiles ---------------------------------------------------
 #
 # The operation and the purpose are the MCP exposure manifest's (`manifest.py`,
-# `MANIFEST_VERSION` 2.1) and are restated here because the runtime must not
+# `MANIFEST_VERSION` 2.2) and are restated here because the runtime must not
 # import the MCP package: an agent-facing allow-list is a decision that package
 # owns, and a dependency in this direction would make the service unable to start
 # without it. Everything else about each operation is read from the catalogue.
@@ -147,7 +147,6 @@ _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("memory.create", "memory_authoring"),
     ("evidence.capture", "content_ingestion"),
     ("import.start", "content_ingestion"),
-    ("continuity.checkpoint.append", "continuity_checkpoint"),
     ("job.get", "job_observation"),
     ("job.events", "job_observation"),
 )
@@ -214,7 +213,7 @@ RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
 )
 
-#: The authoring grant: the restricted rights, exactly the six additions, and
+#: The authoring grant: the restricted rights, exactly the five additions, and
 #: the one role both profiles' mutations need.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(
