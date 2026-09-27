@@ -43,11 +43,13 @@ The installed local service runs a small bounded polling executor from its manag
 service tick, independently of local-socket or HTTP requests. It uses only
 installation-local registered checkout roots, renews the existing workspace lease
 during Git, file-read and blob-publication loops, and holds the shared SQLite gate only
-for short reads and fenced settlement. A sealed header that has no event is recovered
-before the checkout is read again. When coverage has a gap, the executor commits only
-the missing snapshot named by the earliest successor's predecessor link; it does not
-append another head. Stable derived stream, snapshot and idempotency identities make
-retries and lost replies converge. Its pass result contains counts only and
+for short reads and fenced settlement. An eventless seal is reused without rereading
+only when it initializes an absent stream or fills the exact named gap; otherwise the
+producer fails closed and rereads/revalidates the checkout before appending a new
+head. When coverage has a gap, the executor commits only the missing snapshot named by
+the earliest successor's predecessor link; it does not append another head. Stable
+derived stream, snapshot and idempotency identities make retries and lost replies
+converge. Its pass result contains counts only and
 application/capture results contain no local path, checkout hint, file list or raw
 manifest.
 
