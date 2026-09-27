@@ -115,11 +115,12 @@ CLOCK_FACTS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("reproducibility", "generated_at"),
     ),
     # The engineering pack stamps the resolution instant into its
-    # reproducibility block, and pack_id is the canonical digest over the
-    # result *including* that instant, so both move per call (§12.6).
+    # reproducibility block and its authorized-frontier document. Their digests,
+    # including pack_id over the complete result, therefore move per call (§12.6).
     "engineering_context_build": (
         ("pack", "pack_id"),
         ("pack", "reproducibility", "artifact_checksum"),
+        ("pack", "reproducibility", "authorized_frontier_digest"),
         ("pack", "reproducibility", "resolution_instant_us"),
     ),
 }
