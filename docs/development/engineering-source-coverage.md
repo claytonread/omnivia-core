@@ -242,11 +242,16 @@ covered target. It reads only and writes nothing.
   `applicability_pending` and the frozen retry class `retryable_after_delay`.
   This is the compatibility-preserving refusal signal, not a newly ratified
   error code, and a read is never downgraded to `diagnostic`.
-- **Authorization before evaluation:** in both modes, the frontier of search
-  (`accepted`, `candidates`, `history`) and pack build is read through the
-  existing `storage.memory.read_authorized_memory_snapshot`. It resolves
-  identities and evidence-label grants first and hydrates only admitted
-  versions. The grant is computed with `local_owner_label_grant` for the
+- **Authorization before evaluation:** in both modes, the frontier of pack
+  build is read through the existing
+  `storage.memory.read_authorized_memory_snapshot`, and the frontier of search
+  (`accepted`, `candidates`, `history`) through
+  `storage.engineering_preview.read_authorized_previews`, which reads the same
+  frozen authorised frontier and then only the admitted versions' bounded
+  preview rows, hydrating no body (see
+  `engineering-search-preview-projection.md`). Both resolve identities and
+  evidence-label grants first and read only admitted versions. The grant is
+  computed with `local_owner_label_grant` for the
   effective authenticated caller (`context.principal`) and the server binding's
   granted workspace, never for the principal the handler was composed for,
   because a session dispatch runs this owner-composed handler as another
