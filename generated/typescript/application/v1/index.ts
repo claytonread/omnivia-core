@@ -4269,6 +4269,63 @@ export interface EngineeringSourceRecordResult {
 }
 
 /**
+ * Result of the future `engineering.source.capture.commit` mutation (not accepted in this
+ * contract version): the committed captured-index event's identities, counts, digests and
+ * coverage. It exposes no local path, checkout hint, file list or raw manifest.
+ */
+export interface EngineeringSourceCaptureCommitResult {
+  /**
+   * The repository the stream is bound to.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The source stream.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The event's sequence within the stream.
+   */
+  readonly sequence: number;
+  /**
+   * The sealed capture this event commits.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * The sealed rich working-tree manifest digest.
+   */
+  readonly rich_manifest_digest: ContentChecksum;
+  /**
+   * The canonical coverage digest over the captured path-to-digest index.
+   */
+  readonly coverage_digest: ContentChecksum;
+  /**
+   * The sealed capture coverage: `complete` or `incomplete`.
+   */
+  readonly capture_status: string;
+  /**
+   * The number of indexed files at seal time.
+   */
+  readonly file_count: number;
+  /**
+   * Open, bounded code: `recorded` for a new event, `already_recorded` when an identical event
+   * was already stored; a duplicate delivery never creates a second event.
+   */
+  readonly disposition: string;
+  /**
+   * The stream's coverage barrier, committed with this record.
+   */
+  readonly coverage: EngineeringSourceStreamCoverage;
+  /**
+   * Server-owned time the event was first recorded.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Audit reference for this delivery.
+   */
+  readonly audit_reference: string;
+}
+
+/**
  * Input for `engineering.repository.register`: an explicitly authorized local operator binds one
  * exact, installation-local checkout directory to one logical repository identity. Not a model-
  * facing tool: it is reachable only through the accepted local client/CLI, under the distinct
@@ -7068,6 +7125,46 @@ export interface EngineeringSourceRecordInput {
    * equal the server's own computation.
    */
   readonly manifest_digest?: ContentChecksum;
+}
+
+/**
+ * Input for the future `engineering.source.capture.commit` mutation (not accepted in this
+ * contract version): it references an already sealed Core capture and derives every other value
+ * from the persisted capture header, indexed file evidence and stream state -- never from the
+ * payload. It carries only identities, the producer's stream sequence and predecessor, the
+ * sealed snapshot identity, and an optional fail-closed precondition digest. It never accepts a
+ * checkout path, a repository path, a file path, a manifest body, raw bytes, a command,
+ * `checkout_id`, `installation_id`, a workspace, principal, purpose, scope, role or capability
+ * field, or a caller-selected capture status, file count, coverage digest or audit identity.
+ * Unknown keys are refused.
+ */
+export interface EngineeringSourceCaptureCommitInput {
+  /**
+   * Stable logical repository identity of the sealed capture.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The producer's source stream: one ordered history such as one worktree or checkout.
+   * Streams never share coverage.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The producer's monotonic sequence within the stream, from 1.
+   */
+  readonly sequence: number;
+  /**
+   * Required exactly when `sequence` is greater than 1.
+   */
+  readonly predecessor?: EngineeringSourcePredecessor;
+  /**
+   * Identity of the already sealed Core capture this event commits.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Optional fail-closed precondition against the sealed rich-manifest digest. It never
+   * substitutes for the server-owned digest.
+   */
+  readonly expected_manifest_digest?: ContentChecksum;
 }
 
 /**
