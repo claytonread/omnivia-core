@@ -20,7 +20,7 @@ human recorded authoring intent for exactly its principal and workspace, and tha
 row is written by `mcp.configure`. The credential this module files is its own:
 :data:`SECRET`, put straight into the protected store under :data:`PRINCIPAL`,
 which no `mcp.configure` ever issued and which therefore no protected authoring
-record names. The fifteen are so asserted at the seam where the wire's answer
+record names. The twenty are so asserted at the seam where the wire's answer
 arrives -- what `_qualification` returned -- and the *restricted* half of the
 same rule is proved live, by a child that really does ask the protected authority
 and really is told no. The live authoring path is proved end to end in
@@ -137,8 +137,8 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Installed]:
 
 
 def test_the_expected_inventory_is_the_requirement_s_own_two_numbers() -> None:
-    """R004 section 9.2 fixes 10 and 15; this is where a manifest drift is caught."""
-    assert server.EXPECTED_TOOL_COUNT == {"restricted": 10, "authoring": 15}
+    """The current manifest fixes 14 and 20; this catches inventory drift."""
+    assert server.EXPECTED_TOOL_COUNT == {"restricted": 14, "authoring": 20}
 
 
 def test_the_qualification_budget_outlasts_the_child_s_own_startup() -> None:
@@ -151,19 +151,19 @@ def test_the_qualification_budget_outlasts_the_child_s_own_startup() -> None:
     assert server.QUALIFICATION_TIMEOUT_SECONDS > server.MANAGED_START_TIMEOUT_SECONDS
 
 
-def test_a_restricted_setup_qualifies_over_real_mcp_and_reports_ten_tools(
+def test_a_restricted_setup_qualifies_over_real_mcp_and_reports_fourteen_tools(
     installed: Installed,
 ) -> None:
-    """A real child, a real handshake, and the ten the manifest advertises.
+    """A real child, a real handshake, and the fourteen advertised tools.
 
     Nothing here is in this process: `verify_installed_setup` spawns the entry
     point an MCP host would launch, completes `initialize` and `tools/list` over
     real pipes, and the count comes back off the wire.
     """
-    assert server.verify_installed_setup(installed.write()) == 10
+    assert server.verify_installed_setup(installed.write()) == 14
 
 
-def test_an_authoring_inventory_qualifies_and_reports_fifteen_tools(
+def test_an_authoring_inventory_qualifies_and_reports_twenty_tools(
     installed: Installed, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The wider profile, at the seam where the wire's answer arrives.
@@ -185,7 +185,7 @@ def test_an_authoring_inventory_qualifies_and_reports_fifteen_tools(
         mutation_enabled=True,
         allowed_purposes=list(AUTHORING_PURPOSES),
     )
-    assert server.verify_installed_setup(path) == 15
+    assert server.verify_installed_setup(path) == 20
 
 
 def test_an_authoring_ceiling_the_protected_authority_will_not_raise_is_refused(
@@ -195,7 +195,7 @@ def test_an_authoring_ceiling_the_protected_authority_will_not_raise_is_refused(
 
     The child really does ask the protected authority, over the session's own
     endpoint, with the bearer this installation filed, and is really told no. So
-    it settles on `restricted`, advertises ten tools and five purposes -- and this
+    it settles on `restricted`, advertises fourteen tools and nine purposes -- and this
     configuration allows eight. A setup that published it would advertise a
     surface whose purposes its own calls would be refused for.
     """
@@ -284,7 +284,7 @@ def test_a_legacy_configuration_is_upgraded_to_restricted_before_qualification(
     The live installation already holds the restricted setup provisioned by the
     fixture. Startup reuses that authority, never treats a legacy true byte as
     authoring consent, and publishes the dedicated principal and reference into
-    the same owner-private file. Qualification then observes the restricted ten.
+    the same owner-private file. Qualification then observes the restricted fourteen.
     """
     path = installed.write(
         name=f"legacy-{legacy_mutation}.json",
@@ -292,7 +292,7 @@ def test_a_legacy_configuration_is_upgraded_to_restricted_before_qualification(
         mutation_enabled=legacy_mutation,
     )
 
-    assert server.verify_installed_setup(path) == 10
+    assert server.verify_installed_setup(path) == 14
 
     upgraded = read_configuration(path)
     assert upgraded.credential_reference is not None

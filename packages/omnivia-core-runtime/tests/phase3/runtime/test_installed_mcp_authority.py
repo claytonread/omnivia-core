@@ -135,6 +135,10 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "memory.search",
         "graph.traverse",
         "context_pack.build",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
+        "continuity.handoff.read",
         "decision.evaluate",
         "decision.record.get",
         "decision.record.list",
@@ -144,12 +148,17 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "workspace:read",
         "memory:read",
         "graph:read",
+        "engineering:read",
         "decision:read",
         "decision:invoke",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.PURPOSE) == {
         "workspace_inspection",
         "knowledge_retrieval",
+        "engineering_search",
+        "engineering_expand",
+        "engineering_context",
+        "continuity_handoff",
         "decision_evaluation",
         "decision_record",
         "decision_status",
@@ -165,6 +174,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         ("memory.read", "1.0"),
         ("graph.read", "1.0"),
         ("context_pack.build", "1.0"),
+        ("engineering.read", "1.0"),
         ("decision.read", "1.0"),
         ("decision.invoke", "1.0"),
     }
@@ -173,7 +183,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
     assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
-def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
+def test_authoring_policy_is_the_read_surface_plus_exactly_the_six() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
     # R004 section 9.1's "workspace contributor authority sufficient for
@@ -187,13 +197,19 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
         "memory.create",
         "evidence.capture",
         "import.start",
+        "continuity.checkpoint.append",
         "job.get",
         "job.events",
     }
-    assert kinds(added, McpGrantKind.SCOPE) == {"memory:write", "job:read"}
+    assert kinds(added, McpGrantKind.SCOPE) == {
+        "memory:write",
+        "engineering:write",
+        "job:read",
+    }
     assert kinds(added, McpGrantKind.PURPOSE) == {
         "memory_authoring",
         "content_ingestion",
+        "continuity_checkpoint",
         "job_observation",
     }
     assert {
@@ -204,6 +220,7 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
         ("memory.write", "1.0"),
         ("evidence.write", "1.0"),
         ("ingestion.import", "1.0"),
+        ("engineering.write", "1.0"),
         ("job.read", "1.0"),
     }
 
