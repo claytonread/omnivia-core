@@ -245,6 +245,57 @@ def test_counts_cover_the_whole_rendering_under_the_named_tokenizer() -> None:
     assert pack["budget"]["rendered_tokens"] == _tokens(text)
 
 
+def test_working_context_is_capped_at_one_quarter_of_both_legacy_budgets() -> None:
+    ctx = dataclasses.replace(CTX, effective_tokens=400, effective_bytes=800)
+    working = (
+        WorkingItem("ck-1", 1, "認証を再開", ("未解決🙂" * 4,)),
+        WorkingItem("ck-2", 2, "Second checkpoint " * 5, ("follow up " * 8,)),
+        WorkingItem("ck-3", 3, "Lowest priority " * 8, ("later " * 20,)),
+    )
+    pack = _build(ctx, working=working)
+    without_working = _build(ctx)
+    working_tokens = pack["rendering"]["token_count"] - without_working["rendering"][
+        "token_count"
+    ]
+    working_bytes = pack["rendering"]["byte_count"] - without_working["rendering"][
+        "byte_count"
+    ]
+
+    assert working_tokens <= ctx.effective_tokens // 4
+    assert working_bytes <= ctx.effective_bytes // 4
+    assert any(
+        omission["reason"] == "working_context_share"
+        for omission in pack["omissions"]
+    )
+    assert all(
+        section["content"] != "Lowest priority " * 8 + "Unresolved: " + "later " * 20
+        for section in pack["sections"]
+    )
+
+
+def test_byte_only_working_context_uses_exact_multilingual_utf8_share() -> None:
+    ctx = dataclasses.replace(V2_CTX, effective_bytes=800)
+    working = (
+        WorkingItem("ck-1", 1, "継続🙂" * 4, ("未解決" * 3,)),
+        WorkingItem("ck-2", 2, "後回し🚧" * 20, ("大きい" * 20,)),
+    )
+    pack = _build_v2(ctx, working=working)
+    without_working = _build_v2(ctx, working=())
+    working_bytes = pack["rendering"]["byte_count"] - without_working["rendering"][
+        "byte_count"
+    ]
+
+    assert working_bytes <= ctx.effective_bytes // 4
+    assert [
+        section["content"]
+        for section in pack["sections"]
+        if section["partition"] == "working_context"
+    ] == ["継続🙂" * 4 + " Unresolved: " + "未解決" * 3]
+    assert {omission["reason"] for omission in pack["omissions"]} == {
+        "working_context_share"
+    }
+
+
 def test_partitions_stay_separate_and_accepted_renders_first() -> None:
     pack = _build()
     assert [s["partition"] for s in pack["sections"]] == [
@@ -261,7 +312,10 @@ def test_tight_token_budget_drops_optional_sections_but_keeps_notice_and_accepte
     tight = dataclasses.replace(CTX, effective_tokens=mandatory)
     pack = _build(tight, working=(WorkingItem("ck-1", 1, "Obj", ("x",)),))
     assert [s["partition"] for s in pack["sections"]] == ["accepted_knowledge"]
-    assert {o["reason"] for o in pack["omissions"]} == {"budget"}
+    assert {o["reason"] for o in pack["omissions"]} == {
+        "budget",
+        "working_context_share",
+    }
     assert [c["citation_id"] for c in pack["citations"]] == ["cite-1"]
     assert pack["rendering"]["token_count"] <= mandatory
     assert NOTICE in pack["rendering"]["text"]
@@ -303,7 +357,10 @@ def test_byte_only_drops_optional_sections_whole_and_refuses_too_small_mandatory
             "record_ref": {"record_id": "rec-b", "version": "ver-1"},
         }
     ]
-    assert all(omission["reason"] == "budget" for omission in packed["omissions"])
+    assert {omission["reason"] for omission in packed["omissions"]} == {
+        "budget",
+        "working_context_share",
+    }
     with pytest.raises(MandatoryContextTooLarge):
         _build_v2(dataclasses.replace(V2_CTX, effective_bytes=cap - 1), records=(ACCEPTED,), working=())
 

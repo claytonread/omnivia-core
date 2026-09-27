@@ -28,6 +28,7 @@ BUILDER_VERSION: Final = "eng-build-2"
 BYTE_ONLY_RENDERER_VERSION: Final = "eng-render-3"
 BYTE_ONLY_BUILDER_VERSION: Final = "eng-build-3"
 BYTE_ONLY_COUNTING_MODE: Final = "byte_only.v1"
+WORKING_CONTEXT_SHARE_DIVISOR: Final = 4
 
 #: Dropped last-first when the rendering exceeds a budget. Accepted knowledge
 #: and the uncertainty notice are mandatory and never dropped (§12.5).
@@ -109,6 +110,60 @@ def _render(
     return "\n\n".join(parts)
 
 
+def _enforce_working_context_share(
+    *,
+    notice: str,
+    sections: list[dict[str, Any]],
+    labels: Mapping[str, str],
+    omissions: list[dict[str, Any]],
+    effective_bytes: int,
+    effective_tokens: int | None,
+) -> None:
+    """Keep model-facing working context within its accepted 25% share.
+
+    The request contract has no expanded-working-context control, so every accepted
+    request uses the default quarter share. Measuring the full rendering with and
+    without working sections counts their headings, checkpoint labels and separators;
+    no payload-only estimate stands in for what the model actually receives.
+    """
+
+    byte_limit = effective_bytes // WORKING_CONTEXT_SHARE_DIVISOR
+    token_limit = (
+        None
+        if effective_tokens is None
+        else effective_tokens // WORKING_CONTEXT_SHARE_DIVISOR
+    )
+    while True:
+        without_working = [
+            section
+            for section in sections
+            if section["partition"] != "working_context"
+        ]
+        if len(without_working) == len(sections):
+            return
+        full_text = _render(notice, sections, labels)
+        base_text = _render(notice, without_working, labels)
+        working_bytes = len(full_text.encode("utf-8")) - len(base_text.encode("utf-8"))
+        working_tokens = (
+            None
+            if token_limit is None
+            else _token_count(full_text) - _token_count(base_text)
+        )
+        if working_bytes <= byte_limit and (
+            token_limit is None or working_tokens is not None and working_tokens <= token_limit
+        ):
+            return
+        dropped_index = next(
+            index
+            for index in range(len(sections) - 1, -1, -1)
+            if sections[index]["partition"] == "working_context"
+        )
+        dropped = sections.pop(dropped_index)
+        omissions.append(
+            {"field": dropped["section_id"], "reason": "working_context_share"}
+        )
+
+
 def build_pack(
     ctx: BuildContext,
     records: tuple[PackRecord, ...],
@@ -162,6 +217,14 @@ def build_pack(
     # never invalidate the checksum already computed over this pack.
     uncertainties = list(uncertainties)
     omissions = [dict(o) for o in omissions]
+    _enforce_working_context_share(
+        notice=notice,
+        sections=sections,
+        labels=labels,
+        omissions=omissions,
+        effective_bytes=ctx.effective_bytes,
+        effective_tokens=ctx.effective_tokens,
+    )
     while True:
         text = _render(notice, sections, labels)
         token_count = _token_count(text)
@@ -315,6 +378,14 @@ def build_pack_byte_only(
 
     uncertainties = list(uncertainties)
     omissions = [dict(omission) for omission in omissions]
+    _enforce_working_context_share(
+        notice=notice,
+        sections=sections,
+        labels=labels,
+        omissions=omissions,
+        effective_bytes=ctx.effective_bytes,
+        effective_tokens=None,
+    )
     while True:
         text = _render(notice, sections, labels)
         byte_count = len(text.encode("utf-8"))

@@ -129,6 +129,7 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
 )
 from omnivia_core_runtime.service.engineering_pack import (
+    WORKING_CONTEXT_SHARE_DIVISOR,
     BuildContext,
     MandatoryContextTooLarge,
     PackRecord,
@@ -169,7 +170,9 @@ from omnivia_core_runtime.storage.engineering_preview import (
     read_previews_for_frontier,
 )
 from omnivia_core_runtime.storage.governed import (
+    GovernedPayloadComponents,
     hydrate_authorized_governed_record_values,
+    plan_authorized_governed_payload,
     read_governed_supersessions,
 )
 from omnivia_core_runtime.storage.memory import (
@@ -269,7 +272,8 @@ _MESSAGE_PAYLOAD_INVALID: Final = (
 
 CONTEXT_BUILD_SECTION_CAP: Final = 24
 CONTEXT_BUILD_ABSOLUTE_SECTION_CAP: Final = 64
-CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-1"
+CONTEXT_BUILD_CHECKPOINT_CAP: Final = 5
+CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +366,38 @@ def _payload_read_refusal(
     return application_refusal(
         ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_PAYLOAD_INVALID
     )
+
+
+def _governed_payload_components(
+    plan: GovernedPayloadComponents,
+) -> tuple[tuple[str, str, int], ...]:
+    """Stable identities and exact bytes for one metadata-only record plan."""
+    return tuple(
+        (kind, identity, byte_length)
+        for kind, lengths in (
+            ("content", plan.content_byte_lengths),
+            ("rationale", plan.transition_rationale_byte_lengths),
+            ("claim", plan.claim_byte_lengths),
+        )
+        for identity, byte_length in sorted(lengths.items())
+    )
+
+
+def _checkpoint_working_upper_bound(
+    metadata: continuity_storage.CheckpointMetadata,
+) -> int:
+    """A pre-read upper bound for one checkpoint's model-facing UTF-8 bytes.
+
+    The stored JSON is at least as large as the objective/unresolved strings it
+    contains. Add every renderer-owned label and separator that can surround
+    those strings, so admission never needs to fetch a checkpoint merely to
+    discover that its working-context section cannot fit.
+    """
+    wrapper = (
+        "\n\n[working_context] [uncited checkpoint "
+        f"{metadata.checkpoint_id}#{metadata.sequence}]  Unresolved: "
+    )
+    return metadata.payload_byte_length + len(wrapper.encode("utf-8"))
 
 
 def _proven_version(
@@ -1657,6 +1693,8 @@ class EngineeringHandlers:
         values: tuple[Any, ...] = ()
         evaluated = unproven = 0
         selection_omitted = False
+        source_budget_omitted = False
+        working_share_omitted = False
         authorized_candidate_count = eligible_count = 0
         normalized_query = normalize_query(request.query)
         label_grant = self._label_grant(context)
@@ -1696,11 +1734,57 @@ class EngineeringHandlers:
 
             if request.profile == "resume":
                 try:
-                    checkpoint_rows = continuity_storage.read_checkpoints(
+                    checkpoint_metadata = continuity_storage.list_checkpoint_metadata(
                         connection,
                         workspace_id=context.workspace_id,
                         principal_id=context.principal,
-                        limit=5,
+                        payload_budget=payload_budget,
+                        limit=CONTEXT_BUILD_SECTION_CAP,
+                    )
+                    working_share_limit = (
+                        effective_bytes // WORKING_CONTEXT_SHARE_DIVISOR
+                    )
+                    if (
+                        request.counting_mode
+                        != ENGINEERING_COUNTING_MODE_BYTE_ONLY
+                    ):
+                        working_share_limit = min(
+                            working_share_limit,
+                            effective_tokens // WORKING_CONTEXT_SHARE_DIVISOR,
+                        )
+                    selected_checkpoint_metadata: list[
+                        continuity_storage.CheckpointMetadata
+                    ] = []
+                    planned_checkpoint_bytes = 0
+                    planned_working_bytes = 0
+                    for metadata in checkpoint_metadata:
+                        if (
+                            len(selected_checkpoint_metadata)
+                            == CONTEXT_BUILD_CHECKPOINT_CAP
+                        ):
+                            break
+                        if (
+                            planned_checkpoint_bytes
+                            + metadata.payload_byte_length
+                            > payload_budget.remaining
+                        ):
+                            source_budget_omitted = True
+                            continue
+                        working_upper_bound = _checkpoint_working_upper_bound(metadata)
+                        if (
+                            planned_working_bytes + working_upper_bound
+                            > working_share_limit
+                        ):
+                            working_share_omitted = True
+                            continue
+                        selected_checkpoint_metadata.append(metadata)
+                        planned_checkpoint_bytes += metadata.payload_byte_length
+                        planned_working_bytes += working_upper_bound
+                    checkpoint_rows = continuity_storage.read_selected_checkpoints(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        principal_id=context.principal,
+                        selected=tuple(selected_checkpoint_metadata),
                         payload_budget=payload_budget,
                     )
                 except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
@@ -1842,6 +1926,44 @@ class EngineeringHandlers:
                 best_candidates[: max(0, record_capacity - len(selected_previews))]
             )
             selection_omitted = eligible_count > len(selected_previews)
+            ranked_previews = selected_previews
+            selected_previews = []
+            admitted_components: set[tuple[str, str]] = set()
+            planned_payload_bytes = 0
+            for item in ranked_previews:
+                candidate, _partition, support = item
+                try:
+                    plan = plan_authorized_governed_payload(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        resolution_instant_us=resolved_at_us,
+                        authorized_support={candidate.assembly_id: support},
+                        payload_budget=payload_budget,
+                    )
+                except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
+                    raise _payload_read_refusal(error) from error
+                components = _governed_payload_components(plan)
+                incremental_components = tuple(
+                    (kind, identity, byte_length)
+                    for kind, identity, byte_length in components
+                    if (kind, identity) not in admitted_components
+                )
+                incremental_bytes = sum(
+                    byte_length
+                    for _kind, _identity, byte_length in incremental_components
+                )
+                if (
+                    planned_payload_bytes + incremental_bytes
+                    > payload_budget.remaining
+                ):
+                    source_budget_omitted = True
+                    continue
+                selected_previews.append(item)
+                planned_payload_bytes += incremental_bytes
+                admitted_components.update(
+                    (kind, identity)
+                    for kind, identity, _byte_length in incremental_components
+                )
             assembly_ids = tuple(item[0].assembly_id for item in selected_previews)
             support_assembly_ids = tuple(
                 sorted(
@@ -1916,6 +2038,17 @@ class EngineeringHandlers:
             selection_uncertainties.append(
                 "Additional authorized preview matches were omitted by the bounded "
                 "hydration and section selection."
+            )
+        if source_budget_omitted:
+            omissions.append({"field": "sections", "reason": "source_budget"})
+        if working_share_omitted:
+            omissions.append(
+                {"field": "working_context", "reason": "working_context_share"}
+            )
+        if source_budget_omitted or working_share_omitted:
+            selection_uncertainties.append(
+                "Additional authorized content was omitted because its payload did "
+                "not fit the bounded source-read or working-context budget."
             )
 
         build_context = BuildContext(

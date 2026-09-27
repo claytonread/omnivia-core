@@ -250,13 +250,13 @@ def test_section_cap_limits_a_32_hydration_request_to_24_sections(
     assert {item["reason"] for item in pack["omissions"]} == {"selection_limit"}
 
 
-def test_tiny_evidence_budget_refuses_before_a_payload_select(
+def test_tiny_evidence_budget_omits_optional_records_before_a_payload_select(
     workspace: Workspace,
 ) -> None:
     _observe_many(workspace, 1)
     connection = workspace.holder.connection
     with Trace(connection) as trace:
-        code, _message, _retry = workspace.refused(
+        pack = workspace.ok(
             "engineering.context.build",
             {
                 "query": "item",
@@ -264,9 +264,61 @@ def test_tiny_evidence_budget_refuses_before_a_payload_select(
                 "profile": "investigate",
                 "budget": {"evidence_bytes": 1},
             },
-        )
-    assert code == "size_limit_exceeded"
+        )["pack"]
+    assert pack["budget"]["source_bytes_read"] == 0
+    assert pack["budget"]["hydrations"] == 0
+    assert pack["citations"] == []
+    assert {item["reason"] for item in pack["omissions"]} == {"source_budget"}
     assert trace.body_reads() == []
+
+
+def test_large_high_priority_body_is_skipped_and_a_smaller_group_is_hydrated(
+    workspace: Workspace,
+) -> None:
+    large = esc._observation(None, title="Needle priority", evidence=False)
+    large["content"]["summary"] = "needle " * 280
+    large["content"]["what"] = "巨大🙂" * 600
+    large_record_id = workspace.observe(large)["record_id"]
+
+    small = esc._observation(None, title="Needle fallback", evidence=False)
+    small["content"]["summary"] = "needle"
+    small_record_id = workspace.observe(small)["record_id"]
+    payload_rows = workspace.holder.connection.execute(
+        "SELECT a.governed_record_id, a.assembly_id, "
+        "length(CAST(a.content_json AS BLOB)), "
+        "COALESCE(l.claim_byte_length, 0) "
+        "FROM omnivia_governed_version_assemblies a "
+        "LEFT JOIN omnivia_application_claim_lineage l "
+        "ON l.workspace_id=a.workspace_id AND l.assembly_id=a.assembly_id "
+        "WHERE a.workspace_id = ? AND a.governed_record_id IN (?, ?)",
+        (esc.WORKSPACE_ID, large_record_id, small_record_id),
+    ).fetchall()
+    payload_by_record = {
+        str(row[0]): (str(row[1]), int(row[2]) + int(row[3])) for row in payload_rows
+    }
+    large_assembly, large_bytes = payload_by_record[large_record_id]
+    _small_assembly, small_bytes = payload_by_record[small_record_id]
+    assert large_bytes > small_bytes
+
+    with Trace(workspace.holder.connection) as trace:
+        pack = workspace.ok(
+            "engineering.context.build",
+            {
+                "query": "needle",
+                "targets": [],
+                "profile": "investigate",
+                "budget": {"evidence_bytes": small_bytes},
+            },
+        )["pack"]
+
+    assert [citation["record_ref"]["record_id"] for citation in pack["citations"]] == [
+        small_record_id
+    ]
+    assert pack["budget"]["source_bytes_read"] == small_bytes
+    assert pack["budget"]["hydrations"] == 1
+    assert {item["reason"] for item in pack["omissions"]} == {"source_budget"}
+    assert any("source-read" in uncertainty for uncertainty in pack["uncertainties"])
+    assert not any(large_assembly in statement for statement in trace.body_reads())
 
 
 def test_a_non_engineering_domain_body_is_never_hydrated_or_counted(

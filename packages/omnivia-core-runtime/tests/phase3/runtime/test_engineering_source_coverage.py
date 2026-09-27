@@ -1419,7 +1419,7 @@ def test_pack_partitions_accepted_knowledge_from_candidate_findings(
     statements: list[str] = []
     workspace.holder.connection.set_trace_callback(statements.append)
     try:
-        refusal = workspace.refused(
+        constrained = workspace.ok(
             "engineering.context.build",
             {
                 "query": "provider",
@@ -1427,15 +1427,43 @@ def test_pack_partitions_accepted_knowledge_from_candidate_findings(
                 "profile": "investigate",
                 "budget": {"evidence_bytes": expected_source_bytes - 1},
             },
-        )
+        )["pack"]
     finally:
         workspace.holder.connection.set_trace_callback(None)
-    assert refusal[0] == "size_limit_exceeded"
-    assert not any(
-        any(column in statement for column in ("content_json", "claim_json", "rationale_json"))
+    constrained_refs = {
+        (citation["record_ref"]["record_id"], citation["record_ref"]["version"])
+        for citation in constrained["citations"]
+    }
+    omitted_refs = exact_refs - constrained_refs
+    assert constrained_refs
+    assert omitted_refs
+    assert constrained["budget"]["source_bytes_read"] <= expected_source_bytes - 1
+    assert {item["reason"] for item in constrained["omissions"]} == {
+        "source_budget"
+    }
+    omitted_assemblies = {
+        str(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT assembly_id, governed_record_id, governed_record_version_id "
+            "FROM omnivia_governed_version_assemblies WHERE workspace_id = ?",
+            (WORKSPACE_ID,),
+        )
+        if (str(row[1]), str(row[2])) in omitted_refs
+    }
+    body_reads = [
+        statement
+        for statement in statements
+        if any(
+            column in statement
+            for column in ("content_json", "claim_json", "rationale_json")
+        )
         and "octet_length(" not in statement
         and "length(CAST(" not in statement
-        for statement in statements
+    ]
+    assert not any(
+        assembly_id in statement
+        for assembly_id in omitted_assemblies
+        for statement in body_reads
     )
     fixed_instant = 1_800_000_000_000_000_000
     monkeypatch.setattr(handlers.time, "time_ns", lambda: fixed_instant)
