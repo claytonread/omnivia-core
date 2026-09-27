@@ -61,6 +61,9 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 )
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.engineering_conflict_execution import (
+    EngineeringConflictExecutor,
+)
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.handlers.workflow import WorkflowReleaseResolver
 from omnivia_core_runtime.service.http_transport import (
@@ -903,11 +906,10 @@ def main(
         # HTTP is deliberately not given either: this slice adds no HTTP behaviour.
         #
         # The seam service-owned work runs on, and the only one in this process that
-        # holds the connection, the identity and the current generation together
-        # without also holding a caller's transaction open. `import.start` settles a
-        # job and answers; this executes it, between requests, on the thread that
-        # already owns the writable connection. See `ImportJobExecutor` for why the
-        # work is bounded and why it never raises into the accept loop.
+        # holds the connection, identity and current generation without also holding
+        # a caller's transaction open. Imports and conflict discovery enqueue and
+        # answer first; these bounded executors advance them between requests on the
+        # thread that owns the writable connection.
         executor = ImportJobExecutor(
             connection=started.connection,
             identity=started.identity,
@@ -916,13 +918,25 @@ def main(
             clock=started.clock,
             blobs_root=started.layout.blobs_path,
         )
+        conflict_executor = EngineeringConflictExecutor(
+            connection=started.connection,
+            identity=started.identity,
+            workspace_id=started.workspace_id,
+            fencing_generation=started.generation,
+            clock=started.clock,
+        )
+
+        def service_work() -> None:
+            executor.run_pending()
+            conflict_executor.run_pending()
+
         server = LocalSocketServer(
             router=router,
             authenticated=AuthenticatedApplicationDispatch(
                 seam=installation_authority, dispatcher=application
             ),
             mcp_administration=installation_authority,
-            service_work=executor.run_pending,
+            service_work=service_work,
             endpoint=endpoint,
             gate=started.sqlite_gate,
         )

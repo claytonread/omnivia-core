@@ -146,8 +146,8 @@ from omnivia_core_runtime.service.pagination import (
 )
 from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
+from omnivia_core_runtime.storage import engineering_conflicts, repository_identity
 from omnivia_core_runtime.storage import engineering_source as source_storage
-from omnivia_core_runtime.storage import repository_identity
 from omnivia_core_runtime.storage.engineering_preview import (
     PREVIEW_MAX_CODEPOINTS,
     PROJECTION_VERSION,
@@ -931,22 +931,25 @@ class EngineeringHandlers:
             {"record_id": request.anchor.record_id, "version": request.anchor.version}
         ]
         edges: list[dict[str, Any]] = []
+        visible_edges: list[
+            tuple[dict[str, Any], tuple[str, str]]
+        ] = []
         supersessions = read_governed_supersessions(
             connection,
             workspace_id=context.workspace_id,
             resolution_instant_us=now_us,
         )
         for edge in supersessions:
-            if len(edges) >= edge_limit:
-                break
             source = (edge.governed_record_id, edge.source_version_id)
             target = (edge.governed_record_id, edge.target_version_id)
             if anchor not in (source, target) or not (
                 source in visible and target in visible
             ):
                 continue
-            edges.append(
-                {
+            other = target if source == anchor else source
+            visible_edges.append(
+                (
+                    {
                     "from_record": {
                         "record_id": edge.governed_record_id,
                         "version": edge.source_version_id,
@@ -957,16 +960,67 @@ class EngineeringHandlers:
                     },
                     "relation": "supersedes",
                     "status": "accepted",
-                }
+                    },
+                    other,
+                )
             )
-            other = target if source == anchor else source
+
+        relation_candidates = (
+            engineering_conflicts.read_authorized_relation_candidates_for_anchor(
+                connection,
+                workspace_id=context.workspace_id,
+                anchor_record_id=request.anchor.record_id,
+                anchor_version=request.anchor.version,
+                resolution_instant_us=now_us,
+                label_grant=self._label_grant(context),
+            )
+        )
+        for candidate in relation_candidates:
+            source = (
+                candidate.endpoint_a.record_id,
+                candidate.endpoint_a.version,
+            )
+            target = (
+                candidate.endpoint_b.record_id,
+                candidate.endpoint_b.version,
+            )
+            if anchor not in (source, target) or not (
+                source in visible and target in visible
+            ):
+                continue
+            visible_edges.append(
+                (
+                    {
+                        "from_record": {
+                            "record_id": source[0],
+                            "version": source[1],
+                        },
+                        "to_record": {
+                            "record_id": target[0],
+                            "version": target[1],
+                        },
+                        "relation": candidate.proposed_relation,
+                        "status": candidate.status,
+                    },
+                    target if source == anchor else source,
+                )
+            )
+
+        truncated = depth > 1
+        for edge_payload, other in visible_edges:
+            if len(edges) >= edge_limit:
+                truncated = True
+                break
             node = {"record_id": other[0], "version": other[1]}
-            if node not in nodes and len(nodes) < node_limit:
+            if node not in nodes and len(nodes) >= node_limit:
+                truncated = True
+                continue
+            edges.append(edge_payload)
+            if node not in nodes:
                 nodes.append(node)
         # `depth` is declared by the contract and bounded by it (1..3); this
         # build expands one hop, so depth 2+ would add nothing today and is
         # reported as truncation rather than silently pretended.
-        truncated = depth > 1
         return {
             "nodes": nodes,
             "edges": edges,
