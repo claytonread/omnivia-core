@@ -81,6 +81,25 @@ class ReadinessRefused(Exception):
     """Writable readiness was refused because a precondition does not hold."""
 
 
+class ResourceReleaseBlocked(Exception):
+    """A resource could not be released within its own bound.
+
+    Distinct from an ordinary cleanup exception, which `ResourceStack.unwind()`
+    swallows and continues past: this one means the resource is still genuinely
+    held -- a serving thread still running, a listener still handling a request
+    -- so continuing past it would drop everything beneath it, the lifetime
+    storage lock and the exclusive connection included, while something may
+    still be using them. `unwind()` stops here instead, and a later call
+    retries from exactly this point.
+    """
+
+
+#: The fixed reason `ServiceLifecycle.stop()` records when a resource release is
+#: blocked. Structural rather than derived from whatever raised, so every blocked
+#: shutdown reports the same sentence regardless of which resource it was.
+SHUTDOWN_BLOCKED_REASON = "shutdown blocked: a resource release did not complete"
+
+
 @dataclass(frozen=True)
 class ReadinessRequirements:
     """The nine conditions ADR-037 requires, all at the same service instance.
@@ -132,14 +151,24 @@ class ResourceStack:
         A failing release does not stop the unwind: leaving later resources held
         because an earlier one raised is how a crashed startup keeps a workspace
         locked.
+
+        `ResourceReleaseBlocked` is the one exception that does stop it. It means
+        the resource is still genuinely held rather than merely having failed to
+        clean up, so the entry is left on the stack -- not popped -- along with
+        everything beneath it, in their original order, and only the releases
+        that actually finished are reported. A later call to `unwind()` retries
+        the same blocked entry first.
         """
         released: list[str] = []
         while self._entries:
-            name, release = self._entries.pop()
+            name, release = self._entries[-1]
             try:
                 release()
+            except ResourceReleaseBlocked:
+                return released
             except Exception:  # noqa: BLE001,S110 - cleanup must continue regardless
                 pass
+            self._entries.pop()
             released.append(name)
         return released
 
@@ -188,8 +217,22 @@ class ServiceLifecycle:
         return released
 
     def stop(self) -> list[str]:
-        """Stop cleanly, unwinding resources in reverse order."""
+        """Stop cleanly, unwinding resources in reverse order.
+
+        A blocked release leaves this in FAILED with resources still held rather
+        than STOPPED: declaring STOPPED here would tell every reader -- the
+        lease, the connection, the storage lock -- that nothing is holding the
+        workspace, which is exactly untrue while the blocked resource and
+        everything beneath it are still acquired. A later `stop()` call retries
+        the same unwind and completes it once the block clears.
+        """
         released = self.resources.unwind()
+        if self.resources.names:
+            self.last_failure = SHUTDOWN_BLOCKED_REASON
+            if self.state is not ServiceState.FAILED:
+                self.state = ServiceState.FAILED
+                self.history.append(ServiceState.FAILED)
+            return released
         if self.state is not ServiceState.STOPPED:
             self.state = ServiceState.STOPPED
             self.history.append(ServiceState.STOPPED)
@@ -202,9 +245,11 @@ class ServiceLifecycle:
 
 __all__ = [
     "LEGAL_TRANSITIONS",
+    "SHUTDOWN_BLOCKED_REASON",
     "LifecycleError",
     "ReadinessRefused",
     "ReadinessRequirements",
+    "ResourceReleaseBlocked",
     "ResourceStack",
     "ServiceLifecycle",
     "ServiceState",
