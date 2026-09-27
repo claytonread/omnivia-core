@@ -192,6 +192,10 @@ def test_capture_refuses_while_live_service_owns_workspace(tmp_path: Path) -> No
 
 # --- read_checkout_file -----------------------------------------------------------------
 
+needs_walk = pytest.mark.skipif(
+    not source_capture._NO_FOLLOW_WALK, reason="host lacks no-follow checkout walk"
+)
+
 _DATA = b"def f():\n    return 1\n"
 
 
@@ -223,12 +227,14 @@ def _refused(root: Path, path: str = "pkg/a.py", digest: str | None = None) -> s
     return message
 
 
+@needs_walk
 def test_read_checkout_file_returns_exact_bytes_and_digest(tmp_path: Path) -> None:
     result = _read(_checkout(tmp_path))
     assert result.content == _DATA
     assert result.digest == _digest(_DATA)
 
 
+@needs_walk
 def test_read_checkout_file_keeps_exact_case_and_unicode(tmp_path: Path) -> None:
     root = _checkout(tmp_path)
     (root / "pkg" / "Ünï.PY").write_bytes(b"x")
@@ -270,12 +276,14 @@ def test_read_checkout_file_refuses_malformed_digest(
         )
 
 
+@needs_walk
 def test_read_checkout_file_refuses_wrong_digest(tmp_path: Path) -> None:
     assert _refused(_checkout(tmp_path), digest=_digest(b"other")) == (
         "source content does not match the expected digest"
     )
 
 
+@needs_walk
 def test_read_checkout_file_refuses_missing(tmp_path: Path) -> None:
     root = _checkout(tmp_path)
     _refused(root, "pkg/missing.py")
@@ -283,6 +291,7 @@ def test_read_checkout_file_refuses_missing(tmp_path: Path) -> None:
     _refused(tmp_path / "no-such-root")
 
 
+@needs_walk
 def test_read_checkout_file_refuses_directory_and_fifo(tmp_path: Path) -> None:
     root = _checkout(tmp_path)
     assert _refused(root, "pkg") == "source must be one regular file"
@@ -291,6 +300,7 @@ def test_read_checkout_file_refuses_directory_and_fifo(tmp_path: Path) -> None:
         assert _refused(root, "pkg/pipe") == "source must be one regular file"
 
 
+@needs_walk
 def test_read_checkout_file_refuses_oversized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -299,6 +309,7 @@ def test_read_checkout_file_refuses_oversized(
     assert _refused(root) == "source exceeds the capture size limit"
 
 
+@needs_walk
 def test_read_checkout_file_accepts_exactly_the_size_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -307,6 +318,7 @@ def test_read_checkout_file_accepts_exactly_the_size_limit(
     assert _read(root).content == _DATA
 
 
+@needs_walk
 def test_read_checkout_file_refuses_growth_past_limit_during_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -329,6 +341,7 @@ def test_read_checkout_file_refuses_growth_past_limit_during_read(
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+@needs_walk
 def test_read_checkout_file_refuses_symlinks(tmp_path: Path) -> None:
     root = _checkout(tmp_path)
     outside = tmp_path / "outside"
@@ -351,6 +364,7 @@ def test_read_checkout_file_refuses_symlinks(tmp_path: Path) -> None:
     assert _refused(link_root) == "checkout root is not an accessible directory"
 
 
+@needs_walk
 def test_read_checkout_file_refuses_path_rebound_mid_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -371,6 +385,7 @@ def test_read_checkout_file_refuses_path_rebound_mid_read(
     assert _refused(root) == "source changed while it was being read"
 
 
+@needs_walk
 def test_read_checkout_file_refuses_file_modified_mid_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
