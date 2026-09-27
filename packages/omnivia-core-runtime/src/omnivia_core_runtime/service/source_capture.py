@@ -703,6 +703,7 @@ class WorkingTreeManifest:
 def _git(root: Path, *args: str) -> bytes:
     """Run one bounded, read-only git query; fixed-text refusal on any failure."""
     deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
+    unavailable = False
     try:
         process = subprocess.Popen(
             (*_GIT_ARGS, *args),
@@ -713,7 +714,9 @@ def _git(root: Path, *args: str) -> bytes:
             stderr=subprocess.DEVNULL,
         )
     except OSError:
-        raise SourceCaptureRefused("git is not available for capture") from None
+        unavailable = True
+    if unavailable:
+        raise SourceCaptureRefused("git is not available for capture")
     assert process.stdout is not None
     chunks: list[bytes] = []
     size = 0
