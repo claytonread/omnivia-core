@@ -651,6 +651,7 @@ class ServiceRunner:
         try:
             if self.clock.monotonic() >= deadline:
                 raise RuntimeError("the lease renewal deadline has passed")
+            heartbeat_missed_deadline = False
             try:
                 heartbeat(self.connection, self.identity, clock=self.clock)
             except LeaseHeld:
@@ -660,7 +661,9 @@ class ServiceRunner:
                     # Retry on the next 250ms tick. Read the clock again here:
                     # heartbeat itself may have consumed the remaining margin.
                     return False
-                raise RuntimeError("the lease renewal deadline has passed") from None
+                heartbeat_missed_deadline = True
+            if heartbeat_missed_deadline:
+                raise RuntimeError("the lease renewal deadline has passed")
             if self.clock.monotonic() >= deadline:
                 raise RuntimeError("the lease renewal deadline has passed")
         finally:
