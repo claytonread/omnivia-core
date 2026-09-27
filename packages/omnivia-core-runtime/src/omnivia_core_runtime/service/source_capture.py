@@ -14,6 +14,13 @@ module, but there is one implementation of it and this is not it: this module's
 `BlobPublicationRefused` into `SourceCaptureRefused`, so callers that already catch
 `SourceCaptureRefused` through this module keep catching publication failures reached
 through this facade.
+
+`read_checkout_file` is a different, smaller thing that lives here because it is
+service-owned and reads the same way: one file of an explicitly trusted checkout, by an
+Engineering Memory repository path, verified against a digest the caller already holds.
+It opens no workspace and writes nothing, and it is only the read step of capturing a
+working tree: enumerating a checkout, recording a snapshot and publishing bytes are
+other steps.
 """
 
 from __future__ import annotations
@@ -24,13 +31,15 @@ import re
 import stat
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from omnivia_core.contracts.v1 import to_canonical_json
+from omnivia_core.contracts.v1 import is_content_checksum, to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.storage.engineering_source import valid_path
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 from omnivia_core_runtime.workspace.blob_publication import (
     publish_blob as _publish_blob,
@@ -41,9 +50,7 @@ SOURCE_KIND: Final = "document"
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
-_MEDIA_TYPE = re.compile(
-    r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+\Z"
-)
+_MEDIA_TYPE = re.compile(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+\Z")
 
 
 class SourceCaptureRefused(RuntimeError):
@@ -102,7 +109,9 @@ class SourceCaptureResult:
 
 def _validate_request(source_id: str, media_type: str) -> None:
     if _IDENTIFIER.fullmatch(source_id) is None:
-        raise SourceCaptureRefused("source id is outside the accepted identifier domain")
+        raise SourceCaptureRefused(
+            "source id is outside the accepted identifier domain"
+        )
     if len(media_type) > 255 or _MEDIA_TYPE.fullmatch(media_type) is None:
         raise SourceCaptureRefused("media type is outside the accepted domain")
 
@@ -217,9 +226,7 @@ def _append_capture(
     evidence_id = f"evd-local-{nonce}"
     integrity_event_id = f"bie-local-{nonce}"
     provenance_event_id = f"prv-local-{nonce}"
-    metadata = to_canonical_json(
-        {"capture": "local_file", "source_id": source_id}
-    )
+    metadata = to_canonical_json({"capture": "local_file", "source_id": source_id})
     if len(metadata) > 8192:
         raise SourceCaptureRefused("source metadata exceeds the accepted bound")
     metadata_digest = f"sha256:{hashlib.sha256(metadata.encode()).hexdigest()}"
@@ -370,7 +377,9 @@ def capture_local_source(
     report = runner.start()
     try:
         if not report.ready:
-            raise SourceCaptureRefused(report.reason or "workspace ownership was refused")
+            raise SourceCaptureRefused(
+                report.reason or "workspace ownership was refused"
+            )
         existing = _existing_capture(
             runner,
             source_id=source_id,
@@ -392,12 +401,160 @@ def capture_local_source(
         runner.stop()
 
 
+#: Whether a checkout can be walked by descriptor at all. Asked of the platform rather
+#: than assumed from ``os.name``: without ``dir_fd``, ``O_NOFOLLOW`` and ``O_DIRECTORY``
+#: the only walk left is by pathname, which is the race this read exists to refuse, so
+#: such a host is refused rather than given a weaker read.
+_NO_FOLLOW_WALK: Final = (
+    {os.open, os.stat} <= os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+)
+_DIRECTORY_FLAGS: Final = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
+#: ``O_NONBLOCK`` so a FIFO raced into place cannot hold the open. It is refused by kind
+#: once open, and changes nothing about reading a regular file.
+_FILE_FLAGS: Final = (
+    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutFile:
+    """The bytes of one trusted-checkout file and the digest they were verified against."""
+
+    content: bytes
+    digest: str
+
+
+def _open_component(name: bytes, flags: int, directory: int | None) -> int | None:
+    """Open one name relative to a held directory, or `None`; the OS error is dropped.
+
+    Dropped, not chained: an ``OSError`` quotes the name, and for the root that is a
+    local absolute path. The caller raises after this returns, outside any handler.
+    """
+    try:
+        return os.open(name, flags, dir_fd=directory)
+    except (OSError, ValueError):
+        return None
+
+
+def _identity(name: bytes, directory: int | None) -> tuple[int, int] | None:
+    """What `name` is right now, relative to a held directory, without following it."""
+    try:
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError:
+        return None
+    return current.st_dev, current.st_ino
+
+
+def read_checkout_file(
+    *, checkout_root: Path, relative_path: str, expected_digest: str
+) -> CheckoutFile:
+    """Read one file of a trusted checkout, refusing anything that is not that file.
+
+    `checkout_root` is explicit and trusted, but must itself be a real directory: it is
+    opened without following a link, like every name below it. `relative_path` is not
+    trusted. It must satisfy the Engineering Memory path rules
+    (`engineering_source.valid_path`), which keep its exact Unicode and case and refuse
+    an absolute path, a `..` segment and every other spelling that could leave the
+    checkout; it is used exactly as given, never normalised or case-folded.
+
+    The walk opens each component relative to the descriptor of the one before it, never
+    by a composed path, and holds every descriptor until the read is over. A symlink,
+    whether it is the file or any parent, is refused rather than followed, and no rename
+    can redirect a walk that is already inside a directory. The file must be one regular
+    file of at most `MAX_SOURCE_BYTES`, read within that bound. Afterwards every name is
+    resolved again and must still be the object that was opened, and the file's size and
+    modification time must not have moved; otherwise the source changed or moved while
+    it was read and is refused. Last, the bytes must hash to `expected_digest`.
+
+    Every refusal is a `SourceCaptureRefused` with fixed text. No path, local or
+    relative, and no operating-system error is quoted or chained. Not every host can do
+    this walk; one that cannot is refused, not given a weaker read. Nothing is persisted.
+    """
+    if not valid_path(relative_path):
+        raise SourceCaptureRefused(
+            "repository path is outside the accepted portable domain"
+        )
+    if not is_content_checksum(expected_digest):
+        raise SourceCaptureRefused(
+            "expected digest is outside the accepted checksum domain"
+        )
+    if not _NO_FOLLOW_WALK:
+        raise SourceCaptureRefused(
+            "this host cannot read a checkout without following links"
+        )
+
+    *parents, leaf = (part.encode() for part in relative_path.split("/"))
+    with ExitStack() as stack:
+        # Each held name as (its directory, the name, the object opened): the second
+        # look at the end compares against exactly this.
+        held: list[tuple[int | None, bytes, os.stat_result]] = []
+        directory: int | None = None
+        for name in (os.fsencode(checkout_root), *parents):
+            descriptor = _open_component(name, _DIRECTORY_FLAGS, directory)
+            if descriptor is None:
+                raise SourceCaptureRefused(
+                    "checkout root is not an accessible directory"
+                    if directory is None
+                    else "source cannot be opened as a file inside the checkout"
+                )
+            stack.callback(os.close, descriptor)
+            held.append((directory, name, os.fstat(descriptor)))
+            directory = descriptor
+        descriptor = _open_component(leaf, _FILE_FLAGS, directory)
+        if descriptor is None:
+            raise SourceCaptureRefused(
+                "source cannot be opened as a file inside the checkout"
+            )
+        stack.callback(os.close, descriptor)
+        opened = os.fstat(descriptor)
+        held.append((directory, leaf, opened))
+        if not stat.S_ISREG(opened.st_mode):
+            raise SourceCaptureRefused("source must be one regular file")
+        if opened.st_size > MAX_SOURCE_BYTES:
+            raise SourceCaptureRefused("source exceeds the capture size limit")
+
+        chunks: list[bytes] = []
+        remaining = MAX_SOURCE_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        after = os.fstat(descriptor)
+
+        if len(content) > MAX_SOURCE_BYTES:
+            raise SourceCaptureRefused("source exceeds the capture size limit")
+        if (
+            (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns)
+            or len(content) != after.st_size
+            or any(
+                _identity(name, directory) != (status.st_dev, status.st_ino)
+                for directory, name, status in held
+            )
+        ):
+            raise SourceCaptureRefused("source changed while it was being read")
+
+    digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    if digest != expected_digest:
+        raise SourceCaptureRefused("source content does not match the expected digest")
+    return CheckoutFile(content=content, digest=digest)
+
+
 __all__ = [
     "MAX_SOURCE_BYTES",
     "SOURCE_CAPTURE_FORMAT",
     "BlobPublicationRefused",
+    "CheckoutFile",
     "SourceCaptureRefused",
     "SourceCaptureResult",
     "capture_local_source",
     "publish_blob",
+    "read_checkout_file",
 ]
