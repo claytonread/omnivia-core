@@ -15,6 +15,7 @@ the `resume` pack. Another principal's are indistinguishable from missing ones.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import socket
 import sqlite3
@@ -55,11 +56,13 @@ from omnivia_core_runtime.storage.decisions import canonical_document, content_d
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
+    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     CapabilityRef,
+    EngineeringCheckpointPayload,
     ErrorResponseEnvelope,
     MutationPrecondition,
     SuccessResponseEnvelope,
@@ -240,7 +243,12 @@ def test_register_append_close_handoff_is_one_durable_vertical(tmp_path: Any) ->
         )
         view = handoff["handoff"]
         assert view["format_version"] == "continuity_handoff.v1"
-        assert view["redacted"] is False
+        # `checkpoint_kind` is never delivered, so every handoff is redacted;
+        # this one withholds nothing else.
+        assert view["redacted"] is True
+        assert view["omissions"] == [
+            {"field": "checkpoint_kind", "reason": "working_context_redacted"}
+        ]
         assert view["applicability"] == "not_evaluated"
         assert "Root cause still unconfirmed" in view["unresolved_work"]
         assert view["content_digest"] == _rendered_handoff_digest(view)
@@ -1128,6 +1136,7 @@ def test_lower_grant_receiver_gets_only_a_bounded_digest_bound_view(
     assert view["omissions"] == [
         {"field": "accepted_record_refs", "reason": "retrieve_current_separately"},
         {"field": "candidate_record_refs", "reason": "working_context_redacted"},
+        {"field": "checkpoint_kind", "reason": "working_context_redacted"},
         {"field": "completed_work", "reason": "working_context_redacted"},
         {"field": "context_receipt", "reason": "not_a_persisted_handle"},
         {"field": "external_effects", "reason": "owner_reconciliation_required"},
@@ -1180,6 +1189,274 @@ def test_lower_grant_receiver_gets_only_a_bounded_digest_bound_view(
         (sc.WORKSPACE_ID, receipt["checkpoint_id"]),
     ).fetchone()[0]
     assert view["content_digest"] != stored_digest
+
+
+def test_every_persisted_checkpoint_payload_field_has_a_handoff_policy() -> None:
+    """A field the payload contract adds without a matching handoff policy is
+    either a silent leak or a silent, unaccounted drop; this fails the day the
+    field is added, not the day someone notices in production."""
+    from omnivia_core_runtime.service.handlers import continuity as handlers
+
+    payload_fields = {
+        field.name for field in dataclasses.fields(EngineeringCheckpointPayload)
+    }
+    assert payload_fields == handlers._HANDOFF_KNOWN_FIELDS
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ({}, {"session_id": "esess-nowhere"}, {"sequence": 1}),
+    ids=("neither", "session-only", "sequence-only"),
+)
+def test_handoff_read_rejects_incomplete_or_absent_selectors(
+    workspace: Any, selector: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only two selector shapes are valid: `checkpoint_id` alone, or `session_id`
+    and `sequence` together. Neither field, or only one half of the session
+    pair, is a fixed `invalid_request`."""
+    from omnivia_core_runtime.service.handlers import continuity as handlers
+
+    def fail_if_authority_is_read(_connection: Any) -> Any:
+        pytest.fail("an invalid selector reached authoritative storage")
+
+    monkeypatch.setattr(handlers, "read_guard", fail_if_authority_is_read)
+    assert workspace.refused(
+        "continuity.handoff.read", selector, session=OWNER
+    ) == (
+        ERROR_CODE_INVALID_REQUEST,
+        "the request payload is not valid for this continuity operation",
+        "non_retryable",
+    )
+
+
+def test_handoff_read_rejects_matching_and_conflicting_mixed_selectors(
+    workspace: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkpoint id and a session/sequence pair are exactly one selector, not
+    two redundant spellings of it. A self-consistent second selector and an
+    outright conflicting one are the same fixed refusal: the shape is rejected
+    before storage is ever consulted to know which case it is."""
+    session_id = _session_with(workspace, OWNER, ["Investigate the restore failure"])
+    by_sequence = workspace.ok(
+        "continuity.handoff.read", {"session_id": session_id, "sequence": 1}, session=OWNER
+    )["handoff"]
+    checkpoint_id = by_sequence["checkpoint_id"]
+    assert workspace.ok(
+        "continuity.handoff.read", {"checkpoint_id": checkpoint_id}, session=OWNER
+    )["handoff"] == by_sequence
+    other_session_id = _session_with(workspace, OWNER, ["A second, unrelated session"])
+
+    from omnivia_core_runtime.service.handlers import continuity as handlers
+
+    def fail_if_authority_is_read(_connection: Any) -> Any:
+        pytest.fail("a mixed selector reached authoritative storage")
+
+    monkeypatch.setattr(handlers, "read_guard", fail_if_authority_is_read)
+
+    for mixed in (
+        # Self-consistent: both keys, correctly naming the same checkpoint.
+        {"checkpoint_id": checkpoint_id, "session_id": session_id, "sequence": 1},
+        # Conflicting: checkpoint_id names one checkpoint, session_id another.
+        {"checkpoint_id": checkpoint_id, "session_id": other_session_id, "sequence": 1},
+        # checkpoint_id plus only one half of the session pair.
+        {"checkpoint_id": checkpoint_id, "session_id": session_id},
+        {"checkpoint_id": checkpoint_id, "sequence": 1},
+    ):
+        assert workspace.refused(
+            "continuity.handoff.read", mixed, session=OWNER
+        ) == (
+            ERROR_CODE_INVALID_REQUEST,
+            "the request payload is not valid for this continuity operation",
+            "non_retryable",
+        )
+
+
+def test_handoff_read_fails_closed_when_the_stored_digest_no_longer_matches_the_payload(
+    workspace: Any,
+) -> None:
+    """Storage corruption -- the persisted payload no longer matches its own
+    recorded content_digest, however that happened -- is never rendered into a
+    view. The test drops the append-only update guard solely to create the
+    impossible-on-the-service-path persisted state the reader must distrust."""
+    session_id = _session_with(workspace, OWNER, ["Investigate the restore failure"])
+    checkpoint_id = workspace.ok(
+        "continuity.handoff.read", {"session_id": session_id, "sequence": 1}, session=OWNER
+    )["handoff"]["checkpoint_id"]
+
+    connection = workspace.holder.connection
+    payload_json, stored_digest = connection.execute(
+        "SELECT payload_json, content_digest FROM omnivia_engineering_checkpoints "
+        "WHERE workspace_id = ? AND checkpoint_id = ?",
+        (sc.WORKSPACE_ID, checkpoint_id),
+    ).fetchone()
+    payload = json.loads(payload_json)
+    payload["objective"] = "tampered-secret-objective"
+    connection.close()
+    tampered = sqlite3.connect(str(workspace.holder.path))
+    try:
+        tampered.execute(
+            "DROP TRIGGER omnivia_guard_omnivia_engineering_checkpoints_update"
+        )
+        tampered.execute(
+            "UPDATE omnivia_engineering_checkpoints SET payload_json = ? "
+            "WHERE workspace_id = ? AND checkpoint_id = ?",
+            (canonical_document(payload), sc.WORKSPACE_ID, checkpoint_id),
+        )
+        tampered.commit()
+    finally:
+        tampered.close()
+    workspace.restart()
+    assert content_digest(canonical_document(payload)) != stored_digest
+
+    refusal = workspace.refused(
+        "continuity.handoff.read", {"checkpoint_id": checkpoint_id}, session=OWNER
+    )
+    assert refusal == (
+        ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+        "the stored continuity checkpoint failed an internal integrity check",
+        "non_retryable",
+    )
+    assert "tampered-secret-objective" not in refusal[1]
+
+
+def test_handoff_read_fails_closed_on_a_persisted_field_with_no_handoff_policy(
+    workspace: Any,
+) -> None:
+    """A persisted payload field the handoff has no rendered-or-omitted policy
+    for is never disclosed by default: the read fails closed, digest recomputed
+    to isolate this from the separate integrity check."""
+    session_id = _session_with(workspace, OWNER, ["Investigate the restore failure"])
+    checkpoint_id = workspace.ok(
+        "continuity.handoff.read", {"session_id": session_id, "sequence": 1}, session=OWNER
+    )["handoff"]["checkpoint_id"]
+
+    connection = workspace.holder.connection
+    payload_json = connection.execute(
+        "SELECT payload_json FROM omnivia_engineering_checkpoints "
+        "WHERE workspace_id = ? AND checkpoint_id = ?",
+        (sc.WORKSPACE_ID, checkpoint_id),
+    ).fetchone()[0]
+    payload = json.loads(payload_json)
+    payload["a_field_no_policy_names"] = "secret-value"
+    canonical_payload = canonical_document(payload)
+    connection.close()
+    tampered = sqlite3.connect(str(workspace.holder.path))
+    try:
+        tampered.execute(
+            "DROP TRIGGER omnivia_guard_omnivia_engineering_checkpoints_update"
+        )
+        tampered.execute(
+            "UPDATE omnivia_engineering_checkpoints "
+            "SET payload_json = ?, content_digest = ? "
+            "WHERE workspace_id = ? AND checkpoint_id = ?",
+            (
+                canonical_payload,
+                content_digest(canonical_payload),
+                sc.WORKSPACE_ID,
+                checkpoint_id,
+            ),
+        )
+        tampered.commit()
+    finally:
+        tampered.close()
+    workspace.restart()
+
+    refusal = workspace.refused(
+        "continuity.handoff.read", {"checkpoint_id": checkpoint_id}, session=OWNER
+    )
+    assert refusal == (
+        ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+        "the stored continuity checkpoint carries a payload field this handoff has no policy for",
+        "non_retryable",
+    )
+    assert "a_field_no_policy_names" not in refusal[1]
+    assert "secret-value" not in refusal[1]
+
+
+def test_ac024_a_failed_final_checkpoint_stage_leaves_a_lower_grant_handoff_read_unaffected(
+    workspace: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC024: a failed final-checkpoint staging (rolled back whole) leaves the
+    previous durable checkpoint exactly as it was, and a lower-grant,
+    same-principal handoff read of it -- neither the sender's own full grant,
+    nor a different principal -- succeeds and is byte-identical to a read
+    taken before the failed attempt."""
+    session_id = workspace.ok(
+        "continuity.session.register", _register_input(), session=OWNER
+    )["session"]["session_id"]
+    acknowledged = workspace.ok(
+        "continuity.checkpoint.append",
+        _append_input(session_id),
+        session=OWNER,
+        key="idem-ac024-acknowledged",
+        **_stated("seq-0"),
+    )["receipt"]
+
+    required = HANDOFF.required_capability
+    lower_grant = AuthenticatedSession(
+        principal_id=OWNER.principal_id,
+        roles=frozenset(),
+        installations=OWNER.installations,
+        workspaces=OWNER.workspaces,
+        operations=frozenset({HANDOFF.name}),
+        scopes=frozenset(HANDOFF.scope.required_scopes),
+        purposes=frozenset({ENGINEERING_FAMILY_PURPOSES[HANDOFF.name]}),
+        capabilities=(CapabilityRef(id=required.id, version=required.minimum_version),),
+    )
+    handoff_before = workspace.ok(
+        "continuity.handoff.read",
+        {"checkpoint_id": acknowledged["checkpoint_id"]},
+        session=lower_grant,
+    )["handoff"]
+    before = _settled(workspace)
+
+    original_append = continuity_storage.append_checkpoint
+
+    def fail_after_staging(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        receipt = original_append(*args, **kwargs)
+        if kwargs["checkpoint_kind"] == "session_close":
+            raise RuntimeError("injected final checkpoint staging failure")
+        return receipt
+
+    monkeypatch.setattr(continuity_storage, "append_checkpoint", fail_after_staging)
+    with pytest.raises(RuntimeError, match="injected final checkpoint staging failure"):
+        workspace.call(
+            "continuity.session.close",
+            _close_input(session_id, expected_sequence=1),
+            session=OWNER,
+            key="idem-ac024-close",
+            **_stated("seq-1"),
+        )
+    monkeypatch.setattr(continuity_storage, "append_checkpoint", original_append)
+
+    # The failed staging left no claim: the session is still active at
+    # sequence 1, with no new checkpoint, receipt or settled row of any kind.
+    assert _settled(workspace) == before
+    assert workspace.holder.connection.execute(
+        "SELECT state, last_checkpoint_sequence, last_checkpoint_id "
+        "FROM omnivia_engineering_sessions WHERE workspace_id = ? AND session_id = ?",
+        (sc.WORKSPACE_ID, session_id),
+    ).fetchone() == ("active", 1, acknowledged["checkpoint_id"])
+
+    # A lower-grant, same-principal read of the previous durable checkpoint is
+    # exactly what it was before the failed close attempt.
+    handoff_after = workspace.ok(
+        "continuity.handoff.read",
+        {"checkpoint_id": acknowledged["checkpoint_id"]},
+        session=lower_grant,
+    )["handoff"]
+    assert handoff_after == handoff_before
+    assert handoff_after["content_digest"] == _rendered_handoff_digest(handoff_after)
+
+    # The owner alone can still recover cleanly afterwards.
+    recovered = workspace.ok(
+        "continuity.session.close",
+        _close_input(session_id, expected_sequence=1),
+        session=OWNER,
+        key="idem-ac024-close",
+        **_stated("seq-1"),
+    )
+    assert recovered["state"] == "closed"
 
 
 def test_working_context_search_reads_only_the_callers_checkpoints(workspace: Any) -> None:

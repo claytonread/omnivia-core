@@ -44,6 +44,7 @@ from typing import Any, Final
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
     ERROR_CODE_CONFLICT,
+    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
@@ -95,15 +96,24 @@ _MESSAGE_CONFLICT: Final = (
 _MESSAGE_PRECONDITION: Final = (
     "the continuity session advanced under this request; re-read and re-decide"
 )
+_MESSAGE_UNACCOUNTED_PAYLOAD_FIELD: Final = (
+    "the stored continuity checkpoint carries a payload field this handoff has no policy for"
+)
+_MESSAGE_INTEGRITY: Final = (
+    "the stored continuity checkpoint failed an internal integrity check"
+)
 
 # A handoff is a deliberately small projection of checkpoint evidence.  These
 # regions either require their own current authorisation check, describe the
 # sender's runtime, or could be mistaken for authority to act.  The receiver is
 # told which *region* was withheld, never which record, source, run or effect was
 # inside it.  A tuple gives both the response and its digest one stable order.
+# `checkpoint_kind` is here too: it is sender-side taxonomy, not delivered
+# working context, and is withheld the same way as the other redacted regions.
 _HANDOFF_OMITTED_REGIONS: Final[tuple[tuple[str, str], ...]] = (
     ("accepted_record_refs", "retrieve_current_separately"),
     ("candidate_record_refs", "working_context_redacted"),
+    ("checkpoint_kind", "working_context_redacted"),
     ("completed_work", "working_context_redacted"),
     ("context_receipt", "not_a_persisted_handle"),
     ("external_effects", "owner_reconciliation_required"),
@@ -112,6 +122,19 @@ _HANDOFF_OMITTED_REGIONS: Final[tuple[tuple[str, str], ...]] = (
     ("observations", "requires_fresh_authorization"),
     ("relevant_sources", "requires_fresh_authorization"),
     ("repository_snapshots", "requires_fresh_authorization"),
+)
+
+#: The fields a handoff renders directly, rather than omitting with a reason.
+_HANDOFF_RENDERED_FIELDS: Final[frozenset[str]] = frozenset(
+    {"objective", "unresolved_work", "next_actions"}
+)
+
+#: Every field of the persisted checkpoint payload this handoff accounts for,
+#: rendered or omitted.  A field the payload contract adds and this set does
+#: not name has no handoff policy yet; `continuity_handoff_read` fails closed
+#: rather than silently passing it through or silently dropping it uncounted.
+_HANDOFF_KNOWN_FIELDS: Final[frozenset[str]] = _HANDOFF_RENDERED_FIELDS | frozenset(
+    field for field, _reason in _HANDOFF_OMITTED_REGIONS
 )
 
 # The stored checkpoint is already capped at 256 KiB, but a handoff is intended
@@ -197,7 +220,7 @@ def _handoff_omissions(payload: Mapping[str, Any]) -> list[dict[str, str]]:
     return [
         {"field": field, "reason": reason}
         for field, reason in _HANDOFF_OMITTED_REGIONS
-        if payload.get(field)
+        if field in payload
     ]
 
 
@@ -470,9 +493,20 @@ class ContinuityHandlers:
             request = ContinuityHandoffReadInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
-        if request.checkpoint_id is None and (
-            request.session_id is None or request.sequence is None
-        ):
+        # Exactly one selector shape is valid: `checkpoint_id` alone, or
+        # `session_id` and `sequence` together. Any other combination -- both
+        # named at once (whether or not they agree), or only one half of the
+        # session pair -- is refused here, before any database access.
+        valid_selector = (
+            request.checkpoint_id is not None
+            and request.session_id is None
+            and request.sequence is None
+        ) or (
+            request.checkpoint_id is None
+            and request.session_id is not None
+            and request.sequence is not None
+        )
+        if not valid_selector:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
         connection, _identity, _guard = self._authority()
         # One statement resolves the checkpoint and its session's owner before the
@@ -488,6 +522,19 @@ class ContinuityHandlers:
         if record is None:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
         payload = record["payload"]
+        # The stored payload must still be exactly what its own content_digest
+        # covers -- recomputed with the same canonicalization storage used when
+        # writing it -- before any of it is interpreted or rendered. This is the
+        # original stored payload's digest, never the rendered view's own.
+        if content_digest(canonical_document(payload)) != record["content_digest"]:
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_INTEGRITY)
+        # Every persisted payload field must be either rendered or explicitly
+        # omitted with a reason. A field the payload contract added without a
+        # handoff policy is never disclosed by default: fail closed instead.
+        if set(payload) - _HANDOFF_KNOWN_FIELDS:
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_UNACCOUNTED_PAYLOAD_FIELD
+            )
         omissions = _handoff_omissions(payload)
         view: dict[str, Any] = {
             "format_version": "continuity_handoff.v1",

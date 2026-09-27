@@ -244,7 +244,8 @@ def test_the_engineering_memory_vertical_runs_through_the_installed_cli(
         "handoff"
     ]
     assert handoff["format_version"] == "continuity_handoff.v1"
-    assert handoff["redacted"] is False
+    # `checkpoint_kind` is never delivered, so every handoff is redacted.
+    assert handoff["redacted"] is True
     assert "Wrap up the CLI-driven continuity check" == handoff["objective"]
 
     # --- a real stop, then a real restart, of the owning service -------------
