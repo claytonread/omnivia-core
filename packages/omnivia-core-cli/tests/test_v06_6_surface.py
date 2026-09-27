@@ -57,6 +57,37 @@ EXPECTED_COMMANDS = (
     (("workflow", "inspect"), "workflow.inspect", "workflow_observation"),
     (("workflow", "control"), "workflow.control", "workflow_control"),
     (("workflow", "review"), "workflow.review", "workflow_observation"),
+    (("decisions", "status"), "decision.status", "decision_status"),
+    (("decisions", "evaluate"), "decision.evaluate", "decision_evaluation"),
+    (("decisions", "record"), "decision.record.get", "decision_record"),
+    (("decisions", "records"), "decision.record.list", "decision_record"),
+    (("decisions", "definitions"), "decision.definition.list", "decision_read"),
+    (("decisions", "definition"), "decision.definition.get", "decision_read"),
+    (("decisions", "publish"), "decision.definition.publish", "decision_configuration"),
+    (("decisions", "disable"), "decision.definition.disable", "decision_configuration"),
+    (("decisions", "outcome"), "decision.outcome.submit", "decision_evaluation"),
+    (("decisions", "models"), "decision.model.list", "decision_read"),
+    (("decisions", "install"), "decision.model.install", "decision_configuration"),
+    (("decisions", "activate"), "decision.model.activate", "decision_configuration"),
+    (("decisions", "remove"), "decision.model.remove", "decision_configuration"),
+    (("decisions", "settings"), "decision.settings.get", "decision_settings"),
+    (("decisions", "configure"), "decision.settings.update", "decision_configuration"),
+    # Engineering memory (SPEC-CORE-ENGMEM-001), appended in amendment order.
+    (("continuity", "register"), "continuity.session.register", "continuity_session"),
+    (("continuity", "checkpoint"), "continuity.checkpoint.append", "continuity_checkpoint"),
+    (("continuity", "close"), "continuity.session.close", "continuity_session"),
+    (("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"),
+    (("engineering", "search"), "engineering.search", "engineering_search"),
+    (("engineering", "expand"), "engineering.expand", "engineering_expand"),
+    (("engineering", "context"), "engineering.context.build", "engineering_context"),
+    (("context", "priority"), "context.priority.set", "context_priority"),
+    (("engineering", "review"), "engineering.review.record", "engineering_review"),
+    (("engineering", "source"), "engineering.source.record", "engineering_source"),
+    (
+        ("repository", "register"),
+        "engineering.repository.register",
+        "engineering_repository",
+    ),
 )
 
 EXPECTED_PROBES = (
@@ -101,14 +132,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_twenty_eight_application_commands_are_declared_in_order() -> None:
+def test_the_fifty_four_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 28
+    assert len(APPLICATION_COMMANDS) == 54
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

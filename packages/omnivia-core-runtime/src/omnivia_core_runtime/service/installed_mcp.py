@@ -121,7 +121,7 @@ _MESSAGE_NOT_AUTHENTICATED: Final = (
 # --- the two exact profiles ---------------------------------------------------
 #
 # The operation and the purpose are the MCP exposure manifest's (`manifest.py`,
-# `MANIFEST_VERSION` 2.0) and are restated here because the runtime must not
+# `MANIFEST_VERSION` 2.1) and are restated here because the runtime must not
 # import the MCP package: an agent-facing allow-list is a decision that package
 # owns, and a dependency in this direction would make the service unable to start
 # without it. Everything else about each operation is read from the catalogue.
@@ -133,12 +133,21 @@ _RESTRICTED_OPERATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("memory.search", "knowledge_retrieval"),
     ("graph.traverse", "knowledge_retrieval"),
     ("context_pack.build", "knowledge_retrieval"),
+    ("engineering.search", "engineering_search"),
+    ("engineering.expand", "engineering_expand"),
+    ("engineering.context.build", "engineering_context"),
+    ("continuity.handoff.read", "continuity_handoff"),
+    ("decision.evaluate", "decision_evaluation"),
+    ("decision.record.get", "decision_record"),
+    ("decision.record.list", "decision_record"),
+    ("decision.status", "decision_status"),
 )
 
 _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("memory.create", "memory_authoring"),
     ("evidence.capture", "content_ingestion"),
     ("import.start", "content_ingestion"),
+    ("continuity.checkpoint.append", "continuity_checkpoint"),
     ("job.get", "job_observation"),
     ("job.events", "job_observation"),
 )
@@ -197,15 +206,16 @@ def _derive_policy(entries: tuple[tuple[str, str], ...]) -> tuple[McpGrant, ...]
 #: `INSTALLATION_ADMINISTRATOR_ROLE`, which administers this catalogue.
 _AUTHORING_ROLE: Final = McpGrant(McpGrantKind.ROLE, WORKSPACE_CONTRIBUTOR_ROLE)
 
-#: The read-only grant: exactly the manifest's restricted six and what they need.
-#: No role, because a restricted principal holds no operation a role would admit.
-RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = _derive_policy(_RESTRICTED_OPERATIONS)
+#: The restricted grant: exactly the manifest's restricted fourteen and what they
+#: need. `decision.evaluate` is a mutation the restricted manifest admits, and
+#: the mutation coordinator serves it under the one workspace-contributor role,
+#: so the restricted principal holds that role -- and nothing else.
+RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
+    sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
+)
 
-#: The authoring grant: the restricted rights, exactly the five additions, and the
-#: one role those additions need. The role is added here rather than inside
-#: `_derive_policy` because it is the one right the frozen operation catalogue does
-#: not state -- deriving it would mean inventing a rule the catalogue has no field
-#: for, and a reviewer would have no line to read it off.
+#: The authoring grant: the restricted rights, exactly the six additions, and
+#: the one role both profiles' mutations need.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(
         set(_derive_policy(_RESTRICTED_OPERATIONS + _AUTHORING_ADDITIONS))
@@ -223,12 +233,14 @@ def _roles(policy: tuple[McpGrant, ...]) -> set[McpGrant]:
     return {grant for grant in policy if grant.kind is McpGrantKind.ROLE}
 
 
-if _roles(RESTRICTED_POLICY) or _roles(AUTHORING_POLICY) != {
+if _roles(RESTRICTED_POLICY) != {
+    _AUTHORING_ROLE
+} or _roles(AUTHORING_POLICY) != {
     _AUTHORING_ROLE
 }:  # pragma: no cover
     raise ValueError(
         "an installed MCP profile grants the one workspace-contributor role to "
-        "authoring and no role at all to restricted; the two have drifted"
+        "both profiles and no other role; the two have drifted"
     )
 
 _POLICIES: Final[dict[McpProfile, tuple[McpGrant, ...]]] = {

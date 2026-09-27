@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -1064,6 +1065,20 @@ def _supersession_reference(
     )
 
 
+def _plain_json(value: Any) -> Any:
+    """Decode the contract's immutable containers into plain JSON values.
+
+    Open maps and their nested members decode as frozen mappings; the canonical
+    comparison against the stored `content_json` needs the plain JSON value the
+    encoder can walk.
+    """
+    if isinstance(value, Mapping):
+        return {key: _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(item) for item in value]
+    return value
+
+
 def _decode_application_claim(
     lineage: _ApplicationClaimLineage,
 ) -> MemoryCreateInput:
@@ -1471,7 +1486,7 @@ def _governed_record(
         if (
             claim.record_type != version.record_type
             or claim.domain_scope != version.domain_scope
-            or to_canonical_json(dict(claim.content)) != version.content_json
+            or to_canonical_json(_plain_json(claim.content)) != version.content_json
             or claim.evidence_disposition != version.evidence_disposition
         ):
             raise ValueError(

@@ -102,13 +102,20 @@ def _bootstrap(home: Path) -> None:
 
 
 def _locate() -> str:
-    """The service console script, or skip: these tests are about the real one."""
-    found = shutil.which(SERVICE_EXECUTABLE)
-    if found is not None:
-        return found
+    """The service console script, or skip: these tests are about the real one.
+
+    The interpreter's own environment is preferred over `PATH`: the tests run
+    under an editable install of this tree, and a same-named console script
+    from an unrelated environment earlier on `PATH` would serve a schema this
+    build's fingerprints refuse -- an environment accident reading as a code
+    failure.
+    """
     beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
     if beside.is_file() and os.access(beside, os.X_OK):
         return str(beside)
+    found = shutil.which(SERVICE_EXECUTABLE)
+    if found is not None:
+        return found
     pytest.skip(f"{SERVICE_EXECUTABLE} is not installed in this environment")
 
 

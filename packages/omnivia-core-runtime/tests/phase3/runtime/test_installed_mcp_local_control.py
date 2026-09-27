@@ -387,9 +387,10 @@ def test_a_presented_bearer_dispatches_under_the_authority_it_resolves_to(
         assert session.principal_id.startswith("mcp-claude-code-")
         assert session.workspaces == frozenset({"ws-one"})
         assert "evidence.search" in session.operations
-        # A restricted principal holds no role at all, and no principal here holds
-        # installation authority, so nothing it presents reaches administration.
-        assert session.roles == frozenset()
+        # The one role, for the decision mutation the restricted manifest admits,
+        # and no principal here holds installation authority, so nothing it
+        # presents reaches administration.
+        assert session.roles == frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
         assert session.installations == frozenset()
 
 
@@ -746,10 +747,13 @@ def test_a_follower_reaches_the_owner_and_never_the_database(tmp_path: Path) -> 
         assert session.installations == frozenset()
         assert "evidence.capture" in session.operations
 
-        # The same round trip for a restricted setup carries no role, because the
-        # profile it resolves to holds none: what crosses is the resolution.
+        # The same round trip for a restricted setup carries the one role (its
+        # profile admits the decision mutation), and nothing beyond it: what
+        # crosses is the resolution.
         restricted = harness.secret(profile=McpProfile.RESTRICTED)
-        assert follower.authenticate(restricted).roles == frozenset()
+        assert follower.authenticate(restricted).roles == frozenset(
+            {WORKSPACE_CONTRIBUTOR_ROLE}
+        )
         secret = harness.secret(profile=McpProfile.AUTHORING)
 
         status = follower.administer(_control(LocalControlKind.MCP_STATUS, arguments={}))  # type: ignore[arg-type]

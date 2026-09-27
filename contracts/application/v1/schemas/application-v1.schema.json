@@ -21,7 +21,9 @@
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
     "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
-    "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+    "https://contracts.omnivia.dev/application/v1/chat.schema.json",
+    "https://contracts.omnivia.dev/application/v1/decision.schema.json",
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -228,11 +230,11 @@
     "GovernanceLayer": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceLayer"
     },
-    "GovernanceState": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceState"
-    },
     "RecordCurrentness": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordCurrentness"
+    },
+    "GovernanceState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceState"
     },
     "SourceKind": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceKind"
@@ -264,14 +266,14 @@
     "SupersessionReference": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SupersessionReference"
     },
+    "RecordVersionReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference"
+    },
     "RecordIdentity": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordIdentity"
     },
     "RecordProvenance": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordProvenance"
-    },
-    "RecordVersionReference": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference"
     },
     "JobState": {
       "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState"
@@ -627,11 +629,11 @@
     "ReleaseCompatibilityEntry": {
       "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/ReleaseCompatibilityEntry"
     },
-    "OperationCompatibilityEntry": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityEntry"
-    },
     "CapabilityCompatibilityEntry": {
       "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/CapabilityCompatibilityEntry"
+    },
+    "OperationCompatibilityEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityEntry"
     },
     "CompatibilityMatrix": {
       "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/CompatibilityMatrix"
@@ -723,30 +725,6 @@
     "ResolveWait": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait"
     },
-    "ChatConversationExpectation": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation"
-    },
-    "ChatCommandInput": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput"
-    },
-    "ChatCommandResult": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult"
-    },
-    "ChatGenerationEvent": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
-    },
-    "ChatEventsInput": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput"
-    },
-    "ChatEventsResult": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult"
-    },
-    "ChatSnapshotInput": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput"
-    },
-    "ChatSnapshotResult": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult"
-    },
     "WorkflowRunState": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowRunState"
     },
@@ -812,6 +790,336 @@
     },
     "WorkflowReviewResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult"
+    },
+    "ChatConversationExpectation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation"
+    },
+    "ChatCommandInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput"
+    },
+    "ChatCommandResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult"
+    },
+    "ChatGenerationEvent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
+    },
+    "ChatEventsInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput"
+    },
+    "ChatEventsResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult"
+    },
+    "ChatSnapshotInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput"
+    },
+    "ChatSnapshotResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult"
+    },
+    "DecisionSchemaVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion"
+    },
+    "DecisionSubjectRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSubjectRef"
+    },
+    "DecisionExecutionMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionMode"
+    },
+    "DecisionPrivacyFloor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionPrivacyFloor"
+    },
+    "DecisionExecutionConstraints": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionConstraints"
+    },
+    "DecisionDefinitionRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef"
+    },
+    "DecisionEvaluateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateInput"
+    },
+    "DecisionPrediction": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionPrediction"
+    },
+    "DecisionQuality": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionQuality"
+    },
+    "DecisionDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDisposition"
+    },
+    "DecisionExecutionFacts": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionFacts"
+    },
+    "DecisionRecordStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordStatus"
+    },
+    "DecisionRecord": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecord"
+    },
+    "DecisionRecordGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetInput"
+    },
+    "DecisionRecordListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListInput"
+    },
+    "DecisionRecordListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListResult"
+    },
+    "DecisionOption": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOption"
+    },
+    "DecisionDefinitionSummary": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionSummary"
+    },
+    "DecisionDefinitionListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListInput"
+    },
+    "DecisionDefinitionListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListResult"
+    },
+    "DecisionDefinitionGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetInput"
+    },
+    "DecisionDefinitionPublishInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishInput"
+    },
+    "DecisionDefinitionDisableInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableInput"
+    },
+    "DecisionOutcomeSubmitInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitInput"
+    },
+    "DecisionModelProfileSummary": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelProfileSummary"
+    },
+    "DecisionModelListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListInput"
+    },
+    "DecisionModelListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListResult"
+    },
+    "DecisionModelActionInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActionInput"
+    },
+    "DecisionStatusResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusResult"
+    },
+    "DecisionSettings": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettings"
+    },
+    "DecisionSettingsGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetInput"
+    },
+    "DecisionSettingsUpdateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateInput"
+    },
+    "DecisionDefinitionPublishResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishResult"
+    },
+    "DecisionDefinitionDisableResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableResult"
+    },
+    "DecisionOutcomeSubmitResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitResult"
+    },
+    "DecisionStatusInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusInput"
+    },
+    "DecisionInputBundle": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionInputBundle"
+    },
+    "DecisionEvaluateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateResult"
+    },
+    "DecisionModelInstallResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallResult"
+    },
+    "DecisionModelActivateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateResult"
+    },
+    "DecisionModelRemoveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveResult"
+    },
+    "DecisionRecordGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetResult"
+    },
+    "DecisionDefinitionGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetResult"
+    },
+    "DecisionSettingsGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetResult"
+    },
+    "DecisionSettingsUpdateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateResult"
+    },
+    "DecisionModelActivateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateInput"
+    },
+    "DecisionModelInstallInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallInput"
+    },
+    "DecisionModelRemoveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveInput"
+    },
+    "EngineeringSchemaVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSchemaVersion"
+    },
+    "EngineeringSnapshotRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSnapshotRef"
+    },
+    "EngineeringRecordVersionRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRecordVersionRef"
+    },
+    "EngineeringApplicabilityStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringApplicabilityStatus"
+    },
+    "EngineeringCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringCoverage"
+    },
+    "EngineeringOmission": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringOmission"
+    },
+    "EngineeringSessionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSessionState"
+    },
+    "ContinuitySessionRegisterInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterInput"
+    },
+    "ContinuitySessionBinding": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionBinding"
+    },
+    "ContinuitySessionRegisterResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterResult"
+    },
+    "ContinuitySessionCloseInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseInput"
+    },
+    "ContinuitySessionCloseResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseResult"
+    },
+    "EngineeringObservationKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringObservationKind"
+    },
+    "EngineeringSourceAnchor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceAnchor"
+    },
+    "EngineeringTopicRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringTopicRef"
+    },
+    "EngineeringExternalEffect": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExternalEffect"
+    },
+    "EngineeringContextReceipt": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextReceipt"
+    },
+    "EngineeringCheckpointObservation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringCheckpointObservation"
+    },
+    "EngineeringCheckpointPayload": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringCheckpointPayload"
+    },
+    "CheckpointReceipt": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/CheckpointReceipt"
+    },
+    "ContinuityCheckpointAppendInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendInput"
+    },
+    "ContinuityCheckpointAppendResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendResult"
+    },
+    "ContinuityHandoffReadInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadInput"
+    },
+    "HandoffView": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/HandoffView"
+    },
+    "ContinuityHandoffReadResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadResult"
+    },
+    "EngineeringSearchView": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchView"
+    },
+    "EngineeringPreview": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringPreview"
+    },
+    "EngineeringSearchInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchInput"
+    },
+    "EngineeringSearchResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchResult"
+    },
+    "EngineeringRelationEdge": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRelationEdge"
+    },
+    "EngineeringExpandInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandInput"
+    },
+    "EngineeringExpandResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandResult"
+    },
+    "EngineeringBudget": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringBudget"
+    },
+    "EngineeringCitation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringCitation"
+    },
+    "EngineeringConflictNotice": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringConflictNotice"
+    },
+    "EngineeringPackSection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringPackSection"
+    },
+    "EngineeringRendering": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRendering"
+    },
+    "EngineeringBudgetOutcome": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringBudgetOutcome"
+    },
+    "EngineeringTargetApplicability": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringTargetApplicability"
+    },
+    "EngineeringContextPack": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextPack"
+    },
+    "EngineeringContextBuildInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildInput"
+    },
+    "EngineeringContextBuildResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildResult"
+    },
+    "ContextPrioritySetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetInput"
+    },
+    "ContextPrioritySetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetResult"
+    },
+    "EngineeringReviewRecordInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordInput"
+    },
+    "EngineeringReviewRecordResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordResult"
+    },
+    "EngineeringApplicabilityMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringApplicabilityMode"
+    },
+    "EngineeringSourceManifestEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceManifestEntry"
+    },
+    "EngineeringSourcePredecessor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourcePredecessor"
+    },
+    "EngineeringSourceStreamCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceStreamCoverage"
+    },
+    "EngineeringSourceRecordInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordInput"
+    },
+    "EngineeringSourceRecordResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordResult"
+    },
+    "EngineeringRepositoryRegisterInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterInput"
+    },
+    "EngineeringRepositoryRegisterResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterResult"
     }
   }
 }

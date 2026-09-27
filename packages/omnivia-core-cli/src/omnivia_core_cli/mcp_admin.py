@@ -153,7 +153,14 @@ CONFIGURATION_DIRECTORY: Final[tuple[str, ...]] = CONFIGURATION_STORE_DIRECTORY
 #: configuration's purposes against the running profile's manifest before
 #: `configure` may report success, and a drift fails there.
 _RESTRICTED_PURPOSES: Final[tuple[str, ...]] = (
+    "decision_evaluation",
+    "decision_status",
+    "decision_record",
     "knowledge_retrieval",
+    "engineering_search",
+    "engineering_expand",
+    "engineering_context",
+    "continuity_handoff",
     "workspace_inspection",
 )
 PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
@@ -161,7 +168,12 @@ PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
     "authoring": tuple(
         sorted(
             _RESTRICTED_PURPOSES
-            + ("content_ingestion", "job_observation", "memory_authoring")
+            + (
+                "content_ingestion",
+                "continuity_checkpoint",
+                "job_observation",
+                "memory_authoring",
+            )
         )
     ),
 }

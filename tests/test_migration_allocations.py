@@ -67,6 +67,13 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # allocation, not a file -- its SQL stays absent until a later change deliberately advances
 # this entry from reserved to candidate, with its content hash and introducing commit
 # recorded here.
+# 0043 is reserved to Workflow Runtime for trigger telemetry (C21-A, founder Decision 4A):
+# an allocation, not a file -- its SQL stays absent until founder design review of
+# docs/development/omnivia-core-trigger-telemetry-design-2026-09-23.md and a later change advances it to candidate.
+# 0044-0046 are the Decision Runtime candidates (ADR-042, plan PR-3): settings,
+# immutable definition versions/qualifications, and the evaluation/attempt/
+# result/outcome/subscription/outbox record families, advanced from reservation
+# to candidate in the same change that introduced their SQL.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -113,6 +120,17 @@ EXPECTED_ALLOCATION = (
     ),
     (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
     (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "candidate"),
+    (43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "reserved"),
+    (44, "0044_decision_settings.sql", "Decision Runtime", "candidate"),
+    (45, "0045_decision_definitions.sql", "Decision Runtime", "candidate"),
+    (46, "0046_decision_records.sql", "Decision Runtime", "candidate"),
+    (47, "0047_engineering_repository_identity.sql", "Engineering Memory", "candidate"),
+    (48, "0048_engineering_continuity.sql", "Engineering Memory", "candidate"),
+    (49, "0049_engineering_applicability.sql", "Engineering Memory", "candidate"),
+    (50, "0050_engineering_source_coverage.sql", "Engineering Memory", "candidate"),
+    (51, "0051_engineering_dependency_carry.sql", "Engineering Memory", "candidate"),
+    (52, "0052_engineering_dependency_lookup.sql", "Engineering Memory", "candidate"),
+    (53, "0053_engineering_preview_projection.sql", "Engineering Memory", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -156,6 +174,18 @@ CANDIDATE_INTRODUCED_COMMITS = {
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
     42: "0373e229d2ded9b4c48fdba48fc8e760054f58a6",
+    # 0044-0046 were introduced by 72b84cf6 and repinned to the whitespace
+    # repair b16217f6, which is where their current content lives.
+    44: "b16217f679b304e80daf2af9566e26057d4a9049",
+    45: "b16217f679b304e80daf2af9566e26057d4a9049",
+    46: "b16217f679b304e80daf2af9566e26057d4a9049",
+    47: "8485039908791e4cb39d45f3f9039e971dbe79be",
+    48: "0fe2b2a42963f1f49fa3530305d3e5e116c894c5",
+    49: "752ce7a5d768b4d5a585502d8db9c10abd209c40",
+    50: "c3aca0a50fd0b5d675b4d5389a3ff99cfb765b7f",
+    51: "3fcc8d5a9c618b201c9223c19f4b381d555911d9",
+    52: "4e4a6ed3ef4b1d8ce0145e8ffe52325fde0f80be",
+    53: "97ada9ba23e3a8ef890cfdd1ee0bd03a468bf34d",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

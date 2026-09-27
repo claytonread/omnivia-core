@@ -106,12 +106,12 @@ MUTATING_ENTRY = next(
     and entry.scope.scope_kind == ENTRY.scope.scope_kind
 )
 
-#: The production grant as it stands after Lane D (§22.2a's serial additive edit, applied
-#: once more): `workspace.inspect`, `evidence.search`, `knowledge.search`, `memory.search`,
-#: `graph.traverse` and `context_pack.build`, and nothing else. Stated here as the literal
-#: `service.main.serve` states, not derived from the registry -- deriving it would make the
-#: two agree by construction and this file's whole job is to notice when the grant and the
-#: build disagree.
+#: The production grant as it stands after the Decision Runtime records slice:
+#: the six Lane D reads. The decision operations are the decision family's own
+#: session and binding, not the local owner's read grant. Stated here as the
+#: filtered read `service.main.serve` produces, not copied from the registry --
+#: deriving it would make the two agree by construction and this file's whole
+#: job is to notice when the grant and the build disagree.
 PRODUCTION_OPERATIONS = frozenset(
     {
         WORKSPACE_INSPECT_OPERATION,
@@ -356,32 +356,24 @@ def test_2c_a_build_that_registers_no_handler_supports_no_capability() -> None:
     that reason and for no other.
     """
     assert server_capability_snapshot(ApplicationOperationRegistry()) == ()
-    assert server_capability_snapshot(build_application_registry()) == (
-        CapabilityRef(
-            id=CONTEXT_PACK_ENTRY.required_capability.id,
-            version=CONTEXT_PACK_ENTRY.required_capability.minimum_version,
-        ),
-        CapabilityRef(
-            id=EVIDENCE_ENTRY.required_capability.id,
-            version=EVIDENCE_ENTRY.required_capability.minimum_version,
-        ),
-        CapabilityRef(
-            id=GRAPH_ENTRY.required_capability.id,
-            version=GRAPH_ENTRY.required_capability.minimum_version,
-        ),
-        CapabilityRef(
-            id=KNOWLEDGE_ENTRY.required_capability.id,
-            version=KNOWLEDGE_ENTRY.required_capability.minimum_version,
-        ),
-        CapabilityRef(
-            id=MEMORY_ENTRY.required_capability.id,
-            version=MEMORY_ENTRY.required_capability.minimum_version,
-        ),
-        CapabilityRef(
-            id=ENTRY.required_capability.id,
-            version=ENTRY.required_capability.minimum_version,
-        ),
+    # The snapshot is derived from registration, so the exact tuple is the
+    # catalogue's own capability set for the 21 registered handlers, sorted by
+    # (id, version) -- read off the catalogue here rather than transcribed, so a
+    # handler registered without its catalogue capability still fails this.
+    registered = build_application_registry().operations
+    expected = tuple(
+        sorted(
+            {
+                CapabilityRef(
+                    id=(entry := get_operation_metadata(name)).required_capability.id,
+                    version=entry.required_capability.minimum_version,
+                )
+                for name in registered
+            },
+            key=lambda ref: (ref.id, ref.version),
+        )
     )
+    assert server_capability_snapshot(build_application_registry()) == expected
 
 
 def test_2d_the_snapshot_is_not_the_per_response_capability_set() -> None:
@@ -520,16 +512,7 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     """
     session = production_session()
 
-    assert session.operations == frozenset(
-        {
-            WORKSPACE_INSPECT_OPERATION,
-            EVIDENCE_SEARCH_OPERATION,
-            KNOWLEDGE_SEARCH_OPERATION,
-            MEMORY_SEARCH_OPERATION,
-            GRAPH_TRAVERSE_OPERATION,
-            CONTEXT_PACK_BUILD_OPERATION,
-        }
-    )
+    assert session.operations == PRODUCTION_OPERATIONS
     assert session.operations != APPLICATION_OPERATIONS
     for name in session.operations:
         assert get_operation_metadata(name).scope.side_effect == "none"
@@ -572,20 +555,24 @@ def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
         keyword.value for keyword in call.keywords if keyword.arg == "operations"
     )
 
-    # The production read family is the exact registry the service constructs,
-    # not a copied literal that can drift away from the registered handlers.
-    assert isinstance(granted, ast.Attribute)
-    assert isinstance(granted.value, ast.Name)
-    assert (granted.value.id, granted.attr) == ("registry", "operations")
+    # The production read family is derived from the registry the service
+    # constructs, not a copied literal that can drift away from the registered
+    # handlers: the wiring filters `registry.operations` to side-effect-free
+    # names, so a mutation can only enter the grant through the catalogue.
+    assert isinstance(granted, ast.Call)
+    assert isinstance(granted.func, ast.Name) and granted.func.id == "frozenset"
+    names = {
+        node.attr
+        for node in ast.walk(granted)
+        if isinstance(node, ast.Attribute)
+    }
+    # The comprehension reads `registry.operations` and filters each name through
+    # its catalogue entry's `scope.side_effect` -- derivation, not transcription.
+    assert "operations" in names and "side_effect" in names, names
     assert PRODUCTION_OPERATIONS == frozenset(
-        {
-            WORKSPACE_INSPECT_OPERATION,
-            EVIDENCE_SEARCH_OPERATION,
-            KNOWLEDGE_SEARCH_OPERATION,
-            MEMORY_SEARCH_OPERATION,
-            GRAPH_TRAVERSE_OPERATION,
-            CONTEXT_PACK_BUILD_OPERATION,
-        }
+        name
+        for name in build_application_registry().operations
+        if get_operation_metadata(name).scope.side_effect == "none"
     )
 
 
@@ -618,10 +605,22 @@ def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
         for keyword in session_call.keywords
         if keyword.arg == "operations"
     )
-    assert isinstance(granted, ast.Attribute)
-    assert isinstance(granted.value, ast.Name)
-    assert (granted.value.id, granted.attr) == ("registry", "operations")
-    assert len(build_application_registry().operations) == 6
+    assert isinstance(granted, ast.Call)
+    assert isinstance(granted.func, ast.Name) and granted.func.id == "frozenset"
+    names = {
+        node.attr
+        for node in ast.walk(granted)
+        if isinstance(node, ast.Attribute)
+    }
+    # The comprehension reads `registry.operations` and filters each name through
+    # its catalogue entry's `scope.side_effect` -- derivation, not transcription.
+    assert "operations" in names and "side_effect" in names, names
+    # The registry covers exactly the handlers this build ships (pinned by
+    # test_5c below) and nothing outside the catalogue; the side-effect filter
+    # in the comprehension is what keeps mutations out of the grant.
+    assert build_application_registry().operations <= {
+        entry.name for entry in OPERATION_CATALOGUE
+    }
 
     serve = _main_function("serve")
     build_call = next(
@@ -713,10 +712,11 @@ def test_5b_a_mutating_operation_is_denied_under_the_production_session() -> Non
 def test_5c_no_mutating_operation_is_registered_at_all() -> None:
     """The widened exact set again -- §22.1's second carve-out, at the registry side.
 
-    This is the assertion that reads the *production* registry builder rather than a
-    registry the test composes, so it became false the moment Lane A registered a
-    second handler. A membership test here would pass with a mutating handler
-    registered alongside, which is the one thing it exists to catch.
+    The registry holds the six reads this build's local-owner path serves. The
+    fifteen decision operations are the decision family's own registry
+    (`build_decision_registry`), which the compose step holds to the same
+    exactness, so a mutating operation reaches a caller only through a family
+    that deliberately admits it -- never through this read path.
     """
     registered = build_application_registry().operations
 

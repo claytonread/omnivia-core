@@ -2106,6 +2106,11 @@ def _check_result_belongs_to_the_selected_workspace(
 _JOB_STARTING_RESULT_IDENTIFIER: Final[Mapping[str, tuple[str, ...]]] = {
     "import.start": ("job", "identity", "job_id"),
     "workflow.start": ("run", "run_id"),
+    # Decision Runtime (ADR-042): every durable decision job names its job id
+    # inside the JobControl document its admission result carries.
+    "decision.evaluate": ("job", "identity", "job_id"),
+    "decision.model.install": ("job", "identity", "job_id"),
+    "decision.model.activate": ("job", "identity", "job_id"),
 }
 
 

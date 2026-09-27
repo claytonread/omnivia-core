@@ -72,7 +72,11 @@ from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from omnivia_core_client import Deadline, InstallationServiceConfig, stop_managed_local
-from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, exposure_manifest, tools
+from omnivia_core_mcp.manifest import (
+    EXPOSURE_MANIFEST,
+    exposure_manifest,
+    tools,
+)
 
 from omnivia_core.contracts.v1 import to_canonical_json
 
@@ -111,7 +115,102 @@ ARGUMENTS: dict[str, dict[str, Any]] = {
         "mode": "deterministic_view",
         "token_budget": 4000,
     },
+    "engineering_search": {"query": "authentication provider"},
+    "engineering_expand": {
+        "anchor": {"record_id": fixture.SOURCE_RECORD_ID, "version": fixture.version_of(fixture.SOURCE_RECORD_ID)},
+    },
+    "engineering_context_build": {
+        "query": fixture.SEEDED_TOKEN,
+        "targets": [{"snapshot_id": "esnap-e2e", "snapshot_kind": "working_tree"}],
+        "profile": "investigate",
+    },
+    "continuity_handoff_read": {"checkpoint_id": "eck-e2e-1"},
+    "decision_evaluate": {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": fixture.SOURCE_RECORD_ID, "revision": "r1"}],
+            "input": {
+                "source_refs": [{"id": fixture.SOURCE_RECORD_ID, "revision": "r1"}]
+            },
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": "decision-evaluate-e2e-1",
+    },
+    "decision_record_get": {"evaluation_id": "eval-e2e-1"},
+    "decision_record_list": {},
+    "decision_status": {},
 }
+
+#: The tools the authoring profile adds, smallest call each. The checkpoint
+#: append needs a bound continuity session; none exists here, so the call
+#: answers the handler's own typed `not_found` — which is the point of the
+#: assertion: the tool is real and dispatches, and the refusal is the
+#'s, not the transport's.
+AUTHORING_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "memory_create": {
+        "input": {
+            "record_type": "memory.fact",
+            "domain_scope": "product.core",
+            "content": {"fact": "an authoring-profile memory"},
+            "evidence_disposition": "available",
+            "sources": [{"kind": "direct_submission", "source_id": fixture.SOURCE_RECORD_ID}],
+            "assertion": {
+                "actor_id": "local-user",
+                "actor_kind": "agent",
+                "actor_role": "author",
+                "asserted_at": "2026-01-01T00:00:00Z",
+                "evidence": [],
+            },
+        },
+        "idempotency_key": "mcp-authoring-memory-002",
+    },
+    "continuity_checkpoint_append": {
+        "input": {
+            "session_id": "eng-session-e2e-1",
+            "payload": {
+                "objective": "Investigate the seeded fixture",
+                "checkpoint_kind": "periodic",
+            },
+        },
+        "idempotency_key": "continuity-append-e2e-1",
+    },
+}
+
+#: The four decision tools, with what a default (capability-off) session must
+#: answer for each: the passive status and record-list projections succeed with
+#: structured content, while an admission against a disabled capability and a
+#: lookup of an absent record are the typed refusals the handlers state. The
+#: schema-driven checks below validate the two successes like every other read.
+DECISION_OUTCOMES: dict[str, str] = {
+    "decision_status": "success",
+    "decision_record_list": "success",
+    "decision_record_get": "refused:not_found",
+    "decision_evaluate": "refused:capability_not_granted",
+    "continuity_handoff_read": "refused:not_found",
+}
+
+#: The tools a live session must answer successfully.
+SUCCESSFUL_TOOLS: tuple[str, ...] = tuple(
+    name for name in ARGUMENTS if name not in DECISION_OUTCOMES
+)
+
+
+def assert_call_outcome(observed: dict[str, Any], name: str) -> None:
+    """One call succeeded, or a decision tool answered its stated outcome."""
+    called = observed["calls"][name]
+    expected = DECISION_OUTCOMES.get(name)
+    if expected is None:
+        assert called["is_error"] is False, called
+        return
+    if expected == "success":
+        assert called["is_error"] is False, called
+        assert isinstance(called.get("structured_content"), dict), called
+        return
+    assert called["is_error"] is True, called
+    assert f'"code":"{expected.split(":", 1)[1]}"' in called["content"][0]["text"], (
+        called
+    )
 
 #: Names that must not resolve to a tool, and the R004-06 boundary each one is on.
 #: Literal on purpose: a future edit that exposes one of these has to delete the
@@ -130,15 +229,26 @@ NEVER_A_TOOL: tuple[tuple[str, str], ...] = (
 
 
 #: The purposes the exposure manifest claims. A configuration that allow-lists
-#: exactly these is the one under which all six tools are callable; the
+#: exactly these is the one under which all fourteen tools are callable; the
 #: adversarial suite is where a narrower one refuses.
-ALL_PURPOSES = ("workspace_inspection", "knowledge_retrieval")
+ALL_PURPOSES = (
+    "workspace_inspection",
+    "knowledge_retrieval",
+    "engineering_search",
+    "engineering_expand",
+    "engineering_context",
+    "continuity_handoff",
+    "decision_evaluation",
+    "decision_record",
+    "decision_status",
+)
 
 
-#: What an authoring installation allows: the two read purposes plus the three
+#: What an authoring installation allows: the restricted purposes plus the three
 #: the wider profile's tools claim. Every one is the service's own.
 AUTHORING_PURPOSES = (
     *ALL_PURPOSES,
+    "continuity_checkpoint",
     "memory_authoring",
     "content_ingestion",
     "job_observation",
@@ -390,12 +500,16 @@ def test_every_advertised_tool_is_read_only_and_closed(
     host decides whether to let a model call a tool from exactly this document.
     """
     for tool in observed["tools"]:
-        assert tool["annotations"]["read_only_hint"] is True
+        if tool["name"] == "decision_evaluate":
+            assert tool["annotations"]["read_only_hint"] is False
+            assert tool["input_schema"]["additionalProperties"] is False
+        else:
+            assert tool["annotations"]["read_only_hint"] is True
+            assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
-        assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.0"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.1"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -406,18 +520,18 @@ def test_every_advertised_tool_is_read_only_and_closed(
 # --- one session calls all six ------------------------------------------------
 
 
-def test_the_session_calls_exactly_the_advertised_six(
+def test_the_session_calls_exactly_the_advertised_fourteen(
     observed: dict[str, Any],
 ) -> None:
     """The coverage check, and the reason a seventh tool cannot land untested.
 
     Order and membership, against the manifest rather than against a literal, so
-    this file cannot drift into calling five of six and passing.
+    this file cannot drift into calling thirteen of fourteen and passing.
     """
     assert list(ARGUMENTS) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
     assert list(observed["calls"]) == list(ARGUMENTS)
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
 
 
 @pytest.mark.parametrize("tool_name", list(ARGUMENTS))
@@ -435,7 +549,7 @@ def test_every_request_validates_against_the_advertised_input_schema(
     )
 
 
-@pytest.mark.parametrize("tool_name", list(ARGUMENTS))
+@pytest.mark.parametrize("tool_name", SUCCESSFUL_TOOLS)
 def test_every_structured_result_validates_against_the_advertised_output_schema(
     observed: dict[str, Any], tool_name: str
 ) -> None:
@@ -449,7 +563,7 @@ def test_every_structured_result_validates_against_the_advertised_output_schema(
     )
 
 
-@pytest.mark.parametrize("tool_name", list(ARGUMENTS))
+@pytest.mark.parametrize("tool_name", SUCCESSFUL_TOOLS)
 def test_every_success_carries_one_json_text_item_equal_to_its_structured_content(
     observed: dict[str, Any], tool_name: str
 ) -> None:
@@ -875,6 +989,19 @@ def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
         ),
         ("job_get", {"job_id": "job-not-in-this-workspace"}),
         ("job_events", {"job_id": "job-not-in-this-workspace"}),
+        (
+            "continuity_checkpoint_append",
+            {
+                "input": {
+                    "session_id": "eng-session-e2e-1",
+                    "payload": {
+                        "objective": "Investigate the seeded fixture",
+                        "checkpoint_kind": "periodic",
+                    },
+                },
+                "idempotency_key": "continuity-append-e2e-1",
+            },
+        ),
     ]
 
 
@@ -897,7 +1024,7 @@ def service_error(called: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
-    """One admitted stdio session: the listing, the five calls, then the replay."""
+    """One admitted stdio session: the listing, the authoring calls, the replay."""
     wanted = authoring_calls(principal_id)
     async with (
         stdio_client(parameters(config, "--authoring")) as (read_stream, write_stream),
@@ -923,11 +1050,11 @@ async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
 def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """`mutation_enabled: true` in the trusted file, and still six read tools.
+    """`mutation_enabled: true` in the trusted file, and still the restricted fourteen.
 
     This is the upgrade rule and the security property together: the public
     configuration is a ceiling, not a switch, and the probe here is started the
-    way production starts one -- no admission injected. A model sees the same six
+    way production starts one -- no admission injected. A model sees the same fourteen
     tools it saw before, and `memory_create` is not merely absent from the
     listing but unresolvable at the call.
     """
@@ -941,13 +1068,13 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
         entry.tool_name for entry in EXPOSURE_MANIFEST
     ]
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
     refusal = observed["refusals"]["memory_create"]
     assert refusal["is_error"] is True
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
-def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
+def test_an_admitted_authoring_session_lists_twenty_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
@@ -1394,11 +1521,7 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     contaminated = session(live_config, "--contaminate")
     assert contaminated["tools"] == [tool.model_dump(mode="json") for tool in tools()]
     for name in ARGUMENTS:
-        assert contaminated["calls"][name]["is_error"] is False, (
-            name,
-            contaminated["calls"][name],
-            live_service.diagnosis(),
-        )
+        assert_call_outcome(contaminated, name)
     serialised = json.dumps(contaminated)
     assert "CONTAMINATION-FROM-A-HANDLER" not in serialised
     assert "CONTAMINATION-VIA-PRINT" not in serialised

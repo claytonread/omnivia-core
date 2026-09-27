@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
@@ -34,9 +35,18 @@ from omnivia_core_runtime.storage.governed import (
 )
 from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
 
+if TYPE_CHECKING:
+    from omnivia_core_runtime.storage.engineering_source import DependencyManifest
+
 IdentifierAllocator = Callable[[str], str]
 
 _PROFILE_TYPE: Final = "memory.fact"
+#: The governed record types engineering observations ride (§8.1 via §22.1): the
+#: schema catalogue is frozen to the 0009 vocabulary, so observations use the
+#: catalogue's own finding/risk/decision types under the engineering domain.
+_ENGINEERING_RECORD_TYPES: Final = ("knowledge.finding", "knowledge.risk", "knowledge.decision")
+_ENGINEERING_DOMAIN: Final = "engineering.codebase"
+_ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
 _MESSAGE_INVALID_PROFILE: Final = "the memory claim is outside this supported profile"
 _MESSAGE_EVIDENCE_UNAVAILABLE: Final = (
     "the memory claim's evidence is not currently available"
@@ -51,8 +61,80 @@ class AuthorizedMemorySnapshot:
     digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class AuthorizedVersion:
+    """One sealed version an evidence-label grant admits, as identity facts only.
+
+    Every field is an identity, a currentness fact or a stored digest: nothing here
+    is read from `content_json`, `claim_json` or any other body column, so a caller
+    holding only this value has hydrated no content. `has_evidence` is whether the
+    exact version itself links any evidence.
+    """
+
+    assembly_id: str
+    record_id: str
+    version_id: str
+    record_type: str
+    domain_scope: str
+    layer: str
+    governance_disposition: str | None
+    evidence_disposition: str
+    content_digest: str
+    recorded_at_us: int
+    has_evidence: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedMemoryFrontier:
+    """The frozen authorized frontier of one view, before anything is hydrated.
+
+    `versions` are the admitted versions in the resolver's own order;
+    `support_assembly_ids` are the admitted records' whole transition chains, which a
+    later hydration needs and this value does not read.
+    """
+
+    resolution_instant_us: int
+    view: str
+    versions: tuple[AuthorizedVersion, ...]
+    support_assembly_ids: tuple[str, ...]
+    digest: str
+
+
 def random_identifier(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4()}"
+
+
+#: SQLite's host-parameter ceiling (32 766 on current builds, historically 999)
+#: is an implementation limit, not a design boundary: a 100 000-record workspace
+#: crosses it the first time a frontier folds evidence by `IN (...)` list. The
+#: id list is therefore issued in fixed chunks and the merged rows re-sorted in
+#: Python by the statement's own ORDER BY keys, which reproduces the unchunked
+#: statement's rows in its order exactly at any list size (BINARY collation on
+#: TEXT is code-point order, and the sort columns here are non-null keys).
+_SQL_VARIABLE_CHUNK: Final = 512
+
+
+def _execute_in_rows(
+    connection: sqlite3.Connection,
+    *,
+    select: str,
+    pre: str,
+    in_column: str,
+    post: str = "",
+    leading: tuple[object, ...] = (),
+    ids: Sequence[str],
+    trailing: tuple[object, ...] = (),
+    order_key: Callable[[tuple[object, ...]], tuple[object, ...]],
+) -> list[tuple[object, ...]]:
+    """One `IN (...)` query issued in host-parameter chunks, merged in order."""
+    rows: list[tuple[object, ...]] = []
+    for start in range(0, len(ids), _SQL_VARIABLE_CHUNK):
+        chunk = ids[start : start + _SQL_VARIABLE_CHUNK]
+        placeholders = ", ".join("?" for _ in chunk)
+        statement = f"{select} WHERE {pre} AND {in_column} IN ({placeholders}) {post}"
+        rows.extend(connection.execute(statement, (*leading, *chunk, *trailing)).fetchall())
+    rows.sort(key=order_key)
+    return rows
 
 
 def _microseconds(value: str) -> int:
@@ -153,6 +235,91 @@ def resolve_memory_claim_evidence(
     return tuple(resolved[_source_key(source)] for source in claim.sources)
 
 
+def _plain_content(value: Any) -> Any:
+    """Decode the contract's immutable containers into JSON-serialisable ones."""
+    if isinstance(value, Mapping):
+        return {key: _plain_content(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_content(item) for item in value]
+    return value
+
+
+def _validate_engineering_observation_content(
+    content: Mapping[str, Any],
+) -> DependencyManifest | None:
+    """The `engineering.observation` content profile (SPEC-CORE-ENGMEM-001 §8.1).
+
+    Text is validated, never silently truncated on save: a missing or
+    wrong-typed required field, an oversized field or an oversized payload is a
+    typed refusal, and the caller splits or fixes it explicitly. The 64 KiB cap
+    bounds the canonical content bytes excluding separately referenced
+    evidence. An optional `dependency_manifest` is validated whole and returned
+    for persistence; a malformed one is refused rather than partly kept.
+    """
+    title = content.get("title")
+    summary = content.get("summary")
+    what = content.get("what")
+    kind = content.get("kind")
+    if (
+        not isinstance(title, str)
+        or not 1 <= len(title) <= 200
+        or not isinstance(summary, str)
+        or not 1 <= len(summary) <= 2000
+        or not isinstance(what, str)
+        or not 1 <= len(what) <= 2000
+    ):
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "an engineering observation requires title (<=200), summary (<=2000) "
+            "and what (<=2000) as bounded strings",
+        )
+    if not isinstance(kind, str) or not 1 <= len(kind) <= 64:
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "an engineering observation requires a bounded kind",
+        )
+    basis = content.get("assertion_basis")
+    if basis is not None and (
+        not isinstance(basis, str)
+        or basis
+        not in ("observed", "derived", "reported", "hypothesis")
+    ):
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "assertion_basis must be one of observed, derived, reported, hypothesis",
+        )
+    encoded = to_canonical_json(_plain_content(content))
+    if len(encoded.encode("utf-8")) > _ENGINEERING_CONTENT_CAP_BYTES:
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "the engineering observation content exceeds the 65536-byte payload cap",
+        )
+    if "dependency_manifest" not in content:
+        return None
+    # Imported at use: engineering_source reaches this module back through decisions.
+    from omnivia_core_runtime.storage import engineering_source
+
+    try:
+        manifest = engineering_source.parse_dependency_manifest(
+            content["dependency_manifest"]
+        )
+    except engineering_source.DependencyManifestInvalid as error:
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "the engineering dependency_manifest is outside its bounded profile",
+        ) from error
+    applicability = content.get("applicability")
+    if isinstance(applicability, Mapping) and any(
+        applicability.get(key) not in (None, getattr(manifest, key))
+        for key in ("repository_id", "snapshot_id")
+    ):
+        raise OperationError(
+            ERROR_CODE_INVALID_REQUEST,
+            "the engineering applicability and dependency_manifest name different sources",
+        )
+    return manifest
+
+
 def create_memory_record(
     connection: sqlite3.Connection,
     settlement: MutationSettlementContext,
@@ -163,24 +330,32 @@ def create_memory_record(
     allocate_identifier: IdentifierAllocator = random_identifier,
 ) -> dict[str, object]:
     """Persist one sealed human proposal plus its immutable application lineage."""
-    fact = claim.content.get("fact")
+    dependency_manifest: DependencyManifest | None = None
     if (
-        claim.record_type != _PROFILE_TYPE
-        or not isinstance(fact, str)
-        or not fact
-        or claim.extraction is not None
+        claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
     ):
-        code = (
-            ERROR_CODE_DEPENDENCY_UNAVAILABLE
-            if claim.extraction is not None
-            else ERROR_CODE_INVALID_REQUEST
-        )
-        retry = (
-            RETRY_CLASS_RETRYABLE_AFTER_DELAY
-            if claim.extraction is not None
-            else "non_retryable"
-        )
-        raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
+        dependency_manifest = _validate_engineering_observation_content(claim.content)
+    elif claim.record_type == _PROFILE_TYPE:
+        fact = claim.content.get("fact")
+        if (
+            not isinstance(fact, str)
+            or not fact
+            or claim.extraction is not None
+        ):
+            code = (
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE
+                if claim.extraction is not None
+                else ERROR_CODE_INVALID_REQUEST
+            )
+            retry = (
+                RETRY_CLASS_RETRYABLE_AFTER_DELAY
+                if claim.extraction is not None
+                else "non_retryable"
+            )
+            raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
+    else:
+        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_PROFILE)
 
     evidence_ids = resolve_memory_claim_evidence(
         connection,
@@ -213,8 +388,8 @@ def create_memory_record(
     assembly_id = allocate_identifier("asm")
     event_id = allocate_identifier("pev")
     seal_id = allocate_identifier("seal")
-    content_json = to_canonical_json(dict(claim.content))
-    claim_json = to_canonical_json(claim.to_wire())
+    content_json = to_canonical_json(_plain_content(dict(claim.content)))
+    claim_json = to_canonical_json(_plain_content(claim.to_wire()))
     reason = (
         None if claim.evidence_disposition == "available" else "evidence.unavailable"
     )
@@ -319,6 +494,15 @@ def create_memory_record(
             settlement.settled_at_us,
         ),
     )
+    if claim.domain_scope == _ENGINEERING_DOMAIN:
+        # The bounded preview `engineering.search` serves is written with the
+        # version, so a search never has to read this content to preview it.
+        # Imported at use: engineering_preview reads this module's frontier.
+        from omnivia_core_runtime.storage import engineering_preview
+
+        engineering_preview.record_preview(
+            connection, workspace_id=workspace_id, assembly_id=assembly_id
+        )
     connection.execute(
         "INSERT INTO omnivia_application_claim_lineage "
         "(workspace_id, assembly_id, governed_record_version_id, operation, audit_ref, "
@@ -336,6 +520,28 @@ def create_memory_record(
             settlement.settled_at_us,
         ),
     )
+    if dependency_manifest is not None:
+        # Same fenced transaction as the proposal: the dependency set exists exactly
+        # when this version does. Its digests stay claims until the evaluator checks
+        # them against the recorded baseline manifest.
+        from omnivia_core_runtime.storage import engineering_source
+
+        try:
+            engineering_source.record_dependency_set(
+                connection,
+                settlement,
+                workspace_id=workspace_id,
+                record_id=record_id,
+                version=version_id,
+                manifest=dependency_manifest,
+                allocate_identifier=allocate_identifier,
+            )
+        except engineering_source.DependencyBaselineUnavailable as error:
+            raise OperationError(
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
+                "the dependency manifest's baseline source snapshot is not recorded",
+                retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+            ) from error
 
     at = _timestamp(settlement.settled_at_us)
     temporal = RecordTemporalMetadata(
@@ -373,28 +579,73 @@ def create_memory_record(
     return result.to_wire()
 
 
-def read_authorized_memory_snapshot(
+@contextmanager
+def read_snapshot(connection: sqlite3.Connection) -> Iterator[None]:
+    """One read snapshot: begin unless the caller already holds a transaction.
+
+    Commits only a transaction this block began, and rolls it back on any failure, so
+    a caller composing several reads inside its own transaction gets its own snapshot
+    back, unended.
+    """
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        yield
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
+
+
+def read_authorized_memory_frontier(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     resolution_instant_us: int,
     view: str | None,
     label_grant: EvidenceLabelGrant,
-) -> AuthorizedMemorySnapshot:
-    """Select identity and ACL facts first, then hydrate only admitted assemblies."""
+    domain_scope: str | None = None,
+    body_free: bool = True,
+) -> AuthorizedMemoryFrontier:
+    """Select identity and ACL facts only: the admitted versions, hydrating nothing.
+
+    Every statement reads `omnivia_authoritative_governed_version_metadata`, the
+    sealed versions without their body column, so nothing here can name a body. The
+    evidence-label grant is evaluated here, from identities and evidence links, so a
+    caller that reads anything about an admitted version afterwards reads it for a
+    version the grant already admitted. `domain_scope`, when given, narrows
+    the versions considered by a stored identity fact before any label is folded; a
+    record never changes domain, so it never changes which versions are admitted
+    within it.
+
+    `body_free` selects that metadata view (migration 0053). The legacy memory family
+    passes False to read 0009's full view instead, still selecting no body column, so
+    it runs on schemas that predate 0053.
+    """
+    versions = (
+        "omnivia_authoritative_governed_version_metadata"
+        if body_free
+        else "omnivia_authoritative_governed_versions"
+    )
     resolved_view = resolve_governed_record_view(view)
-    owns_transaction = not connection.in_transaction
-    if owns_transaction:
-        connection.execute("BEGIN")
-    try:
+    with read_snapshot(connection):
+        domain_filter = "" if domain_scope is None else "AND domain_scope = ? "
         rows = connection.execute(
             "SELECT assembly_id, governed_record_id, governed_record_version_id, layer, "
             "governance_disposition, authority_level, valid_from_us, valid_to_us, "
-            "recorded_at_us, append_ordinal, correlation_kind, correlation_id "
-            "FROM omnivia_authoritative_governed_versions "
-            "WHERE workspace_id = ? AND recorded_at_us <= ? "
+            "recorded_at_us, append_ordinal, correlation_kind, correlation_id, "
+            "record_type, domain_scope, content_digest, evidence_disposition "
+            f"FROM {versions} "
+            f"WHERE workspace_id = ? AND recorded_at_us <= ? {domain_filter}"
             "ORDER BY governed_record_id, recorded_at_us, append_ordinal, assembly_id",
-            (workspace_id, resolution_instant_us),
+            (
+                workspace_id,
+                resolution_instant_us,
+                *(() if domain_scope is None else (domain_scope,)),
+            ),
         ).fetchall()
         # This first phase may read only identities and the minimum currentness
         # facts required to select the view.  In particular, do not join the
@@ -407,7 +658,7 @@ def read_authorized_memory_snapshot(
             "FROM omnivia_record_supersessions r "
             "JOIN omnivia_governed_version_seals s "
             "ON s.workspace_id = r.workspace_id AND s.assembly_id = r.assembly_id "
-            "JOIN omnivia_authoritative_governed_versions t "
+            f"JOIN {versions} t "
             "ON t.workspace_id = r.workspace_id AND t.assembly_id = r.assembly_id "
             "AND t.governed_record_version_id = r.target_version_id "
             "WHERE r.workspace_id = ? "
@@ -519,23 +770,28 @@ def read_authorized_memory_snapshot(
         evidence_rows: list[tuple[object, ...]] = []
         label_rows: list[tuple[object, ...]] = []
         if support_ids:
-            placeholders = ", ".join("?" for _ in support_ids)
-            evidence_rows = connection.execute(
-                "SELECT assembly_id, evidence_id FROM omnivia_governed_version_evidence_links "
-                f"WHERE workspace_id = ? AND assembly_id IN ({placeholders}) "
-                "ORDER BY assembly_id, evidence_id",
-                (workspace_id, *support_ids),
-            ).fetchall()
+            evidence_rows = _execute_in_rows(
+                connection,
+                select="SELECT assembly_id, evidence_id "
+                "FROM omnivia_governed_version_evidence_links",
+                pre="workspace_id = ?",
+                in_column="assembly_id",
+                leading=(workspace_id,),
+                ids=support_ids,
+                order_key=lambda row: (str(row[0]), str(row[1])),
+            )
             evidence_ids = tuple(sorted({str(row[1]) for row in evidence_rows}))
             if evidence_ids:
-                evidence_placeholders = ", ".join("?" for _ in evidence_ids)
-                label_rows = connection.execute(
-                    "SELECT evidence_id, label_sequence, label_action, permission_label "
-                    "FROM omnivia_evidence_permission_labels WHERE workspace_id = ? "
-                    f"AND evidence_id IN ({evidence_placeholders}) "
-                    "ORDER BY evidence_id, label_sequence",
-                    (workspace_id, *evidence_ids),
-                ).fetchall()
+                label_rows = _execute_in_rows(
+                    connection,
+                    select="SELECT evidence_id, label_sequence, label_action, permission_label "
+                    "FROM omnivia_evidence_permission_labels",
+                    pre="workspace_id = ?",
+                    in_column="evidence_id",
+                    leading=(workspace_id,),
+                    ids=evidence_ids,
+                    order_key=lambda row: (str(row[0]), cast("int", row[1])),
+                )
         labels_by_evidence: dict[str, list[tuple[object, ...]]] = {}
         for evidence_id, sequence, action, label in label_rows:
             labels_by_evidence.setdefault(str(evidence_id), []).append(
@@ -576,20 +832,34 @@ def read_authorized_memory_snapshot(
         )
         application_transitions: list[tuple[object, ...]] = []
         if authorized_record_ids:
-            record_placeholders = ", ".join("?" for _ in authorized_record_ids)
-            application_transitions = connection.execute(
-                "SELECT governed_record_id, source_assembly_id, "
+            application_transitions = _execute_in_rows(
+                connection,
+                select="SELECT governed_record_id, source_assembly_id, "
                 "source_record_version_id, target_assembly_id, "
                 "target_record_version_id, transition_id, operation, "
                 "rationale_digest, rationale_byte_length, reason_code, "
                 "reason_comment, actor_id, actor_kind, audit_ref, settled_at_us "
-                "FROM omnivia_application_governance_transitions "
-                "WHERE workspace_id = ? "
-                f"AND governed_record_id IN ({record_placeholders}) "
-                "AND settled_at_us <= ? "
-                "ORDER BY governed_record_id, settled_at_us, transition_id",
-                (workspace_id, *authorized_record_ids, resolution_instant_us),
-            ).fetchall()
+                "FROM omnivia_application_governance_transitions",
+                pre="workspace_id = ?",
+                in_column="governed_record_id",
+                post="AND settled_at_us <= ?",
+                leading=(workspace_id,),
+                ids=authorized_record_ids,
+                trailing=(resolution_instant_us,),
+                order_key=lambda row: (
+                    str(row[0]),
+                    cast("int", row[14]),
+                    str(row[5]),
+                ),
+            )
+        authorized_id_set = set(authorized_ids)
+        authorized_support_id_set = set(authorized_support_ids)
+        permitted_evidence_ids = {
+            str(row[1])
+            for row in evidence_rows
+            if str(row[0]) in authorized_support_id_set
+        }
+        authorized_record_id_set = set(authorized_record_ids)
         digest_document = to_canonical_json(
             {
                 "view_policy": "memory-s2-v1",
@@ -598,25 +868,22 @@ def read_authorized_memory_snapshot(
                 "frontier": [
                     [str(row[0]), str(row[1]), str(row[2]), int(row[8])]
                     for row in selected
-                    if str(row[0]) in authorized_ids
+                    if str(row[0]) in authorized_id_set
                 ],
                 "evidence": [
                     list(map(str, row))
                     for row in evidence_rows
-                    if str(row[0]) in authorized_support_ids
+                    if str(row[0]) in authorized_support_id_set
                 ],
                 "label_stream": [
                     [str(item) for item in row]
                     for row in label_rows
-                    if any(
-                        str(e[1]) == str(row[0]) and str(e[0]) in authorized_support_ids
-                        for e in evidence_rows
-                    )
+                    if str(row[0]) in permitted_evidence_ids
                 ],
                 "transition_chain": [
                     [None if item is None else str(item) for item in row]
                     for row in application_transitions
-                    if str(row[0]) in set(authorized_record_ids)
+                    if str(row[0]) in authorized_record_id_set
                 ],
                 "grant": {
                     "principal_id": label_grant.principal_id,
@@ -626,32 +893,75 @@ def read_authorized_memory_snapshot(
                 },
             }
         )
+        selected_by_assembly = {str(row[0]): row for row in selected}
+
+        def admitted(assembly_id: str) -> AuthorizedVersion:
+            row = selected_by_assembly[assembly_id]
+            return AuthorizedVersion(
+                assembly_id=assembly_id,
+                record_id=str(row[1]),
+                version_id=str(row[2]),
+                record_type=str(row[12]),
+                domain_scope=str(row[13]),
+                layer=str(row[3]),
+                governance_disposition=None if row[4] is None else str(row[4]),
+                evidence_disposition=str(row[15]),
+                content_digest=str(row[14]),
+                recorded_at_us=int(row[8]),
+                has_evidence=bool(evidence_by_assembly.get(assembly_id)),
+            )
+
+        return AuthorizedMemoryFrontier(
+            resolution_instant_us=resolution_instant_us,
+            view=resolved_view,
+            versions=tuple(admitted(assembly_id) for assembly_id in authorized_ids),
+            support_assembly_ids=authorized_support_ids,
+            digest=_digest(digest_document),
+        )
+
+
+def read_authorized_memory_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    view: str | None,
+    label_grant: EvidenceLabelGrant,
+) -> AuthorizedMemorySnapshot:
+    """Select identity and ACL facts first, then hydrate only admitted assemblies."""
+    with read_snapshot(connection):
+        frontier = read_authorized_memory_frontier(
+            connection,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            view=view,
+            label_grant=label_grant,
+            body_free=False,
+        )
         values = hydrate_authorized_governed_record_values(
             connection,
             workspace_id=workspace_id,
             resolution_instant_us=resolution_instant_us,
-            assembly_ids=authorized_ids,
-            support_assembly_ids=authorized_support_ids,
+            assembly_ids=tuple(version.assembly_id for version in frontier.versions),
+            support_assembly_ids=frontier.support_assembly_ids,
         )
-    except BaseException:
-        if owns_transaction:
-            connection.execute("ROLLBACK")
-        raise
-    if owns_transaction:
-        connection.execute("COMMIT")
     return AuthorizedMemorySnapshot(
         resolution_instant_us=resolution_instant_us,
-        view=resolved_view,
+        view=frontier.view,
         values=values,
-        digest=_digest(digest_document),
+        digest=frontier.digest,
     )
 
 
 __all__ = [
+    "AuthorizedMemoryFrontier",
     "AuthorizedMemorySnapshot",
+    "AuthorizedVersion",
     "IdentifierAllocator",
     "create_memory_record",
     "random_identifier",
+    "read_authorized_memory_frontier",
     "read_authorized_memory_snapshot",
+    "read_snapshot",
     "resolve_memory_claim_evidence",
 ]

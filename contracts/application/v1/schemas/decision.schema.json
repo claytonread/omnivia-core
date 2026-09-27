@@ -1,0 +1,1300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/decision.schema.json",
+  "title": "OmniVia Core Application Contract v1 - decision payloads",
+  "description": "Input and result payloads for the Decision Runtime application operations (ADR-042 / SPEC-CORE-DEC-001). The Decision Runtime makes bounded, evidence-bearing advisory assessments over authorised business context through provider-neutral contracts; a prediction is never an action grant, a permission, or canonical knowledge. All payloads are data-only: identifiers, bounded text and structured constraints. Raw filesystem paths, executable expressions, model-file URLs, credentials and tool names are not valid anywhere in this boundary. Evaluation is privacy-fenced by the caller's own constraints, which the server may narrow but never widen.",
+  "$defs": {
+    "DecisionSchemaVersion": {
+      "title": "DecisionSchemaVersion",
+      "description": "The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions.",
+      "type": "string",
+      "const": "decision.1"
+    },
+    "DecisionSubjectRef": {
+      "title": "DecisionSubjectRef",
+      "description": "One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Opaque subject identifier, such as `document:847`."
+        },
+        "revision": {
+          "type": "string",
+          "description": "The subject revision the caller last observed, as an opaque token.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionExecutionMode": {
+      "title": "DecisionExecutionMode",
+      "description": "How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes.",
+      "type": "string",
+      "enum": [
+        "advisory"
+      ]
+    },
+    "DecisionPrivacyFloor": {
+      "title": "DecisionPrivacyFloor",
+      "description": "The most permissive processing location the caller accepts. `local_only` binds every attempt to the selected Core host; the server may narrow but never widen this.",
+      "type": "string",
+      "enum": [
+        "local_only"
+      ]
+    },
+    "DecisionExecutionConstraints": {
+      "title": "DecisionExecutionConstraints",
+      "description": "Caller constraints on one evaluation. Policy composes these with installation, workspace and definition limits using the most restrictive effective result; a caller cannot elevate an unqualified template or escape a local-only floor.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionMode",
+          "description": "DecisionExecutionMode — How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes."
+        },
+        "privacy": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionPrivacyFloor",
+          "description": "DecisionPrivacyFloor — The most permissive processing location the caller accepts. `local_only` binds every attempt to the selected Core host; the server may narrow but never widen this."
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "description": "Requested wall-clock budget for the whole evaluation, including queue wait. Policy may permit longer job deadlines; it may never shorten past the minimum the definition requires.",
+          "minimum": 100,
+          "maximum": 600000
+        },
+        "maximum_provider_attempts": {
+          "type": "integer",
+          "description": "Maximum provider attempts. One is the default and the release maximum; a single transient-failure retry is a separately enabled policy.",
+          "minimum": 1,
+          "maximum": 2
+        }
+      },
+      "required": [
+        "mode",
+        "privacy"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionRef": {
+      "title": "DecisionDefinitionRef",
+      "description": "An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable definition identifier, such as `core.document_category`."
+        },
+        "version": {
+          "type": "string",
+          "description": "Semantic version of the definition, such as `1.0.0`.",
+          "minLength": 5,
+          "maxLength": 32
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionEvaluateInput": {
+      "title": "DecisionEvaluateInput",
+      "description": "Input for `decision.evaluate`: one bounded, evidence-bearing assessment request. Identity, effective authority, scopes and purpose come from the authorised request envelope, never from these fields. The envelope's `idempotency_key` (required by the catalogue) is bound to the canonical request digest; reuse with a different request is an explicit conflict. Evaluation has durable side effects - it reads authorised sources and writes evaluation, attempt and audit records - even though it never mutates business records.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "definition_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef",
+          "description": "DecisionDefinitionRef — An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version."
+        },
+        "subject_refs": {
+          "type": "array",
+          "description": "The subjects this evaluation is about.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSubjectRef"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "input": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionInputBundle",
+          "description": "Authorised evidence inputs, resolved after admission."
+        },
+        "execution": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionConstraints",
+          "description": "DecisionExecutionConstraints — Caller constraints on one evaluation. Policy composes these with installation, workspace and definition limits using the most restrictive effective result; a caller cannot elevate an unqualified template or escape a local-only floor."
+        }
+      },
+      "required": [
+        "schema_version",
+        "definition_ref",
+        "subject_refs",
+        "input",
+        "execution"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionPrediction": {
+      "title": "DecisionPrediction",
+      "description": "One typed prediction with its full provider distribution. `kind` selects which fields are meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic acceptance threshold. `probability_semantics` names what the numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty abstention is possible.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "choice",
+            "ordinal"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "selected_option_id": {
+          "type": "string",
+          "description": "For choice: the highest-probability declared option. For ordinal: the highest-probability rubric category.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "probabilities": {
+          "type": "object",
+          "description": "Full returned distribution over the declared answer space, at provider precision.",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "required": []
+        },
+        "probability_true": {
+          "type": "number",
+          "description": "For boolean: the provider's probability of true. False is its complement; a false result is not a failure.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "expected_index": {
+          "type": "number",
+          "description": "For ordinal: the expected zero-based rubric index. A rubric position, never an event probability.",
+          "minimum": 0
+        },
+        "normalised_position": {
+          "type": "number",
+          "description": "For ordinal: expected_index / (K - 1), labelled as a rubric position only.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "probability_semantics": {
+          "type": "string",
+          "description": "What the distribution numbers mean, such as `model_class_probability`.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "provider_decimal_precision": {
+          "type": "integer",
+          "description": "Decimal places the provider itself returns.",
+          "minimum": 0,
+          "maximum": 12
+        }
+      },
+      "required": [
+        "kind",
+        "probability_semantics"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionQuality": {
+      "title": "DecisionQuality",
+      "description": "Quality and qualification facts, kept strictly separate from the prediction and from authority. `empirical_correctness_probability` stays null until a held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release evaluation.",
+      "type": "object",
+      "properties": {
+        "calibration_status": {
+          "type": "string",
+          "enum": [
+            "unvalidated_for_task",
+            "advisory_validated",
+            "qualified_for_named_use",
+            "expired",
+            "revoked"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "empirical_correctness_probability": {
+          "type": "number",
+          "description": "Held-out task-specific estimate, or null while unsupported.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "input_complete": {
+          "type": "boolean",
+          "description": "Whether the loss-aware preflight admitted the context without any unapproved loss."
+        },
+        "qualification_ref": {
+          "type": "string",
+          "description": "Opaque reference to the applicable qualification profile, or null.",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "calibration_status",
+        "input_complete"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDisposition": {
+      "title": "DecisionDisposition",
+      "description": "The deterministic policy result governing how this prediction may be used. `authorises_action` is false for every first-release evaluation; it can never be inferred from any probability, confidence or action-head field.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "advisory_only",
+            "review_required",
+            "abstained",
+            "deterministic_rule",
+            "policy_denied"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "reason_codes": {
+          "type": "array",
+          "description": "Bounded reason codes from the canonical decision reason catalogue, such as `TASK_NOT_QUALIFIED_FOR_AUTOMATION` or `INPUT_CAPACITY_EXCEEDED`.",
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64
+          },
+          "maxItems": 16
+        },
+        "authorises_action": {
+          "type": "boolean",
+          "const": false,
+          "description": "Constant false in this release. Action authority always lives outside the Decision Runtime."
+        }
+      },
+      "required": [
+        "code",
+        "reason_codes",
+        "authorises_action"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionExecutionFacts": {
+      "title": "DecisionExecutionFacts",
+      "description": "Measured execution facts for the terminal attempt. `configured_compute_units` is reported separately by the provider; execution location and remote-processing flags are honest per-attempt facts, never marketing claims.",
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "Provider adapter identifier, such as `deterministic_rules` or `laya_coreml`.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "profile_id": {
+          "type": "string",
+          "description": "Model profile identifier, or null for the deterministic route.",
+          "maxLength": 128
+        },
+        "execution_location": {
+          "type": "string",
+          "enum": [
+            "core_host",
+            "remote"
+          ],
+          "description": "Where the assessment actually executed. `remote` is unimplemented in this release."
+        },
+        "remote_processing_used": {
+          "type": "boolean",
+          "const": false,
+          "description": "Constant false in this release; local-only constraints always win."
+        },
+        "provider_forward_passes": {
+          "type": "integer",
+          "description": "Model forward passes consumed. Multiple questions mean multiple passes; this is counted separately from user requests.",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "description": "Output tokens consumed, if the provider reports them.",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "provider_id",
+        "execution_location",
+        "remote_processing_used",
+        "provider_forward_passes",
+        "output_tokens"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionRecordStatus": {
+      "title": "DecisionRecordStatus",
+      "description": "Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure are normal product outcomes, not errors of the envelope.",
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "succeeded",
+        "abstained",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "DecisionRecord": {
+      "title": "DecisionRecord",
+      "description": "The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "evaluation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier — Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordStatus",
+          "description": "DecisionRecordStatus — Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure are normal product outcomes, not errors of the envelope."
+        },
+        "mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionMode",
+          "description": "DecisionExecutionMode — How the caller intends to use the result. `advisory` is the only mode in this release: the assessment is evidence for a human or an authorised executor, never an executed action. Later modes are separately qualified catalogue changes."
+        },
+        "definition_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef",
+          "description": "DecisionDefinitionRef — An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version."
+        },
+        "subject_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSubjectRef"
+          },
+          "description": "DecisionSubjectRef — One subject the evaluation is about: an opaque identifier minted by the owning feature, and the revision the caller last observed. The runtime resolves the reference through the owner; the string itself carries no path or storage meaning."
+        },
+        "prediction": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionPrediction",
+          "description": "DecisionPrediction — One typed prediction with its full provider distribution. `kind` selects which fields are meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic acceptance threshold. `probability_semantics` names what the numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty abstention is possible."
+        },
+        "quality": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionQuality",
+          "description": "DecisionQuality — Quality and qualification facts, kept strictly separate from the prediction and from authority. `empirical_correctness_probability` stays null until a held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release evaluation."
+        },
+        "disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDisposition",
+          "description": "DecisionDisposition — The deterministic policy result governing how this prediction may be used. `authorises_action` is false for every first-release evaluation; it can never be inferred from any probability, confidence or action-head field."
+        },
+        "execution": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionExecutionFacts",
+          "description": "DecisionExecutionFacts — Measured execution facts for the terminal attempt. `configured_compute_units` is reported separately by the provider; execution location and remote-processing flags are honest per-attempt facts, never marketing claims."
+        },
+        "abstention_reasons": {
+          "type": "array",
+          "description": "Bounded abstention reason codes, present for abstained records.",
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64
+          },
+          "maxItems": 16
+        },
+        "created_at": {
+          "type": "string",
+          "description": "When the evaluation was admitted.",
+          "minLength": 20,
+          "maxLength": 40
+        },
+        "observed_at": {
+          "type": "string",
+          "description": "When the terminal record committed, if terminal."
+        }
+      },
+      "required": [
+        "schema_version",
+        "evaluation_id",
+        "status",
+        "mode",
+        "definition_ref",
+        "subject_refs",
+        "quality",
+        "disposition",
+        "execution",
+        "created_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionRecordGetInput": {
+      "title": "DecisionRecordGetInput",
+      "description": "Input for `decision.record.get`. Authorisation is re-checked against the caller's current grant; idempotent replay of a record is not a permission bypass.",
+      "type": "object",
+      "properties": {
+        "evaluation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier — Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations."
+        }
+      },
+      "required": [
+        "evaluation_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionRecordListInput": {
+      "title": "DecisionRecordListInput",
+      "description": "Input for `decision.record.list`: the caller's authorised evaluation records for the selected workspace, newest first.",
+      "type": "object",
+      "properties": {
+        "definition_id": {
+          "type": "string",
+          "description": "Optional filter by definition identifier.",
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "description": "Optional filter by record status.",
+          "enum": [
+            "pending",
+            "running",
+            "succeeded",
+            "abstained",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "limit": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit",
+          "description": "Bounded maximum number of records to return in this page."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Pagination position; an absent page asks for the first page."
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": []
+    },
+    "DecisionRecordListResult": {
+      "title": "DecisionRecordListResult",
+      "description": "One page of authorised evaluation records.",
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecord"
+          },
+          "description": "DecisionRecord — The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes."
+        },
+        "next_cursor": {
+          "type": "string",
+          "description": "Cursor for the next page, or null when the list is exhausted."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Pagination position: the continuation for the next page, always present."
+        }
+      },
+      "required": [
+        "records",
+        "page"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionOption": {
+      "title": "DecisionOption",
+      "description": "One declared option of a choice definition: a stable identifier, a human label and a bounded description. Options are an ordered list; the order is part of the definition's identity and digest. One-option decisions are ill-formed - a constant belongs in deterministic code.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable option identifier used in predictions.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable option label.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "description": {
+          "type": "string",
+          "description": "Bounded description given to the model alongside the label.",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionSummary": {
+      "title": "DecisionDefinitionSummary",
+      "description": "One permitted definition version as `decision.definition.list` and `decision.definition.get` report it.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier — Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 32,
+          "description": "Structured payload value."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Structured payload value."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "What this definition assesses and for whom.",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "choice",
+            "ordinal"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "option_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 32,
+          "description": "Structured payload value."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this version currently admits evaluations."
+        },
+        "digest": {
+          "type": "string",
+          "description": "Opaque definition digest binding question, rubric, options, recipe and model settings.",
+          "minLength": 16,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "title",
+        "purpose",
+        "kind",
+        "option_count",
+        "enabled",
+        "digest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionListInput": {
+      "title": "DecisionDefinitionListInput",
+      "description": "Input for `decision.definition.list`: permitted definition versions for the selected workspace.",
+      "type": "object",
+      "properties": {
+        "include_disabled": {
+          "type": "boolean",
+          "description": "Whether disabled versions appear in the list."
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": []
+    },
+    "DecisionDefinitionListResult": {
+      "title": "DecisionDefinitionListResult",
+      "description": "Permitted definition versions.",
+      "type": "object",
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionSummary"
+          },
+          "description": "DecisionDefinitionSummary — One permitted definition version as `decision.definition.list` and `decision.definition.get` report it."
+        }
+      },
+      "required": [
+        "definitions"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionGetInput": {
+      "title": "DecisionDefinitionGetInput",
+      "description": "Input for `decision.definition.get`.",
+      "type": "object",
+      "properties": {
+        "definition_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef",
+          "description": "DecisionDefinitionRef — An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version."
+        }
+      },
+      "required": [
+        "definition_ref"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionPublishInput": {
+      "title": "DecisionDefinitionPublishInput",
+      "description": "Input for `decision.definition.publish`: one new immutable definition version. The document is structured data only - identifiers, bounded text, ordered options and recipe references. Executable content of any kind is not a valid field, and a semantic change to any meaning-bearing part requires a new version and qualification review.",
+      "type": "object",
+      "properties": {
+        "definition": {
+          "type": "object",
+          "description": "The immutable definition document: stable id, semantic version, title, purpose, owning product, author provenance, decision kind, ordered options or rubric, instructions, required evidence fields, context recipe version, supported languages, minimum source freshness, risk floor, permitted output uses, privacy floor and approved candidate profile identifiers. Bounded to the definition schema; a digest is computed by the service.",
+          "required": []
+        }
+      },
+      "required": [
+        "definition"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionDisableInput": {
+      "title": "DecisionDefinitionDisableInput",
+      "description": "Input for `decision.definition.disable`: stop one version admitting evaluations. Records and history are unaffected.",
+      "type": "object",
+      "properties": {
+        "definition_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef",
+          "description": "DecisionDefinitionRef — An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version."
+        }
+      },
+      "required": [
+        "definition_ref"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionOutcomeSubmitInput": {
+      "title": "DecisionOutcomeSubmitInput",
+      "description": "Input for `decision.outcome.submit`: append one evidenced outcome or correction to an evaluation. The original prediction is preserved, never overwritten. An actor preference is not automatically ground truth; outcome provenance records who submitted it and on what evidence.",
+      "type": "object",
+      "properties": {
+        "evaluation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier — Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "corrected",
+            "rejected",
+            "superseded"
+          ],
+          "description": "The reviewer's or system's evidenced conclusion about the assessment."
+        },
+        "corrected_option_id": {
+          "type": "string",
+          "description": "For corrected choice/ordinal outcomes: the evidenced correct option.",
+          "maxLength": 128
+        },
+        "note": {
+          "type": "string",
+          "description": "Bounded reviewer note.",
+          "maxLength": 2048
+        },
+        "evidence_refs": {
+          "type": "array",
+          "description": "Opaque evidence references supporting the outcome.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSubjectRef"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "evaluation_id",
+        "outcome"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelProfileSummary": {
+      "title": "DecisionModelProfileSummary",
+      "description": "One approved model profile as `decision.model.list` reports it, with the five lifecycle dimensions kept separate (installation, activation, health, qualification, processing). A model being installed or ready says nothing about task qualification.",
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "description": "Approved profile identifier, such as `laya.multilingual.general.fp16`.",
+          "minLength": 3,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Structured payload value."
+        },
+        "capacity_total_tokens": {
+          "type": "integer",
+          "description": "The profile's total token capacity.",
+          "minimum": 1
+        },
+        "maximum_options": {
+          "type": "integer",
+          "description": "The profile's maximum option count.",
+          "minimum": 2
+        },
+        "installed_size_bytes": {
+          "type": "integer",
+          "description": "Complete on-disk bundle size when installed."
+        },
+        "installation": {
+          "type": "string",
+          "enum": [
+            "not_installed",
+            "queued",
+            "downloading",
+            "verifying",
+            "installed",
+            "failed",
+            "removing"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "activation": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "selected",
+            "loading",
+            "ready",
+            "unloading",
+            "unavailable"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "health": {
+          "type": "string",
+          "enum": [
+            "not_checked",
+            "checking",
+            "healthy",
+            "degraded",
+            "failed"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "qualification": {
+          "type": "string",
+          "enum": [
+            "unvalidated",
+            "advisory_validated",
+            "qualified_for_named_use",
+            "expired",
+            "revoked"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "compute_configuration": {
+          "type": "string",
+          "description": "Configured compute units, reported separately from observed execution evidence.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "profile_id",
+        "name",
+        "capacity_total_tokens",
+        "maximum_options",
+        "installation",
+        "activation",
+        "health",
+        "qualification",
+        "compute_configuration"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelListInput": {
+      "title": "DecisionModelListInput",
+      "description": "Input for `decision.model.list`: approved profiles and their current state. Passive; never triggers downloads or loading.",
+      "type": "object",
+      "properties": {
+        "include_unqualified": {
+          "type": "boolean",
+          "description": "Whether profiles without task qualification appear in the list. Absent defaults to true: unvalidated profiles are shown as advisory."
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelListResult": {
+      "title": "DecisionModelListResult",
+      "description": "Approved model profiles and their lifecycle state.",
+      "type": "object",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelProfileSummary"
+          },
+          "description": "DecisionModelProfileSummary — One approved model profile as `decision.model.list` reports it, with the five lifecycle dimensions kept separate (installation, activation, health, qualification, processing). A model being installed or ready says nothing about task qualification."
+        }
+      },
+      "required": [
+        "profiles"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelActionInput": {
+      "title": "DecisionModelActionInput",
+      "description": "Input for `decision.model.install`, `decision.model.activate` and `decision.model.remove`: one approved profile identifier. Profile identifiers must come from the signed catalogue; the page and the CLI cannot select arbitrary model files or repositories.",
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "description": "Structured payload value."
+        }
+      },
+      "required": [
+        "profile_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionStatusResult": {
+      "title": "DecisionStatusResult",
+      "description": "Passive status projection for `decision.status`: engine availability on the selected host, processing state and the caller's applicable grants. Reading it never downloads, warms, starts Core or processes records.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "host_engine_available": {
+          "type": "boolean",
+          "description": "Whether any local provider can run on the selected Core host. False on unsupported hosts, truthfully, regardless of client hardware."
+        },
+        "host_support_reason": {
+          "type": "string",
+          "description": "Bounded explanation when unavailable, such as an unsupported host class.",
+          "maxLength": 256
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether Local Decisions processing is currently enabled."
+        },
+        "installed_profiles": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Structured payload value."
+        },
+        "active_subscriptions": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Structured payload value."
+        }
+      },
+      "required": [
+        "schema_version",
+        "host_engine_available",
+        "enabled",
+        "installed_profiles",
+        "active_subscriptions"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionSettings": {
+      "title": "DecisionSettings",
+      "description": "Applicable Local Decisions configuration as `decision.settings.get` reports it: processing state, subscription state and bounded budgets. Defaults are the specification's conservative set; disabling never deletes history.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "processing": {
+          "type": "string",
+          "enum": [
+            "off",
+            "advisory",
+            "paused",
+            "blocked"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "subscription_enabled": {
+          "type": "boolean",
+          "description": "Whether the bounded new-document classification subscription admits work."
+        },
+        "subscription_daily_budget": {
+          "type": "integer",
+          "description": "Daily provider forward-pass ceiling for the subscription.",
+          "minimum": 0
+        },
+        "revision": {
+          "type": "integer",
+          "description": "Configuration revision for compare-and-swap updates.",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "schema_version",
+        "processing",
+        "subscription_enabled",
+        "subscription_daily_budget",
+        "revision"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionSettingsGetInput": {
+      "title": "DecisionSettingsGetInput",
+      "description": "Input for `decision.settings.get`. Passive.",
+      "type": "object",
+      "properties": {
+        "include_defaults": {
+          "type": "boolean",
+          "description": "Whether unset values are reported with the specification's conservative defaults. Absent defaults to false: unset values are omitted."
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "DecisionSettingsUpdateInput": {
+      "title": "DecisionSettingsUpdateInput",
+      "description": "Input for `decision.settings.update`: compare-and-swap configuration change. The revision must match the caller's last observed value; a mismatch is a conflict, and the update cannot enable processing the caller has no grant for.",
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "description": "The configuration revision the caller last observed.",
+          "minimum": 0
+        },
+        "processing": {
+          "type": "string",
+          "enum": [
+            "off",
+            "advisory",
+            "paused",
+            "blocked"
+          ],
+          "description": "Bounded enumerated value."
+        },
+        "subscription_enabled": {
+          "type": "boolean",
+          "description": "Structured payload value."
+        },
+        "subscription_daily_budget": {
+          "type": "integer",
+          "description": "New daily ceiling, bounded by installation policy.",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "revision"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionPublishResult": {
+      "title": "DecisionDefinitionPublishResult",
+      "description": "Result for `decision.definition.publish`: the immutable version now registered, with its computed digest. Publication binds contract metadata; it does not enable evaluations or grant any caller.",
+      "type": "object",
+      "properties": {
+        "definition_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef",
+          "description": "DecisionDefinitionRef — An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version."
+        },
+        "digest": {
+          "type": "string",
+          "description": "Opaque definition digest computed by the service.",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the version admits evaluations immediately (publish and enable are separate concerns)."
+        }
+      },
+      "required": [
+        "definition_ref",
+        "digest",
+        "enabled"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionDisableResult": {
+      "title": "DecisionDefinitionDisableResult",
+      "description": "Result for `decision.definition.disable`.",
+      "type": "object",
+      "properties": {
+        "definition_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionRef",
+          "description": "DecisionDefinitionRef — An immutable Decision Definition version. Definitions are immutable; a semantic change to question, rubric, options or recipe is a new version."
+        },
+        "enabled": {
+          "type": "boolean",
+          "const": false,
+          "description": "Structured payload value."
+        }
+      },
+      "required": [
+        "definition_ref",
+        "enabled"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionOutcomeSubmitResult": {
+      "title": "DecisionOutcomeSubmitResult",
+      "description": "Result for `decision.outcome.submit`: the appended outcome identity. The original prediction and its evidence remain preserved.",
+      "type": "object",
+      "properties": {
+        "outcome_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier — Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations."
+        },
+        "evaluation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier — Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations."
+        }
+      },
+      "required": [
+        "outcome_id",
+        "evaluation_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionStatusInput": {
+      "title": "DecisionStatusInput",
+      "description": "Input for `decision.status`. Passive; carries nothing.",
+      "type": "object",
+      "properties": {
+        "include_profiles": {
+          "type": "boolean",
+          "description": "Whether the status projection includes per-profile installation state. Absent defaults to false; the projection stays passive either way."
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "DecisionInputBundle": {
+      "title": "DecisionInputBundle",
+      "description": "Authorised evidence inputs for one evaluation. Source references are resolved and access-checked by the runtime after admission; inline state is caller-supplied evidence, never verified organisational truth, and is preserved as such in the record.",
+      "type": "object",
+      "properties": {
+        "source_refs": {
+          "type": "array",
+          "description": "Opaque authorised source references, resolved against the caller's effective grant.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSubjectRef"
+          },
+          "maxItems": 16
+        },
+        "inline_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Optional caller-supplied structured state, data-only and bounded. It is never executed and never treated as verified fact."
+        }
+      },
+      "required": [
+        "source_refs"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionEvaluateResult": {
+      "title": "DecisionEvaluateResult",
+      "description": "Admission result for `decision.evaluate`: the durable evaluation identity and its job reference. A bounded caller wait may return the terminal record via `decision.record.get`; a cold start returns pending status without holding the transport.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "evaluation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Durable evaluation identifier; opaque, and not a bearer authorisation token."
+        },
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "The durable job carrying the evaluation."
+        }
+      },
+      "required": [
+        "schema_version",
+        "evaluation_id",
+        "job"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelInstallResult": {
+      "title": "DecisionModelInstallResult",
+      "description": "Immediate admission result for the model management action: the durable job carrying it. The refreshed profile state is the job's terminal result.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "The durable job carrying the install/activation."
+        }
+      },
+      "required": [
+        "schema_version",
+        "job"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelActivateResult": {
+      "title": "DecisionModelActivateResult",
+      "description": "Immediate admission result for the model management action: the durable job carrying it. The refreshed profile state is the job's terminal result.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion",
+          "description": "DecisionSchemaVersion — The payload schema version for every decision payload in this boundary. Independent of the application envelope and workspace format versions."
+        },
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "The durable job carrying the install/activation."
+        }
+      },
+      "required": [
+        "schema_version",
+        "job"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelRemoveResult": {
+      "title": "DecisionModelRemoveResult",
+      "description": "Result for `decision.model.remove`: the profile's refreshed lifecycle state after removal or drain refusal is reported separately by policy.",
+      "type": "object",
+      "properties": {
+        "profile": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelProfileSummary",
+          "description": "The profile's refreshed state."
+        }
+      },
+      "required": [
+        "profile"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionRecordGetResult": {
+      "title": "DecisionRecordGetResult",
+      "description": "Wraps one DecisionRecord document.",
+      "type": "object",
+      "properties": {
+        "record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecord",
+          "description": "DecisionRecord — The durable record of one evaluation. Every terminal record identifies the evaluation, the effective context it ran under, the exact definition/subject/source revisions, provider and preparation identities, the typed prediction, the deterministic disposition and the execution facts. Abstention, cancellation and failure are first-class terminal states with their own reason codes."
+        }
+      },
+      "required": [
+        "record"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionDefinitionGetResult": {
+      "title": "DecisionDefinitionGetResult",
+      "description": "Wraps one DecisionDefinitionSummary document.",
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionSummary",
+          "description": "DecisionDefinitionSummary — One permitted definition version as `decision.definition.list` and `decision.definition.get` report it."
+        }
+      },
+      "required": [
+        "definition"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionSettingsGetResult": {
+      "title": "DecisionSettingsGetResult",
+      "description": "Wraps one DecisionSettings document.",
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettings",
+          "description": "DecisionSettings — Applicable Local Decisions configuration as `decision.settings.get` reports it: processing state, subscription state and bounded budgets. Defaults are the specification's conservative set; disabling never deletes history."
+        }
+      },
+      "required": [
+        "settings"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionSettingsUpdateResult": {
+      "title": "DecisionSettingsUpdateResult",
+      "description": "Wraps one DecisionSettings document.",
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettings",
+          "description": "DecisionSettings — Applicable Local Decisions configuration as `decision.settings.get` reports it: processing state, subscription state and bounded budgets. Defaults are the specification's conservative set; disabling never deletes history."
+        }
+      },
+      "required": [
+        "settings"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelActivateInput": {
+      "title": "DecisionModelActivateInput",
+      "description": "Input for `decision.model.activate`: one approved, installed profile identifier to select for inference.",
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "description": "Structured payload value."
+        }
+      },
+      "required": [
+        "profile_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelInstallInput": {
+      "title": "DecisionModelInstallInput",
+      "description": "Input for the model management action: one approved profile identifier.",
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "description": "Structured payload value."
+        }
+      },
+      "required": [
+        "profile_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionModelRemoveInput": {
+      "title": "DecisionModelRemoveInput",
+      "description": "Input for the model management action: one approved profile identifier.",
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "description": "Structured payload value."
+        }
+      },
+      "required": [
+        "profile_id"
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

@@ -103,6 +103,8 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "compatibility-matrix",
     "runtime",
     "chat",
+    "decision",
+    "engineering",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1229,6 +1231,52 @@ _WORKFLOW_CONTROL: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "not_found"))
 )
 
+#: Decision Runtime (ADR-042). Reads reuse POINT_READ; evaluation adds the
+#: provider/queue/admission failures an assessment can hit (dependency for the
+#: optional worker, deadline and rate for bounded budgets, not_found for an
+#: unknown definition); configuration mutations reuse the governance profile.
+_DECISION_EVALUATE: tuple[str, ...] = tuple(
+    sorted(
+        {
+            *_CREATE_MUT,
+            "dependency_unavailable",
+            "deadline_exceeded",
+            "not_found",
+            "rate_limited",
+        }
+    )
+)
+_DECISION_CONFIGURE: tuple[str, ...] = _GOV_MUT
+
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity mutations append immutable
+#: L0 artefacts to a bound session: a session/checkpoint reference that does not
+#: resolve is `not_found`, and the bounded payload caps make `size_limit_exceeded`
+#: reachable. Priority changes name an exact visible record version, so they can
+#: fail to find it; reviews reuse the governance profile (they carry a mutation
+#: precondition and resolve exact versions).
+_ENG_CONTINUITY_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "not_found", "size_limit_exceeded"))
+)
+#: `continuity.checkpoint.append` states its expected predecessor as a real
+#: mutation precondition (SPEC-CORE-ENGMEM-001 §9.2): two concurrent successors
+#: of one checkpoint must resolve as a precondition failure, not a silent
+#: replacement, and a session that moved under the caller is a `conflict`.
+_ENG_CONTINUITY_APPEND: tuple[str, ...] = tuple(
+    sorted({*_GOV_MUT, "not_found", "size_limit_exceeded"})
+)
+_ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: `engineering.source.record` appends one immutable event to a source stream the
+#: caller owns: reusing a sequence or snapshot identity for different content, or
+#: naming a stream bound to another repository, is a `conflict`, and the bounded
+#: manifest and pending window make `size_limit_exceeded` reachable.
+_ENG_SOURCE_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
+)
+#: `engineering.repository.register` binds an exact local checkout to a repository
+#: identity: re-registering the same identity with different metadata is a
+#: `conflict`, but there is no bounded manifest here, so `size_limit_exceeded` does
+#: not apply the way it does to `engineering.source.record`.
+_ENG_REPOSITORY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
@@ -1248,6 +1296,25 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "JOB_EVENTS": _JOB_EVENTS,
     "WORKFLOW_START": _WORKFLOW_START,
     "WORKFLOW_CONTROL": _WORKFLOW_CONTROL,
+    "DECISION_STATUS": _POINT_READ,
+    "DECISION_EVALUATE": _DECISION_EVALUATE,
+    "DECISION_RECORD_GET": _POINT_READ,
+    "DECISION_RECORD_LIST": _POINT_READ,
+    "DECISION_DEFINITION_LIST": _POINT_READ,
+    "DECISION_DEFINITION_GET": _POINT_READ,
+    "DECISION_CONFIGURE": _DECISION_CONFIGURE,
+    "DECISION_OUTCOME_SUBMIT": _DECISION_EVALUATE,
+    "DECISION_MODEL_LIST": _POINT_READ,
+    "DECISION_MODEL_INSTALL": _DECISION_CONFIGURE,
+    "DECISION_MODEL_ACTIVATE": _DECISION_CONFIGURE,
+    "DECISION_MODEL_REMOVE": _DECISION_CONFIGURE,
+    "DECISION_SETTINGS_GET": _POINT_READ,
+    "DECISION_SETTINGS_UPDATE": _DECISION_CONFIGURE,
+    "ENG_CONTINUITY_MUT": _ENG_CONTINUITY_MUT,
+    "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
+    "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
+    "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
+    "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1397,12 +1464,136 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "installation", ("workspace:read",), "none", "workspace.read",
         "workspace", "WorkspaceList", "INSTALL_READ", True,
     ),
+    # --- Decision Runtime (ADR-042 / SPEC-CORE-DEC-001) -----------------------
+    "decision.status": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionStatus", "DECISION_STATUS", False,
+    ),
+    "decision.evaluate": FrozenOperation(
+        "workspace", ("decision:invoke",), "update", "decision.invoke",
+        "decision", "DecisionEvaluate", "DECISION_EVALUATE", False,
+        job_kind="decision.evaluate", terminal_result="DecisionRecord",
+    ),
+    "decision.record.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionRecordGet", "DECISION_RECORD_GET", False,
+    ),
+    "decision.record.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionRecordList", "DECISION_RECORD_LIST", True,
+    ),
+    "decision.definition.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionDefinitionList", "DECISION_DEFINITION_LIST", False,
+    ),
+    "decision.definition.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionDefinitionGet", "DECISION_DEFINITION_GET", False,
+    ),
+    "decision.definition.publish": FrozenOperation(
+        "workspace", ("decision:configure",), "create", "decision.configure",
+        "decision", "DecisionDefinitionPublish", "DECISION_CONFIGURE", False,
+    ),
+    "decision.definition.disable": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionDefinitionDisable", "DECISION_CONFIGURE", False,
+    ),
+    "decision.outcome.submit": FrozenOperation(
+        "workspace", ("decision:feedback",), "create", "decision.feedback",
+        "decision", "DecisionOutcomeSubmit", "DECISION_EVALUATE", False,
+    ),
+    "decision.model.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionModelList", "DECISION_MODEL_LIST", False,
+    ),
+    "decision.model.install": FrozenOperation(
+        "workspace", ("decision:configure",), "create", "decision.configure",
+        "decision", "DecisionModelInstall", "DECISION_CONFIGURE", False,
+        job_kind="decision.model_install", terminal_result="DecisionModelInstallResult",
+    ),
+    "decision.model.activate": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionModelActivate", "DECISION_CONFIGURE", False,
+        job_kind="decision.model_activate", terminal_result="DecisionModelActivateResult",
+    ),
+    "decision.model.remove": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionModelRemove", "DECISION_CONFIGURE", False,
+    ),
+    "decision.settings.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionSettingsGet", "DECISION_SETTINGS_GET", False,
+    ),
+    "decision.settings.update": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionSettingsUpdate", "DECISION_CONFIGURE", False,
+    ),
+    # Engineering memory (SPEC-CORE-ENGMEM-001): continuity + engineering retrieval.
+    # Reads: handoff reads authoritative L0 checkpoints (POINT_READ); retrieval goes
+    # through serving projections with bounded results (GRAPH_READ); the pack build
+    # adds token budgets (CONTEXT_READ). Mutations: continuity appends (ENG_CONTINUITY_MUT),
+    # priority is a principal-scoped preference (ENG_PRIORITY_MUT), and review records
+    # a governed attestation with a precondition (GOV_MUT).
+    "continuity.session.register": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuitySessionRegister", "ENG_CONTINUITY_MUT", False,
+    ),
+    "continuity.checkpoint.append": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuityCheckpointAppend", "ENG_CONTINUITY_APPEND", False,
+    ),
+    "continuity.session.close": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContinuitySessionClose", "GOV_MUT", False,
+    ),
+    "continuity.handoff.read": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "ContinuityHandoffRead", "POINT_READ", False,
+    ),
+    "engineering.search": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringSearch", "GRAPH_READ", True,
+    ),
+    "engineering.expand": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringExpand", "GRAPH_READ", False,
+    ),
+    "engineering.context.build": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringContextBuild", "CONTEXT_READ", False,
+    ),
+    "context.priority.set": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContextPrioritySet", "ENG_PRIORITY_MUT", False,
+    ),
+    "engineering.review.record": FrozenOperation(
+        "workspace", ("engineering:curate",), "create", "engineering.curate",
+        "engineering", "EngineeringReviewRecord", "GOV_MUT", False,
+    ),
+    # A trusted source producer's own grant: distinct from `engineering:write`, so
+    # contributed observations never carry the authority to attest source state.
+    "engineering.source.record": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "engineering", "EngineeringSourceRecord", "ENG_SOURCE_MUT", False,
+    ),
+    # An explicitly authorized local operator's own grant: distinct from
+    # `engineering:write` and `engineering:source`, so neither a contributed
+    # observation nor a trusted source stream carries the authority to bind a
+    # local checkout to a repository identity.
+    "engineering.repository.register": FrozenOperation(
+        "workspace", ("engineering:repository",), "create", "engineering.repository",
+        "engineering", "EngineeringRepositoryRegister", "ENG_REPOSITORY_MUT", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
-#: precondition. Every other operation sets both precondition booleans false.
+#: precondition, plus `decision.settings.update`, whose compare-and-swap
+#: revision is a mutation precondition: a mismatch is a state the caller
+#: re-reads and re-decides against.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
-    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede"}
+    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
+     "decision.settings.update", "continuity.session.close", "continuity.checkpoint.append",
+     "engineering.review.record"}
 )
 
 

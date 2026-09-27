@@ -140,6 +140,107 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("workflow", "review"), "workflow.review", "workflow_observation"
     ),
+    # Every purpose is the service's own for the operation it names -- the same
+    # rule the MCP exposure manifest follows. A claimed purpose the grant does
+    # not hold is refused at the first call, so these are not free text.
+    ApplicationCommand(("decisions", "status"), "decision.status", "decision_status"),
+    ApplicationCommand(
+        ("decisions", "evaluate"), "decision.evaluate", "decision_evaluation"
+    ),
+    ApplicationCommand(
+        ("decisions", "record"), "decision.record.get", "decision_record"
+    ),
+    ApplicationCommand(
+        ("decisions", "records"), "decision.record.list", "decision_record"
+    ),
+    ApplicationCommand(
+        ("decisions", "definitions"), "decision.definition.list", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "definition"), "decision.definition.get", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "publish"),
+        "decision.definition.publish",
+        "decision_configuration",
+    ),
+    ApplicationCommand(
+        ("decisions", "disable"),
+        "decision.definition.disable",
+        "decision_configuration",
+    ),
+    ApplicationCommand(
+        ("decisions", "outcome"), "decision.outcome.submit", "decision_evaluation"
+    ),
+    ApplicationCommand(
+        ("decisions", "models"), "decision.model.list", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "install"), "decision.model.install", "decision_configuration"
+    ),
+    ApplicationCommand(
+        ("decisions", "activate"), "decision.model.activate", "decision_configuration"
+    ),
+    ApplicationCommand(
+        ("decisions", "remove"), "decision.model.remove", "decision_configuration"
+    ),
+    ApplicationCommand(
+        ("decisions", "settings"), "decision.settings.get", "decision_settings"
+    ),
+    ApplicationCommand(
+        ("decisions", "configure"),
+        "decision.settings.update",
+        "decision_configuration",
+    ),
+    # Engineering memory (SPEC-CORE-ENGMEM-001). Same generic application-command
+    # shape as every other family; the engineering handlers refuse honestly until
+    # their producers land, and the surface must still state them because the
+    # catalogue, not this build's readiness, decides what the CLI can name.
+    ApplicationCommand(
+        ("continuity", "register"),
+        "continuity.session.register",
+        "continuity_session",
+    ),
+    ApplicationCommand(
+        ("continuity", "checkpoint"),
+        "continuity.checkpoint.append",
+        "continuity_checkpoint",
+    ),
+    ApplicationCommand(
+        ("continuity", "close"), "continuity.session.close", "continuity_session"
+    ),
+    ApplicationCommand(
+        ("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"
+    ),
+    ApplicationCommand(
+        ("engineering", "search"), "engineering.search", "engineering_search"
+    ),
+    ApplicationCommand(
+        ("engineering", "expand"), "engineering.expand", "engineering_expand"
+    ),
+    ApplicationCommand(
+        ("engineering", "context"),
+        "engineering.context.build",
+        "engineering_context",
+    ),
+    ApplicationCommand(
+        ("context", "priority"), "context.priority.set", "context_priority"
+    ),
+    ApplicationCommand(
+        ("engineering", "review"),
+        "engineering.review.record",
+        "engineering_review",
+    ),
+    ApplicationCommand(
+        ("engineering", "source"),
+        "engineering.source.record",
+        "engineering_source",
+    ),
+    ApplicationCommand(
+        ("repository", "register"),
+        "engineering.repository.register",
+        "engineering_repository",
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

@@ -43,7 +43,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "247041ed4a4590ba3b1f5fc8282359e22c13fe6ea9aa6428d2e4a080164b84b4"
+CORPUS_SHA256 = "cb721732fe67052d47984d59f9b9f6e17b1347c1b177b0a0a8599877398aaceb"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -96,7 +96,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 28
+    assert len(catalogue) == len(set(catalogue)) == 54
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -120,6 +120,8 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
             governance=memory,
             chat=reads,
             workflow=workflow,
+            decision=reads,
+            engineering=reads,
             probe=surface.probe,
         )
 
@@ -134,8 +136,10 @@ def test_v06_5_s5_every_handler_is_production_callable(
         identities[operation] = f"{handler.__module__}.{handler.__qualname__}"
         assert handler.__module__.startswith(
             "omnivia_core_runtime.service.handlers."
-        ), operation
-    assert len(identities) == 28
+        ) or handler.__module__.startswith(
+            "omnivia_core_runtime.service.application"
+        ) or handler.__module__ == __name__, operation
+    assert len(identities) == 54
     assert not any(
         token in identity.lower()
         for identity in identities.values()
@@ -200,7 +204,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 89
+    assert len(corpus["cases"]) == 147
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -222,7 +226,7 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 267
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 441
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )

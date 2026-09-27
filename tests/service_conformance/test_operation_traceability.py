@@ -28,7 +28,7 @@ Two things this module deliberately does *not* do:
   facts are correct was decided by
   ``omnivia_core.contracts.v1.generated.OPERATION_CATALOGUE`` and is checked
   again here only for *equality* with that source, never re-derived.
-* It copies no case from the accepted 89-case adapter-wire-conformance corpus.
+* It copies no case from the accepted 121-case adapter-wire-conformance corpus.
   It proves that corpus exists and is referenced by name, and nothing more.
 
 Standard library and ``omnivia_core.contracts.v1`` only. Nothing here may
@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.0",
+    "manifest_version": "2.1",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -83,6 +83,20 @@ MCP_EXPOSED = (
     ("memory.search", "memory_search"),
     ("graph.traverse", "graph_traverse"),
     ("context_pack.build", "context_pack_build"),
+    ("engineering.search", "engineering_search"),
+    ("engineering.expand", "engineering_expand"),
+    ("engineering.context.build", "engineering_context_build"),
+    ("continuity.handoff.read", "continuity_handoff_read"),
+    ("decision.evaluate", "decision_evaluate"),
+    ("decision.record.get", "decision_record_get"),
+    ("decision.record.list", "decision_record_list"),
+    ("decision.status", "decision_status"),
+    ("memory.create", "memory_create"),
+    ("evidence.capture", "evidence_capture"),
+    ("import.start", "import_start"),
+    ("job.get", "job_get"),
+    ("job.events", "job_events"),
+    ("continuity.checkpoint.append", "continuity_checkpoint_append"),
 )
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
@@ -139,10 +153,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 28
+    assert len(OPERATION_CATALOGUE) == 54
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 28
-    assert len(set(FIXTURE_NAMES)) == 28
+    assert len(FIXTURE_NAMES) == 54
+    assert len(set(FIXTURE_NAMES)) == 54
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -269,8 +283,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 6
-    assert len(omitted) == 22
+    assert len(exposed) == 20
+    assert len(omitted) == 34
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -282,7 +296,19 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
     """
     decision = TRACEABILITY["client_surfaces"]["mcp"]
     for entry in decision["exposed"]:
-        assert CATALOGUE_BY_NAME[entry["operation"]].scope.side_effect == "none"
+        op = CATALOGUE_BY_NAME[entry["operation"]]
+        if op.scope.side_effect != "none":
+            # ADR-042: `decision.evaluate` is exposed with durable side effects
+            # (audit/evaluation records); the tool description states this.
+            # SPEC-CORE-ENGMEM-001: `continuity.checkpoint.append` likewise.
+            # The authoring additions (`memory.create`, `evidence.capture`,
+            # `import.start`) were always mutation-bearing.
+            assert entry["operation"] in (
+                "decision.evaluate", "continuity.checkpoint.append",
+                "memory.create", "evidence.capture", "import.start",
+            )
+        else:
+            assert op.scope.side_effect == "none"
     for entry in decision["omitted"]:
         assert set(entry) == {"operation", "reason"}
         side_effect = CATALOGUE_BY_NAME[entry["operation"]].scope.side_effect
@@ -296,8 +322,10 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
     assert reads_omitted == {
         "chat.events",
         "chat.snapshot",
-        "job.events",
-        "job.get",
+        "decision.definition.get",
+        "decision.definition.list",
+        "decision.model.list",
+        "decision.settings.get",
         "memory.get",
         "memory.list",
         "workflow.inspect",
@@ -318,16 +346,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 89
+    assert reference["case_count"] == 147
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_89_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_147_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 89
-    assert len(set(case_ids)) == 89
+    assert len(case_ids) == 147
+    assert len(set(case_ids)) == 147
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

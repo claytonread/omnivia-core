@@ -1818,7 +1818,7 @@ SHIPPED_OPERATIONS = frozenset(
 )
 
 
-def test_lc_b13_the_shipped_operations_are_exactly_the_six_read_operations() -> None:
+def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> None:
     """The registry, the purposes and the capability snapshot, all at six operations.
 
     `test_workspace_inspect_refusals.py` holds the production *grant* evidence; this is the
@@ -1838,7 +1838,27 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_six_read_operations() -> 
     assert OPERATION_PURPOSES[MEMORY_SEARCH_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[GRAPH_TRAVERSE_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
-    assert set(OPERATION_PURPOSES) == SHIPPED_OPERATIONS
+    # OPERATION_PURPOSES is the local-owner read policy: every registered read,
+    # and no mutation -- the decision stubs' mutations are excluded by design.
+    # OPERATION_PURPOSES is the workspace read policy: the six reads this
+    # registry serves plus the decision family's reads (its own session derives
+    # its purposes from the same table).
+    assert SHIPPED_OPERATIONS <= set(OPERATION_PURPOSES)
+    assert set(OPERATION_PURPOSES) - SHIPPED_OPERATIONS == {
+        "decision.record.get",
+        "decision.record.list",
+        "decision.status",
+        "decision.definition.list",
+        "decision.definition.get",
+        "decision.model.list",
+        "decision.settings.get",
+        # The engineering family's reads live in its own session and derive
+        # their purposes from the same table (SPEC-CORE-ENGMEM-001).
+        "continuity.handoff.read",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
+    }
     for name in SHIPPED_OPERATIONS:
         entry = get_operation_metadata(name)
         assert entry.scope.side_effect == "none"

@@ -114,6 +114,60 @@ _RESULT_KEYS: Final = {
 #: or a boolean is a refusal rather than a `TypeError` out of `len`.
 _MAPPING_RESULTS: Final = frozenset({"workspace_inspect"})
 
+#: The eight tools the restricted profile additionally advertises: four
+#: decision tools and four Engineering Memory tools.  The decision capability is
+#: off by default (§28.2), so the journey requires the two passive projections
+#: to answer with structured content and the other two -- an admission against
+#: a disabled capability and a lookup of an absent record -- to refuse with
+#: exactly the typed codes their handlers state.  The journey records no
+#: engineering observations or checkpoints, so the search and the context build
+#: answer structurally while an expansion of an absent record and a handoff of
+#: an absent checkpoint refuse `not_found`.  None of them counts among the
+#: populated reads.
+_DECISION_EXPECTATIONS: Final = {
+    "decision_status": "success",
+    "decision_record_list": "success",
+    "decision_record_get": "refused:not_found",
+    "decision_evaluate": "refused:capability_not_granted",
+    "engineering_search": "success",
+    "engineering_context_build": "success",
+    "engineering_expand": "refused:not_found",
+    "continuity_handoff_read": "refused:not_found",
+}
+_DECISION_PAYLOADS: Final = {
+    "engineering_search": {"query": "standard journey"},
+    "engineering_expand": {
+        "anchor": {"record_id": "standard-journey-absent", "version": "1"}
+    },
+    "engineering_context_build": {
+        "query": "standard journey",
+        "targets": [
+            {
+                "snapshot_id": "standard-journey-snapshot",
+                "snapshot_kind": "working_tree",
+            }
+        ],
+        "profile": "investigate",
+    },
+    "continuity_handoff_read": {"checkpoint_id": "standard-journey-absent"},
+    "decision_evaluate": {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": "standard-journey-subject", "revision": "r1"}],
+            "input": {
+                "source_refs": [{"id": "standard-journey-subject", "revision": "r1"}]
+            },
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": "standard-journey-decision-evaluate-1",
+    },
+    "decision_record_get": {"evaluation_id": "standard-journey-eval-1"},
+    "decision_record_list": {},
+    "decision_status": {},
+}
+_EXPECTED_TOOL_COUNT: Final = 6 + len(_DECISION_EXPECTATIONS)
+
 #: `whoami /user` reports the SID in this form, mixed into a CSV row.
 _SID_RE: Final = re.compile(r"S-1-[0-9-]+")
 
@@ -498,7 +552,7 @@ def _restrict(path: Path) -> None:
 #: The installed-administration host and profile this journey provisions. Fixed
 #: to `claude-code`/`restricted`: the protected configuration `configure` writes
 #: is the one file every client family below then reads through its own launch
-#: form, and `restricted` is the six-tool, read-only profile the Standard
+#: form, and `restricted` is the fourteen-tool, read-only profile the Standard
 #: distribution ships -- this journey does not exercise `authoring` and must
 #: not broaden mutation authority for this distribution.
 _ADMIN_HOST: Final = "claude-code"
@@ -712,6 +766,11 @@ async def _mcp_session(
             called[name] = (await session.call_tool(name, dict(payload))).model_dump(
                 mode="json"
             )
+        for name, payload in _DECISION_PAYLOADS.items():
+            stage[0] = name
+            called[name] = (await session.call_tool(name, dict(payload))).model_dump(
+                mode="json"
+            )
         stage[0] = "shutdown"
     return {
         "server": initialized.server_info.name,
@@ -760,7 +819,7 @@ def _mcp_journey(
     tools = observed.get("tools")
     if (
         not isinstance(tools, list)
-        or len(tools) != 6
+        or len(tools) != _EXPECTED_TOOL_COUNT
         or not all(
             isinstance(tool, Mapping) and isinstance(tool.get("name"), str)
             for tool in tools
@@ -768,16 +827,36 @@ def _mcp_journey(
     ):
         # Checked before the sort: a missing or non-string name would otherwise
         # raise a `TypeError` out of `sorted` rather than fail this journey.
-        raise JourneyError("MCP did not advertise the accepted six-tool manifest")
+        raise JourneyError("MCP did not advertise the accepted fourteen-tool manifest")
     advertised = sorted(tool["name"] for tool in tools)
-    if advertised != sorted(calls):
-        raise JourneyError(f"the {host} tool manifest was not the accepted six tools")
+    expected_calls = sorted([*calls, *_DECISION_EXPECTATIONS])
+    if advertised != expected_calls:
+        raise JourneyError(
+            f"the {host} tool manifest was not the accepted fourteen tools"
+        )
     called = observed.get("called")
-    if not isinstance(called, Mapping) or set(called) != set(calls):
-        raise JourneyError(f"the {host} session did not call all six tools")
+    if not isinstance(called, Mapping) or set(called) != set(expected_calls):
+        raise JourneyError(f"the {host} session did not call all fourteen tools")
     populated: dict[str, int] = {}
     for name in calls:
         result = called[name]
+        decision_expectation = _DECISION_EXPECTATIONS.get(name)
+        if decision_expectation is not None:
+            if decision_expectation == "success":
+                if not isinstance(result, dict) or result.get("is_error") is True:
+                    raise JourneyError(f"MCP {name} did not answer for {host}")
+                structured = result.get("structured_content")
+                if not isinstance(structured, dict) or not structured:
+                    raise JourneyError(f"MCP {name} returned nothing for {host}")
+                continue
+            if not isinstance(result, dict) or result.get("is_error") is not True:
+                raise JourneyError(f"MCP {name} did not refuse for {host}")
+            expected_code = decision_expectation.split(":", 1)[1]
+            if f'"code":"{expected_code}"' not in json.dumps(result):
+                raise JourneyError(
+                    f"MCP {name} refused for the wrong reason for {host}"
+                )
+            continue
         if not isinstance(result, dict) or result.get("is_error") is True:
             raise JourneyError(f"MCP {name} did not return a success for {host}")
         structured = result.get("structured_content")

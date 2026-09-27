@@ -1075,19 +1075,39 @@ def _result(module: ModuleType, name: str) -> object:
 
 
 def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
-    """A complete, accepted session observation, before any mutation."""
+    """A complete, accepted session observation, before any mutation.
+
+    `names` are the six data-bearing reads; the eight decision and engineering
+    tools are appended with their expected success or typed-refusal outcomes.
+    """
+    called = {
+        name: {
+            "is_error": False,
+            "structured_content": {module._RESULT_KEYS[name]: _result(module, name)},
+        }
+        for name in names
+    }
+    for name, expectation in module._DECISION_EXPECTATIONS.items():
+        if expectation == "success":
+            called[name] = {
+                "is_error": False,
+                "structured_content": {"projection": ["one"]},
+            }
+        else:
+            called[name] = {
+                "is_error": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"{name} was refused by the service: "
+                        f'{{"error":{{"code":"{expectation.split(":", 1)[1]}"}}}}',
+                    }
+                ],
+            }
     observed = {
         "server": "omnivia-core-mcp",
-        "tools": [{"name": name} for name in names],
-        "called": {
-            name: {
-                "is_error": False,
-                "structured_content": {
-                    module._RESULT_KEYS[name]: _result(module, name)
-                },
-            }
-            for name in names
-        },
+        "tools": [{"name": name} for name in [*names, *module._DECISION_EXPECTATIONS]],
+        "called": called,
     }
     observed.update(overrides)
     return observed
@@ -1384,9 +1404,9 @@ def test_retained_host_evidence_exposes_exactly_the_accepted_fields(
             "config_format": profile.config_format,
             "connected": True,
             "session_completed": True,
-            "tool_count": 6,
+            "tool_count": 14,
             "tool_calls": 6,
-            "tools": sorted(names),
+            "tools": sorted([*names, *module._DECISION_EXPECTATIONS]),
             "result_counts": dict.fromkeys(names, 1),
             "verdict": "pass",
         }
@@ -1425,10 +1445,12 @@ def test_every_advertised_tool_is_called_from_every_host(
         _calls(module),
     )
 
+    # `_mcp_session` is patched out, so only the reads cross this seam; the
+    # stub-refusal calls happen inside the real session driver.
     assert len(called) == 24
     assert {name for _command, name in called} == set(names)
-    assert result["tool_count"] == 6
-    assert result["tools"] == sorted(names)
+    assert result["tool_count"] == 14
+    assert result["tools"] == sorted([*names, *module._DECISION_EXPECTATIONS])
     assert result["knowledge_records"] == 1
     assert result["context_records"] == 1
     assert result["stdio_session_completed"] is True
@@ -1499,13 +1521,13 @@ def test_a_host_manifest_that_differs_from_the_others_fails_closed(
 
     def _per_host(command, arguments, calls, profile):
         seen.append(profile.name)
-        advertised = sorted(calls)
+        advertised = sorted([*calls, *module._DECISION_EXPECTATIONS])
         return {
             "client": profile.name,
             "config_format": profile.config_format,
             "connected": True,
             "session_completed": True,
-            "tool_count": 6,
+            "tool_count": 14,
             "tool_calls": 6,
             # The second host sees a different manifest from the first.
             "tools": advertised[1:] if len(seen) == 2 else advertised,
@@ -1526,12 +1548,15 @@ def test_a_host_manifest_that_differs_from_the_others_fails_closed(
     assert str(excinfo.value) == "the advertised tool manifest differed between hosts"
 
 
-def test_a_manifest_that_is_not_the_accepted_six_tools_fails_closed(
+def test_a_manifest_that_is_not_the_accepted_fourteen_tools_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _module()
     names = list(module._RESULT_KEYS)
-    renamed = [{"name": name} for name in (*names[:-1], "context_pack_write")]
+    renamed = [
+        {"name": name}
+        for name in (*names[:-1], "context_pack_write", *module._DECISION_EXPECTATIONS)
+    ]
     monkeypatch.setattr(
         module, "_mcp_session", _session(_observation(module, names, tools=renamed))
     )
@@ -1540,7 +1565,7 @@ def test_a_manifest_that_is_not_the_accepted_six_tools_fails_closed(
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
 
     assert str(excinfo.value) == (
-        "the claude_desktop tool manifest was not the accepted six tools"
+        "the claude_desktop tool manifest was not the accepted fourteen tools"
     )
 
 
@@ -1559,7 +1584,10 @@ def test_a_manifest_of_the_wrong_size_fails_closed(
     with pytest.raises(module.JourneyError) as excinfo:
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
 
-    assert str(excinfo.value) == "MCP did not advertise the accepted six-tool manifest"
+    assert (
+        str(excinfo.value)
+        == "MCP did not advertise the accepted fourteen-tool manifest"
+    )
 
 
 def test_a_session_that_did_not_identify_the_server_fails_closed(
@@ -1638,7 +1666,7 @@ def test_a_tool_that_was_never_called_fails_closed(
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[3])
 
     assert str(excinfo.value) == (
-        "the official_python_sdk session did not call all six tools"
+        "the official_python_sdk session did not call all fourteen tools"
     )
 
 
@@ -1668,7 +1696,7 @@ def test_a_missing_or_malformed_call_table_fails_closed(
     with pytest.raises(module.JourneyError) as excinfo:
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
 
-    assert str(excinfo.value) == "the codex session did not call all six tools"
+    assert str(excinfo.value) == "the codex session did not call all fourteen tools"
 
 
 def test_a_call_table_carrying_a_tool_nobody_called_fails_closed(
@@ -1684,7 +1712,7 @@ def test_a_call_table_carrying_a_tool_nobody_called_fails_closed(
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
 
     assert str(excinfo.value) == (
-        "the claude_desktop session did not call all six tools"
+        "the claude_desktop session did not call all fourteen tools"
     )
 
 
@@ -1717,7 +1745,10 @@ def test_a_malformed_tool_entry_or_name_fails_closed(
     with pytest.raises(module.JourneyError) as excinfo:
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
 
-    assert str(excinfo.value) == "MCP did not advertise the accepted six-tool manifest"
+    assert (
+        str(excinfo.value)
+        == "MCP did not advertise the accepted fourteen-tool manifest"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1925,9 +1956,7 @@ def test_visibility_wait_polls_at_the_fixed_interval_until_visible(
 ) -> None:
     module = _module()
     outcomes = iter([False, False, True])
-    monkeypatch.setattr(
-        module, "_knowledge_search_visible", lambda *_: next(outcomes)
-    )
+    monkeypatch.setattr(module, "_knowledge_search_visible", lambda *_: next(outcomes))
     slept: list[float] = []
     monkeypatch.setattr(module.time, "sleep", slept.append)
 

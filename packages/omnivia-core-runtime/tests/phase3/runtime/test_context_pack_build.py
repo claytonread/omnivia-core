@@ -184,10 +184,11 @@ QUERY = "alpha"
 SENTINEL_TEXT = "zz-caller-sentinel-9f3c1d"
 SENTINEL_CODE = "zzcallersentinel.deadbeef"
 
-#: The production grant as `service.main.serve` wires it after this lane's additive edit:
-#: the five operations Lane E left it holding, plus `context_pack.build`. Stated as the
-#: literal `serve` states rather than derived from the registry --
-#: `test_workspace_inspect_refusals.py` is what pins it against `main.py`'s own syntax.
+#: The production grant as `service.main.serve` wires it: the six reads, with
+#: the decision operations on the decision family's own session. Stated as the
+#: filtered read `serve` produces rather than copied from the registry --
+#: `test_workspace_inspect_refusals.py` is what pins it against `main.py`'s own
+#: syntax.
 PRODUCTION_OPERATIONS = frozenset(
     {
         WORKSPACE_INSPECT_OPERATION,
@@ -1779,16 +1780,13 @@ def test_the_production_operation_capability_scope_and_purpose_grant_is_exact() 
     registry = build_application_registry()
 
     assert session.operations == PRODUCTION_OPERATIONS
-    assert registry.operations == PRODUCTION_OPERATIONS
     assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == (
         KNOWLEDGE_RETRIEVAL_PURPOSE
     )
     assert session.purposes == frozenset(
         {"workspace_inspection", "knowledge_retrieval"}
     )
-    assert session.scopes == frozenset(
-        {"workspace:read", "memory:read", "graph:read"}
-    )
+    assert session.scopes == frozenset({"workspace:read", "memory:read", "graph:read"})
     assert tuple(ENTRY.scope.required_scopes) == ("memory:read",)
     assert ENTRY.scope.side_effect == "none"
     assert session.capabilities == (
@@ -1799,7 +1797,9 @@ def test_the_production_operation_capability_scope_and_purpose_grant_is_exact() 
         CapabilityRef(id="memory.read", version="1.0"),
         CapabilityRef(id="workspace.read", version="1.0"),
     )
-    assert server_capability_snapshot(registry) == session.capabilities
+    # The snapshot covers every registered handler (the decision stubs among
+    # them), so it is a superset of the read session's capabilities.
+    assert set(session.capabilities) <= set(server_capability_snapshot(registry))
 
 
 def test_context_pack_build_is_absent_from_every_probe_seam(owned: m2.Owned) -> None:

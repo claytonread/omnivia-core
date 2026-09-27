@@ -107,6 +107,22 @@ WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
 #: canonical Runtime stream, not a scheduler row -- and one purpose covering both would
 #: let a grant issued for either be presented for the other.
 WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
+DECISION_EVALUATION_PURPOSE: Final = "decision_evaluation"
+DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity bindings and their final
+#: close are one session-level act; checkpoint appends are their own purpose because
+#: they write durable L0 evidence, not session bookkeeping.
+CONTINUITY_SESSION_PURPOSE: Final = "continuity_session"
+CONTINUITY_CHECKPOINT_PURPOSE: Final = "continuity_checkpoint"
+CONTEXT_PRIORITY_PURPOSE: Final = "context_priority"
+ENGINEERING_REVIEW_PURPOSE: Final = "engineering_review"
+#: A trusted source producer recording source state. Its own purpose, like its own
+#: scope and capability, so a grant to contribute observations never covers it.
+ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
+#: An explicitly authorized local operator binding a checkout to a repository
+#: identity. Its own purpose, like its own scope and capability, so neither a
+#: contributed observation nor a trusted source stream carries this authority.
+ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -127,6 +143,21 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "record.supersede": KNOWLEDGE_GOVERNANCE_PURPOSE,
+        "decision.evaluate": DECISION_EVALUATION_PURPOSE,
+        "decision.definition.publish": DECISION_CONFIGURATION_PURPOSE,
+        "decision.definition.disable": DECISION_CONFIGURATION_PURPOSE,
+        "decision.outcome.submit": DECISION_EVALUATION_PURPOSE,
+        "decision.model.install": DECISION_CONFIGURATION_PURPOSE,
+        "decision.model.activate": DECISION_CONFIGURATION_PURPOSE,
+        "decision.model.remove": DECISION_CONFIGURATION_PURPOSE,
+        "decision.settings.update": DECISION_CONFIGURATION_PURPOSE,
+        "continuity.session.register": CONTINUITY_SESSION_PURPOSE,
+        "continuity.checkpoint.append": CONTINUITY_CHECKPOINT_PURPOSE,
+        "continuity.session.close": CONTINUITY_SESSION_PURPOSE,
+        "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
+        "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
+        "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
+        "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
     }
 )
 
@@ -165,6 +196,30 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
         "record.supersede": KNOWLEDGE_REVIEWER_ROLE,
+        "decision.evaluate": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.definition.publish": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.definition.disable": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.outcome.submit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.install": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.activate": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.remove": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Engineering memory (SPEC-CORE-ENGMEM-001): continuity and priority writes
+        # are contributor acts; recording a review attestation is a reviewer act and
+        # accepts no knowledge by itself.
+        "continuity.session.register": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.checkpoint.append": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.session.close": WORKSPACE_CONTRIBUTOR_ROLE,
+        "context.priority.set": WORKSPACE_CONTRIBUTOR_ROLE,
+        "engineering.review.record": KNOWLEDGE_REVIEWER_ROLE,
+        # The contributor role, plus the operation's own `engineering:source` scope and
+        # `engineering.source` capability, which only a source producer's grant holds.
+        "engineering.source.record": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Binding a local checkout to a repository identity is contributor work in the
+        # same sense authoring content is: it reviews nothing and administers nothing.
+        # Its own `engineering:repository` scope and `engineering.repository` capability
+        # are what only an explicitly authorized local operator's grant holds.
+        "engineering.repository.register": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 
