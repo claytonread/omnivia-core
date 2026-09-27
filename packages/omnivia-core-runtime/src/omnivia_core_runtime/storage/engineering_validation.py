@@ -508,6 +508,15 @@ def verify_factual_validation_receipt(
         raise ValidationReceiptInvalid
     if receipt.outcome.status != "passed" or receipt.outcome.exit_code != 0:
         raise ValidationReceiptInvalid
+
+    applicability = content.get("applicability")
+    if not isinstance(applicability, Mapping):
+        raise ValidationReceiptInvalid
+    if (
+        applicability.get("repository_id") != receipt.evaluated_frontier.repository_id
+        or applicability.get("snapshot_id") != receipt.evaluated_frontier.snapshot_id
+    ):
+        raise ValidationReceiptInvalid
     linked = frozenset(evidence_ids)
     if (
         receipt.evidence_id not in linked

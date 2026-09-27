@@ -21,6 +21,7 @@ import test_blobs_staged_sources_and_evidence_migration as m2
 import test_engineering_source_coverage as esc
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.storage import governance as governance_storage
+from omnivia_core_runtime.storage import memory as memory_storage
 from omnivia_core_runtime.storage.engineering_validation import (
     VALIDATION_RECEIPT_MEDIA_TYPE,
     VALIDATION_SOURCE_KIND,
@@ -41,6 +42,7 @@ WORKSPACE_ID = esc.WORKSPACE_ID
 REPOSITORY = esc.REPOSITORY
 STREAM = esc.STREAM
 SNAPSHOT = "esnap-validation"
+SNAPSHOT_B = "esnap-validation-b"
 PRODUCER = "validation.runner"
 PRODUCER_VERSION = "1.0.0"
 RUN_ID = "job-validation-1"
@@ -67,6 +69,10 @@ def _timestamp(value: int) -> str:
 def workspace(tmp_path: Path) -> Any:
     opened = Workspace(tmp_path)
     opened.record(esc._source(1, SNAPSHOT, esc.FILES_A), key="validation-source")
+    opened.record(
+        esc._source(2, SNAPSHOT_B, esc.FILES_A, predecessor=SNAPSHOT),
+        key="validation-source-b",
+    )
     yield opened
     opened.holder.connection.close()
 
@@ -75,7 +81,7 @@ def _frontier(workspace: Workspace, snapshot: str = SNAPSHOT) -> dict[str, Any]:
     row = workspace.holder.connection.execute(
         "SELECT e.sequence, e.manifest_digest FROM omnivia_engineering_source_events e "
         "WHERE e.workspace_id=? AND e.stream_id=? AND e.snapshot_id=?",
-        (WORKSPACE_ID, STREAM, SNAPSHOT),
+        (WORKSPACE_ID, STREAM, snapshot),
     ).fetchone()
     assert row is not None
     return {
@@ -88,7 +94,10 @@ def _frontier(workspace: Workspace, snapshot: str = SNAPSHOT) -> dict[str, Any]:
 
 
 def _base_content(
-    *, kind: str = "validation_result", basis: str = "observed"
+    *,
+    kind: str = "validation_result",
+    basis: str = "observed",
+    applicability_snapshot: str = SNAPSHOT,
 ) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
@@ -99,7 +108,7 @@ def _base_content(
         "assertion_basis": basis,
         "applicability": {
             "repository_id": REPOSITORY,
-            "snapshot_id": SNAPSHOT,
+            "snapshot_id": applicability_snapshot,
         },
     }
 
@@ -113,9 +122,11 @@ def _document(
     execution_kind: str = "command",
     status: str = "passed",
     exit_code: int = 0,
+    frontier: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    frontier = _frontier(workspace, snapshot=SNAPSHOT)
-    frontier["snapshot_id"] = snapshot
+    if frontier is None:
+        frontier = _frontier(workspace, snapshot=SNAPSHOT)
+        frontier["snapshot_id"] = snapshot
     return {
         "schema_version": "1.0",
         "execution": {
@@ -549,3 +560,92 @@ def test_output_evidence_mutation_is_rechecked_before_acceptance(
         governance_storage, "_verify_validation_receipt", verify_with_missing_output
     )
     _assert_receipt_refusal(_transition(workspace, "candidate.approve", proposed))
+
+
+def _cross_snapshot_claim(workspace: Workspace) -> dict[str, Any]:
+    """Content scoped to snapshot A, backed by a receipt evaluated against B."""
+    content = _base_content(applicability_snapshot=SNAPSHOT)
+    document = _document(workspace, content, frontier=_frontier(workspace, SNAPSHOT_B))
+    _seed_execution_evidence(workspace, document)
+    content["validation_receipt"] = {
+        "evidence_id": RECEIPT_EVIDENCE_ID,
+        "document": copy.deepcopy(document),
+    }
+    return _claim(content)
+
+
+def test_receipt_scoped_to_other_snapshot_cannot_create(workspace: Workspace) -> None:
+    claim = _cross_snapshot_claim(workspace)
+    _assert_receipt_refusal(workspace.call("memory.create", claim, key="cross-snapshot"))
+
+
+@pytest.mark.parametrize("operation", ["knowledge.propose", "candidate.approve"])
+def test_receipt_scoped_to_other_snapshot_cannot_propose_or_approve(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """Governance rechecks a legacy cross-snapshot record at each boundary."""
+
+    def bypass_for_legacy_fixture(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    claim = _cross_snapshot_claim(workspace)
+    with monkeypatch.context() as creation_bypass:
+        creation_bypass.setattr(
+            memory_storage,
+            "_verify_validation_receipt",
+            bypass_for_legacy_fixture,
+        )
+        created = _identity(
+            workspace.ok("memory.create", claim, key="legacy-cross-snapshot")
+        )
+    source = created
+    if operation == "candidate.approve":
+        with monkeypatch.context() as proposal_bypass:
+            proposal_bypass.setattr(
+                governance_storage,
+                "_verify_validation_receipt",
+                bypass_for_legacy_fixture,
+            )
+            proposed_response = _transition(workspace, "knowledge.propose", created)
+        assert isinstance(proposed_response, SuccessResponseEnvelope), proposed_response
+        source = _identity(dict(proposed_response.to_wire()["result"]), "updated_record")
+
+    _assert_receipt_refusal(_transition(workspace, operation, source))
+
+
+@pytest.mark.parametrize("applicability", [None, "snapshot-a"])
+def test_factual_receipt_requires_mapping_applicability(
+    workspace: Workspace, applicability: object
+) -> None:
+    content = _base_content()
+    content["applicability"] = applicability
+    document = _document(workspace, content, frontier=_frontier(workspace, SNAPSHOT))
+    _seed_execution_evidence(workspace, document)
+    content["validation_receipt"] = {
+        "evidence_id": RECEIPT_EVIDENCE_ID,
+        "document": copy.deepcopy(document),
+    }
+    _assert_receipt_refusal(
+        workspace.call("memory.create", _claim(content), key="invalid-applicability")
+    )
+
+
+@pytest.mark.parametrize("snapshot", [SNAPSHOT, SNAPSHOT_B])
+def test_matching_snapshot_binding_survives_creation_proposal_and_acceptance(
+    workspace: Workspace, snapshot: str
+) -> None:
+    content = _base_content(applicability_snapshot=snapshot)
+    document = _document(workspace, content, frontier=_frontier(workspace, snapshot))
+    _seed_execution_evidence(workspace, document)
+    content["validation_receipt"] = {
+        "evidence_id": RECEIPT_EVIDENCE_ID,
+        "document": copy.deepcopy(document),
+    }
+    claim = _claim(content)
+
+    created = _identity(workspace.ok("memory.create", claim, key=f"matching-{snapshot}"))
+    proposed_response = _transition(workspace, "knowledge.propose", created)
+    assert isinstance(proposed_response, SuccessResponseEnvelope), proposed_response
+    proposed = _identity(dict(proposed_response.to_wire()["result"]), "updated_record")
+    approved_response = _transition(workspace, "candidate.approve", proposed)
+    assert isinstance(approved_response, SuccessResponseEnvelope), approved_response
