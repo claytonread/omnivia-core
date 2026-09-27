@@ -69,6 +69,10 @@ class BuildContext:
     effective_hydrations: int = 8
     effective_evidence_bytes: int = 262_144
     hydrations: int = 0
+    source_bytes_read: int = 0
+    selection_profile: str | None = None
+    authorized_frontier_digest: str | None = None
+    authorized_candidate_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +186,12 @@ def build_pack(
         "artifact_canonicalization": "rfc8785",
         "resolution_instant_us": ctx.resolved_at_us,
     }
+    if ctx.selection_profile is not None:
+        reproducibility["selection_profile"] = ctx.selection_profile
+    if ctx.authorized_frontier_digest is not None:
+        reproducibility["authorized_frontier_digest"] = ctx.authorized_frontier_digest
+    if ctx.authorized_candidate_count is not None:
+        reproducibility["authorized_candidate_count"] = ctx.authorized_candidate_count
     normalized_request: dict[str, Any] = {"query": ctx.query, "profile": ctx.profile}
     if ctx.source_coverage:
         normalized_request["applicability_mode"] = ctx.mode
@@ -200,9 +210,16 @@ def build_pack(
         },
         "rendered_tokens": token_count,
         "rendered_bytes": byte_count,
-        "source_bytes_read": 0,
-        "hydrations": 0,
+        "source_bytes_read": ctx.source_bytes_read,
+        "hydrations": ctx.hydrations,
     }
+    if ctx.selection_profile is not None:
+        budget["effective"].update(
+            {
+                "hydrations": ctx.effective_hydrations,
+                "evidence_bytes": ctx.effective_evidence_bytes,
+            }
+        )
     if ctx.requested_budget is not None:
         budget["requested"] = dict(ctx.requested_budget)
 
@@ -328,6 +345,12 @@ def build_pack_byte_only(
         "artifact_canonicalization": "rfc8785",
         "resolution_instant_us": ctx.resolved_at_us,
     }
+    if ctx.selection_profile is not None:
+        reproducibility["selection_profile"] = ctx.selection_profile
+    if ctx.authorized_frontier_digest is not None:
+        reproducibility["authorized_frontier_digest"] = ctx.authorized_frontier_digest
+    if ctx.authorized_candidate_count is not None:
+        reproducibility["authorized_candidate_count"] = ctx.authorized_candidate_count
     normalized_request: dict[str, Any] = {
         "query": ctx.query,
         "profile": ctx.profile,
@@ -348,8 +371,8 @@ def build_pack_byte_only(
             "evidence_bytes": ctx.effective_evidence_bytes,
         },
         "rendered_bytes": byte_count,
-        "source_bytes_read": 0,
-        "hydrations": 0,
+        "source_bytes_read": ctx.source_bytes_read,
+        "hydrations": ctx.hydrations,
     }
     if ctx.requested_budget is not None:
         budget["requested"] = dict(ctx.requested_budget)

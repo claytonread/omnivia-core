@@ -50,6 +50,10 @@ from typing import Any, Final, TypeGuard
 from omnivia_core.contracts.v1 import is_content_checksum, is_identifier
 from omnivia_core_runtime.storage import repository_identity as repo_identity
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
+from omnivia_core_runtime.storage.payload_budget import (
+    PayloadLengthMismatch,
+    PayloadReadBudget,
+)
 
 #: The documented v1 bounds (spec §6.3 caps, stated here once).
 MAX_MANIFEST_ENTRIES: Final = 256
@@ -581,6 +585,8 @@ def covered_snapshot(
     workspace_id: str,
     snapshot_id: str,
     repository_id: str | None = None,
+    payload_budget: PayloadReadBudget | None = None,
+    cache: dict[tuple[str, str, str | None], CoveredSnapshot | None] | None = None,
 ) -> CoveredSnapshot | None:
     """The recorded snapshot if its event is inside its stream's coverage.
 
@@ -588,9 +594,17 @@ def covered_snapshot(
     gap in its stream, belongs to another repository than the one stated, or its
     stored manifest body no longer matches its digest. A read; it writes nothing.
     """
+    cache_key = (workspace_id, snapshot_id, repository_id)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    manifest_projection = (
+        "e.manifest_json"
+        if payload_budget is None
+        else payload_budget.byte_length_sql(connection, "e.manifest_json")
+    )
     row = connection.execute(
         "SELECT st.repository_id, e.stream_id, e.sequence, st.covered_sequence, "
-        "e.manifest_json, e.manifest_digest, sn.capture_status "
+        f"{manifest_projection}, e.manifest_digest, sn.capture_status "
         "FROM omnivia_engineering_source_events e "
         "JOIN omnivia_engineering_source_streams st "
         "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
@@ -600,13 +614,37 @@ def covered_snapshot(
         (workspace_id, snapshot_id),
     ).fetchone()
     if row is None or int(row[2]) > int(row[3]):
+        if cache is not None:
+            cache[cache_key] = None
         return None
     if repository_id is not None and repository_id != str(row[0]):
+        if cache is not None:
+            cache[cache_key] = None
         return None
-    if content_digest(str(row[4])) != str(row[5]):
+    if payload_budget is None:
+        manifest_json = str(row[4])
+    else:
+        expected_bytes = int(row[4])
+        if not 2 <= expected_bytes <= MAX_MANIFEST_BYTES:
+            raise PayloadLengthMismatch("the source manifest byte length is invalid")
+        payload_budget.precheck([expected_bytes])
+        payload_row = connection.execute(
+            "SELECT manifest_json FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND snapshot_id = ?",
+            (workspace_id, snapshot_id),
+        ).fetchone()
+        if payload_row is None:
+            if cache is not None:
+                cache[cache_key] = None
+            return None
+        manifest_json = str(payload_row[0])
+        payload_budget.consume(manifest_json, expected_bytes)
+    if content_digest(manifest_json) != str(row[5]):
+        if cache is not None:
+            cache[cache_key] = None
         return None
-    manifest = json.loads(str(row[4]))
-    return CoveredSnapshot(
+    manifest = json.loads(manifest_json)
+    covered = CoveredSnapshot(
         repository_id=str(row[0]),
         stream_id=str(row[1]),
         sequence=int(row[2]),
@@ -615,6 +653,9 @@ def covered_snapshot(
         manifest_digest=str(row[5]),
         manifest=manifest,
     )
+    if cache is not None:
+        cache[cache_key] = covered
+    return covered
 
 
 def parse_dependency_manifest(raw: object) -> DependencyManifest:
@@ -901,6 +942,10 @@ def evaluate_applicability(
     version: str,
     evidence_available: bool,
     target: CoveredSnapshot,
+    payload_budget: PayloadReadBudget | None = None,
+    snapshot_cache: dict[
+        tuple[str, str, str | None], CoveredSnapshot | None
+    ] | None = None,
 ) -> str:
     """The one evaluator: an exact record version's dependencies at one target.
 
@@ -924,6 +969,8 @@ def evaluate_applicability(
         workspace_id=workspace_id,
         snapshot_id=str(row[2]),
         repository_id=str(row[0]),
+        payload_budget=payload_budget,
+        cache=snapshot_cache,
     )
     if baseline is None or baseline.stream_id != target.stream_id:
         return "unknown"

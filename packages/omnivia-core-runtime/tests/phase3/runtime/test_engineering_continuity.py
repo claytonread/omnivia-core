@@ -652,6 +652,20 @@ def test_the_resume_pack_reads_only_the_callers_checkpoints(workspace: Any) -> N
 
     before = pack(OWNER)
     assert objectives(before) == [f"Owner step {n}" for n in (6, 5, 4, 3, 2)]
+    assert len(before["sections"]) <= 24
+    expected_checkpoint_bytes = sum(
+        int(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT length(CAST(c.payload_json AS BLOB)) "
+            "FROM omnivia_engineering_checkpoints c "
+            "JOIN omnivia_engineering_sessions s "
+            "ON s.workspace_id = c.workspace_id AND s.session_id = c.session_id "
+            "WHERE c.workspace_id = ? AND s.principal_id = ? "
+            "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT 5",
+            (sc.WORKSPACE_ID, OWNER.principal_id),
+        )
+    )
+    assert before["budget"]["source_bytes_read"] == expected_checkpoint_bytes
 
     _session_with(workspace, OTHER, [f"XYZZY step {n}" for n in range(1, 6)])
 
@@ -662,3 +676,29 @@ def test_the_resume_pack_reads_only_the_callers_checkpoints(workspace: Any) -> N
     theirs = pack(OTHER)
     assert objectives(theirs) == [f"XYZZY step {n}" for n in (5, 4, 3, 2, 1)]
     assert "Owner step" not in json.dumps(theirs)
+
+
+def test_resume_payload_budget_refuses_before_checkpoint_json_is_selected(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["A checkpoint larger than one byte"])
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        refusal = workspace.refused(
+            "engineering.context.build",
+            {
+                "query": "provider",
+                "targets": [],
+                "profile": "resume",
+                "budget": {"evidence_bytes": 1},
+            },
+            session=OWNER,
+        )
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+    assert refusal[0] == ERROR_CODE_SIZE_LIMIT_EXCEEDED
+    assert not any(
+        "SELECT c.checkpoint_id, c.sequence, c.payload_json" in statement
+        for statement in statements
+    )

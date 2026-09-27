@@ -1,10 +1,9 @@
-"""The pre-hydration budget and body-free frontier gate of `engineering.context.build`.
+"""The pre-hydration budget and preview-first gate of `engineering.context.build`.
 
 Every supplied budget field is validated -- a positive, non-bool integer at or
 below its server ceiling -- before any frontier or body read, and the admitted
-candidate count is checked against the effective hydration cap before any body
-is hydrated: a build past that cap refuses as `size_limit_exceeded` and reads
-no body column at all.
+candidate set is ranked from bounded projections before the selected bodies are
+hydrated. Source payload lengths are checked before a payload SELECT.
 """
 
 from __future__ import annotations
@@ -18,9 +17,9 @@ from omnivia_core_runtime.service.handlers import engineering as handlers
 
 Workspace = esc.Workspace
 
-#: The columns a body read touches; a statement naming one of these ran against
-#: content or claim payload, never against the body-free frontier metadata.
-BODY_COLUMNS = ("content_json", "claim_json")
+#: Exact payload projections. Length-only prechecks name the same columns but do
+#: not return their contents to the application.
+BODY_COLUMNS = ("content_json", "claim_json", "rationale_json")
 
 
 class Trace:
@@ -38,7 +37,13 @@ class Trace:
         self.connection.set_trace_callback(None)
 
     def body_reads(self) -> list[str]:
-        return [s for s in self.statements if any(m in s for m in BODY_COLUMNS)]
+        return [
+            statement
+            for statement in self.statements
+            if any(column in statement for column in BODY_COLUMNS)
+            and "octet_length(" not in statement
+            and "length(CAST(" not in statement
+        ]
 
     def frontier_reads(self) -> list[str]:
         return [
@@ -77,18 +82,23 @@ def _build(workspace: Workspace, **overrides: Any) -> Any:
 # --- the hydration-cap gate ---------------------------------------------------------
 
 
-def test_admitted_bodies_past_the_hydration_cap_refuse_before_any_body_query(
+def test_more_matches_than_the_hydration_cap_selects_without_over_hydrating(
     workspace: Workspace,
 ) -> None:
     assert handlers.BUDGET_DEFAULT_HYDRATIONS == 8
     _observe_many(workspace, 9)
     connection = workspace.holder.connection
     with Trace(connection) as trace:
-        code, _message, _retry = workspace.refused(
+        result = workspace.ok(
             "engineering.context.build", {"query": "item", "targets": [], "profile": "investigate"}
         )
-    assert code == "size_limit_exceeded"
-    assert trace.body_reads() == []
+    pack = result["pack"]
+    assert pack["budget"]["hydrations"] == 8
+    assert len(pack["citations"]) == 8
+    assert {tuple(item.values()) for item in pack["omissions"]} >= {
+        ("sections", "selection_limit")
+    }
+    assert len(trace.body_reads()) >= 1
 
 
 def test_exactly_the_hydration_cap_still_builds(workspace: Workspace) -> None:
@@ -102,12 +112,29 @@ def test_exactly_the_hydration_cap_still_builds(workspace: Workspace) -> None:
     assert {c["record_ref"]["record_id"] for c in pack["citations"]} == set(ids)
 
 
+def test_requested_single_hydration_is_deterministic_and_discloses_omission(
+    workspace: Workspace,
+) -> None:
+    _observe_many(workspace, 3)
+    request = {
+        "query": "item",
+        "targets": [],
+        "profile": "investigate",
+        "budget": {"hydrations": 1},
+    }
+    first = workspace.ok("engineering.context.build", request)["pack"]
+    second = workspace.ok("engineering.context.build", request)["pack"]
+    assert first["budget"]["hydrations"] == 1
+    assert len(first["sections"]) == 1
+    assert {item["reason"] for item in first["omissions"]} == {"selection_limit"}
+    assert any("bounded hydration" in item for item in first["uncertainties"])
+    assert first["sections"] == second["sections"]
+
+
 def test_a_denied_version_is_never_counted_toward_the_hydration_cap(
     workspace: Workspace,
 ) -> None:
-    """Nine records exist, one behind a label only the owner holds: the owner's
-    own count exceeds the cap and refuses, but the label-blind reader admits
-    only the other eight and builds cleanly."""
+    """A label-hidden version never enters the reader's preview candidate count."""
     import test_blobs_staged_sources_and_evidence_migration as m2
 
     m2.write(workspace.holder, m2.EVIDENCE, evidence_id="evd-open", source_native_id="doc-open")
@@ -120,11 +147,12 @@ def test_a_denied_version_is_never_counted_toward_the_hydration_cap(
         )
     workspace.observe(esc._observation(None, title="Hidden item", evidence=True))
 
-    owner_code, _msg, _retry = workspace.refused(
+    owner = workspace.ok(
         "engineering.context.build",
         {"query": "item", "targets": [], "profile": "investigate"},
     )
-    assert owner_code == "size_limit_exceeded"
+    assert owner["pack"]["budget"]["hydrations"] == 8
+    assert owner["pack"]["reproducibility"]["authorized_candidate_count"] == 9
 
     reader = esc._reader()
     result = workspace.ok(
@@ -133,6 +161,112 @@ def test_a_denied_version_is_never_counted_toward_the_hydration_cap(
         session=reader,
     )
     assert result["pack"]["budget"]["hydrations"] == 8
+    assert result["pack"]["reproducibility"]["authorized_candidate_count"] == 8
+
+
+def test_one_preview_match_among_more_than_the_cap_hydrates_only_one(
+    workspace: Workspace,
+) -> None:
+    unrelated_ids = _observe_many(workspace, 12, prefix="Unrelated")
+    selected_id = workspace.observe(
+        esc._observation(None, title="Needle finding", evidence=False)
+    )["record_id"]
+    unrelated_assemblies = {
+        str(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT assembly_id FROM omnivia_governed_version_assemblies "
+            "WHERE workspace_id = ? AND governed_record_id IN "
+            f"({', '.join('?' for _ in unrelated_ids)})",
+            (esc.WORKSPACE_ID, *unrelated_ids),
+        )
+    }
+    with Trace(workspace.holder.connection) as trace:
+        result = workspace.ok(
+            "engineering.context.build",
+            {"query": "needle", "targets": [], "profile": "investigate"},
+        )
+    pack = result["pack"]
+    assert pack["budget"]["hydrations"] == 1
+    assert [item["record_ref"]["record_id"] for item in pack["citations"]] == [
+        selected_id
+    ]
+    assert not any(
+        assembly_id in statement
+        for assembly_id in unrelated_assemblies
+        for statement in trace.body_reads()
+    )
+
+
+def test_selection_and_frontier_digest_are_independent_of_page_size(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _observe_many(workspace, 11)
+    instant = 1_800_000_000_000_000_000
+    monkeypatch.setattr(handlers.time, "time_ns", lambda: instant)
+    request = {"query": "item", "targets": [], "profile": "investigate"}
+    normal = workspace.ok("engineering.context.build", request)["pack"]
+
+    monkeypatch.setattr(handlers, "AUTHORIZED_FRONTIER_PAGE_SIZE", 2)
+    paged = workspace.ok("engineering.context.build", request)["pack"]
+    assert paged == normal
+
+
+def test_record_id_pages_use_the_workspace_record_index(workspace: Workspace) -> None:
+    _observe_many(workspace, 2)
+    plan = workspace.holder.connection.execute(
+        "EXPLAIN QUERY PLAN SELECT governed_record_id "
+        "FROM omnivia_authoritative_governed_version_metadata "
+        "WHERE workspace_id = ? AND recorded_at_us <= ? AND domain_scope = ? "
+        "AND governed_record_id > ? GROUP BY governed_record_id "
+        "ORDER BY governed_record_id LIMIT ?",
+        (esc.WORKSPACE_ID, 2**63 - 1, "engineering.codebase", "", 512),
+    ).fetchall()
+    assert any(
+        "omnivia_idx_governed_version_assemblies_record" in str(row[3])
+        for row in plan
+    ), plan
+
+
+def test_section_cap_limits_a_32_hydration_request_to_24_sections(
+    workspace: Workspace,
+) -> None:
+    _observe_many(workspace, 30)
+    pack = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "item",
+            "targets": [],
+            "profile": "investigate",
+            "budget": {
+                "model_tokens": 16000,
+                "model_bytes": 65536,
+                "hydrations": 32,
+                "evidence_bytes": 1048576,
+            },
+        },
+    )["pack"]
+    assert len(pack["sections"]) == 24
+    assert pack["budget"]["hydrations"] == 24
+    assert {item["reason"] for item in pack["omissions"]} == {"selection_limit"}
+
+
+def test_tiny_evidence_budget_refuses_before_a_payload_select(
+    workspace: Workspace,
+) -> None:
+    _observe_many(workspace, 1)
+    connection = workspace.holder.connection
+    with Trace(connection) as trace:
+        code, _message, _retry = workspace.refused(
+            "engineering.context.build",
+            {
+                "query": "item",
+                "targets": [],
+                "profile": "investigate",
+                "budget": {"evidence_bytes": 1},
+            },
+        )
+    assert code == "size_limit_exceeded"
+    assert trace.body_reads() == []
 
 
 def test_a_non_engineering_domain_body_is_never_hydrated_or_counted(
@@ -159,12 +293,34 @@ def test_a_non_engineering_domain_body_is_never_hydrated_or_counted(
 def test_a_successful_small_build_reports_the_exact_hydration_count(
     workspace: Workspace,
 ) -> None:
-    _observe_many(workspace, 3)
+    record_ids = _observe_many(workspace, 3)
     result = workspace.ok(
         "engineering.context.build",
         {"query": "item", "targets": [], "profile": "investigate"},
     )
-    assert result["pack"]["budget"]["hydrations"] == 3
+    budget = result["pack"]["budget"]
+    assert budget["hydrations"] == 3
+    placeholders = ", ".join("?" for _ in record_ids)
+    content_bytes = sum(
+        int(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT length(CAST(content_json AS BLOB)) "
+            "FROM omnivia_governed_version_assemblies "
+            f"WHERE workspace_id = ? AND governed_record_id IN ({placeholders})",
+            (esc.WORKSPACE_ID, *record_ids),
+        )
+    )
+    claim_bytes = int(
+        workspace.holder.connection.execute(
+            "SELECT COALESCE(SUM(l.claim_byte_length), 0) "
+            "FROM omnivia_application_claim_lineage l "
+            "JOIN omnivia_governed_version_assemblies a "
+            "ON a.workspace_id = l.workspace_id AND a.assembly_id = l.assembly_id "
+            f"WHERE a.workspace_id = ? AND a.governed_record_id IN ({placeholders})",
+            (esc.WORKSPACE_ID, *record_ids),
+        ).fetchone()[0]
+    )
+    assert budget["source_bytes_read"] == content_bytes + claim_bytes
 
 
 # --- the budget validation gate -----------------------------------------------------

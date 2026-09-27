@@ -32,6 +32,10 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
+from omnivia_core_runtime.storage.payload_budget import (
+    PayloadLengthMismatch,
+    PayloadReadBudget,
+)
 
 _SESSIONS_TABLE: Final = "omnivia_engineering_sessions"
 _CHECKPOINTS_TABLE: Final = "omnivia_engineering_checkpoints"
@@ -355,12 +359,43 @@ def read_checkpoints(
     workspace_id: str,
     principal_id: str,
     limit: int = -1,
+    payload_budget: PayloadReadBudget | None = None,
 ) -> list[Any]:
     """`principal_id`'s own checkpoints, newest first, as `(checkpoint_id,
     sequence, payload_json)` rows. Ownership is filtered in SQL before the order
     and `limit` apply (SQLite reads `LIMIT -1` as no limit)."""
-    return connection.execute(
-        f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
-        "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT ?",
+    order_and_limit = (
+        "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT ?"
+    )
+    if payload_budget is None:
+        return connection.execute(
+            f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
+            + order_and_limit,
+            (workspace_id, principal_id, limit),
+        ).fetchall()
+    length_sql = payload_budget.byte_length_sql(connection, "c.payload_json")
+    metadata = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, {length_sql} {_OWNED_CHECKPOINTS} "
+        + order_and_limit,
         (workspace_id, principal_id, limit),
     ).fetchall()
+    expected = [(str(row[0]), int(row[1]), int(row[2])) for row in metadata]
+    if any(not 2 <= row[2] <= CHECKPOINT_PAYLOAD_CAP_BYTES for row in expected):
+        raise PayloadLengthMismatch("a checkpoint payload byte length is invalid")
+    payload_budget.precheck([row[2] for row in expected])
+    rows = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
+        + order_and_limit,
+        (workspace_id, principal_id, limit),
+    ).fetchall()
+    if [(str(row[0]), int(row[1])) for row in rows] != [
+        (row[0], row[1]) for row in expected
+    ]:
+        raise PayloadLengthMismatch(
+            "checkpoint metadata changed inside the read snapshot"
+        )
+    for row, (_checkpoint_id, _sequence, expected_bytes) in zip(
+        rows, expected, strict=True
+    ):
+        payload_budget.consume(str(row[2]), expected_bytes)
+    return rows
