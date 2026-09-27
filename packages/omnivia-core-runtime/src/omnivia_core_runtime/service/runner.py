@@ -20,6 +20,7 @@ from omnivia_core.contracts.v1 import ServiceEndpointDescriptor, ServiceProcessE
 from omnivia_core.workspace.compatibility import evaluate_compatibility
 from omnivia_core_runtime.ownership.discovery import compare_and_clean, publish
 from omnivia_core_runtime.ownership.fencing import (
+    StaleGeneration,
     assert_guards_intact,
     close_guard,
     fenced_transaction,
@@ -68,6 +69,7 @@ from omnivia_core_runtime.service.versions import (
     workspace_contract_version,
 )
 from omnivia_core_runtime.service.workflow_runtime import workflow_runtime_scheduler
+from omnivia_core_runtime.storage import engineering_invalidation
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
@@ -107,6 +109,15 @@ LEASE_RENEWAL_INTERVAL_SECONDS = DEFAULT_LEASE_TTL_SECONDS / 3
 #: a lease nothing renewed. This is the line between the two, and it is under the
 #: TTL, so the instance stops while its lease is still demonstrably current.
 LEASE_RENEWAL_DEADLINE_SECONDS = DEFAULT_LEASE_TTL_SECONDS * 2 / 3
+
+#: Service stderr is operational, not diagnostic-for-a-human-with-the-source: it
+#: must never carry a workspace's own identifiers (a stream id) or an
+#: exception's raw text (a path, a value, a query fragment can all end up in
+#: one). Every tick/startup failure below prints one of these fixed, bounded
+#: codes instead -- enough to page on or grep for, never enough to leak.
+_DIAG_INVALIDATION_SELECT_FAILED = "INVALIDATION_TICK_ERROR: select_failed"
+_DIAG_INVALIDATION_ADVANCE_FAILED = "INVALIDATION_TICK_ERROR: advance_failed"
+_DIAG_INVALIDATION_STARTUP_FAILED = "INVALIDATION_STARTUP_ERROR: recovery_failed"
 
 
 @dataclass(frozen=True)
@@ -151,6 +162,14 @@ class StartupReport:
 class ServiceRunner:
     """Owns one workspace for the lifetime of this process."""
 
+    #: The fair keyset cursor `drain_pending_invalidation` resumes its next
+    #: bounded page of lagging streams from (see `engineering_invalidation.
+    #: select_pending_streams`). A class-level default rather than only an
+    #: `__init__` assignment, so the `ServiceRunner.__new__`-built test harness
+    #: (which never calls `__init__`) still reads a real starting cursor
+    #: instead of raising `AttributeError` on first tick.
+    _invalidation_cursor: str | None = None
+
     def __init__(
         self, settings: ServiceSettings, *, clock: Clock | None = None
     ) -> None:
@@ -181,6 +200,7 @@ class ServiceRunner:
         #: acquisition itself until the first renewal. `None` until a lease is held,
         #: so nothing can renew before there is something to renew.
         self._lease_renewed_at: float | None = None
+        self._invalidation_cursor = None
 
     # --- startup -------------------------------------------------------------
 
@@ -609,6 +629,46 @@ class ServiceRunner:
                 "WHERE m.job_id = omnivia_durable_jobs.job_id)",
                 (self.generation,),
             )
+
+        # Engineering source invalidation (migration 0059): a stream left mid-event
+        # or simply behind when the previous instance stopped resumes from its own
+        # durable watermark, exactly as the job sweep above resumes from durable
+        # job state. Best-effort and never a readiness precondition -- `current_safe`
+        # proves every version directly on each read and never consults this
+        # worker's output, so catching up slowly costs staleness of the
+        # `diagnostic`-mode assessment history, never correctness.
+        try:
+            # Bounded over *raw* stream rows scanned, exactly as
+            # `drain_pending_invalidation`'s own per-tick page is
+            # (`engineering_invalidation.select_pending_streams`): `pending_streams`'
+            # own lagging predicate is residual against the streams table's only
+            # applicable index, so using it here would let a caught-up workspace's
+            # stream count -- not `TICK_STREAM_LIMIT` -- decide how many rows this
+            # one-shot pass reads. A workspace with more lagging streams than
+            # `TICK_STREAM_LIMIT` leaves the rest to converge over subsequent ticks
+            # rather than making startup itself unbounded. Unlike the tick's own
+            # page, this one-shot pass needs no fairness cursor -- there is no "next
+            # startup" for one to carry state into -- so the returned cursor is
+            # discarded.
+            streams, _next_cursor = engineering_invalidation.select_pending_streams(
+                connection,
+                workspace_id=self.workspace_id,
+                limit=engineering_invalidation.TICK_STREAM_LIMIT,
+                after=None,
+            )
+            for stream_id in streams:
+                engineering_invalidation.drain_invalidation(
+                    connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    stream_id=stream_id,
+                    fencing_generation=self.generation,
+                    now_us=now_us,
+                )
+        except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+            import sys as _s
+
+            print(_DIAG_INVALIDATION_STARTUP_FAILED, file=_s.stderr)
         return True
 
     # --- keeping the lease current -------------------------------------------
@@ -677,6 +737,91 @@ class ServiceRunner:
                 self.sqlite_gate.release()
         self._lease_renewed_at = now
         return True
+
+    def drain_pending_invalidation(self) -> None:
+        """One bounded engineering-invalidation step for each of up to
+        `TICK_STREAM_LIMIT` lagging streams, fairly selected.
+
+        Called from the same main serve loop poll as `renew_lease_if_due` --
+        the only scheduler seam this service has (see `main._serve_until_stopped`).
+        Startup recovery (`_recover`) and the live per-record trigger
+        (`EngineeringHandlers._drain_invalidation`) each drain a stream once, up
+        to `DRAIN_STEP_LIMIT` bounded steps; neither runs again on its own, so a
+        backlog beyond either bound would otherwise sit forever in an
+        otherwise-idle service. `select_pending_streams` bounds *this* pass over
+        the workspace's own stream count the same way `advance_invalidation`
+        already bounds one step's own work, and carries `self._invalidation_cursor`
+        forward tick to tick so a persistently failing low-sort stream occupies
+        at most one page per sweep rather than crowding every later stream out
+        of every tick. The tick repeats every 250ms while the service is up, so
+        a backlog of any size -- in stream count or in one stream's own events
+        -- eventually converges without another source write or a restart.
+
+        Best-effort, like the other two call sites: this worker's assessment
+        history is diagnostic-only bookkeeping that `current_safe` never reads
+        -- it proves every version directly, from its own guarded evaluator, on
+        every read -- so a failure here costs staleness of that history, never
+        correctness, and is never folded into readiness. It is still surfaced
+        rather than silently absorbed, so a persistent failure is diagnosable
+        from the service's own output instead of only from a growing backlog --
+        through a fixed, bounded diagnostic code, never a source identifier or
+        raw exception text service stderr must not carry. One stream's failure
+        does not block another's turn this tick; a stale fencing generation
+        stops the whole pass at once, since every remaining stream would refuse
+        identically and the loop's own lease check is what decides whether this
+        instance keeps serving at all.
+
+        Holds `self.sqlite_gate` for the entire selection-plus-advance pass,
+        the same reentrant gate `renew_lease_if_due` serializes its own
+        connection use behind -- acquired without blocking, since a tick that
+        cannot get it skips cleanly rather than stalling the poll loop behind
+        whichever other tenant holds it, and the cursor is left untouched for
+        the next tick to retry from.
+        """
+        if self.connection is None or self.identity is None or self.generation is None:
+            return
+        if self.workspace_id is None:  # pragma: no cover - set before the connection is
+            return
+        import sys as _s
+
+        # Non-blocking: `renew_lease_if_due` (the loop's other tenant of this
+        # same connection) can be mid-heartbeat holding this gate, and this
+        # tick is best-effort -- it skips cleanly rather than stalling the
+        # poll loop behind a wait, and the next tick tries again.
+        if not self.sqlite_gate.acquire(blocking=False):
+            return
+        try:
+            now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
+            try:
+                streams, next_cursor = engineering_invalidation.select_pending_streams(
+                    self.connection,
+                    workspace_id=self.workspace_id,
+                    limit=engineering_invalidation.TICK_STREAM_LIMIT,
+                    after=self._invalidation_cursor,
+                )
+            except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+                print(_DIAG_INVALIDATION_SELECT_FAILED, file=_s.stderr)
+                return
+            self._invalidation_cursor = next_cursor
+            for stream_id in streams:
+                try:
+                    engineering_invalidation.advance_invalidation(
+                        self.connection,
+                        self.identity,
+                        workspace_id=self.workspace_id,
+                        stream_id=stream_id,
+                        fencing_generation=self.generation,
+                        now_us=now_us,
+                    )
+                except StaleGeneration:
+                    # This instance's authority is gone; every remaining stream
+                    # would refuse identically, and the poll's own lease check
+                    # (run just before this, every tick) is what stops serving.
+                    break
+                except Exception:  # noqa: BLE001 - best-effort catch-up, not a readiness gate
+                    print(_DIAG_INVALIDATION_ADVANCE_FAILED, file=_s.stderr)
+        finally:
+            self.sqlite_gate.release()
 
     # --- shutdown ------------------------------------------------------------
 

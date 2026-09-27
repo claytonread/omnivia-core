@@ -574,11 +574,12 @@ def _serve_until_stopped(
     interrupted (EINTR) and the signal runs immediately -- but polling is harmless
     there too, so one path serves both platforms.
 
-    The poll is also the service-owned source scheduler. ``source_work`` is a bounded,
-    internally rate-limited pass, so it advances sealed or registered checkouts while
-    both transports are idle and under HTTP-only traffic. Git and filesystem work run
-    without the shared SQLite gate; the pass acquires that gate only for short reads,
-    fenced settlement and lease renewal.
+    The poll is also the service-owned source scheduler and invalidation recovery
+    seam. ``source_work`` is a bounded, internally rate-limited pass, so it advances
+    sealed or registered checkouts while both transports are idle and under HTTP-only
+    traffic. Git and filesystem work run without the shared SQLite gate; the pass
+    acquires that gate only for short reads, fenced settlement and lease renewal.
+    ``drain_pending_invalidation()`` is also bounded and cheap when no backlog exists.
 
     A renewal this instance can no longer show succeeded ends the run, through the
     same unwind and the same reverse resource order a signal takes. Nothing keeps
@@ -606,6 +607,9 @@ def _serve_until_stopped(
                     except Exception:  # noqa: BLE001 - same structural output below
                         renewal_failed = True
                         break
+            drain_invalidation = getattr(runner, "drain_pending_invalidation", None)
+            if drain_invalidation is not None:
+                drain_invalidation()
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.

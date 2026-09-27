@@ -358,7 +358,7 @@ covered target. It reads only and writes nothing.
 
 | Family | Shape |
 |---|---|
-| `omnivia_engineering_source_streams` | Stream binding (principal, repository), announced head, covered barrier. Identity is immutable and both sequences only advance. A new stream starts at barrier 0. The old barrier was validated when written and never decreases, so each advance validates only the newly covered range (OLD, NEW]: it must hold exactly NEW − OLD present events and span at most one 64-event pending window. That is one primary-key range scan, independent of the stream's lifetime history. Writers must be the owner's audited `engineering.source.record`. No DELETE. |
+| `omnivia_engineering_source_streams` | Stream binding (principal, repository), announced head, covered barrier. Identity is immutable and both sequences only advance. A new stream starts at barrier 0. The old barrier was validated when written and never decreases, so each advance validates only the newly covered range (OLD, NEW]: it must hold exactly NEW − OLD present events and span at most one 64-event pending window. That is one primary-key range scan, independent of the stream's lifetime history. Writers must be the owner's audited `engineering.source.record` or `engineering.source.capture.commit`. No DELETE. |
 | `omnivia_engineering_source_events` | Immutable event: snapshot (FK to 0047), predecessor link and canonical manifest body. The digest must equal the snapshot row's, and the entry count must match the body. The event must lie within the announced head and agree with stored neighbours. Unique snapshot per workspace. Append-only. |
 | `omnivia_engineering_dependency_sets` | One per exact record version: baseline (a recorded event of the stated stream and repository), producer and version, coverage. It seals exactly its dependency rows, and every whole-file row must carry a digest. It is written only by `memory.create`'s audited mutation, or carried by 0051 (below). Append-only. |
 | `omnivia_engineering_dependencies` (0049) | `ADD COLUMN expected_digest` (nullable, `sha256:` format), an index on (workspace, record, version), and a 0050 insert guard: once a version's set row exists, no further dependency row is accepted for it, so a sealed set never changes. |
@@ -419,15 +419,135 @@ No table, column or index is added, and no existing migration is rewritten.
 Both are candidates owned by Engineering Memory, with `accepted_commit` null
 until the normal acceptance process records a landing.
 
+## Source invalidation (migration 0059; spec §15.3; AC-057/AC-061)
+
+The gap this slice closes: recording a new source event always advanced
+coverage, but nothing durable ever re-assessed the dependents of a covered
+change until a review or a fresh `memory.create` happened to touch them.
+`current_safe` was never affected by this (it proves each version directly, on
+every read, from the same evaluator described above), but `diagnostic` search
+had no better answer than `not_evaluated` or a stale legacy row.
+
+- **No new queue table.** `omnivia_engineering_source_streams` gains
+  `processed_sequence` (the worker's watermark) and a nullable
+  `pending_dependent_record_id` / `pending_dependent_version` pair: a durable
+  *keyset* cursor into the *next* unprocessed event's scoped dependency sets,
+  for an event whose fan-out does not fit one bounded step.
+  The flat `record_source_event` and captured
+  `record_captured_source_event` writes announce new work the instant
+  `covered_sequence` advances past the watermark: that gap *is* the durable
+  invalidation queue, announced and enqueued in the same atomic write as the
+  covered source event.
+- **One bounded step at a time, paged by a stable keyset.**
+  (`storage.engineering_invalidation.advance_invalidation`): for a bounded
+  `flat_v1` event, diff its inline manifest against its stored predecessor. For
+  every event, page raw dependency sets through the new
+  `(workspace_id, repository_id, stream_id, record_id, version)` scope index
+  and inspect only each set's at-most-64 indexed whole-file selectors. Inline
+  events compare those selectors with their bounded changed-path set. A
+  `captured_v1` manifest can hold 10,000 paths, so captured events probe only
+  those selectors in the two captured-file indexes; they never hydrate or scan
+  the captured manifest in Python. Same-path history in another repository or
+  stream is skipped by the scope-index prefix. A transition with an incomplete
+  capture or a representation change
+  rechecks every scoped dependency conservatively. The unmodified evaluator
+  runs for each selected `(record, version)` against the event target, and
+  every result is appended as a `basis: "deterministic"` row in the
+  0049 assessment history (the value the schema reserved and left unused until
+  now). A batch too large for one step persists the *last* scoped (record_id,
+  version) it durably scanned, not a row count, and the next page resumes
+  strictly past that key. The watermark itself holds as the
+  durable, explicit statement that work remains -- never a silent skip. A row
+  count was tried first and rejected: it counts positions in a query re-run
+  fresh on every page, and a dependency set some other fenced write (an
+  unrelated `memory.create`) seals between two pages shifts every later
+  position by one, so the next page silently re-reads a row it already
+  checked and, one page later, drops one it had not reached yet -- a
+  duplicate that becomes a skip. A keyset cursor has no position to shift: a
+  row at or behind it was already checked (and assessed when affected) or fell outside this
+  event's cohort because it did not exist when this page ran, and
+  current-state evaluation of that row is never this history's job --
+  `current_safe` proves it directly, from the same evaluator, on every read --
+  and the very next covered event whose diff touches one of its dependencies
+  re-runs the lookup fresh and finds it. A row ahead of the cursor, by
+  contrast, is checked by the very next page and assessed when affected, never
+  skipped and never assessed twice for an event already finished with it.
+- **The same evaluator, so the same rules.** A changed digest is
+  `potentially_stale`, an absence under complete capture is `invalid`, and an
+  incomplete capture or an unqualified set is `unknown` -- identically to a
+  live `current_safe` check. There is still no rename field: a renamed file
+  reads as an ordinary absence at its recorded dependency's old path, not as a
+  specially reconciled move.
+- **Generation-fenced like every other writer.** Each step runs inside
+  `ownership.fencing.fenced_transaction` under the caller's own fencing
+  generation, so a writer whose authority has been superseded is refused
+  before anything commits, exactly as any other guarded write is. Duplicate or
+  replayed source events touch neither the watermark nor the assessment
+  history (an `already_recorded` disposition changes nothing for either to
+  advance from). Recovery after a restart is simply calling the worker again:
+  every fact it needs is a durable column on the guarded stream row, so
+  nothing in memory is required to resume. A caller's clock reading behind
+  the stream row's own last `updated_at_us` -- a real clock stepping
+  backward, not only a hypothetical -- is clamped forward to that stored
+  value (the same clamp `record_source_event` already applies to this
+  column) rather than raised into the guard trigger that would otherwise
+  reject the write and roll back the batch of assessments just computed;
+  every assessment keeps the caller's own, unclamped reading, so nothing is
+  backdated, and only this liveness bookkeeping column is held to its
+  existing monotonic invariant.
+- **Where it runs.** Both
+  `service.handlers.engineering.engineering_source_record` and
+  `engineering_source_capture_commit` best-effort drain the just-advanced
+  stream after their own mutation commits;
+  `service.runner.ServiceRunner._recover` best-effort drains, on startup, up to
+  `TICK_STREAM_LIMIT` streams with outstanding work, each up to
+  `DRAIN_STEP_LIMIT` bounded steps; and
+  `service.runner.ServiceRunner.drain_pending_invalidation` takes one further
+  bounded step for up to `TICK_STREAM_LIMIT` pending streams on every tick of
+  the main serve loop's existing 250ms poll (`main._serve_until_stopped`) --
+  the only scheduler seam this service has. Both bounds select streams through
+  `storage.engineering_invalidation.select_pending_streams`, which reads a
+  fixed `TICK_STREAM_LIMIT` *raw* stream rows in primary-key order per call
+  rather than filtering for lagging ones in SQL: `pending_streams`'s own
+  `processed_sequence < covered_sequence` filter is residual against the
+  streams table's only applicable index, so using it to bound this selection
+  would let a caught-up workspace's stream count, not `TICK_STREAM_LIMIT`,
+  decide how many rows one call reads. `select_pending_streams` carries a
+  fair keyset cursor forward tick to tick and wraps once it runs past every
+  stream, so a persistently failing or merely low-sort stream is never
+  starved of its own turn, and a workspace with more lagging streams than
+  either bound leaves the rest to converge over later ticks rather than
+  making one startup pass or one tick unbounded in stream count. The tick is
+  what keeps a backlog beyond either the per-stream step bound or the
+  per-pass stream-count bound converging in an otherwise idle service: neither
+  the live trigger nor startup recovery runs again on its own, so without it a
+  backlog past one drain budget, past `TICK_STREAM_LIMIT` streams, or past
+  however many events land while the service is down, would sit forever. All
+  three are deliberately not a readiness precondition: `current_safe` does not
+  depend on this history, so falling behind costs staleness of the
+  `diagnostic`-mode assessment history, never correctness, and a per-tick or
+  startup failure is written to the service's own diagnostic output -- a
+  fixed, bounded code, never a source identifier or raw exception text --
+  rather than silently absorbed or folded into any readiness signal.
+
+### Migration pin
+
+Allocation 59 is a candidate owned by Engineering Memory, with predecessor 58.
+Its allocation record is added only after the migration exists at its immutable
+introducing commit, following the repository's two-step migration-pin workflow.
+`accepted_commit` stays null until the normal acceptance process records a
+landing.
+
 ## Producer → consumer map
 
 | Producer | Writes | Consumers |
 |---|---|---|
-| `engineering.source.record` (trusted source, `engineering:source`) | repository (first use), stream, 0047 snapshot, source event, head and barrier | `covered_snapshot` (targets and baselines), the evaluator, `current_safe` search and build, the dependency-set trigger |
-| `memory.create` with `dependency_manifest` (contributor) | governed proposal, 0049 dependency rows, dependency set | the evaluator |
+| `engineering.source.record` and `engineering.source.capture.commit` (trusted source, `engineering:source`) | repository/stream bindings, flat or captured snapshot event, head and barrier | `covered_snapshot` (targets and baselines), the evaluator, `current_safe` search and build, the dependency-set trigger, the invalidation worker |
+| `memory.create` with `dependency_manifest` (contributor) | governed proposal, 0049 dependency rows, dependency set | the evaluator, the invalidation worker's scoped lookup |
 | `knowledge.propose`, `candidate.approve` (claim-preserving governance) | the new exact version's carried dependency rows and set, when the source's set is consistent | the evaluator |
-| Evaluator (read-only) | nothing | `current_safe` search (frontier admission, preview `matched`) and `current_safe` pack build (sections, per-target status, omissions) |
+| Evaluator (read-only) | nothing | `current_safe` search (frontier admission, preview `matched`) and `current_safe` pack build (sections, per-target status, omissions); also called by the invalidation worker |
 | `engineering.review.record` (unchanged) | attestation plus conservative assessment | `diagnostic` search only; never the evaluator |
+| Invalidation worker (migration 0059, service-owned, generation-fenced) | `deterministic` assessments; the stream's `processed_sequence` and its keyset cursor (`pending_dependent_record_id`/`pending_dependent_version`) | `diagnostic` search's re-assessment of stored rows; never `current_safe`, which still proves every version directly |
 
 ## Deferred and unsupported
 
@@ -444,9 +564,15 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
   `schema_contract` and `external_evidence` are recorded but not evaluated.
 - **Renames:** there is no rename field. A renamed required file reads as absent
   at the target, which is `invalid` under complete capture.
-- **No worker:** there is no background invalidation worker or serving
-  projection, and nothing persists assessments from the evaluator. `diagnostic`
-  search still re-assesses legacy rows conservatively and never shows `matched`.
+- **No serving projection beyond the assessment history itself:** migration
+  0059 adds the background invalidation worker (see above), but there is
+  still no separate cache or projection it serves reads from -- it only
+  appends to the same 0049 assessment history `diagnostic` search already
+  reads through `assess_against_registered_head`. A stored `invalid` or
+  `potentially_stale` -- `deterministic` or `review` alike -- is surfaced
+  there unchanged; a stored `matched` is not, and is re-derived the same
+  conservative way it always was. `diagnostic` search still never shows
+  `matched` for anything, by that same existing rule.
 - **No lineage reasoning:** there is no cross-stream equivalence, ancestry or
   merge-base reasoning. Equal digests in another stream prove nothing here.
 - **Continuity access:** `working_context` (search view and the `resume` pack
