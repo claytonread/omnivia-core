@@ -151,7 +151,6 @@ from omnivia_core.contracts.v1 import (
     EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     CapabilityRequirement,
     ClientIdentity,
-    ContinuityCheckpointAppendInput,
     ContinuityHandoffReadInput,
     ContractDecodeError,
     ContractSemanticError,
@@ -291,12 +290,13 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 #: call path in the same commit, and one that relaxes one does not leave a stale
 #: copy refusing valid input.
 #:
-#: Only the five the `authoring` profile adds, plus the four decision tools the
-#: restricted profile grew: those six reads are unchanged accepted behaviour and
-#: are validated where they always were -- at the service, which answers with its
-#: own typed refusal. The decision tools decode through the generated contract
-#: types' own `from_wire` (their semantic validators land with the runtime slice),
-#: which is still the contract's own decode, not a local opinion.
+#: Only the five the `authoring` profile adds, the four decision tools, the three
+#: Engineering Memory reads, and continuity handoff need local canonical
+#: decoders. The original six reads are unchanged accepted behaviour and are
+#: validated where they always were -- at the service, which answers with its
+#: own typed refusal. The newer reads decode through the generated contract
+#: types' own `from_wire`, which is still the contract's own decode, not a local
+#: opinion.
 _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "memory.create": decode_memory_create_input,
     "evidence.capture": decode_evidence_capture_input,
@@ -311,7 +311,6 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "engineering.expand": EngineeringExpandInput.from_wire,
     "engineering.context.build": EngineeringContextBuildInput.from_wire,
     "continuity.handoff.read": ContinuityHandoffReadInput.from_wire,
-    "continuity.checkpoint.append": ContinuityCheckpointAppendInput.from_wire,
 }
 
 
@@ -1430,7 +1429,7 @@ async def serve(*, session: ConnectedSession) -> None:
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
     RESTRICTED_PROFILE: 14,
-    AUTHORING_PROFILE: 20,
+    AUTHORING_PROFILE: 19,
 }
 
 _UNEXPECTED_INVENTORY: Final = (
