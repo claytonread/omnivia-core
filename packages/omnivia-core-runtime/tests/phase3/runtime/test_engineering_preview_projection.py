@@ -944,6 +944,41 @@ def test_an_absent_projection_row_is_refused_never_answered_from_the_body(
         assert engineering_preview.rebuild_missing_previews(connection) == 0
 
 
+def test_a_damaged_off_query_projection_still_refuses_under_current_safe(
+    workspace: Workspace,
+) -> None:
+    """The query pre-filter that keeps the `current_safe` cap bounded is a
+    ranking-time convenience over admitted candidates, never an authorization or
+    a projection-integrity shortcut: an admitted version with no projection row
+    still refuses the whole read, even though its preview text never contains
+    the query and it would otherwise never reach the evaluator or the cap."""
+    workspace.record(esc._source(1, "esnap-a", esc.FILES_A))
+    off_query = esc._observation(esc._manifest(), title="Auth decision")
+    off_query["content"]["summary"] = "Nothing about the search word here."
+    off_query["content"]["what"] = "Still nothing to see here."
+    off_query_record = workspace.observe(off_query)
+    matched = workspace.observe(
+        esc._observation(esc._manifest(), title="Sign-in provider decision two")
+    )
+    (off_query_assembly,) = _assemblies(workspace, off_query_record["record_id"])
+    connection = workspace.holder.connection
+    safe = {
+        "applicability_mode": "current_safe",
+        "repository_target": {"repository_id": esc.REPOSITORY, "snapshot_id": "esnap-a"},
+    }
+    assert set(_ids(_search(workspace, view="candidates", **safe))) == {matched["record_id"]}
+
+    with _guards_lifted(connection, DELETE_GUARD):
+        _damage(
+            connection, f"DELETE FROM {PROJECTION} WHERE assembly_id = '{off_query_assembly}'"
+        )
+    code, message, retry = workspace.refused(
+        "engineering.search", {"query": "provider", "view": "candidates", **safe}
+    )
+    assert (code, retry) == ("projection_unavailable", "retryable_after_delay")
+    assert off_query_assembly not in message and off_query_record["record_id"] not in message
+
+
 def test_a_stale_projection_row_is_refused(workspace: Workspace) -> None:
     """A row derived from other content, or of another projection version, is
     `stale_projection`: the read refuses rather than serve rules or text the version
