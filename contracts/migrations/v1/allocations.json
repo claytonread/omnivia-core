@@ -447,6 +447,17 @@
       "sha256": "464975d081d01cb756b4e012e767edf1ff28471816ac0ef543385100eb76707b",
       "introduced_commit": "309b7c815d730c885032aae155368413502453fc",
       "accepted_commit": null
+    },
+    {
+      "number": 58,
+      "filename": "0058_engineering_source_producer_queue.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 57,
+      "sha256": "6ce70ea6b2d94e04ac1505b277b54a0c6950a1bfad9544bd46629f0aab4d53b6",
+      "introduced_commit": "ab2e334aba3f9d2abdcfbff8ed8ba6148ebd627a",
+      "accepted_commit": null
     }
   ]
 }
