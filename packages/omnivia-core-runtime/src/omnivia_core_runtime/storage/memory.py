@@ -30,6 +30,12 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationError
+from omnivia_core_runtime.storage.engineering_validation import (
+    ValidationExecutionReceipt,
+    ValidationReceiptInvalid,
+    parse_factual_validation_receipt,
+    verify_factual_validation_receipt,
+)
 from omnivia_core_runtime.storage.governed import (
     GovernedRecordValue,
     hydrate_authorized_governed_record_values,
@@ -57,6 +63,9 @@ ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
 _MESSAGE_INVALID_PROFILE: Final = "the memory claim is outside this supported profile"
 _MESSAGE_EVIDENCE_UNAVAILABLE: Final = (
     "the memory claim's evidence is not currently available"
+)
+_MESSAGE_VALIDATION_RECEIPT_INVALID: Final = (
+    "factual validation results require verified immutable execution evidence"
 )
 
 
@@ -300,6 +309,45 @@ def _validate_engineering_observation_content(
     return manifest
 
 
+def _parse_validation_receipt(
+    content: Mapping[str, Any],
+) -> ValidationExecutionReceipt | None:
+    try:
+        return parse_factual_validation_receipt(content)
+    except ValidationReceiptInvalid:
+        pass
+    raise OperationError(
+        ERROR_CODE_INVALID_REQUEST, _MESSAGE_VALIDATION_RECEIPT_INVALID
+    )
+
+
+def _verify_validation_receipt(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    record_id: str,
+    content: Mapping[str, Any],
+    evidence_ids: tuple[str, ...],
+    receipt: ValidationExecutionReceipt,
+) -> None:
+    try:
+        verify_factual_validation_receipt(
+            connection,
+            workspace_id=workspace_id,
+            record_id=record_id,
+            content=content,
+            evidence_ids=evidence_ids,
+            receipt=receipt,
+        )
+    except ValidationReceiptInvalid:
+        pass
+    else:
+        return
+    raise OperationError(
+        ERROR_CODE_INVALID_REQUEST, _MESSAGE_VALIDATION_RECEIPT_INVALID
+    )
+
+
 def create_memory_record(
     connection: sqlite3.Connection,
     settlement: MutationSettlementContext,
@@ -311,11 +359,13 @@ def create_memory_record(
 ) -> dict[str, object]:
     """Persist one sealed human proposal plus its immutable application lineage."""
     dependency_manifest: DependencyManifest | None = None
+    validation_receipt: ValidationExecutionReceipt | None = None
     if (
         claim.record_type in _ENGINEERING_RECORD_TYPES
         and claim.domain_scope == _ENGINEERING_DOMAIN
     ):
         dependency_manifest = _validate_engineering_observation_content(claim.content)
+        validation_receipt = _parse_validation_receipt(claim.content)
     elif claim.record_type == _PROFILE_TYPE:
         fact = claim.content.get("fact")
         if (
@@ -368,6 +418,15 @@ def create_memory_record(
     assembly_id = allocate_identifier("asm")
     event_id = allocate_identifier("pev")
     seal_id = allocate_identifier("seal")
+    if validation_receipt is not None:
+        _verify_validation_receipt(
+            connection,
+            workspace_id=workspace_id,
+            record_id=record_id,
+            content=claim.content,
+            evidence_ids=evidence_ids,
+            receipt=validation_receipt,
+        )
     content_json = to_canonical_json(_plain_content(dict(claim.content)))
     claim_json = to_canonical_json(_plain_content(claim.to_wire()))
     reason = (
