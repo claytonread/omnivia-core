@@ -119,6 +119,10 @@ ENGINEERING_REVIEW_PURPOSE: Final = "engineering_review"
 #: A trusted source producer recording source state. Its own purpose, like its own
 #: scope and capability, so a grant to contribute observations never covers it.
 ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
+#: An explicitly authorized local operator binding a checkout to a repository
+#: identity. Its own purpose, like its own scope and capability, so neither a
+#: contributed observation nor a trusted source stream carries this authority.
+ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -153,6 +157,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
         "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
         "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
+        "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
     }
 )
 
@@ -210,6 +215,11 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # The contributor role, plus the operation's own `engineering:source` scope and
         # `engineering.source` capability, which only a source producer's grant holds.
         "engineering.source.record": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Binding a local checkout to a repository identity is contributor work in the
+        # same sense authoring content is: it reviews nothing and administers nothing.
+        # Its own `engineering:repository` scope and `engineering.repository` capability
+        # are what only an explicitly authorized local operator's grant holds.
+        "engineering.repository.register": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

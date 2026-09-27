@@ -309,6 +309,8 @@ __all__ = [
     "EngineeringRecordVersionRef",
     "EngineeringRelationEdge",
     "EngineeringRendering",
+    "EngineeringRepositoryRegisterInput",
+    "EngineeringRepositoryRegisterResult",
     "EngineeringReviewRecordInput",
     "EngineeringReviewRecordResult",
     "EngineeringSchemaVersion",
@@ -7063,6 +7065,147 @@ class EngineeringSourceRecordResult:
             disposition=field_disposition,
             coverage=field_coverage,
             recorded_at=field_recorded_at,
+            audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringRepositoryRegisterInput:
+    """Input for `engineering.repository.register`: an explicitly authorized local operator
+    binds one exact, installation-local checkout directory to one logical repository
+    identity. Not a model-facing tool: it is reachable only through the accepted local
+    client/CLI, under the distinct `engineering:repository` scope and
+    `engineering.repository` capability, and is refused over every other route.
+    `repository_id` is the caller's own stable logical identity -- never inferred from
+    `display_name`, from the checkout's own git remote or configuration, or from any other
+    repository-supplied hint -- and two registrations may share a `display_name` by design
+    (label-only lookup stays ambiguous). `checkout_root` is validated server-side as a real,
+    installation-local directory with no traversal or symlink escape; it is stored only as
+    this installation's own checkout mapping and never appears in a governed observation, a
+    manifest or an error message. The workspace and installation are the authenticated
+    caller's own and can never be supplied by the payload. Unknown keys are refused.
+    """
+
+    repository_id: Identifier
+    display_name: str
+    checkout_root: str
+    provider_hint: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["display_name"] = self.display_name
+        if self.provider_hint is not None:
+            wire["provider_hint"] = self.provider_hint
+        wire["checkout_root"] = self.checkout_root
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringRepositoryRegisterInput"
+    ) -> EngineeringRepositoryRegisterInput:
+        """Decode a wire payload into a EngineeringRepositoryRegisterInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_display_name = _decode_str(
+            _require_field(mapping, "display_name", path),
+            f"{path}.display_name",
+        )
+        field_provider_hint: str | None = None
+        if "provider_hint" in mapping:
+            raw_provider_hint = mapping["provider_hint"]
+            if raw_provider_hint is None:
+                raise ContractDecodeError(
+                    f"{path}.provider_hint: null is not a valid value"
+                )
+            field_provider_hint = _decode_str(raw_provider_hint, f"{path}.provider_hint")
+        field_checkout_root = _decode_str(
+            _require_field(mapping, "checkout_root", path),
+            f"{path}.checkout_root",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            display_name=field_display_name,
+            provider_hint=field_provider_hint,
+            checkout_root=field_checkout_root,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringRepositoryRegisterResult:
+    """Result of `engineering.repository.register`: the repository and checkout identities, and
+    whether this delivery newly registered the repository, idempotently repeated an identical
+    registration, or audited a moved checkout. The installation-local path is never echoed
+    back.
+    """
+
+    repository_id: Identifier
+    checkout_id: Identifier
+    repository_disposition: str
+    checkout_disposition: str
+    audit_reference: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["checkout_id"] = self.checkout_id
+        wire["repository_disposition"] = self.repository_disposition
+        wire["checkout_disposition"] = self.checkout_disposition
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringRepositoryRegisterResult"
+    ) -> EngineeringRepositoryRegisterResult:
+        """Decode a wire payload into a EngineeringRepositoryRegisterResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_checkout_id = _decode_str(
+            _require_field(mapping, "checkout_id", path),
+            f"{path}.checkout_id",
+        )
+        field_repository_disposition = _decode_str(
+            _require_field(mapping, "repository_disposition", path),
+            f"{path}.repository_disposition",
+        )
+        field_checkout_disposition = _decode_str(
+            _require_field(mapping, "checkout_disposition", path),
+            f"{path}.checkout_disposition",
+        )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            checkout_id=field_checkout_id,
+            repository_disposition=field_repository_disposition,
+            checkout_disposition=field_checkout_disposition,
             audit_reference=field_audit_reference,
         )
 
@@ -23071,6 +23214,60 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "invalid_request",
             "rate_limited",
             "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="engineering.repository.register",
+        scope=OperationScope(
+            required_scopes=("engineering:repository",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringRepositoryRegisterInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringRepositoryRegisterResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.repository",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
