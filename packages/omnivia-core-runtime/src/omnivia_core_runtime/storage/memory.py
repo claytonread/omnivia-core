@@ -46,7 +46,12 @@ _PROFILE_TYPE: Final = "memory.fact"
 #: catalogue's own finding/risk/decision types under the engineering domain.
 _ENGINEERING_RECORD_TYPES: Final = ("knowledge.finding", "knowledge.risk", "knowledge.decision")
 _ENGINEERING_DOMAIN: Final = "engineering.codebase"
-_ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
+#: The write-time content cap (§8.1): every engineering observation body is
+#: bounded to this many canonical UTF-8 bytes, so a caller-facing budget
+#: reasoner may use `count * ENGINEERING_CONTENT_CAP_BYTES` as a real,
+#: non-fabricated worst-case bound on what full hydration would read, without
+#: reading a single body.
+ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
 _MESSAGE_INVALID_PROFILE: Final = "the memory claim is outside this supported profile"
 _MESSAGE_EVIDENCE_UNAVAILABLE: Final = (
     "the memory claim's evidence is not currently available"
@@ -256,7 +261,7 @@ def _validate_engineering_observation_content(
             "assertion_basis must be one of observed, derived, reported, hypothesis",
         )
     encoded = to_canonical_json(_plain_content(content))
-    if len(encoded.encode("utf-8")) > _ENGINEERING_CONTENT_CAP_BYTES:
+    if len(encoded.encode("utf-8")) > ENGINEERING_CONTENT_CAP_BYTES:
         raise OperationError(
             ERROR_CODE_INVALID_REQUEST,
             "the engineering observation content exceeds the 65536-byte payload cap",
@@ -869,6 +874,17 @@ def read_authorized_memory_frontier(
             support_assembly_ids=authorized_support_ids,
             digest=_digest(digest_document),
         )
+
+
+def engineering_observation_payload_bytes(content: Mapping[str, Any]) -> int:
+    """The exact canonical UTF-8 byte length of one hydrated observation's body.
+
+    The same canonicalisation `_validate_engineering_observation_content` bounds
+    at write time, read back at hydration time, so a caller counting bytes it
+    actually read reports the same number the write path already enforced --
+    never a fabricated or re-estimated one.
+    """
+    return len(to_canonical_json(_plain_content(dict(content))).encode("utf-8"))
 
 
 def read_authorized_memory_snapshot(
