@@ -482,9 +482,14 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
     assert harness.stored() == {
         "allowed_purposes": [
             "content_ingestion",
+            "continuity_checkpoint",
+            "continuity_handoff",
             "decision_evaluation",
             "decision_record",
             "decision_status",
+            "engineering_context",
+            "engineering_expand",
+            "engineering_search",
             "job_observation",
             "knowledge_retrieval",
             "memory_authoring",
@@ -525,6 +530,10 @@ def test_a_restricted_configure_writes_the_restricted_ceiling_and_purposes(
         "decision_status",
         "decision_record",
         "knowledge_retrieval",
+        "engineering_search",
+        "engineering_expand",
+        "engineering_context",
+        "continuity_handoff",
         "workspace_inspection",
     ]
     assert harness.service.setups["claude-code"]["authoring_intent"] is False
