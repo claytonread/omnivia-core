@@ -345,7 +345,7 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 149
+    assert reference["case_count"] == 151
 
 
 def test_the_referenced_corpus_file_exists_and_holds_exactly_149_unique_cases() -> None:
@@ -353,8 +353,8 @@ def test_the_referenced_corpus_file_exists_and_holds_exactly_149_unique_cases() 
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 149
-    assert len(set(case_ids)) == 149
+    assert len(case_ids) == 151
+    assert len(set(case_ids)) == 151
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:
