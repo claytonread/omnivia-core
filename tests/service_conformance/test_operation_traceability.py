@@ -10,12 +10,12 @@ claiming a result.
 
 MCP and CLI are not service adapters here. Each is a single top-level
 client-surface decision, never a per-operation applicability claim. Format
-``v1.1`` records the accepted MCP mapping: the six operations the curated MCP
-exposure manifest allow-lists, each with its tool name, and every other
+``v1.1`` records the accepted MCP mapping: the nineteen operations the curated
+MCP exposure manifest allow-lists, each with its tool name, and every other
 catalogue operation as an intentional omission with its reason. The CLI
 mapping is still not decided, and neither surface's evidence is evaluated
 here. This module proves that split holds and stays in step with the frozen
-twenty-eight-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
+fifty-four-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
 recorded mapping to ``omnivia_core_mcp.manifest`` itself, which this module
 may not import.
 
@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.1",
+    "manifest_version": "2.2",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -96,7 +96,6 @@ MCP_EXPOSED = (
     ("import.start", "import_start"),
     ("job.get", "job_get"),
     ("job.events", "job_events"),
-    ("continuity.checkpoint.append", "continuity_checkpoint_append"),
 )
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
@@ -122,7 +121,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 TRACEABILITY = _load_json(FIXTURE_PATH)
 CATALOGUE_BY_NAME = {entry.name: entry for entry in OPERATION_CATALOGUE}
 #: ``(operation name, fixture entry)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of twenty-eight.
+#: failure names the operation rather than an index into a list of fifty-four.
 FIXTURE_OPERATIONS: list[dict[str, Any]] = TRACEABILITY["operations"]
 FIXTURE_NAMES = [op["contract"]["name"] for op in FIXTURE_OPERATIONS]
 FIXTURE_CASES = list(zip(FIXTURE_NAMES, FIXTURE_OPERATIONS))
@@ -283,8 +282,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 20
-    assert len(omitted) == 35
+    assert len(exposed) == 19
+    assert len(omitted) == 37
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -300,11 +299,10 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         if op.scope.side_effect != "none":
             # ADR-042: `decision.evaluate` is exposed with durable side effects
             # (audit/evaluation records); the tool description states this.
-            # SPEC-CORE-ENGMEM-001: `continuity.checkpoint.append` likewise.
             # The authoring additions (`memory.create`, `evidence.capture`,
             # `import.start`) were always mutation-bearing.
             assert entry["operation"] in (
-                "decision.evaluate", "continuity.checkpoint.append",
+                "decision.evaluate",
                 "memory.create", "evidence.capture", "import.start",
             )
         else:
@@ -330,12 +328,13 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         "memory.list",
         "workflow.inspect",
         "workflow.review",
+        "analysis.start",
         "workspace.list",
     }
 
 
 # --------------------------------------------------------------------------
-# The referenced 89-case adapter-wire-conformance corpus
+# The referenced 149-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 
@@ -346,16 +345,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 150
+    assert reference["case_count"] == 154
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_150_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_154_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 150
-    assert len(set(case_ids)) == 150
+    assert len(case_ids) == 154
+    assert len(set(case_ids)) == 154
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

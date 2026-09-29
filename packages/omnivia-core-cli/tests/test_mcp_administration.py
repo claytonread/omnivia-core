@@ -482,7 +482,6 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
     assert harness.stored() == {
         "allowed_purposes": [
             "content_ingestion",
-            "continuity_checkpoint",
             "continuity_handoff",
             "decision_evaluation",
             "decision_record",

@@ -46,7 +46,7 @@ is available to trusted clients as `engineering capture`.
 3. **Qualification lanes** (`test_engineering_qualification.py`, env-gated): 10k and 100k-observation synthetic corpora; p50/p95/p99 for `engineering.search`, `engineering.context.build`, `continuity.checkpoint.append`; reports written to `benchmarks/reports/engineering-memory/lane-<n>.json`.
 4. **Release evidence manifest**: `omnivia-core-engineering-memory-release-evidence-2026-09-27.md`.
 
-## Performance qualification (measured 2026-09-27, this machine)
+## Performance qualification (measured 2026-09-27/29, this machine)
 
 Lane 10 000 observations (`benchmarks/reports/engineering-memory/lane-10000.json`, seed 78.6 s):
 
@@ -56,11 +56,18 @@ Lane 10 000 observations (`benchmarks/reports/engineering-memory/lane-10000.json
 | `engineering.context.build` (investigate, 30 samples) | 2.96 s | 3.30 s | 3.33 s | ≤ 1 s | **over target** |
 | `continuity.checkpoint.append` (100 samples) | 1.05 ms | 1.5 ms | 8.6 ms | ≤ 200 ms | inside target |
 
-The search gap is structural: the preview path scores the full admitted candidate set in Python per query (no SQL-side top-k), so latency scales with corpus size. Pack construction inherits the frontier scan. These are measurements, not release guarantees. There is no valid completed 100 000-observation report. The previous rerun used code that this branch has since changed and was stopped; a fresh run is required after the scale fixes are integrated. (Fixture cost datum for that fresh run: seeding 100 000 observations through the production writer took 3 567.7 s (~59.5 min) on this machine, before any measurement sample ran.) The fixture still needs the worktree, ACL, conflict, cache-state, concurrency and environment dimensions required by spec §20.2 before it can serve as release qualification.
+**Lane 100 000 observations** (`benchmarks/reports/engineering-memory/lane-100000.json`, seed 3 054.4 s ≈ 50.9 min, macOS arm64 / 18-core / Python 3.11.15) — **completed end to end for the first time** after #143's hydration chunking, on main at `50d1274f`:
 
-## Scale-qualification finding: SQLite host-parameter ceiling (found and fixed)
+| Operation | p50 | p95 | p99 | Verdict |
+|---|---:|---:|---:|---|
+| `engineering.search` (diagnostic, 30 samples) | 3.32 s | 3.57 s | 3.78 s | over target, scales with corpus |
+| `engineering.search` (`current_safe`, 30 samples) | 3.17 s | 3.50 s | 3.54 s | over target, same curve |
+| `engineering.context.build` (investigate, 10 samples) | 29.3 s | 31.2 s | 31.2 s | over target by ~30× |
+| `continuity.checkpoint.append` (100 samples) | 1.10 ms | 1.65 ms | 10.5 ms | inside target |
 
-The first 100 000-observation lane failed with `sqlite3.OperationalError: too many SQL variables`: `read_authorized_memory_frontier` folds evidence links, permission labels and governance transitions by `IN (...)` lists sized by the admitted frontier, and a workspace at 100k records crosses SQLite's host-parameter ceiling. Any workspace past tens of thousands of records would fail `memory.search` and `engineering.search` the same way — a genuine production correctness bug at scale, which is exactly the class of finding the §20.2 scale-qualification lane exists to produce. Fixed in `50f4fa7a` by issuing each fold in fixed 512-id chunks and re-sorting the merged rows by the statements' own ORDER BY keys, reproducing the unchunked statement's rows and order exactly; digest-sensitive suites (2 668 corpus/conformance tests, 701 memory/engineering tests) answer identically, and `test_memory_frontier_chunking.py` pins the boundary with a deterministic 540-record frontier. Commit `84d37b92` also spends the `current_safe` applicability cap only on authorised query matches and repairs the source fixture. A fresh 100k diagnostic run remains pending after the pack builder stops hydrating the full frontier.
+The scaling curve confirms the 10k finding: the preview path scores the full admitted candidate set in Python per query (no SQL-side top-k), so search latency grows roughly linearly with corpus size, and pack construction — which hydrates, renders and checksums over the same frontier — grows super-linearly past it (2.96 s at 10k → 29.3 s at 100k). The chunked folds answered correctly at every scale, so these are **latency** gaps, not correctness gaps: §20.3's resource-correctness gates held (bounded hydration, no cap disabled, no ACL shortcut). The identified production follow-up remains §11.3's SQL-side top-k / permission-partitioned scoring lane; until it lands, a 100k-scale supported-configuration claim would be dishonest, and the checkpoint path (p95 1.65 ms against a 200 ms target) is already production-shaped.
+
+These are measurements, not release guarantees. The fixture still needs the worktree, ACL, conflict, cache-state, concurrency and environment dimensions required by spec §20.2 before it can serve as release qualification.
 
 ## Honest limitations (carried into the release note)
 

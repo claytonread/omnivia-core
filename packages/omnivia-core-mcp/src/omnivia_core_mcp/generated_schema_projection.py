@@ -3003,413 +3003,6 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
-    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendInput": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "ContinuityCheckpointAppendInput",
-        "description": "Input for `continuity.checkpoint.append`: appends one immutable checkpoint to a bound session. The envelope's idempotency key makes a lost-reply retry return the original receipt; reusing the key with a different payload is an explicit conflict. The expected parent sequence serialises competing successors: two clients cannot both become the successor of one checkpoint.",
-        "type": "object",
-        "unevaluatedProperties": False,
-        "properties": {
-            "session_id": {
-                "$ref": "#/$defs/common__Identifier",
-                "description": "The bound session to append to.",
-            },
-            "parent_checkpoint_id": {
-                "$ref": "#/$defs/common__Identifier",
-                "description": "Exact predecessor checkpoint, required for an explicit continuation.",
-            },
-            "expected_parent_sequence": {
-                "type": "integer",
-                "description": "The parent sequence the caller expects; a concurrent successor makes this append a precondition failure rather than a silent replacement.",
-                "minimum": 1,
-            },
-            "payload": {
-                "$ref": "#/$defs/engineering__EngineeringCheckpointPayload",
-                "description": "The validated checkpoint payload stored as immutable L0 evidence.",
-            },
-        },
-        "required": [
-            "session_id",
-            "payload",
-        ],
-        "$defs": {
-            "common__Identifier": {
-                "title": "Identifier",
-                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
-            },
-            "common__Timestamp": {
-                "title": "Timestamp",
-                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
-                "maxLength": 40,
-            },
-            "engineering__EngineeringCheckpointObservation": {
-                "title": "EngineeringCheckpointObservation",
-                "description": "One bounded working statement inside a checkpoint, with its evidence references and an explicit support classification. `claimed` means the agent reported it; only `verified` statements carry validation evidence, and neither classification is accepted knowledge.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "statement": {
-                        "type": "string",
-                        "description": "The bounded working statement.",
-                        "minLength": 1,
-                        "maxLength": 2000,
-                    },
-                    "evidence_refs": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/common__Identifier",
-                        },
-                        "description": "Immutable evidence identities supporting the statement, when support exists.",
-                    },
-                    "support": {
-                        "type": "string",
-                        "description": "Open, bounded code naming how the statement is supported, such as `verified` or `claimed`.",
-                        "minLength": 1,
-                        "maxLength": 32,
-                    },
-                },
-                "required": [
-                    "statement",
-                    "support",
-                ],
-            },
-            "engineering__EngineeringCheckpointPayload": {
-                "title": "EngineeringCheckpointPayload",
-                "description": "The structured, validated payload of one continuity checkpoint. Preserves working context with unresolved work and uncertainty intact: completed work distinguishes verified evidence from claims, failed approaches and unresolved questions are first-class, and suggested next actions are suggestions only - never permission to execute. The payload is L0 evidence once stored; Core does not become the owner of any plan or external effect it references.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "objective": {
-                        "type": "string",
-                        "description": "Bounded description of the current work, labelled working context.",
-                        "minLength": 1,
-                        "maxLength": 2000,
-                    },
-                    "checkpoint_kind": {
-                        "type": "string",
-                        "description": "Open, bounded code naming why the checkpoint was taken, such as `periodic`, `before_compaction`, `after_compaction`, `handoff` or `session_close`.",
-                        "minLength": 1,
-                        "maxLength": 64,
-                    },
-                    "external_run_ref": {
-                        "type": "string",
-                        "description": "External Runtime/host run reference, when present. A reference, never execution authority.",
-                        "maxLength": 256,
-                    },
-                    "repository_snapshots": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringSnapshotRef",
-                        },
-                        "description": "Exact snapshots relevant to the work.",
-                    },
-                    "accepted_record_refs": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
-                        },
-                        "description": "Accepted exact versions verified by Core at submission.",
-                    },
-                    "candidate_record_refs": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringRecordVersionRef",
-                        },
-                        "description": "Proposed versions, visibly separate from accepted knowledge.",
-                    },
-                    "observations": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringCheckpointObservation",
-                        },
-                        "description": "Bounded working statements with evidence references and support classification.",
-                    },
-                    "completed_work": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringCheckpointObservation",
-                        },
-                        "description": "Reported accomplishments; validation links distinguish verified evidence from claims.",
-                    },
-                    "failed_approaches": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringCheckpointObservation",
-                        },
-                        "description": "Prior attempts and their evidence, including uncertainty.",
-                    },
-                    "unresolved_work": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "maxLength": 2000,
-                        },
-                        "description": "Questions, blockers and incomplete investigations, preserved intact.",
-                    },
-                    "relevant_sources": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/records__SourceReference",
-                        },
-                        "description": "Source/evidence references rather than absolute paths.",
-                    },
-                    "external_effects": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/$defs/engineering__EngineeringExternalEffect",
-                        },
-                        "description": "Reported external operation ids and their reported status, including `unknown`.",
-                    },
-                    "next_actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "maxLength": 2000,
-                        },
-                        "description": "Suggested next actions. Suggestions only; no permission to execute.",
-                    },
-                    "context_receipt": {
-                        "$ref": "#/$defs/engineering__EngineeringContextReceipt",
-                        "description": "Optional prior pack checksum and reproducibility inputs.",
-                    },
-                },
-                "required": [
-                    "objective",
-                    "checkpoint_kind",
-                ],
-            },
-            "engineering__EngineeringContextReceipt": {
-                "title": "EngineeringContextReceipt",
-                "description": "A reproducibility receipt for the context a checkpoint was produced under: the pack content checksum and its declared inputs. Not a persisted pack handle, and never a bearer token for regeneration.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "pack_checksum": {
-                        "$ref": "#/$defs/jobs__ContentChecksum",
-                        "description": "Content checksum of the engineering context pack this checkpoint references.",
-                    },
-                },
-                "required": [
-                    "pack_checksum",
-                ],
-            },
-            "engineering__EngineeringExternalEffect": {
-                "title": "EngineeringExternalEffect",
-                "description": "One reported external operation and its reported status. `unknown` is preserved as unknown: reconciling the effect is the owning Runtime's job, and a handoff never retries an unknown effect automatically.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "effect_ref": {
-                        "type": "string",
-                        "description": "External operation reference as reported by the host Runtime.",
-                        "minLength": 1,
-                        "maxLength": 256,
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "Open, bounded code naming the reported outcome, such as `confirmed`, `failed` or `unknown`.",
-                        "minLength": 1,
-                        "maxLength": 32,
-                    },
-                },
-                "required": [
-                    "effect_ref",
-                    "status",
-                ],
-            },
-            "engineering__EngineeringRecordVersionRef": {
-                "title": "EngineeringRecordVersionRef",
-                "description": "An exact governed record version: record identity plus exact version. Every engineering relationship, review, priority and citation names endpoints at this granularity; selecting a latest timestamp is never canonical resolution.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "record_id": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "Governed record identity.",
-                    },
-                    "version": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "Exact record version identity.",
-                    },
-                    "content_digest": {
-                        "$ref": "#/$defs/jobs__ContentChecksum",
-                        "description": "Optional content checksum of the referenced version, when the caller already holds it.",
-                    },
-                },
-                "required": [
-                    "record_id",
-                    "version",
-                ],
-            },
-            "engineering__EngineeringSnapshotRef": {
-                "title": "EngineeringSnapshotRef",
-                "description": "A reference to one immutable captured source state within a registered repository. A working-tree snapshot is never asserted to be its base commit, and a branch label is advisory provenance only: it is never a unique identity or an applicability proof.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "snapshot_id": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "Identity of the immutable snapshot capture.",
-                    },
-                    "repository_id": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "Stable logical repository identity, when known to the caller; the server resolves and validates it against registered bindings.",
-                    },
-                    "snapshot_kind": {
-                        "type": "string",
-                        "description": "Open, bounded code naming how the snapshot was captured, such as `git_commit`, `working_tree` or `source_archive`.",
-                        "minLength": 1,
-                        "maxLength": 64,
-                    },
-                    "branch_label": {
-                        "type": "string",
-                        "description": "Advisory display/provenance label; never identity and never applicability authority.",
-                        "maxLength": 256,
-                    },
-                },
-                "required": [
-                    "snapshot_id",
-                ],
-            },
-            "jobs__ContentChecksum": {
-                "title": "ContentChecksum",
-                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
-                "type": "string",
-                "minLength": 71,
-                "maxLength": 71,
-                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
-            },
-            "records__SourceKind": {
-                "title": "SourceKind",
-                "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
-            },
-            "records__SourceReference": {
-                "title": "SourceReference",
-                "description": "A pointer to the external or internal thing a record's claim came from.",
-                "type": "object",
-                "properties": {
-                    "kind": {
-                        "$ref": "#/$defs/records__SourceKind",
-                        "description": "What kind of thing this reference points at.",
-                    },
-                    "source_id": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "Identifier of the source within its own system of record.",
-                    },
-                    "locator": {
-                        "type": "string",
-                        "description": "Optional locator within the source, such as a path, offset, or message id.",
-                        "maxLength": 2048,
-                    },
-                    "retrieved_at": {
-                        "$ref": "#/$defs/common__Timestamp",
-                        "description": "When the source was read to produce the record it supports.",
-                    },
-                },
-                "required": [
-                    "kind",
-                    "source_id",
-                ],
-                "unevaluatedProperties": False,
-            },
-        },
-    },
-    "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendResult": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "ContinuityCheckpointAppendResult",
-        "description": "Result of `continuity.checkpoint.append`.",
-        "type": "object",
-        "unevaluatedProperties": False,
-        "properties": {
-            "receipt": {
-                "$ref": "#/$defs/engineering__CheckpointReceipt",
-                "description": "The durable receipt proving the checkpoint exists.",
-            },
-        },
-        "required": [
-            "receipt",
-        ],
-        "$defs": {
-            "common__Identifier": {
-                "title": "Identifier",
-                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
-            },
-            "common__Timestamp": {
-                "title": "Timestamp",
-                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
-                "maxLength": 40,
-            },
-            "engineering__CheckpointReceipt": {
-                "title": "CheckpointReceipt",
-                "description": "The durable receipt a successful checkpoint append returns. Only this receipt proves a checkpoint exists; host hooks and UI claims are not durability guarantees. Replaying the same idempotency key with the exact same request returns this same receipt.",
-                "type": "object",
-                "unevaluatedProperties": False,
-                "properties": {
-                    "checkpoint_id": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "Service-issued immutable checkpoint identity.",
-                    },
-                    "session_id": {
-                        "$ref": "#/$defs/common__Identifier",
-                        "description": "The bound continuity session.",
-                    },
-                    "sequence": {
-                        "type": "integer",
-                        "description": "Monotonic checkpoint sequence within the session, assigned transactionally.",
-                        "minimum": 1,
-                    },
-                    "content_digest": {
-                        "$ref": "#/$defs/jobs__ContentChecksum",
-                        "description": "Content checksum of the stored checkpoint evidence.",
-                    },
-                    "recorded_at": {
-                        "$ref": "#/$defs/common__Timestamp",
-                        "description": "Server-owned immutable recorded time.",
-                    },
-                    "audit_reference": {
-                        "type": "string",
-                        "description": "Audit reference for the committed append.",
-                        "minLength": 1,
-                        "maxLength": 256,
-                    },
-                },
-                "required": [
-                    "checkpoint_id",
-                    "session_id",
-                    "sequence",
-                    "content_digest",
-                    "recorded_at",
-                    "audit_reference",
-                ],
-            },
-            "jobs__ContentChecksum": {
-                "title": "ContentChecksum",
-                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
-                "type": "string",
-                "minLength": 71,
-                "maxLength": 71,
-                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
-            },
-        },
-    },
     "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "ContinuityHandoffReadInput",
@@ -3657,11 +3250,97 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "$ref": "#/$defs/engineering__EngineeringApplicabilityMode",
                 "description": "How applicability qualifies this pack. `diagnostic` (the default) is the pre-existing behaviour: every target statement is `not_evaluated`. `current_safe` requires every target to be a recorded snapshot inside its source stream's contiguous validated coverage, checked before any selection, or the build is refused with `dependency_unavailable` and the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records proven `matched` at every target enter the pack.",
             },
+            "counting_mode": {
+                "$ref": "#/$defs/engineering__EngineeringCountingMode",
+                "description": "Optional explicit counting negotiation. Omission preserves the legacy engineering_context.v1 behavior.",
+            },
+            "tokenizer": {
+                "$ref": "#/$defs/engineering__EngineeringTokenizerReference",
+                "description": "Exact tokenizer requested by exact_tokens.v1. Forbidden for byte_only.v1.",
+            },
         },
         "required": [
             "query",
             "targets",
             "profile",
+        ],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {
+                        "counting_mode": {
+                            "const": "byte_only.v1",
+                        },
+                    },
+                    "required": [
+                        "counting_mode",
+                    ],
+                },
+                "then": {
+                    "required": [
+                        "budget",
+                    ],
+                    "not": {
+                        "required": [
+                            "tokenizer",
+                        ],
+                    },
+                    "properties": {
+                        "budget": {
+                            "required": [
+                                "model_bytes",
+                            ],
+                            "not": {
+                                "required": [
+                                    "model_tokens",
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+            {
+                "if": {
+                    "properties": {
+                        "counting_mode": {
+                            "const": "exact_tokens.v1",
+                        },
+                    },
+                    "required": [
+                        "counting_mode",
+                    ],
+                },
+                "then": {
+                    "required": [
+                        "budget",
+                        "tokenizer",
+                    ],
+                    "properties": {
+                        "budget": {
+                            "required": [
+                                "model_tokens",
+                                "model_bytes",
+                            ],
+                        },
+                    },
+                },
+            },
+            {
+                "if": {
+                    "not": {
+                        "required": [
+                            "counting_mode",
+                        ],
+                    },
+                },
+                "then": {
+                    "not": {
+                        "required": [
+                            "tokenizer",
+                        ],
+                    },
+                },
+            },
         ],
         "$defs": {
             "common__Identifier": {
@@ -3683,7 +3362,12 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
-                "description": "Caller-requested bounded budgets for one engineering context build. Byte and token limits are simultaneous limits, not conversions of one another. Effective budgets are the minimum of the request, the granted profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "description": "Caller-requested bounded budgets for one engineering context build. Exact-token mode applies byte and token limits simultaneously, never converting one into the other; byte-only mode omits the token limit entirely. Effective budgets are the minimum of the request, the server-owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "x-omnivia-typescript-v2-view": {
+                    "omit": [
+                        "model_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3711,8 +3395,23 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                         "minimum": 1,
                         "maximum": 1048576,
                     },
+                    "authorized_candidates": {
+                        "type": "integer",
+                        "description": "Maximum authorized preview candidates examined for the build; the proposed default is 2000 and the hard ceiling 10000.",
+                        "minimum": 1,
+                        "maximum": 10000,
+                    },
                 },
                 "required": [],
+            },
+            "engineering__EngineeringCountingMode": {
+                "title": "EngineeringCountingMode",
+                "description": "Closed, versioned counting contract for an engineering context build. `byte_only.v1` negotiates exact UTF-8 byte accounting without a token estimate. `exact_tokens.v1` requires an exact named tokenizer; a service that has not installed it refuses the request rather than estimating.",
+                "type": "string",
+                "enum": [
+                    "byte_only.v1",
+                    "exact_tokens.v1",
+                ],
             },
             "engineering__EngineeringSnapshotRef": {
                 "title": "EngineeringSnapshotRef",
@@ -3744,6 +3443,26 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "snapshot_id",
                 ],
             },
+            "engineering__EngineeringTokenizerReference": {
+                "title": "EngineeringTokenizerReference",
+                "description": "Exact tokenizer identity and version requested for model-token counting. The pair is replay input, never a model-family guess or permission to download a tokenizer.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "tokenizer_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact tokenizer identity.",
+                    },
+                    "tokenizer_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact tokenizer version.",
+                    },
+                },
+                "required": [
+                    "tokenizer_id",
+                    "tokenizer_version",
+                ],
+            },
             "engineering__EngineeringTopicRef": {
                 "title": "EngineeringTopicRef",
                 "description": "A reference to the evolving question or decision an observation belongs to: either an existing topic entity identity or a proposed namespaced topic key scoped by workspace, project/repository domain and sensitivity boundary. Equal keys in different scopes do not merge.",
@@ -3769,6 +3488,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "EngineeringContextBuildResult",
         "description": "Result of `engineering.context.build`. Nothing is persisted: the pack is regenerated or fails with an explicit replay-inputs error, never silently reissued from absent projections.",
+        "x-omnivia-typescript-v2-view": {},
         "type": "object",
         "unevaluatedProperties": False,
         "properties": {
@@ -3803,7 +3523,12 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
-                "description": "Caller-requested bounded budgets for one engineering context build. Byte and token limits are simultaneous limits, not conversions of one another. Effective budgets are the minimum of the request, the granted profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "description": "Caller-requested bounded budgets for one engineering context build. Exact-token mode applies byte and token limits simultaneously, never converting one into the other; byte-only mode omits the token limit entirely. Effective budgets are the minimum of the request, the server-owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "x-omnivia-typescript-v2-view": {
+                    "omit": [
+                        "model_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3831,12 +3556,26 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                         "minimum": 1,
                         "maximum": 1048576,
                     },
+                    "authorized_candidates": {
+                        "type": "integer",
+                        "description": "Maximum authorized preview candidates examined for the build; the proposed default is 2000 and the hard ceiling 10000.",
+                        "minimum": 1,
+                        "maximum": 10000,
+                    },
                 },
                 "required": [],
             },
             "engineering__EngineeringBudgetOutcome": {
                 "title": "EngineeringBudgetOutcome",
                 "description": "The budget as requested, as effectively applied, and as actually consumed by this build. Actual source-read bytes and hydration counts are reported, so a pack cannot exceed its caps invisibly.",
+                "x-omnivia-typescript-v2-view": {
+                    "legacy_required": [
+                        "rendered_tokens",
+                    ],
+                    "omit": [
+                        "rendered_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3851,6 +3590,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "rendered_tokens": {
                         "type": "integer",
                         "description": "Tokens actually rendered model-facing.",
+                        "x-omnivia-python-init-required": True,
                         "minimum": 0,
                     },
                     "rendered_bytes": {
@@ -3871,7 +3611,6 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 },
                 "required": [
                     "effective",
-                    "rendered_tokens",
                     "rendered_bytes",
                     "source_bytes_read",
                     "hydrations",
@@ -3933,13 +3672,21 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringContextPack": {
                 "title": "EngineeringContextPack",
-                "description": "The engineering context pack representation (`format_version` `engineering_context.v1`): a non-persisted deterministic view built from a pinned BuildContext and the authorised frontier. `pack_id` equals the canonical artifact checksum computed after removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token: following any citation requires fresh authorisation, and a previously generated pack may no longer be deliverable after revocation even when its bytes are reproducible.",
+                "description": "A non-persisted deterministic engineering context view built from a pinned BuildContext and the authorised frontier. Legacy `engineering_context.v1` retains the pinned pattern-token count. Negotiated `engineering_context.v2` carries exact UTF-8 byte accounting and no token estimate. `pack_id` equals the canonical artifact checksum computed after removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token: following any citation requires fresh authorisation, and a previously generated pack may no longer be deliverable after revocation even when its bytes are reproducible.",
+                "x-omnivia-typescript-v2-view": {
+                    "const": {
+                        "format_version": "engineering_context.v2",
+                    },
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
                     "format_version": {
                         "type": "string",
-                        "const": "engineering_context.v1",
+                        "enum": [
+                            "engineering_context.v1",
+                            "engineering_context.v2",
+                        ],
                         "description": "The engineering pack representation format. This representation is never decoded as a legacy application-v1 ContextPackBuildResult.",
                     },
                     "pack_id": {
@@ -4046,6 +3793,223 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "reproducibility",
                     "fresh_authorization_required",
                 ],
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {
+                                "format_version": {
+                                    "const": "engineering_context.v1",
+                                },
+                            },
+                            "required": [
+                                "format_version",
+                            ],
+                        },
+                        "then": {
+                            "properties": {
+                                "rendering": {
+                                    "required": [
+                                        "token_count",
+                                    ],
+                                },
+                                "budget": {
+                                    "required": [
+                                        "rendered_tokens",
+                                    ],
+                                    "properties": {
+                                        "effective": {
+                                            "required": [
+                                                "model_tokens",
+                                            ],
+                                        },
+                                    },
+                                },
+                                "normalized_request": {
+                                    "not": {
+                                        "required": [
+                                            "counting_mode",
+                                        ],
+                                    },
+                                },
+                                "reproducibility": {
+                                    "not": {
+                                        "required": [
+                                            "counting_mode",
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "if": {
+                            "properties": {
+                                "format_version": {
+                                    "const": "engineering_context.v2",
+                                },
+                            },
+                            "required": [
+                                "format_version",
+                            ],
+                        },
+                        "then": {
+                            "properties": {
+                                "rendering": {
+                                    "not": {
+                                        "required": [
+                                            "token_count",
+                                        ],
+                                    },
+                                },
+                                "budget": {
+                                    "not": {
+                                        "required": [
+                                            "rendered_tokens",
+                                        ],
+                                    },
+                                    "properties": {
+                                        "requested": {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        "effective": {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                    },
+                                },
+                                "normalized_request": {
+                                    "properties": {
+                                        "counting_mode": {
+                                            "const": "byte_only.v1",
+                                        },
+                                    },
+                                    "required": [
+                                        "counting_mode",
+                                    ],
+                                    "allOf": [
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_id",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_version",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_note",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "token_count",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "rendered_tokens",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                                "reproducibility": {
+                                    "properties": {
+                                        "counting_mode": {
+                                            "const": "byte_only.v1",
+                                        },
+                                    },
+                                    "required": [
+                                        "counting_mode",
+                                    ],
+                                    "allOf": [
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_id",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_version",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_note",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "token_count",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "rendered_tokens",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ],
             },
             "engineering__EngineeringOmission": {
                 "title": "EngineeringOmission",
@@ -4140,7 +4104,15 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringRendering": {
                 "title": "EngineeringRendering",
-                "description": "The complete model-facing rendering of a pack: one canonical UTF-8 string containing section labels, content, authority/applicability warnings and compact citations, counted exactly with the pinned tokenizer. Headers, citation labels, warnings and separators count when they are sent to the model; transport metadata that is not sent is separately byte-capped and lives elsewhere.",
+                "description": "The complete model-facing rendering of a pack: one canonical UTF-8 string containing section labels, content, authority/applicability warnings and compact citations. Legacy v1 reports the pinned pattern-token count and exact UTF-8 byte count; byte-only v2 reports only the exact UTF-8 byte count. Headers, citation labels, warnings and separators are part of the measured string; transport metadata that is not sent lives elsewhere.",
+                "x-omnivia-typescript-v2-view": {
+                    "legacy_required": [
+                        "token_count",
+                    ],
+                    "omit": [
+                        "token_count",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -4157,6 +4129,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "token_count": {
                         "type": "integer",
                         "description": "Exact token count of `text` under the pinned supported tokenizer.",
+                        "x-omnivia-python-init-required": True,
                         "minimum": 0,
                     },
                     "byte_count": {
@@ -4168,7 +4141,6 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "required": [
                     "text",
                     "renderer_version",
-                    "token_count",
                     "byte_count",
                 ],
             },

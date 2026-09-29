@@ -16,7 +16,14 @@ the `resume` pack. Another principal's are indistinguishable from missing ones.
 from __future__ import annotations
 
 import json
+import socket
 import sqlite3
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from pathlib import Path
+from threading import Barrier, RLock
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,7 +43,21 @@ from omnivia_core_runtime.service.operations import (
     OperationContext,
     OperationError,
 )
+from omnivia_core_runtime.service.ovc1 import HEADER_BYTES, decode_frame, encode_frame
 from omnivia_core_runtime.service.pagination import PROCESS_CONTINUATION_TOKENS
+from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
+from omnivia_core_runtime.service.protocol import DocumentRouter
+from omnivia_core_runtime.service.transport import LocalSocketServer, endpoint_for_path
+from omnivia_core_runtime.storage import continuity as continuity_storage
+from omnivia_core_runtime.storage.continuity import (
+    CheckpointMetadata,
+    PayloadLengthMismatch,
+    list_checkpoint_metadata,
+    read_checkpoints,
+    read_selected_checkpoints,
+)
+from omnivia_core_runtime.storage.memory import read_snapshot
+from omnivia_core_runtime.storage.payload_budget import PayloadReadBudget
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
@@ -45,7 +66,11 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    ErrorResponseEnvelope,
     MutationPrecondition,
+    SuccessResponseEnvelope,
+    decode_response,
+    encode_request,
     get_operation_metadata,
 )
 
@@ -68,14 +93,16 @@ def _session(entry: Any) -> AuthenticatedSession:
     return s0.session_for(entry)
 
 
-def _handlers(holder: Any, entry: Any) -> ContinuityHandlers:
+def _handlers(
+    holder: Any, entry: Any, *, clock: Any | None = None
+) -> ContinuityHandlers:
     return ContinuityHandlers(
         service=SimpleNamespace(
             connection=holder.connection, identity=holder.identity
         ),
         session=_session(entry),
         binding=s0.BINDING,
-        clock=s0.clock_at(),
+        clock=s0.clock_at() if clock is None else clock,
     )
 
 
@@ -159,8 +186,9 @@ def _call(
     *,
     stated_version: str | None = None,
     idempotency_key: str | None = None,
+    clock: Any | None = None,
 ) -> Any:
-    handlers = _handlers(holder, entry)
+    handlers = _handlers(holder, entry, clock=clock)
     context = _context(
         holder,
         entry,
@@ -439,6 +467,355 @@ def _settled(workspace: Any) -> list[list[Any]]:
     ]
 
 
+def _register_with_lease(holder: Any, lease_delta_us: int) -> str:
+    """Register so the immutable lease ends at `WALL_BASE + lease_delta_us`."""
+    registered_at = s0.WALL_BASE - timedelta(
+        seconds=continuity_storage.SESSION_LEASE_SECONDS
+    ) + timedelta(microseconds=lease_delta_us)
+    session_id = str(
+        _call(
+            holder,
+            REGISTER,
+            "continuity_session_register",
+            _register_input(),
+            clock=s0.clock_at(wall=registered_at),
+        ).result["session"]["session_id"]
+    )
+    assert holder.connection.execute(
+        "SELECT lease_expires_at_us FROM omnivia_engineering_sessions "
+        "WHERE workspace_id = ? AND session_id = ?",
+        (WORKSPACE_ID, session_id),
+    ).fetchone() == (s0.WALL_BASE_US + lease_delta_us,)
+    return session_id
+
+
+def _settled_holder(holder: Any) -> list[list[Any]]:
+    return [
+        holder.connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
+        for table in _SETTLED_TABLES
+    ]
+
+
+@pytest.mark.parametrize(
+    ("lease_delta_us", "succeeds"),
+    ((1, True), (0, False), (-1, False)),
+    ids=("before-expiry", "at-expiry", "after-expiry"),
+)
+def test_checkpoint_append_uses_the_fenced_settlement_instant_for_lease_expiry(
+    tmp_path: Any, lease_delta_us: int, succeeds: bool
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, lease_delta_us)
+        before = _settled_holder(holder)
+
+        if succeeds:
+            appended = _call(
+                holder,
+                APPEND,
+                "continuity_checkpoint_append",
+                _append_input(session_id),
+                stated_version="seq-0",
+            )
+            assert appended.result["receipt"]["sequence"] == 1
+            assert holder.connection.execute(
+                "SELECT last_checkpoint_sequence FROM omnivia_engineering_sessions "
+                "WHERE workspace_id = ? AND session_id = ?",
+                (WORKSPACE_ID, session_id),
+            ).fetchone() == (1,)
+        else:
+            with pytest.raises(OperationError) as expired:
+                _call(
+                    holder,
+                    APPEND,
+                    "continuity_checkpoint_append",
+                    _append_input(session_id),
+                    stated_version="seq-0",
+                )
+            assert expired.value.code == ERROR_CODE_CONFLICT
+            assert _settled_holder(holder) == before
+    finally:
+        holder.connection.close()
+
+
+@pytest.mark.parametrize("lease_delta_us", (0, -1), ids=("at-expiry", "after-expiry"))
+@pytest.mark.parametrize("with_final_checkpoint", (False, True), ids=("plain", "final"))
+def test_session_close_is_refused_whole_when_its_lease_has_expired(
+    tmp_path: Any, lease_delta_us: int, with_final_checkpoint: bool
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, lease_delta_us)
+        request: dict[str, Any] = {
+            "session_id": session_id,
+            "expected_sequence": 0,
+        }
+        if with_final_checkpoint:
+            request["final_checkpoint"] = {
+                "objective": "This final checkpoint must roll back",
+                "checkpoint_kind": "session_close",
+            }
+        before = _settled_holder(holder)
+
+        with pytest.raises(OperationError) as expired:
+            _call(
+                holder,
+                CLOSE,
+                "continuity_session_close",
+                request,
+                stated_version="seq-0",
+            )
+
+        assert expired.value.code == ERROR_CODE_CONFLICT
+        assert _settled_holder(holder) == before
+        assert holder.connection.execute(
+            "SELECT state, last_checkpoint_sequence, last_checkpoint_id "
+            "FROM omnivia_engineering_sessions "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == ("active", None, None)
+    finally:
+        holder.connection.close()
+
+
+class _SettlementCrossesLeaseClock:
+    """Issue before the lease deadline, then settle after it without sleeping."""
+
+    def __init__(self) -> None:
+        self.wall_reads = 0
+
+    def monotonic(self) -> float:
+        return s0.MONOTONIC_BASE
+
+    def wall_time(self) -> Any:
+        self.wall_reads += 1
+        if self.wall_reads == 1:
+            return s0.WALL_BASE
+        return s0.WALL_BASE + timedelta(microseconds=20)
+
+
+def test_delayed_first_delivery_refuses_when_settlement_crosses_the_lease(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnivia_core_runtime.service.handlers import continuity as handlers
+
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, 10)
+        before = _settled_holder(holder)
+        clock = _SettlementCrossesLeaseClock()
+        original = handlers._session_version
+        observed_before_expiry = False
+
+        def observe_precondition(*args: Any, **kwargs: Any) -> str:
+            nonlocal observed_before_expiry
+            assert clock.wall_reads == 1
+            observed_before_expiry = True
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(handlers, "_session_version", observe_precondition)
+
+        with pytest.raises(OperationError) as expired:
+            _call(
+                holder,
+                APPEND,
+                "continuity_checkpoint_append",
+                _append_input(session_id),
+                stated_version="seq-0",
+                idempotency_key="idem-delayed-first-delivery",
+                clock=clock,
+            )
+
+        assert observed_before_expiry is True
+        assert clock.wall_reads == 2
+        assert expired.value.code == ERROR_CODE_CONFLICT
+        assert _settled_holder(holder) == before
+    finally:
+        holder.connection.close()
+
+
+def test_committed_append_replays_after_expiry_without_a_second_checkpoint(
+    tmp_path: Any,
+) -> None:
+    holder = _owned(tmp_path)
+    try:
+        session_id = _register_with_lease(holder, 1)
+        request = _append_input(session_id)
+        first = _call(
+            holder,
+            APPEND,
+            "continuity_checkpoint_append",
+            request,
+            stated_version="seq-0",
+            idempotency_key="idem-append-before-expiry",
+        )
+        after_expiry = s0.clock_at(
+            wall=s0.WALL_BASE + timedelta(microseconds=2)
+        )
+
+        replayed = _call(
+            holder,
+            APPEND,
+            "continuity_checkpoint_append",
+            request,
+            stated_version="seq-0",
+            idempotency_key="idem-append-before-expiry",
+            clock=after_expiry,
+        )
+
+        assert replayed.result["receipt"] == first.result["receipt"]
+        assert replayed.audit_reference == first.audit_reference
+        assert holder.connection.execute(
+            "SELECT COUNT(*), MIN(sequence), MAX(sequence) "
+            "FROM omnivia_engineering_checkpoints "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (WORKSPACE_ID, session_id),
+        ).fetchone() == (1, 1, 1)
+
+        changed = _append_input(
+            session_id,
+            payload={
+                "objective": "A different request cannot reuse the committed key",
+                "checkpoint_kind": "periodic",
+            },
+        )
+        with pytest.raises(OperationError) as conflict:
+            _call(
+                holder,
+                APPEND,
+                "continuity_checkpoint_append",
+                changed,
+                stated_version="seq-0",
+                idempotency_key="idem-append-before-expiry",
+                clock=after_expiry,
+            )
+        assert conflict.value.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
+    finally:
+        holder.connection.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
+    reason="requires a real Unix socket",
+)
+def test_concurrent_successors_through_real_transport_admit_exactly_one(
+    tmp_path: Any,
+) -> None:
+    """Two client threads race while the real server thread alone owns SQLite."""
+    workspace = sc.Workspace(tmp_path)
+    try:
+        session_id = workspace.ok(
+            "continuity.session.register", _register_input(), key="idem-compete-register"
+        )["session"]["session_id"]
+        requests = [
+            s0.envelope_for(
+                APPEND,
+                operation_input=_append_input(
+                    session_id, expected_parent_sequence=0
+                ),
+                request_id=f"req-competing-{index}",
+                correlation_id=f"cor-competing-{index}",
+                trace_id=f"trc-competing-{index}",
+                workspace_id=sc.WORKSPACE_ID,
+                idempotency_key=f"idem-competing-{index}",
+                mutation_precondition=MutationPrecondition(record_version="seq-0"),
+            )
+            for index in range(2)
+        ]
+
+        router = DocumentRouter(
+            probes=ProbeRouter(
+                facts=lambda: ServiceFacts(
+                    observed_at="2026-09-28T00:00:00Z",
+                    health_status="pass",
+                    readiness_status="pass",
+                    discovery_status="pass",
+                ),
+                capabilities=tuple,
+                clock=lambda: 0,
+            ),
+            dispatch=workspace.surface.dispatch,
+        )
+
+        def receive_exact(client: socket.socket, byte_count: int) -> bytes:
+            chunks: list[bytes] = []
+            while byte_count:
+                chunk = client.recv(byte_count)
+                if not chunk:
+                    raise AssertionError("transport closed before the response completed")
+                chunks.append(chunk)
+                byte_count -= len(chunk)
+            return b"".join(chunks)
+
+        barrier = Barrier(3)
+
+        def compete(address: str, request: Any) -> Any:
+            barrier.wait(timeout=10)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(10)
+                client.connect(address)
+                client.sendall(encode_frame(encode_request(request)))
+                header = receive_exact(client, HEADER_BYTES)
+                body_length = int.from_bytes(header[4:], "big")
+                return decode_response(
+                    decode_frame(header + receive_exact(client, body_length))
+                )
+
+        with tempfile.TemporaryDirectory(prefix="ov-continuity-", dir="/tmp") as directory:
+            endpoint = endpoint_for_path(Path(directory) / "service.sock")
+            with LocalSocketServer(
+                router=router,
+                endpoint=endpoint,
+                gate=RLock(),
+                timeout=10,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(compete, endpoint.address, request)
+                    for request in requests
+                ]
+                barrier.wait(timeout=10)
+                outcomes = [future.result(timeout=30) for future in futures]
+
+        winners = [
+            outcome for outcome in outcomes
+            if isinstance(outcome, SuccessResponseEnvelope)
+        ]
+        losers = [
+            outcome for outcome in outcomes
+            if isinstance(outcome, ErrorResponseEnvelope)
+        ]
+        observed = [outcome.to_wire() for outcome in outcomes]
+        assert len(winners) == 1, observed
+        assert len(losers) == 1, observed
+        assert losers[0].error.code == ERROR_CODE_MUTATION_PRECONDITION_FAILED
+        winning_receipt = winners[0].result["receipt"]
+        assert workspace.holder.connection.execute(
+            "SELECT last_checkpoint_sequence, last_checkpoint_id "
+            "FROM omnivia_engineering_sessions "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (sc.WORKSPACE_ID, session_id),
+        ).fetchone() == (1, winning_receipt["checkpoint_id"])
+        assert workspace.holder.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_checkpoints "
+            "WHERE workspace_id = ? AND session_id = ?",
+            (sc.WORKSPACE_ID, session_id),
+        ).fetchone() == (1,)
+
+        fresh = workspace.ok(
+            "continuity.checkpoint.append",
+            _append_input(
+                session_id,
+                parent_checkpoint_id=winning_receipt["checkpoint_id"],
+                expected_parent_sequence=1,
+            ),
+            key="idem-after-competing-successors",
+            mutation_precondition=MutationPrecondition(record_version="seq-1"),
+        )
+        assert fresh["receipt"]["sequence"] == 2
+    finally:
+        workspace.holder.connection.close()
+
+
 def _session_with(
     workspace: Any, session: AuthenticatedSession, objectives: list[str]
 ) -> str:
@@ -652,6 +1029,20 @@ def test_the_resume_pack_reads_only_the_callers_checkpoints(workspace: Any) -> N
 
     before = pack(OWNER)
     assert objectives(before) == [f"Owner step {n}" for n in (6, 5, 4, 3, 2)]
+    assert len(before["sections"]) <= 24
+    expected_checkpoint_bytes = sum(
+        int(row[0])
+        for row in workspace.holder.connection.execute(
+            "SELECT length(CAST(c.payload_json AS BLOB)) "
+            "FROM omnivia_engineering_checkpoints c "
+            "JOIN omnivia_engineering_sessions s "
+            "ON s.workspace_id = c.workspace_id AND s.session_id = c.session_id "
+            "WHERE c.workspace_id = ? AND s.principal_id = ? "
+            "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT 5",
+            (sc.WORKSPACE_ID, OWNER.principal_id),
+        )
+    )
+    assert before["budget"]["source_bytes_read"] == expected_checkpoint_bytes
 
     _session_with(workspace, OTHER, [f"XYZZY step {n}" for n in range(1, 6)])
 
@@ -662,3 +1053,271 @@ def test_the_resume_pack_reads_only_the_callers_checkpoints(workspace: Any) -> N
     theirs = pack(OTHER)
     assert objectives(theirs) == [f"XYZZY step {n}" for n in (5, 4, 3, 2, 1)]
     assert "Owner step" not in json.dumps(theirs)
+
+
+def test_resume_payload_budget_omits_checkpoint_before_json_is_selected(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["A checkpoint larger than one byte"])
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        pack = workspace.ok(
+            "engineering.context.build",
+            {
+                "query": "provider",
+                "targets": [],
+                "profile": "resume",
+                "budget": {"evidence_bytes": 1},
+            },
+            session=OWNER,
+        )["pack"]
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+    assert pack["budget"]["source_bytes_read"] == 0
+    assert not any(
+        section["partition"] == "working_context" for section in pack["sections"]
+    )
+    assert {item["reason"] for item in pack["omissions"]} == {"source_budget"}
+    assert not any(
+        "SELECT c.checkpoint_id, c.sequence, c.payload_json" in statement
+        for statement in statements
+    )
+
+
+def test_resume_skips_oversized_lower_priority_checkpoint_before_body_read(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["大🙂" * 800, "Recent small checkpoint"])
+    checkpoint_rows = read_checkpoints(
+        workspace.holder.connection,
+        workspace_id=sc.WORKSPACE_ID,
+        principal_id=OWNER.principal_id,
+    )
+    checkpoint_by_objective = {
+        str(json.loads(str(row[2]))["objective"]): (str(row[0]), len(str(row[2]).encode("utf-8")))
+        for row in checkpoint_rows
+    }
+    oversized_id, _oversized_bytes = checkpoint_by_objective["大🙂" * 800]
+    small_id, small_bytes = checkpoint_by_objective["Recent small checkpoint"]
+
+    statements: list[str] = []
+    workspace.holder.connection.set_trace_callback(statements.append)
+    try:
+        pack = workspace.ok(
+            "engineering.context.build",
+            {"query": "provider", "targets": [], "profile": "resume"},
+            session=OWNER,
+        )["pack"]
+    finally:
+        workspace.holder.connection.set_trace_callback(None)
+
+    working = [
+        section
+        for section in pack["sections"]
+        if section["partition"] == "working_context"
+    ]
+    assert [section["content"].partition(" Unresolved:")[0] for section in working] == [
+        "Recent small checkpoint"
+    ]
+    assert pack["budget"]["source_bytes_read"] == small_bytes
+    assert {item["reason"] for item in pack["omissions"]} == {
+        "working_context_share"
+    }
+    body_selects = [
+        statement
+        for statement in statements
+        if "c.payload_json" in statement
+        and "octet_length" not in statement
+        and "length(CAST(" not in statement
+    ]
+    assert any(small_id in statement for statement in body_selects)
+    assert not any(oversized_id in statement for statement in body_selects)
+
+
+# --- checkpoint metadata and selected-read planning seams --------------------------
+
+#: Non-ASCII on purpose: a checkpoint metadata byte length that only an exact
+#: UTF-8 encode -- not `len()` on the Python string -- would get right.
+_MULTILINGUAL_OBJECTIVE = "調査結果 🔍 Investigation continue"
+
+
+def _never_selects_bare_column(statements: list[str], column: str) -> bool:
+    """Whether `column` appears in `statements` only wrapped by the byte-length
+    projection (`octet_length(...)` or `length(CAST(... AS BLOB))`), never as a
+    bare selected value SQLite would return to the caller."""
+    for statement in statements:
+        index = 0
+        while True:
+            index = statement.find(column, index)
+            if index == -1:
+                break
+            before = statement[:index].rstrip()
+            if not before.endswith(("octet_length(", "CAST(")):
+                return False
+            index += len(column)
+    return True
+
+
+def test_list_checkpoint_metadata_matches_read_checkpoints_order_and_meters_no_body(
+    workspace: Any,
+) -> None:
+    session_id = _session_with(
+        workspace, OWNER, [_MULTILINGUAL_OBJECTIVE, "second step", "third step"]
+    )
+    connection = workspace.holder.connection
+
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        with read_snapshot(connection):
+            metadata = list_checkpoint_metadata(
+                connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                payload_budget=PayloadReadBudget(limit=10_000_000),
+            )
+    finally:
+        connection.set_trace_callback(None)
+
+    bodies = read_checkpoints(
+        connection, workspace_id=sc.WORKSPACE_ID, principal_id=OWNER.principal_id
+    )
+    assert [entry.checkpoint_id for entry in metadata] == [row[0] for row in bodies]
+    expected = {
+        str(row[0]): len(str(row[2]).encode("utf-8")) for row in bodies
+    }
+    assert {entry.checkpoint_id: entry.payload_byte_length for entry in metadata} == (
+        expected
+    )
+    # Every stored checkpoint carries the exact metered length even though the
+    # canonical payload JSON escapes the multibyte objective to plain ASCII.
+    assert {row[2] for row in bodies}
+    assert all(str(row[2]).isascii() for row in bodies)
+    assert _never_selects_bare_column(statements, "c.payload_json")
+    assert session_id  # the session exists; nothing else about it matters here
+
+
+def test_read_selected_checkpoints_fetches_only_requested_ids_in_caller_order(
+    workspace: Any,
+) -> None:
+    _session_with(
+        workspace, OWNER, [f"Step {n}" for n in range(1, 6)]
+    )
+    connection = workspace.holder.connection
+    budget = PayloadReadBudget(limit=10_000_000)
+    with read_snapshot(connection):
+        metadata = list_checkpoint_metadata(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            payload_budget=budget,
+        )
+        assert len(metadata) == 5
+        # A reordered, non-contiguous, bounded subset -- not the newest-first order
+        # the metadata itself came back in.
+        chosen = (metadata[3], metadata[0], metadata[2])
+        excluded = {metadata[1].checkpoint_id, metadata[4].checkpoint_id}
+
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        try:
+            rows = read_selected_checkpoints(
+                connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                selected=chosen,
+                payload_budget=budget,
+            )
+        finally:
+            connection.set_trace_callback(None)
+
+    assert [row[0] for row in rows] == [entry.checkpoint_id for entry in chosen]
+    assert excluded.isdisjoint(row[0] for row in rows)
+    assert budget.source_bytes_read == sum(
+        entry.payload_byte_length for entry in chosen
+    )
+    body_selects = [s for s in statements if "c.payload_json" in s and "octet_length" not in s]
+    assert len(body_selects) == 1
+
+
+def test_selected_checkpoint_stale_metadata_fails_closed_before_any_body_select(
+    workspace: Any,
+) -> None:
+    _session_with(workspace, OWNER, ["Only step"])
+    connection = workspace.holder.connection
+    budget = PayloadReadBudget(limit=10_000_000)
+    with read_snapshot(connection):
+        (real,) = list_checkpoint_metadata(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            payload_budget=budget,
+        )
+
+        for tampered in (
+            CheckpointMetadata(
+                checkpoint_id=real.checkpoint_id,
+                sequence=real.sequence,
+                payload_byte_length=real.payload_byte_length + 1,
+            ),
+            CheckpointMetadata(
+                checkpoint_id=real.checkpoint_id,
+                sequence=real.sequence + 1,
+                payload_byte_length=real.payload_byte_length,
+            ),
+        ):
+            statements: list[str] = []
+            connection.set_trace_callback(statements.append)
+            try:
+                with pytest.raises(PayloadLengthMismatch):
+                    read_selected_checkpoints(
+                        connection,
+                        workspace_id=sc.WORKSPACE_ID,
+                        principal_id=OWNER.principal_id,
+                        selected=(tampered,),
+                        payload_budget=PayloadReadBudget(limit=10_000_000),
+                    )
+            finally:
+                connection.set_trace_callback(None)
+            assert not any(
+                "c.payload_json" in s and "octet_length" not in s
+                for s in statements
+            )
+
+        # The unauthorized name is never `read_checkpoints`-visible-but-rejected;
+        # a wholly unknown id fails closed identically.
+        with pytest.raises(PayloadLengthMismatch):
+            read_selected_checkpoints(
+                connection,
+                workspace_id=sc.WORKSPACE_ID,
+                principal_id=OWNER.principal_id,
+                selected=(
+                    CheckpointMetadata(
+                        checkpoint_id="eck-nowhere",
+                        sequence=1,
+                        payload_byte_length=2,
+                    ),
+                ),
+                payload_budget=PayloadReadBudget(limit=10_000_000),
+            )
+
+
+def test_checkpoint_planning_requires_one_active_read_snapshot(workspace: Any) -> None:
+    connection = workspace.holder.connection
+    assert not connection.in_transaction
+    with pytest.raises(ValueError, match="active read snapshot"):
+        list_checkpoint_metadata(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            payload_budget=PayloadReadBudget(limit=10_000_000),
+        )
+    with pytest.raises(ValueError, match="active read snapshot"):
+        read_selected_checkpoints(
+            connection,
+            workspace_id=sc.WORKSPACE_ID,
+            principal_id=OWNER.principal_id,
+            selected=(),
+            payload_budget=PayloadReadBudget(limit=10_000_000),
+        )

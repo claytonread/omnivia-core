@@ -57,6 +57,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "records",
     "jobs",
     "operations",
+    "analysis",
     "workspace",
     "memory",
     "evidence",
