@@ -138,14 +138,14 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_fifty_five_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 55
+def test_the_catalogue_holds_exactly_the_frozen_fifty_six_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 56
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
     # The original twenty-eight are alphabetical; the fifteen Decision Runtime
     # operations from ADR-042, the ten engineering-memory operations
     # (SPEC-CORE-ENGMEM-001) and the repository registration operation (spec
     # §16.3) are appended after them in amendment order.
-    assert len(set(FROZEN_NAMES)) == 55
+    assert len(set(FROZEN_NAMES)) == 56
 
 
 def test_two_operations_are_installation_scoped_and_fifty_three_are_workspace_scoped() -> None:

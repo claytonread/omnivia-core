@@ -202,9 +202,10 @@ workspace.create   workspace.list
 Fifty-three are workspace-scoped:
 
 ```text
-candidate.approve       candidate.reject    chat.command        chat.events
-chat.snapshot           context_pack.build  continuity.checkpoint.append
-continuity.handoff.read continuity.session.close
+analysis.start          candidate.approve   candidate.reject    chat.command
+chat.events             chat.snapshot       context_pack.build
+continuity.checkpoint.append                continuity.handoff.read
+continuity.session.close
 continuity.session.register                 context.priority.set
 decision.definition.disable                decision.definition.get
 decision.definition.list                   decision.definition.publish

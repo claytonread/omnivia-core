@@ -7,7 +7,7 @@
   "adapter_evidence_corpus": {
     "file": "contracts/application/v1/fixtures/application-wire-adapter-conformance-v1.json",
     "format": "omnivia.adapter-conformance.v1",
-    "case_count": 150
+    "case_count": 154
   },
   "adapter_classes": [
     "in_process",
@@ -20,7 +20,7 @@
       "mapping_source": {
         "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
         "symbol": "EXPOSURE_MANIFEST",
-        "manifest_version": "2.1"
+        "manifest_version": "2.2"
       },
       "exposed": [
         {
@@ -98,10 +98,6 @@
         {
           "operation": "job.events",
           "tool": "job_events"
-        },
-        {
-          "operation": "continuity.checkpoint.append",
-          "tool": "continuity_checkpoint_append"
         }
       ],
       "omitted": [
@@ -222,6 +218,10 @@
           "reason": "mutation"
         },
         {
+          "operation": "continuity.checkpoint.append",
+          "reason": "mutation"
+        },
+        {
           "operation": "continuity.session.close",
           "reason": "mutation"
         },
@@ -244,6 +244,10 @@
         {
           "operation": "engineering.repository.register",
           "reason": "mutation"
+        },
+        {
+          "operation": "analysis.start",
+          "reason": "read_not_allow_listed"
         }
       ],
       "evidence_state": "not_evaluated"
@@ -3417,6 +3421,7 @@
           "authorization_denied",
           "cancelled",
           "capability_not_granted",
+          "context_budget_insufficient",
           "deadline_exceeded",
           "dependency_unavailable",
           "incompatible_version",
@@ -3429,6 +3434,7 @@
           "size_limit_exceeded",
           "stale_projection",
           "token_limit_exceeded",
+          "tokenizer_unavailable",
           "upgrade_required",
           "workspace_migration_required",
           "workspace_not_granted"
@@ -3756,6 +3762,67 @@
           "upgrade_required",
           "workspace_busy",
           "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "analysis.start",
+        "scope": {
+          "required_scopes": [
+            "insights:read"
+          ],
+          "side_effect": "none",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartResult",
+        "required_capability": {
+          "id": "insights.analysis",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": false,
+          "required": false,
+          "safe_to_retry": true
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "read"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "rate_limited",
+          "unsupported_minor_version",
+          "upgrade_required",
           "workspace_migration_required",
           "workspace_not_granted"
         ]

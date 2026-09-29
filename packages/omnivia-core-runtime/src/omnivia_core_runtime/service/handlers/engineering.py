@@ -55,9 +55,10 @@ Retrieval security shape, inherited from the knowledge family and the plan:
    effective caller's evidence-label grant from identities and links before it
    reads any projection row, so a denied version is never previewed;
    exact references (the expand anchor and its supersession endpoints, the
-   priority and review targets) and the pack builder hydrate through
-   `storage.memory.read_authorized_memory_snapshot` under that same grant, so a
-   hidden version is indistinguishable from a nonexistent one;
+   priority and review targets) hydrate through
+   `storage.memory.read_authorized_memory_snapshot`. The pack pages that same
+   authorized identity frontier, ranks bounded projections, and uses the narrow
+   metered hydrator only for selected versions and their authorized support;
 8. `working_context` reads the continuity checkpoint index — reported
    accomplishments are labelled as continuity evidence, never as governed
    knowledge (§12.3). Search and the `resume` pack read only checkpoints of
@@ -78,15 +79,21 @@ that same fenced, audited, idempotent seam.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
+    ENGINEERING_COUNTING_MODE_BYTE_ONLY,
+    ENGINEERING_COUNTING_MODE_EXACT_TOKENS,
     ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
+    ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT,
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
@@ -95,13 +102,13 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_STALE_PROJECTION,
     ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+    ERROR_CODE_TOKENIZER_UNAVAILABLE,
     GOVERNANCE_STATE_ACCEPTED,
     RETRY_CLASS_RETRYABLE_AFTER_DELAY,
     ContextPrioritySetInput,
     ContextPrioritySetResult,
     ContractDecodeError,
     ContractSemanticError,
-    EngineeringContextBuildInput,
     EngineeringExpandInput,
     EngineeringRepositoryRegisterInput,
     EngineeringRepositoryRegisterResult,
@@ -112,6 +119,7 @@ from omnivia_core.contracts.v1 import (
     EngineeringSourceCaptureCommitResult,
     EngineeringSourceRecordInput,
     EngineeringSourceRecordResult,
+    decode_engineering_context_build_input,
     idempotency_equivalence,
     is_identifier,
     to_canonical_json,
@@ -123,11 +131,13 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
 )
 from omnivia_core_runtime.service.engineering_pack import (
+    WORKING_CONTEXT_SHARE_DIVISOR,
     BuildContext,
     MandatoryContextTooLarge,
     PackRecord,
     WorkingItem,
     build_pack,
+    build_pack_byte_only,
 )
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
@@ -159,12 +169,27 @@ from omnivia_core_runtime.storage.engineering_preview import (
     preview_search_text,
     rank_previews,
     read_authorized_previews,
+    read_previews_for_frontier,
 )
-from omnivia_core_runtime.storage.governed import read_governed_supersessions
+from omnivia_core_runtime.storage.governed import (
+    GovernedPayloadComponents,
+    hydrate_authorized_governed_record_values,
+    plan_authorized_governed_payload,
+    read_governed_supersessions,
+)
 from omnivia_core_runtime.storage.memory import (
+    AUTHORIZED_FRONTIER_PAGE_SIZE,
     IdentifierAllocator,
     random_identifier,
+    read_authorized_memory_frontier,
     read_authorized_memory_snapshot,
+    read_memory_record_id_page,
+    read_snapshot,
+)
+from omnivia_core_runtime.storage.payload_budget import (
+    PayloadBudgetExceeded,
+    PayloadLengthMismatch,
+    PayloadReadBudget,
 )
 from omnivia_core_runtime.storage.retrieval import (
     EvidenceLabelGrant,
@@ -219,13 +244,71 @@ _RESPONSE_RESERVE: Final = 2048
 _MESSAGE_BUDGET: Final = (
     "the minimum safe engineering context does not fit the effective budget"
 )
+_MESSAGE_TOKENIZER_UNAVAILABLE: Final = (
+    "the requested exact tokenizer is not available in this service"
+)
 
-#: Server hard budget ceilings (§12.4). Effective budgets are the minimum of the
-#: caller request and these ceilings; both token and byte caps are simultaneous.
+#: Server hard budget ceilings (§12.4). A supplied budget above its ceiling, zero,
+#: negative or non-integer is refused (`invalid_request`) rather than silently
+#: clamped; an absent field resolves to its default.
 BUDGET_CEILING_TOKENS: Final = 16000
 BUDGET_CEILING_BYTES: Final = 65536
+BUDGET_CEILING_HYDRATIONS: Final = 32
+BUDGET_CEILING_EVIDENCE_BYTES: Final = 1_048_576
+BUDGET_CEILING_AUTHORIZED_CANDIDATES: Final = 10_000
 BUDGET_DEFAULT_TOKENS: Final = 4000
 BUDGET_DEFAULT_BYTES: Final = 16384
+BUDGET_DEFAULT_HYDRATIONS: Final = 8
+BUDGET_DEFAULT_EVIDENCE_BYTES: Final = 262_144
+BUDGET_DEFAULT_AUTHORIZED_CANDIDATES: Final = 2_000
+_MESSAGE_BUDGET_INVALID: Final = (
+    "the requested budget is not a positive integer at or below its server ceiling"
+)
+_MESSAGE_HYDRATION_BOUND: Final = (
+    "the admitted engineering frontier exceeds the effective hydration budget"
+)
+_MESSAGE_SOURCE_READ_BOUND: Final = (
+    "the selected engineering payloads exceed the effective evidence byte budget"
+)
+_MESSAGE_AUTHORIZED_CANDIDATE_BOUND: Final = (
+    "the authorized engineering frontier exceeds its bounded candidate budget"
+)
+_MESSAGE_PAYLOAD_INVALID: Final = (
+    "an engineering source payload failed its stored byte-length check"
+)
+
+CONTEXT_BUILD_SECTION_CAP: Final = 24
+CONTEXT_BUILD_ABSOLUTE_SECTION_CAP: Final = 64
+CONTEXT_BUILD_CHECKPOINT_CAP: Final = 5
+CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-3"
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringBudgetPolicy:
+    """Server-owned limits for one named engineering retrieval profile."""
+
+    model_tokens: int
+    model_bytes: int
+    hydrations: int
+    evidence_bytes: int
+    authorized_candidates: int
+
+
+_DEFAULT_ENGINEERING_BUDGET_POLICY: Final = EngineeringBudgetPolicy(
+    model_tokens=BUDGET_DEFAULT_TOKENS,
+    model_bytes=BUDGET_DEFAULT_BYTES,
+    hydrations=BUDGET_DEFAULT_HYDRATIONS,
+    evidence_bytes=BUDGET_DEFAULT_EVIDENCE_BYTES,
+    authorized_candidates=BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
+)
+ENGINEERING_PROFILE_BUDGETS: Final[Mapping[str, EngineeringBudgetPolicy]] = (
+    MappingProxyType(
+        {
+            profile: _DEFAULT_ENGINEERING_BUDGET_POLICY
+            for profile in ("investigate", "implement", "review", "resume")
+        }
+    )
+)
 
 _MESSAGE_PRIORITY: Final = (
     "context priority ships contracts first; the preference store lands in a "
@@ -299,6 +382,50 @@ def _applicability_pending() -> OperationError:
     return application_refusal(ERROR_CODE_DEPENDENCY_UNAVAILABLE, APPLICABILITY_PENDING)
 
 
+def _payload_read_refusal(
+    error: PayloadBudgetExceeded | PayloadLengthMismatch,
+) -> OperationError:
+    if isinstance(error, PayloadBudgetExceeded):
+        return application_refusal(
+            ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_SOURCE_READ_BOUND
+        )
+    return application_refusal(
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_PAYLOAD_INVALID
+    )
+
+
+def _governed_payload_components(
+    plan: GovernedPayloadComponents,
+) -> tuple[tuple[str, str, int], ...]:
+    """Stable identities and exact bytes for one metadata-only record plan."""
+    return tuple(
+        (kind, identity, byte_length)
+        for kind, lengths in (
+            ("content", plan.content_byte_lengths),
+            ("rationale", plan.transition_rationale_byte_lengths),
+            ("claim", plan.claim_byte_lengths),
+        )
+        for identity, byte_length in sorted(lengths.items())
+    )
+
+
+def _checkpoint_working_upper_bound(
+    metadata: continuity_storage.CheckpointMetadata,
+) -> int:
+    """A pre-read upper bound for one checkpoint's model-facing UTF-8 bytes.
+
+    The stored JSON is at least as large as the objective/unresolved strings it
+    contains. Add every renderer-owned label and separator that can surround
+    those strings, so admission never needs to fetch a checkpoint merely to
+    discover that its working-context section cannot fit.
+    """
+    wrapper = (
+        "\n\n[working_context] [uncited checkpoint "
+        f"{metadata.checkpoint_id}#{metadata.sequence}]  Unresolved: "
+    )
+    return metadata.payload_byte_length + len(wrapper.encode("utf-8"))
+
+
 def _proven_version(
     connection: Any,
     workspace_id: str,
@@ -306,6 +433,10 @@ def _proven_version(
     version: str,
     evidence_available: bool,
     targets: list[source_storage.CoveredSnapshot],
+    payload_budget: PayloadReadBudget | None = None,
+    snapshot_cache: dict[
+        tuple[str, str, str | None], source_storage.CoveredSnapshot | None
+    ] | None = None,
 ) -> bool:
     """Whether the evaluator proves `matched` for this exact version at every target.
 
@@ -322,6 +453,8 @@ def _proven_version(
             version=version,
             evidence_available=evidence_available,
             target=target,
+            payload_budget=payload_budget,
+            snapshot_cache=snapshot_cache,
         )
         == "matched"
         for target in targets
@@ -458,6 +591,48 @@ class EngineeringHandlers:
             granted_workspace="" if granted is None else granted,
         )
 
+    def _effective_budget(self, budget: Any) -> tuple[int, int, int, int, int]:
+        """The five effective budget fields, each validated before any read.
+
+        A supplied field must be a positive, non-bool integer at or below its
+        server ceiling; anything else -- zero, negative, non-integer, a bool
+        or one that exceeds its ceiling -- is refused outright, never silently
+        clamped. An absent field resolves to its default.
+        """
+
+        def resolve(value: Any, default: int, ceiling: int) -> int:
+            if value is None:
+                return default
+            if type(value) is not int or value <= 0 or value > ceiling:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_BUDGET_INVALID)
+            return value
+
+        if budget is None:
+            return (
+                BUDGET_DEFAULT_TOKENS,
+                BUDGET_DEFAULT_BYTES,
+                BUDGET_DEFAULT_HYDRATIONS,
+                BUDGET_DEFAULT_EVIDENCE_BYTES,
+                BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
+            )
+        return (
+            resolve(budget.model_tokens, BUDGET_DEFAULT_TOKENS, BUDGET_CEILING_TOKENS),
+            resolve(budget.model_bytes, BUDGET_DEFAULT_BYTES, BUDGET_CEILING_BYTES),
+            resolve(
+                budget.hydrations, BUDGET_DEFAULT_HYDRATIONS, BUDGET_CEILING_HYDRATIONS
+            ),
+            resolve(
+                budget.evidence_bytes,
+                BUDGET_DEFAULT_EVIDENCE_BYTES,
+                BUDGET_CEILING_EVIDENCE_BYTES,
+            ),
+            resolve(
+                budget.authorized_candidates,
+                BUDGET_DEFAULT_AUTHORIZED_CANDIDATES,
+                BUDGET_CEILING_AUTHORIZED_CANDIDATES,
+            ),
+        )
+
     def _authorized_values(
         self,
         connection: Any,
@@ -470,8 +645,8 @@ class EngineeringHandlers:
         resolved first and only admitted versions are hydrated, so a denied version
         never reaches applicability, scoring, the candidate cap or omissions.
 
-        Exact references and the pack builder read here; search never does, because
-        a search hydrates no body (see `_preview_candidates`).
+        Exact references read here; search and pack selection never do, because
+        they rank bounded previews before any selected pack hydration.
         """
         return read_authorized_memory_snapshot(
             connection,
@@ -488,7 +663,7 @@ class EngineeringHandlers:
         *,
         resolution_instant_us: int,
         view: str,
-    ) -> tuple[PreviewCandidate, ...]:
+    ) -> tuple[tuple[PreviewCandidate, ...], str]:
         """The engineering observations the effective caller's grant admits, as
         bounded previews, or the projection refusal that says why none can be served.
 
@@ -523,6 +698,32 @@ class EngineeringHandlers:
             _MESSAGE_PROJECTION_UNAVAILABLE,
             retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
         )
+
+    def _previews_for_frontier(
+        self,
+        connection: Any,
+        context: OperationContext,
+        frontier: Any,
+    ) -> tuple[PreviewCandidate, ...]:
+        """Map one frozen frontier to its bounded projections in the same snapshot."""
+        try:
+            return read_previews_for_frontier(
+                connection,
+                workspace_id=context.workspace_id,
+                frontier=frontier,
+            )
+        except PreviewProjectionUnavailable as error:
+            raise OperationError(
+                ERROR_CODE_PROJECTION_UNAVAILABLE,
+                _MESSAGE_PROJECTION_UNAVAILABLE,
+                retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+            ) from error
+        except PreviewProjectionStale as error:
+            raise OperationError(
+                ERROR_CODE_STALE_PROJECTION,
+                _MESSAGE_STALE_PROJECTION,
+                retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+            ) from error
 
     def _timestamp_us(self, value: str) -> int:
         import datetime as _dt
@@ -708,6 +909,13 @@ class EngineeringHandlers:
                 "principal": context.principal,
                 "workspace": context.workspace_id,
                 "operation": "engineering.search",
+                "api_version": context.request.metadata.api_version,
+                "authority": (
+                    None if context.authority is None else context.authority.to_wire()
+                ),
+                "scopes": None if context.scopes is None else list(context.scopes),
+                "purpose": context.purpose,
+                "granted_operations": sorted(context.granted_operations),
                 "input": binding,
                 "limit": limit,
                 "view": view,
@@ -751,7 +959,7 @@ class EngineeringHandlers:
             # admits, and only their bounded projection rows: a denied version
             # never reaches scoring, previews, totals or the continuation's
             # snapshot digest, and no version's body is read at any point.
-            admitted = self._preview_candidates(
+            admitted, authorization_frontier_digest = self._preview_candidates(
                 connection,
                 context,
                 resolution_instant_us=resolved_at_us,
@@ -815,6 +1023,7 @@ class EngineeringHandlers:
             # rendered them. It names the content without reading it.
             snapshot_digest = token_digest(
                 {
+                    "authorization_frontier": authorization_frontier_digest,
                     "projection_version": PROJECTION_VERSION,
                     "ordered": [
                         [candidate.record_id, candidate.version, candidate.content_digest]
@@ -1558,126 +1767,448 @@ class EngineeringHandlers:
         `reproducibility.artifact_checksum` removed (§12.3a).
         """
         try:
-            request = EngineeringContextBuildInput.from_wire(context.request.input)
+            request = decode_engineering_context_build_input(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         mode = request.applicability_mode or "diagnostic"
         if mode not in _APPLICABILITY_MODES:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+
+        negotiated = request.counting_mode is not None
+        if negotiated:
+            profile_policy = ENGINEERING_PROFILE_BUDGETS.get(request.profile)
+            if profile_policy is None or request.budget is None:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            caller_tokens = (
+                profile_policy.model_tokens
+                if request.budget.model_tokens is None
+                else request.budget.model_tokens
+            )
+            caller_bytes = (
+                profile_policy.model_bytes
+                if request.budget.model_bytes is None
+                else request.budget.model_bytes
+            )
+            caller_hydrations = (
+                profile_policy.hydrations
+                if request.budget.hydrations is None
+                else request.budget.hydrations
+            )
+            caller_evidence_bytes = (
+                profile_policy.evidence_bytes
+                if request.budget.evidence_bytes is None
+                else request.budget.evidence_bytes
+            )
+            caller_authorized_candidates = (
+                profile_policy.authorized_candidates
+                if request.budget.authorized_candidates is None
+                else request.budget.authorized_candidates
+            )
+            effective_tokens = min(
+                caller_tokens,
+                profile_policy.model_tokens,
+                BUDGET_CEILING_TOKENS,
+            )
+            effective_bytes = min(
+                caller_bytes,
+                profile_policy.model_bytes,
+                BUDGET_CEILING_BYTES,
+            )
+            effective_hydrations = min(
+                caller_hydrations,
+                profile_policy.hydrations,
+                BUDGET_CEILING_HYDRATIONS,
+            )
+            effective_evidence_bytes = min(
+                caller_evidence_bytes,
+                profile_policy.evidence_bytes,
+                BUDGET_CEILING_EVIDENCE_BYTES,
+            )
+            effective_authorized_candidates = min(
+                caller_authorized_candidates,
+                profile_policy.authorized_candidates,
+                BUDGET_CEILING_AUTHORIZED_CANDIDATES,
+            )
+            if request.counting_mode == ENGINEERING_COUNTING_MODE_EXACT_TOKENS:
+                raise OperationError(
+                    ERROR_CODE_TOKENIZER_UNAVAILABLE,
+                    _MESSAGE_TOKENIZER_UNAVAILABLE,
+                    retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                        ERROR_CODE_TOKENIZER_UNAVAILABLE
+                    ],
+                )
+        else:
+            # Preserve the reviewed v1 budget gate: supplied legacy fields are
+            # validated before storage access and are never silently clamped.
+            (
+                effective_tokens,
+                effective_bytes,
+                effective_hydrations,
+                effective_evidence_bytes,
+                effective_authorized_candidates,
+            ) = self._effective_budget(request.budget)
+
         connection = self._connection()
-        # current_safe: every target's authoritative coverage is checked before the
-        # frontier is read; one uncovered target refuses the whole build.
-        covered: list[source_storage.CoveredSnapshot] = []
+        payload_budget = PayloadReadBudget(effective_evidence_bytes)
+        source_snapshot_cache: dict[
+            tuple[str, str, str | None], source_storage.CoveredSnapshot | None
+        ] = {}
         if mode == "current_safe":
-            # No targets would silently degrade to an unqualified pack; too many
-            # would unbound the check. Both refuse before any source read.
+            # Validate the bounded shape before storage. Coverage itself is read
+            # in the one outer snapshot below and still precedes every frontier.
             if not request.targets:
                 raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
             if len(request.targets) > CURRENT_SAFE_TARGET_CAP:
                 raise OperationError(
                     ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CURRENT_SAFE_BOUND
                 )
-            for requested in request.targets:
-                resolved = source_storage.covered_snapshot(
-                    connection,
-                    workspace_id=context.workspace_id,
-                    snapshot_id=requested.snapshot_id,
-                    repository_id=requested.repository_id,
-                )
-                if resolved is None:
-                    raise _applicability_pending()
-                covered.append(resolved)
+
         resolved_at_us = time.time_ns() // 1000
-
-        effective_tokens = (
-            BUDGET_DEFAULT_TOKENS
-            if request.budget is None or request.budget.model_tokens is None
-            else min(request.budget.model_tokens, BUDGET_CEILING_TOKENS)
-        )
-        effective_bytes = (
-            BUDGET_DEFAULT_BYTES
-            if request.budget is None or request.budget.model_bytes is None
-            else min(request.budget.model_bytes, BUDGET_CEILING_BYTES)
-        )
-
-        normalized = " ".join(request.query.lower().split())
-
-        # The authorised frontier: accepted observations matching the query,
-        # plus (for the investigate profile, which explicitly requests them)
-        # proposed candidates under the candidate_findings partition.
         views = ("current_canonical",) + (
             ("candidates",) if request.profile == "investigate" else ()
         )
-        values: tuple[Any, ...] = ()
-        for governed_view in views:
-            # Both modes hydrate only versions the effective caller's evidence
-            # grant admits, so a denied version is never selected, cited or
-            # counted as an omission.
-            values += self._authorized_values(
-                connection,
-                context,
-                resolution_instant_us=resolved_at_us,
-                view=governed_view,
-            )
-        # Each record keeps its own partition: a candidate never renders under
-        # `accepted_knowledge`, whatever else the frontier holds.
-        selected: list[tuple[Any, str]] = []
-        evaluated = unproven = 0
-        for value in values:
-            record = value.record
-            if record.domain_scope != OBSERVATION_DOMAIN:
-                continue
-            content = record.content
-            if not isinstance(content, Mapping):
-                continue
-            # Only a governance-accepted version is accepted knowledge; a
-            # hypothesis stays a finding even after acceptance (§8.2).
-            partition = (
-                "accepted_knowledge"
-                if record.provenance.identity.governance_state
-                == GOVERNANCE_STATE_ACCEPTED
-                and content.get("assertion_basis") != "hypothesis"
-                else "candidate_findings"
-            )
-            text = " ".join(
-                str(content.get(key, "")) for key in ("title", "summary", "what")
-            ).lower()
-            if normalized and normalized not in text:
-                continue
-            if covered:
-                evaluated += 1
-                if evaluated > CURRENT_SAFE_CANDIDATE_CAP:
-                    raise application_refusal(
-                        ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_CURRENT_SAFE_BOUND
-                    )
-                if not _proven_matched(connection, context.workspace_id, record, covered):
-                    unproven += 1
-                    continue
-            selected.append((record, partition))
-
-        # Working context (resume profile only, explicitly requested material):
-        # the effective principal's own five newest checkpoints. Ownership is
-        # filtered before the cut, so another principal's never takes a slot,
-        # a section, budget, an omission or a byte of the checksum.
+        covered: list[source_storage.CoveredSnapshot] = []
         working: list[dict[str, Any]] = []
-        if request.profile == "resume":
-            for checkpoint_id, sequence, payload_json in continuity_storage.read_checkpoints(
-                connection,
-                workspace_id=context.workspace_id,
-                principal_id=context.principal,
-                limit=5,
-            ):
-                payload = json.loads(payload_json)
-                working.append(
+        selected_previews: list[
+            tuple[PreviewCandidate, str, tuple[str, ...]]
+        ] = []
+        values: tuple[Any, ...] = ()
+        evaluated = unproven = 0
+        selection_omitted = False
+        source_budget_omitted = False
+        working_share_omitted = False
+        authorized_candidate_count = eligible_count = 0
+        normalized_query = normalize_query(request.query)
+        label_grant = self._label_grant(context)
+        frontier_hashers = {view: hashlib.sha256() for view in views}
+
+        def selection_key(
+            item: tuple[PreviewCandidate, str, tuple[str, ...]],
+        ) -> tuple[int, int, str, str]:
+            candidate = item[0]
+            hits = (
+                preview_search_text(candidate).count(normalized_query)
+                if normalized_query
+                else 0
+            )
+            return (-hits, -candidate.recorded_at_us, candidate.record_id, candidate.version)
+
+        # Coverage, authorized identities, bounded projections, applicability
+        # proof, selection, exact hydration and owned checkpoints all observe one
+        # SQLite snapshot. Bodies are selected only after preview ranking.
+        with read_snapshot(connection):
+            if mode == "current_safe":
+                for requested in request.targets:
+                    try:
+                        resolved = source_storage.covered_snapshot(
+                            connection,
+                            workspace_id=context.workspace_id,
+                            snapshot_id=requested.snapshot_id,
+                            repository_id=requested.repository_id,
+                            payload_budget=payload_budget,
+                            cache=source_snapshot_cache,
+                        )
+                    except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
+                        raise _payload_read_refusal(error) from error
+                    if resolved is None:
+                        raise _applicability_pending()
+                    covered.append(resolved)
+
+            if request.profile == "resume":
+                try:
+                    checkpoint_metadata = continuity_storage.list_checkpoint_metadata(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        principal_id=context.principal,
+                        payload_budget=payload_budget,
+                        limit=CONTEXT_BUILD_SECTION_CAP,
+                    )
+                    working_share_limit = (
+                        effective_bytes // WORKING_CONTEXT_SHARE_DIVISOR
+                    )
+                    if (
+                        request.counting_mode
+                        != ENGINEERING_COUNTING_MODE_BYTE_ONLY
+                    ):
+                        working_share_limit = min(
+                            working_share_limit,
+                            effective_tokens // WORKING_CONTEXT_SHARE_DIVISOR,
+                        )
+                    selected_checkpoint_metadata: list[
+                        continuity_storage.CheckpointMetadata
+                    ] = []
+                    planned_checkpoint_bytes = 0
+                    planned_working_bytes = 0
+                    for metadata in checkpoint_metadata:
+                        if (
+                            len(selected_checkpoint_metadata)
+                            == CONTEXT_BUILD_CHECKPOINT_CAP
+                        ):
+                            break
+                        if (
+                            planned_checkpoint_bytes
+                            + metadata.payload_byte_length
+                            > payload_budget.remaining
+                        ):
+                            source_budget_omitted = True
+                            continue
+                        working_upper_bound = _checkpoint_working_upper_bound(metadata)
+                        if (
+                            planned_working_bytes + working_upper_bound
+                            > working_share_limit
+                        ):
+                            working_share_omitted = True
+                            continue
+                        selected_checkpoint_metadata.append(metadata)
+                        planned_checkpoint_bytes += metadata.payload_byte_length
+                        planned_working_bytes += working_upper_bound
+                    checkpoint_rows = continuity_storage.read_selected_checkpoints(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        principal_id=context.principal,
+                        selected=tuple(selected_checkpoint_metadata),
+                        payload_budget=payload_budget,
+                    )
+                except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
+                    raise _payload_read_refusal(error) from error
+                for checkpoint_id, sequence, payload_json in checkpoint_rows:
+                    payload = json.loads(payload_json)
+                    working.append(
+                        {
+                            "checkpoint_id": checkpoint_id,
+                            "sequence": sequence,
+                            "objective": str(payload.get("objective", "")),
+                            "unresolved": payload.get("unresolved_work", []),
+                        }
+                    )
+
+            record_capacity = min(
+                effective_hydrations,
+                max(0, CONTEXT_BUILD_SECTION_CAP - len(working)),
+                CONTEXT_BUILD_ABSOLUTE_SECTION_CAP,
+            )
+            best_accepted: list[
+                tuple[PreviewCandidate, str, tuple[str, ...]]
+            ] = []
+            best_candidates: list[
+                tuple[PreviewCandidate, str, tuple[str, ...]]
+            ] = []
+            after_record_id: str | None = None
+            while True:
+                record_ids = read_memory_record_id_page(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    resolution_instant_us=resolved_at_us,
+                    domain_scope=OBSERVATION_DOMAIN,
+                    after_record_id=after_record_id,
+                    limit=AUTHORIZED_FRONTIER_PAGE_SIZE,
+                )
+                if not record_ids:
+                    break
+                for governed_view in views:
+                    frontier = read_authorized_memory_frontier(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        resolution_instant_us=resolved_at_us,
+                        view=governed_view,
+                        label_grant=label_grant,
+                        domain_scope=OBSERVATION_DOMAIN,
+                        body_free=True,
+                        record_ids=record_ids,
+                    )
+                    previews = self._previews_for_frontier(connection, context, frontier)
+                    next_authorized_candidate_count = (
+                        authorized_candidate_count + len(previews)
+                    )
+                    if (
+                        next_authorized_candidate_count
+                        > effective_authorized_candidates
+                    ):
+                        raise application_refusal(
+                            ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+                            _MESSAGE_AUTHORIZED_CANDIDATE_BOUND,
+                        )
+                    authorized_candidate_count = next_authorized_candidate_count
+                    versions_by_assembly = {
+                        version.assembly_id: version for version in frontier.versions
+                    }
+                    for candidate in previews:
+                        version = versions_by_assembly[candidate.assembly_id]
+                        support = frontier.support_assembly_ids_by_record.get(
+                            candidate.record_id, ()
+                        )
+                        manifest_item = to_canonical_json(
+                            {
+                                "assembly_id": version.assembly_id,
+                                "content_digest": version.content_digest,
+                                "domain_scope": version.domain_scope,
+                                "evidence_disposition": version.evidence_disposition,
+                                "governance_disposition": version.governance_disposition,
+                                "has_evidence": version.has_evidence,
+                                "layer": version.layer,
+                                "record_id": version.record_id,
+                                "record_type": version.record_type,
+                                "recorded_at_us": version.recorded_at_us,
+                                "support_assembly_ids": list(support),
+                                "version": version.version_id,
+                            }
+                        ).encode("utf-8")
+                        frontier_hashers[governed_view].update(
+                            len(manifest_item).to_bytes(8, "big")
+                        )
+                        frontier_hashers[governed_view].update(manifest_item)
+                    ordered = (
+                        rank_previews(previews, request.query)
+                        if normalized_query
+                        else tuple(sorted(previews, key=lambda candidate: selection_key((candidate, "", ()))))
+                    )
+                    for candidate in ordered:
+                        partition = (
+                            "accepted_knowledge"
+                            if governed_view == "current_canonical"
+                            and candidate.governance_state == GOVERNANCE_STATE_ACCEPTED
+                            and candidate.assertion_basis != "hypothesis"
+                            else "candidate_findings"
+                        )
+                        if covered:
+                            evaluated += 1
+                            if evaluated > CURRENT_SAFE_CANDIDATE_CAP:
+                                raise application_refusal(
+                                    ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+                                    _MESSAGE_CURRENT_SAFE_BOUND,
+                                )
+                            try:
+                                proven = _proven_version(
+                                    connection,
+                                    context.workspace_id,
+                                    candidate.record_id,
+                                    candidate.version,
+                                    candidate.evidence_disposition == "available"
+                                    and candidate.evidence_available,
+                                    covered,
+                                    payload_budget=payload_budget,
+                                    snapshot_cache=source_snapshot_cache,
+                                )
+                            except (
+                                PayloadBudgetExceeded,
+                                PayloadLengthMismatch,
+                            ) as error:
+                                raise _payload_read_refusal(error) from error
+                            if not proven:
+                                unproven += 1
+                                continue
+                        eligible_count += 1
+                        support = frontier.support_assembly_ids_by_record.get(
+                            candidate.record_id, ()
+                        )
+                        item = (candidate, partition, support)
+                        bucket = (
+                            best_accepted
+                            if partition == "accepted_knowledge"
+                            else best_candidates
+                        )
+                        bucket.append(item)
+                after_record_id = record_ids[-1]
+                if len(record_ids) < AUTHORIZED_FRONTIER_PAGE_SIZE:
+                    break
+
+            best_accepted.sort(key=selection_key)
+            best_candidates.sort(key=selection_key)
+            selection_omitted = eligible_count > record_capacity
+            ranked_previews = (*best_accepted, *best_candidates)
+            admitted_components: set[tuple[str, str]] = set()
+            planned_payload_bytes = 0
+            for item in ranked_previews:
+                if len(selected_previews) == record_capacity:
+                    break
+                candidate, _partition, support = item
+                try:
+                    plan = plan_authorized_governed_payload(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        resolution_instant_us=resolved_at_us,
+                        authorized_support={candidate.assembly_id: support},
+                        payload_budget=payload_budget,
+                    )
+                except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
+                    raise _payload_read_refusal(error) from error
+                components = _governed_payload_components(plan)
+                incremental_components = tuple(
+                    (kind, identity, byte_length)
+                    for kind, identity, byte_length in components
+                    if (kind, identity) not in admitted_components
+                )
+                incremental_bytes = sum(
+                    byte_length
+                    for _kind, _identity, byte_length in incremental_components
+                )
+                if (
+                    planned_payload_bytes + incremental_bytes
+                    > payload_budget.remaining
+                ):
+                    source_budget_omitted = True
+                    continue
+                selected_previews.append(item)
+                planned_payload_bytes += incremental_bytes
+                admitted_components.update(
+                    (kind, identity)
+                    for kind, identity, _byte_length in incremental_components
+                )
+            assembly_ids = tuple(item[0].assembly_id for item in selected_previews)
+            support_assembly_ids = tuple(
+                sorted(
                     {
-                        "checkpoint_id": checkpoint_id,
-                        "sequence": sequence,
-                        "objective": str(payload.get("objective", "")),
-                        "unresolved": payload.get("unresolved_work", []),
+                        support_id
+                        for _candidate, _partition, support in selected_previews
+                        for support_id in support
                     }
                 )
+            )
+            try:
+                values = hydrate_authorized_governed_record_values(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    resolution_instant_us=resolved_at_us,
+                    assembly_ids=assembly_ids,
+                    support_assembly_ids=support_assembly_ids,
+                    payload_budget=payload_budget,
+                )
+            except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
+                raise _payload_read_refusal(error) from error
+
+        partition_by_assembly = {
+            candidate.assembly_id: partition
+            for candidate, partition, _support in selected_previews
+        }
+        selected: list[tuple[Any, str]] = []
+        for assembly_id, value in zip(
+            (item[0].assembly_id for item in selected_previews), values, strict=True
+        ):
+            selected.append((value.record, partition_by_assembly[assembly_id]))
+        authorized_frontier_document = to_canonical_json(
+            {
+                "grant": {
+                    "all_labels": label_grant.all_labels,
+                    "labels": sorted(label_grant.labels),
+                    "principal_id": label_grant.principal_id,
+                },
+                "profile": CONTEXT_BUILD_SELECTION_PROFILE,
+                "projection_version": PROJECTION_VERSION,
+                "resolution_instant_us": resolved_at_us,
+                "view_digests": {
+                    view: hasher.hexdigest()
+                    for view, hasher in frontier_hashers.items()
+                },
+                "workspace_id": context.workspace_id,
+            }
+        )
+        authorized_frontier_digest = (
+            "sha256:"
+            + hashlib.sha256(authorized_frontier_document.encode("utf-8")).hexdigest()
+        )
 
         omissions: list[dict[str, Any]] = []
+        selection_uncertainties: list[str] = []
         if covered:
             notice = (
                 "current_safe: every cited record is proven `matched` at every "
@@ -1691,6 +2222,23 @@ class EngineeringHandlers:
             notice = (
                 "Target applicability is not evaluated in this build; every "
                 "applicability statement is `not_evaluated`."
+            )
+        if selection_omitted:
+            omissions.append({"field": "sections", "reason": "selection_limit"})
+            selection_uncertainties.append(
+                "Additional authorized preview matches were omitted by the bounded "
+                "hydration and section selection."
+            )
+        if source_budget_omitted:
+            omissions.append({"field": "sections", "reason": "source_budget"})
+        if working_share_omitted:
+            omissions.append(
+                {"field": "working_context", "reason": "working_context_share"}
+            )
+        if source_budget_omitted or working_share_omitted:
+            selection_uncertainties.append(
+                "Additional authorized content was omitted because its payload did "
+                "not fit the bounded source-read or working-context budget."
             )
 
         build_context = BuildContext(
@@ -1720,6 +2268,9 @@ class EngineeringHandlers:
                         "model_bytes": request.budget.model_bytes,
                         "hydrations": request.budget.hydrations,
                         "evidence_bytes": request.budget.evidence_bytes,
+                        "authorized_candidates": (
+                            request.budget.authorized_candidates
+                        ),
                     }.items()
                     if value is not None
                 }
@@ -1728,9 +2279,23 @@ class EngineeringHandlers:
             effective_bytes=effective_bytes,
             projection_version=PROJECTION_VERSION,
             applicability_evaluator=EVALUATOR_VERSION,
+            counting_mode=request.counting_mode,
+            effective_hydrations=effective_hydrations,
+            effective_evidence_bytes=effective_evidence_bytes,
+            effective_authorized_candidates=effective_authorized_candidates,
+            hydrations=len(values),
+            source_bytes_read=payload_budget.source_bytes_read,
+            selection_profile=CONTEXT_BUILD_SELECTION_PROFILE,
+            authorized_frontier_digest=authorized_frontier_digest,
+            authorized_candidate_count=authorized_candidate_count,
         )
         try:
-            pack = build_pack(
+            builder = (
+                build_pack_byte_only
+                if request.counting_mode == ENGINEERING_COUNTING_MODE_BYTE_ONLY
+                else build_pack
+            )
+            pack = builder(
                 build_context,
                 tuple(
                     PackRecord(
@@ -1757,13 +2322,18 @@ class EngineeringHandlers:
                     for item in working
                 ),
                 notice=notice,
-                uncertainties=[notice],
+                uncertainties=[notice, *selection_uncertainties],
                 omissions=omissions,
             )
         except MandatoryContextTooLarge as error:
+            error_code = (
+                ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT
+                if request.counting_mode == ENGINEERING_COUNTING_MODE_BYTE_ONLY
+                else ERROR_CODE_TOKEN_LIMIT_EXCEEDED
+            )
             raise OperationError(
-                ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
+                error_code,
                 _MESSAGE_BUDGET,
-                retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_TOKEN_LIMIT_EXCEEDED],
+                retry_class=DEFAULT_RETRY_CLASSIFICATION[error_code],
             ) from error
         return {"pack": pack}

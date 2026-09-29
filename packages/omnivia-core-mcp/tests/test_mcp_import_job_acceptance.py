@@ -386,7 +386,7 @@ def test_a_staged_import_is_executed_observed_and_survives_revocation() -> None:
     * the installed command configures `claude-code` for the authoring profile,
       and a real SDK client completes a pinned 2025-06-18 handshake against the
       module a host launches;
-    * the advertised surface is the authoring eleven, and neither `job_cancel`
+    * the advertised surface is the authoring nineteen, and neither `job_cancel`
       nor `job_retry` is among them or reachable by name;
     * `import_start` over that staged descriptor answers with one durable
       `ingestion.import` job, and Core's own executor carries it to a terminal

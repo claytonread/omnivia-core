@@ -172,9 +172,7 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("decisions", "outcome"), "decision.outcome.submit", "decision_evaluation"
     ),
-    ApplicationCommand(
-        ("decisions", "models"), "decision.model.list", "decision_read"
-    ),
+    ApplicationCommand(("decisions", "models"), "decision.model.list", "decision_read"),
     ApplicationCommand(
         ("decisions", "install"), "decision.model.install", "decision_configuration"
     ),
@@ -246,6 +244,9 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         "engineering.repository.register",
         "engineering_repository",
     ),
+    ApplicationCommand(
+        ("analysis", "start"), "analysis.start", "insights_analysis_request"
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (
@@ -285,7 +286,9 @@ EXIT_CODES: Final[Mapping[str, int]] = MappingProxyType(
         "invalid_purpose": 3,
         "workspace_migration_required": 4,
         "incompatible_version": 4,
+        "unsupported_minor_version": 4,
         "upgrade_required": 4,
+        "tokenizer_unavailable": 4,
         "conflict": 5,
         "mutation_precondition_failed": 5,
         "idempotency_conflict": 5,
@@ -301,6 +304,7 @@ EXIT_CODES: Final[Mapping[str, int]] = MappingProxyType(
         "internal_recoverable": 7,
         "not_found": 8,
         "size_limit_exceeded": 8,
+        "context_budget_insufficient": 8,
         "token_limit_exceeded": 8,
         "internal_non_recoverable": EXIT_UNKNOWN_ERROR,
     }

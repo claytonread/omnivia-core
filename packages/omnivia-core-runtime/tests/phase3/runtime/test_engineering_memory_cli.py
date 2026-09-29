@@ -38,6 +38,20 @@ import test_managed_start as managed
 WORKSPACE_ID = managed.WORKSPACE_ID
 
 
+def _pinned_child_env() -> dict[str, str]:
+    """This checkout's console scripts first on `PATH` for a CLI child.
+
+    The production launcher resolves the managed service through `PATH` so a
+    deliberately shadowed build is honoured. Invoking the CLI by full
+    interpreter path leaves the checkout's own `.venv/bin` off `PATH`, so a
+    same-named `omnivia-core-service` from an unrelated installation would be
+    selected and serve a schema these fingerprints refuse.
+    """
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
+    return env
+
+
 def _run_cli(home: Path, *arguments: str) -> tuple[int, dict[str, Any]]:
     """One installed `omnivia` invocation, answered with its JSON envelope."""
     completed = subprocess.run(
@@ -55,6 +69,7 @@ def _run_cli(home: Path, *arguments: str) -> tuple[int, dict[str, Any]]:
         text=True,
         timeout=240,
         check=False,
+        env=_pinned_child_env(),
     )
     return completed.returncode, dict(json.loads(completed.stdout))
 
@@ -95,6 +110,7 @@ def _lifecycle(home: Path, *arguments: str) -> dict[str, Any]:
         text=True,
         timeout=240,
         check=False,
+        env=_pinned_child_env(),
     )
     assert completed.returncode == 0, completed.stderr
     return dict(json.loads(completed.stdout))
