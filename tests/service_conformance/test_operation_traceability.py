@@ -152,10 +152,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 54
+    assert len(OPERATION_CATALOGUE) == 55
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 54
-    assert len(set(FIXTURE_NAMES)) == 54
+    assert len(FIXTURE_NAMES) == 55
+    assert len(set(FIXTURE_NAMES)) == 55
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -283,7 +283,7 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
     assert len(exposed) == 19
-    assert len(omitted) == 35
+    assert len(omitted) == 36
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -328,6 +328,7 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         "memory.list",
         "workflow.inspect",
         "workflow.review",
+        "analysis.start",
         "workspace.list",
     }
 

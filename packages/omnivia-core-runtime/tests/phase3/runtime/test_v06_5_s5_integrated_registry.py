@@ -43,7 +43,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "f57d0bbf01a18c568be1360863116542cb7824a9e7ee192416333f03751ceb62"
+CORPUS_SHA256 = "0213a555586e0a813f960f29adb35df67b7631f380d7e341fee0fafaa9187471"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -96,7 +96,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 54
+    assert len(catalogue) == len(set(catalogue)) == 55
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -139,7 +139,7 @@ def test_v06_5_s5_every_handler_is_production_callable(
         ) or handler.__module__.startswith(
             "omnivia_core_runtime.service.application"
         ) or handler.__module__ == __name__, operation
-    assert len(identities) == 54
+    assert len(identities) == 55
     assert not any(
         token in identity.lower()
         for identity in identities.values()

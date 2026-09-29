@@ -213,7 +213,8 @@
         "context.priority.set",
         "engineering.review.record",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "analysis.start"
       ]
     },
     {
@@ -468,7 +469,8 @@
         "context.priority.set",
         "engineering.review.record",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "analysis.start"
       ]
     },
     {
@@ -531,7 +533,8 @@
         "context.priority.set",
         "engineering.review.record",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "analysis.start"
       ]
     },
     {

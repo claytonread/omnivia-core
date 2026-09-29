@@ -74,7 +74,11 @@ EXPECTED_COMMANDS = (
     (("decisions", "configure"), "decision.settings.update", "decision_configuration"),
     # Engineering memory (SPEC-CORE-ENGMEM-001), appended in amendment order.
     (("continuity", "register"), "continuity.session.register", "continuity_session"),
-    (("continuity", "checkpoint"), "continuity.checkpoint.append", "continuity_checkpoint"),
+    (
+        ("continuity", "checkpoint"),
+        "continuity.checkpoint.append",
+        "continuity_checkpoint",
+    ),
     (("continuity", "close"), "continuity.session.close", "continuity_session"),
     (("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"),
     (("engineering", "search"), "engineering.search", "engineering_search"),
@@ -87,6 +91,11 @@ EXPECTED_COMMANDS = (
         ("repository", "register"),
         "engineering.repository.register",
         "engineering_repository",
+    ),
+    (
+        ("analysis", "start"),
+        "analysis.start",
+        "insights_analysis_request",
     ),
 )
 
@@ -134,14 +143,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_fifty_four_application_commands_are_declared_in_order() -> None:
+def test_the_fifty_five_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 54
+    assert len(APPLICATION_COMMANDS) == 55
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

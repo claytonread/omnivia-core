@@ -10406,6 +10406,118 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "description": "analysis.start answers a well-formed request on the success branch. The v1 result type is reserved and empty: milestone 1 of the structured-data programme defines decoding and refusal only, so this case pins the wire shape of the reserved success type for adapter authors and asserts nothing about execution.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "analysis.start/primary-success",
+      "operation": "analysis.start",
+      "request": {
+        "input": {
+          "request_version": "1.0",
+          "target": {
+            "kind": "metric",
+            "metric_revision_id": "metric-overdue-receivables-r1"
+          },
+          "as_of_date": "2026-09-30",
+          "business_timezone": "Australia/Brisbane",
+          "use_class": "exploration",
+          "parameters": [
+            {
+              "name": "currency",
+              "value": {
+                "code": "AUD"
+              }
+            }
+          ],
+          "output_bounds": {
+            "max_rows": 1000
+          },
+          "purpose_reference": "finance-exposure-review"
+        },
+        "metadata": {
+          "request_id": "req-analysis.start-success",
+          "scopes": [
+            "insights:read"
+          ],
+          "required_capabilities": [
+            {
+              "id": "insights.analysis",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "analysis.start"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-analysis.start-success"
+        },
+        "result": {}
+      }
+    },
+    {
+      "description": "analysis.start naming a supported major with an unsupported minor is refused with the dedicated typed code, never downgraded and never translated into a generic error.",
+      "expect": {
+        "branch": "error",
+        "error_code": "unsupported_minor_version",
+        "retry_class": "non_retryable"
+      },
+      "id": "error/unsupported_minor_version",
+      "operation": "analysis.start",
+      "request": {
+        "input": {
+          "request_version": "1.5",
+          "target": {
+            "kind": "metric",
+            "metric_revision_id": "metric-overdue-receivables-r1"
+          },
+          "as_of_date": "2026-09-30",
+          "business_timezone": "Australia/Brisbane",
+          "use_class": "exploration",
+          "parameters": [
+            {
+              "name": "currency",
+              "value": {
+                "code": "AUD"
+              }
+            }
+          ],
+          "output_bounds": {
+            "max_rows": 1000
+          },
+          "purpose_reference": "finance-exposure-review"
+        },
+        "metadata": {
+          "request_id": "req-error-unsupported_minor_version",
+          "scopes": [
+            "insights:read"
+          ],
+          "required_capabilities": [
+            {
+              "id": "insights.analysis",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "analysis.start"
+      },
+      "response": {
+        "error": {
+          "code": "unsupported_minor_version",
+          "message": "analysis request payload minor 5 of major 1 is not supported; supported version is 1.0",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-error-unsupported_minor_version"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

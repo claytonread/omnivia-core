@@ -9,6 +9,7 @@
 //   contracts/application/v1/schemas/records.schema.json
 //   contracts/application/v1/schemas/jobs.schema.json
 //   contracts/application/v1/schemas/operations.schema.json
+//   contracts/application/v1/schemas/analysis.schema.json
 //   contracts/application/v1/schemas/workspace.schema.json
 //   contracts/application/v1/schemas/memory.schema.json
 //   contracts/application/v1/schemas/evidence.schema.json
@@ -50,6 +51,68 @@ export const CONTRACT_VERSION = "1.3" as const;
  * Base URI every canonical v1 schema `$id` is rooted at.
  */
 export const SCHEMA_BASE_URI = "https://contracts.omnivia.dev/application/v1/" as const;
+
+/**
+ * The requested result-use class. `action_input` is deliberately absent from the v1 vocabulary:
+ * action consumption is denied until an accepted action-input policy exists (UDL-D06), and a
+ * request naming it is refused as `invalid_request` rather than decoded as an admitted use
+ * class.
+ */
+export type AnalysisUseClass = string;
+
+/**
+ * The closed `AnalysisUseClass` vocabulary, emitted from the schema's `enum`.
+ */
+export const ANALYSIS_USE_CLASS_VALUES = [
+  "exploration",
+  "historical_display",
+  "current_publication",
+] as const;
+
+/**
+ * Return whether a value is a declared `AnalysisUseClass`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAnalysisUseClass(value: unknown): value is AnalysisUseClass {
+  return (
+    typeof value === "string" &&
+    (ANALYSIS_USE_CLASS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * A calendar date in the business timezone, without a time or offset. Distinct from a UTC
+ * instant: the envelope records instants; this type records a business-date boundary.
+ */
+export type BusinessDate = string;
+
+/**
+ * An IANA timezone identifier interpreting the request's business dates, such as
+ * `Australia/Brisbane`. A fixed offset is not a timezone and is refused.
+ */
+export type BusinessTimezone = string;
+
+/**
+ * Explicit bounded output. Requested bounds narrow the host and runtime limits; they never
+ * override them and never grant execution.
+ */
+export interface AnalysisOutputBounds {
+  /**
+   * Maximum returned rows for a bounded Data View read result. Absent means the admitted
+   * server profile default.
+   */
+  readonly max_rows?: number;
+}
+
+/**
+ * Result of `analysis.start`. Reserved in milestone 1: the milestone-1 build never returns a
+ * success result, so this type declares no members. It exists so the catalogue's result
+ * reference resolves and so a later milestone extends this shape additively rather than
+ * inventing a second result type.
+ */
+export interface AnalysisStartResult {
+}
 
 /**
  * A `major.minor` contract version. Major changes are breaking; minor changes are additive and
@@ -3062,6 +3125,57 @@ export interface WorkspaceInspectInput {
 }
 
 /**
+ * A governed analysis target that is a metric, named by its exact immutable revision identifier.
+ * A mutable `latest` alias is not accepted: the revision must be stated.
+ */
+export interface GovernedMetricReference {
+  /**
+   * Discriminator for the governed-reference union; constant for this member.
+   */
+  readonly kind: string;
+  /**
+   * Exact immutable revision identifier of the approved metric definition. Required on the
+   * metric branch and absent on the Data View branch; its presence is what distinguishes the
+   * two union members.
+   */
+  readonly metric_revision_id: Identifier;
+}
+
+/**
+ * A governed analysis target that is a Data View, named by its exact immutable revision
+ * identifier. A mutable `latest` alias is not accepted: the revision must be stated.
+ */
+export interface GovernedDataViewReference {
+  /**
+   * Discriminator for the governed-reference union; constant for this member.
+   */
+  readonly kind: string;
+  /**
+   * Exact immutable revision identifier of the approved Data View definition. Required on the
+   * Data View branch and absent on the metric branch; its presence is what distinguishes the
+   * two union members.
+   */
+  readonly data_view_revision_id: Identifier;
+}
+
+/**
+ * One exact typed parameter: a bounded parameter name and its JSON data value. Values are data,
+ * never expressions: an executable fragment is not a representable parameter value, and the
+ * server interprets parameter meaning only through the governed definition the target names.
+ */
+export interface AnalysisParameter {
+  /**
+   * Parameter name as declared by the governed definition.
+   */
+  readonly name: Identifier;
+  /**
+   * The parameter's JSON data value. JSON data only: no expression channel exists in this
+   * contract.
+   */
+  readonly value: JsonObject;
+}
+
+/**
  * The conversation a chat command changes, and the revision the caller believes it is at.
  * Optimistic concurrency for the conversation aggregate, stated as both counters rather than
  * one: a conversation's `graph_revision` and its append position move independently, so
@@ -5984,6 +6098,12 @@ export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]):
 }
 
 /**
+ * Exactly one governed analysis target: an exact metric revision or an exact Data View revision.
+ * The union is discriminated by the required `kind` member unique to each branch.
+ */
+export type AnalysisTarget = GovernedMetricReference | GovernedDataViewReference;
+
+/**
  * Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's single
  * mutation seam. `command_name` names a member of the Chat Contract's own closed command
  * registry and `command` is that command's request document, carried verbatim and opaque to this
@@ -8230,6 +8350,64 @@ export interface WorkspaceListInput {
 }
 
 /**
+ * Input for `analysis.start`. Workspace-scoped: the workspace is the request envelope's selected
+ * workspace; this payload never carries a second, independent workspace identifier. Exactly one
+ * temporal scope is stated: an `as_of` business date or an explicit `period` half-open interval,
+ * never both and never neither.
+ */
+export interface AnalysisStartInput {
+  /**
+   * The payload schema version this request was authored against, as `major.minor`. Milestone
+   * 1 supports `1.0` only.
+   */
+  readonly request_version: ContractVersion;
+  /**
+   * The exact governed definition this analysis names.
+   */
+  readonly target: AnalysisTarget;
+  /**
+   * Point-in-time business scope: evaluate the governed definition as of this business date in
+   * the business timezone. Mutually exclusive with `period`.
+   */
+  readonly as_of_date?: BusinessDate;
+  /**
+   * Inclusive start of the business-period scope. Required with `period_end` and forbidden
+   * with `as_of_date`.
+   */
+  readonly period_start?: BusinessDate;
+  /**
+   * Exclusive end of the business-period scope. Required with `period_start` and forbidden
+   * with `as_of_date`.
+   */
+  readonly period_end?: BusinessDate;
+  /**
+   * IANA timezone interpreting every business date in this request.
+   */
+  readonly business_timezone: BusinessTimezone;
+  /**
+   * The requested result-use class. Requesting a class does not grant it; the result-use gate
+   * evaluates permission separately.
+   */
+  readonly use_class: AnalysisUseClass;
+  /**
+   * Exact typed parameters, each a name plus JSON data value. Absent means the governed
+   * definition's declared defaults apply. Order is not significant; duplicate names are
+   * refused.
+   */
+  readonly parameters?: readonly AnalysisParameter[];
+  /**
+   * Explicit bounded output. Absent means the admitted server profile default bounds.
+   */
+  readonly output_bounds?: AnalysisOutputBounds;
+  /**
+   * Caller-visible reference to the purpose this analysis is requested under. A purpose
+   * reference is a claim the service validates; it is never a substitute for identity,
+   * authorisation or policy checks.
+   */
+  readonly purpose_reference: Identifier;
+}
+
+/**
  * Everything a caller needs to reason about what this server accepted and what it can do.
  * Returned on every response, success or error.
  */
@@ -10444,6 +10622,7 @@ export const FROZEN_ERROR_CODES = [
   "workspace_lease_unavailable",
   "workspace_migration_required",
   "incompatible_version",
+  "unsupported_minor_version",
   "upgrade_required",
   "projection_unavailable",
   "stale_projection",
@@ -10501,6 +10680,7 @@ export const DEFAULT_RETRY_CLASSIFICATION: Readonly<Record<FrozenErrorCode, Froz
   workspace_lease_unavailable: "retryable_after_delay",
   workspace_migration_required: "non_retryable",
   incompatible_version: "non_retryable",
+  unsupported_minor_version: "non_retryable",
   upgrade_required: "non_retryable",
   projection_unavailable: "retryable_after_delay",
   stale_projection: "retryable_after_delay",
@@ -12371,6 +12551,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "analysis.start",
+    scope: { required_scopes: ["insights:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartResult",
+    required_capability: { id: "insights.analysis", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "unsupported_minor_version",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

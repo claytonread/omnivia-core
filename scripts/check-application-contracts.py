@@ -94,6 +94,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "records",
     "jobs",
     "operations",
+    "analysis",
     "workspace",
     "memory",
     "evidence",
@@ -1172,6 +1173,13 @@ _INSTALL_READ: tuple[str, ...] = tuple(sorted((*_BASE_INSTALL, "bootstrap_in_pro
 _INSTALL_CREATE: tuple[str, ...] = tuple(
     sorted((*_INSTALL_READ, "conflict", "idempotency_conflict"))
 )
+#: Governed analysis (SPEC-CORE-DATA-001, T-0715 milestone 1): the workspace
+#: base set plus the new payload-version code. No size/token codes: the
+#: milestone admits no unbounded read, and output bounds ride the profile that
+#: introduces them.
+_ANALYSIS_START: tuple[str, ...] = tuple(
+    sorted((*_BASE_WORKSPACE, "unsupported_minor_version"))
+)
 _POINT_READ: tuple[str, ...] = tuple(sorted((*_BASE_WORKSPACE, "not_found")))
 _PROJECTION_READ: tuple[str, ...] = tuple(
     sorted((*_BASE_WORKSPACE, "projection_unavailable", "stale_projection"))
@@ -1287,6 +1295,7 @@ _ENG_SOURCE_MUT: tuple[str, ...] = tuple(
 #: not apply the way it does to `engineering.source.record`.
 _ENG_REPOSITORY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
+    "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
     "INSTALL_READ": _INSTALL_READ,
@@ -1594,6 +1603,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "engineering.repository.register": FrozenOperation(
         "workspace", ("engineering:repository",), "create", "engineering.repository",
         "engineering", "EngineeringRepositoryRegister", "ENG_REPOSITORY_MUT", False,
+    ),
+    "analysis.start": FrozenOperation(
+        "workspace", ("insights:read",), "none", "insights.analysis",
+        "analysis", "AnalysisStart", "ANALYSIS_START", False,
     ),
 }
 

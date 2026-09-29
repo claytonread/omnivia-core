@@ -9,7 +9,10 @@
     "retryable_after_delay": "Retry only after backing off. Honour `retry_after_ms` when present.",
     "retryable_after_precondition_refresh": "The request is only safe to retry after re-reading the record and rebuilding `mutation_precondition`. Never blind-retry."
   },
-  "x-omnivia-retryable-retry-classes": ["retryable", "retryable_after_delay"],
+  "x-omnivia-retryable-retry-classes": [
+    "retryable",
+    "retryable_after_delay"
+  ],
   "x-omnivia-error-catalogue": {
     "authentication_required": "non_retryable",
     "authorization_denied": "non_retryable",
@@ -26,6 +29,7 @@
     "workspace_lease_unavailable": "retryable_after_delay",
     "workspace_migration_required": "non_retryable",
     "incompatible_version": "non_retryable",
+    "unsupported_minor_version": "non_retryable",
     "upgrade_required": "non_retryable",
     "projection_unavailable": "retryable_after_delay",
     "stale_projection": "retryable_after_delay",
@@ -84,7 +88,11 @@
           "description": "Optional structured detail. Must never carry credentials."
         }
       },
-      "required": ["code", "message", "retry_class"],
+      "required": [
+        "code",
+        "message",
+        "retry_class"
+      ],
       "unevaluatedProperties": false
     }
   }
