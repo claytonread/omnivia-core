@@ -335,11 +335,11 @@ def test_every_probe_command_path_resolves_to_its_own_command(
     assert find_probe_command(command.path) is command
 
 
-def test_the_two_lookups_are_declared_and_cover_all_fifty_five_paths() -> None:
+def test_the_two_lookups_are_declared_and_cover_all_fifty_six_paths() -> None:
     """Twenty-eight application paths and three probe paths, and no path in both."""
     application = {command.path for command in APPLICATION_COMMANDS}
     probes = {command.path for command in PROBE_COMMANDS}
-    assert len(application) == 55
+    assert len(application) == 56
     assert len(probes) == 3
     assert not application & probes
 
