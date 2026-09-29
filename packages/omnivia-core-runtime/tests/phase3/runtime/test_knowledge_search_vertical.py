@@ -62,6 +62,7 @@ import test_governed_truth_and_relations_migration as m3
 import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.application import (
+    ANALYSIS_START_OPERATION,
     CONTEXT_PACK_BUILD_OPERATION,
     EVIDENCE_SEARCH_OPERATION,
     GRAPH_TRAVERSE_OPERATION,
@@ -1814,6 +1815,7 @@ SHIPPED_OPERATIONS = frozenset(
         MEMORY_SEARCH_OPERATION,
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
+        ANALYSIS_START_OPERATION,
     }
 )
 
@@ -1840,7 +1842,7 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
     assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     # OPERATION_PURPOSES is the local-owner read policy: every registered read,
     # and no mutation -- the decision stubs' mutations are excluded by design.
-    # OPERATION_PURPOSES is the workspace read policy: the six reads this
+    # OPERATION_PURPOSES is the workspace read policy: the seven reads this
     # registry serves plus the decision family's reads (its own session derives
     # its purposes from the same table).
     assert SHIPPED_OPERATIONS <= set(OPERATION_PURPOSES)
@@ -1868,6 +1870,7 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
             "context_pack.build",
             "evidence.read",
             "graph.read",
+            "insights.analysis",
             "knowledge.read",
             "memory.read",
             "workspace.read",

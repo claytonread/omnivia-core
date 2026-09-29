@@ -94,6 +94,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "records",
     "jobs",
     "operations",
+    "analysis",
     "workspace",
     "memory",
     "evidence",
@@ -1172,6 +1173,13 @@ _INSTALL_READ: tuple[str, ...] = tuple(sorted((*_BASE_INSTALL, "bootstrap_in_pro
 _INSTALL_CREATE: tuple[str, ...] = tuple(
     sorted((*_INSTALL_READ, "conflict", "idempotency_conflict"))
 )
+#: Governed analysis (SPEC-CORE-DATA-001, T-0715 milestone 1): the workspace
+#: base set plus the new payload-version code. No size/token codes: the
+#: milestone admits no unbounded read, and output bounds ride the profile that
+#: introduces them.
+_ANALYSIS_START: tuple[str, ...] = tuple(
+    sorted((*_BASE_WORKSPACE, "unsupported_minor_version"))
+)
 _POINT_READ: tuple[str, ...] = tuple(sorted((*_BASE_WORKSPACE, "not_found")))
 _PROJECTION_READ: tuple[str, ...] = tuple(
     sorted((*_BASE_WORKSPACE, "projection_unavailable", "stale_projection"))
@@ -1179,6 +1187,15 @@ _PROJECTION_READ: tuple[str, ...] = tuple(
 _GRAPH_READ: tuple[str, ...] = tuple(sorted((*_PROJECTION_READ, "not_found", "size_limit_exceeded")))
 _CONTEXT_READ: tuple[str, ...] = tuple(
     sorted((*_PROJECTION_READ, "size_limit_exceeded", "token_limit_exceeded"))
+)
+_ENGINEERING_CONTEXT_READ: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CONTEXT_READ,
+            "context_budget_insufficient",
+            "tokenizer_unavailable",
+        )
+    )
 )
 _CREATE_MUT: tuple[str, ...] = tuple(
     sorted(
@@ -1278,6 +1295,7 @@ _ENG_SOURCE_MUT: tuple[str, ...] = tuple(
 #: not apply the way it does to `engineering.source.record`.
 _ENG_REPOSITORY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
+    "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
     "INSTALL_READ": _INSTALL_READ,
@@ -1287,6 +1305,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "PROJECTION_READ": _PROJECTION_READ,
     "GRAPH_READ": _GRAPH_READ,
     "CONTEXT_READ": _CONTEXT_READ,
+    "ENGINEERING_CONTEXT_READ": _ENGINEERING_CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
     "GOV_MUT": _GOV_MUT,
@@ -1531,7 +1550,8 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     # Engineering memory (SPEC-CORE-ENGMEM-001): continuity + engineering retrieval.
     # Reads: handoff reads authoritative L0 checkpoints (POINT_READ); retrieval goes
     # through serving projections with bounded results (GRAPH_READ); the pack build
-    # adds token budgets (CONTEXT_READ). Mutations: continuity appends (ENG_CONTINUITY_MUT),
+    # adds counting-contract budgets (ENGINEERING_CONTEXT_READ). Mutations: continuity
+    # appends (ENG_CONTINUITY_MUT),
     # priority is a principal-scoped preference (ENG_PRIORITY_MUT), and review records
     # a governed attestation with a precondition (GOV_MUT).
     "continuity.session.register": FrozenOperation(
@@ -1560,7 +1580,7 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     ),
     "engineering.context.build": FrozenOperation(
         "workspace", ("engineering:read",), "none", "engineering.read",
-        "engineering", "EngineeringContextBuild", "CONTEXT_READ", False,
+        "engineering", "EngineeringContextBuild", "ENGINEERING_CONTEXT_READ", False,
     ),
     "context.priority.set": FrozenOperation(
         "workspace", ("engineering:write",), "update", "engineering.write",
@@ -1583,6 +1603,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "engineering.repository.register": FrozenOperation(
         "workspace", ("engineering:repository",), "create", "engineering.repository",
         "engineering", "EngineeringRepositoryRegister", "ENG_REPOSITORY_MUT", False,
+    ),
+    "analysis.start": FrozenOperation(
+        "workspace", ("insights:read",), "none", "insights.analysis",
+        "analysis", "AnalysisStart", "ANALYSIS_START", False,
     ),
 }
 

@@ -11,12 +11,15 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
+from omnivia_core_runtime.service import engineering_pack
 from omnivia_core_runtime.service.engineering_pack import (
+    BYTE_ONLY_COUNTING_MODE,
     BuildContext,
     MandatoryContextTooLarge,
     PackRecord,
     WorkingItem,
     build_pack,
+    build_pack_byte_only,
 )
 from omnivia_core_runtime.storage.context_pack import (
     CONTEXT_PACK_TOKENIZER_ID,
@@ -27,6 +30,7 @@ from referencing import Registry, Resource
 from omnivia_core.contracts.v1 import to_canonical_json
 
 NOTICE = "Target applicability is not evaluated in this build."
+FIXTURE_DIR = Path(__file__).with_name("fixtures")
 
 CTX = BuildContext(
     resolved_at_us=1_700_000_000_000_000,
@@ -47,6 +51,20 @@ ACCEPTED = PackRecord(
     "rec-b", "ver-1", "accepted_knowledge", "Auth", "Provider A, naïve 認証 `f(x)`;"
 )
 CANDIDATE = PackRecord("rec-a", "ver-2", "candidate_findings", "Guess", "Maybe provider B.")
+V2_WORKING = (
+    WorkingItem("ck-1", 3, "Resume ‘auth’", ("call a.b()", "終わり!")),
+)
+V2_CTX = dataclasses.replace(
+    CTX,
+    requested_budget={
+        "model_bytes": 16384,
+        "hydrations": 16,
+        "evidence_bytes": 524288,
+    },
+    counting_mode=BYTE_ONLY_COUNTING_MODE,
+    effective_hydrations=8,
+    effective_evidence_bytes=262144,
+)
 
 
 def _build(
@@ -65,6 +83,21 @@ def _build(
 def _tokens(text: str) -> int:
     # Independent restatement of context-pack.tokenizer.v1.
     return len(re.findall(r"[^\W_]+|[^\s]", text))
+
+
+def _build_v2(
+    ctx: BuildContext = V2_CTX,
+    records: Any = (CANDIDATE, ACCEPTED),
+    working: Any = V2_WORKING,
+) -> Any:
+    return build_pack_byte_only(
+        ctx,
+        tuple(records),
+        tuple(working),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+    )
 
 
 def test_rendered_pack_matches_the_published_result_schema() -> None:
@@ -92,11 +125,88 @@ def test_rendered_pack_matches_the_published_result_schema() -> None:
     for pack in (
         _build(),
         _build(dataclasses.replace(CTX, requested_budget={"model_tokens": 1000})),
+        _build_v2(),
     ):
         assert [
             (list(error.absolute_path), error.message)
             for error in validator.iter_errors({"pack": pack})
         ] == []
+
+
+def test_legacy_v1_matches_the_prechange_canonical_golden() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v1_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    actual = to_canonical_json(_build())
+    assert actual == expected
+    assert (
+        _build()["pack_id"]
+        == "sha256:270959fb56b2e5f863e521ee67dfe4c27409e9175fe0b94761e558165d4550f8"
+    )
+
+
+def test_byte_only_v2_matches_its_canonical_golden_and_exact_utf8_count() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v2_byte_only_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    pack = _build_v2()
+    text = pack["rendering"]["text"]
+    assert to_canonical_json(pack) == expected
+    assert pack["format_version"] == "engineering_context.v2"
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert pack["rendering"]["byte_count"] <= pack["budget"]["effective"]["model_bytes"]
+    assert NOTICE in text
+    assert "[accepted_knowledge]" in text
+    assert "[candidate_findings]" in text
+    assert "[working_context]" in text
+    assert "[cite-1]" in text
+    assert "[uncited checkpoint ck-1#3]" in text
+    assert "naïve 認証 `f(x)`" in text
+    assert "終わり!" in text
+
+
+def test_byte_only_v2_contains_no_token_or_tokenizer_fields() -> None:
+    pack = _build_v2()
+    forbidden = {
+        "model_tokens",
+        "rendered_tokens",
+        "token_count",
+        "tokenizer_id",
+        "tokenizer_version",
+    }
+
+    def keys(value: Any) -> set[str]:
+        if isinstance(value, dict):
+            return set(value).union(*(keys(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(keys(item) for item in value))
+        return set()
+
+    assert forbidden.isdisjoint(keys(pack))
+    assert "token estimate" not in to_canonical_json(pack).lower()
+    assert pack["normalized_request"]["counting_mode"] == BYTE_ONLY_COUNTING_MODE
+    assert pack["reproducibility"]["counting_mode"] == BYTE_ONLY_COUNTING_MODE
+
+
+def test_byte_only_v2_replay_and_digest_inputs_are_stable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _build_v2()
+    assert to_canonical_json(first) == to_canonical_json(_build_v2())
+    assert first["pack_id"] == _build_v2()["pack_id"]
+    assert _build_v2(dataclasses.replace(V2_CTX, resolved_at_us=1))["pack_id"] != first[
+        "pack_id"
+    ]
+    assert _build_v2(dataclasses.replace(V2_CTX, effective_bytes=16000))[
+        "pack_id"
+    ] != first["pack_id"]
+    assert _build()["pack_id"] != first["pack_id"]
+
+    monkeypatch.setattr(engineering_pack, "BYTE_ONLY_RENDERER_VERSION", "eng-render-test")
+    renderer_changed = _build_v2()["pack_id"]
+    assert renderer_changed != first["pack_id"]
+    monkeypatch.setattr(engineering_pack, "BYTE_ONLY_BUILDER_VERSION", "eng-build-test")
+    assert _build_v2()["pack_id"] != renderer_changed
 
 
 def test_same_frozen_context_replays_to_identical_bytes_and_checksum() -> None:
@@ -135,6 +245,57 @@ def test_counts_cover_the_whole_rendering_under_the_named_tokenizer() -> None:
     assert pack["budget"]["rendered_tokens"] == _tokens(text)
 
 
+def test_working_context_is_capped_at_one_quarter_of_both_legacy_budgets() -> None:
+    ctx = dataclasses.replace(CTX, effective_tokens=400, effective_bytes=800)
+    working = (
+        WorkingItem("ck-1", 1, "認証を再開", ("未解決🙂" * 4,)),
+        WorkingItem("ck-2", 2, "Second checkpoint " * 5, ("follow up " * 8,)),
+        WorkingItem("ck-3", 3, "Lowest priority " * 8, ("later " * 20,)),
+    )
+    pack = _build(ctx, working=working)
+    without_working = _build(ctx)
+    working_tokens = pack["rendering"]["token_count"] - without_working["rendering"][
+        "token_count"
+    ]
+    working_bytes = pack["rendering"]["byte_count"] - without_working["rendering"][
+        "byte_count"
+    ]
+
+    assert working_tokens <= ctx.effective_tokens // 4
+    assert working_bytes <= ctx.effective_bytes // 4
+    assert any(
+        omission["reason"] == "working_context_share"
+        for omission in pack["omissions"]
+    )
+    assert all(
+        section["content"] != "Lowest priority " * 8 + "Unresolved: " + "later " * 20
+        for section in pack["sections"]
+    )
+
+
+def test_byte_only_working_context_uses_exact_multilingual_utf8_share() -> None:
+    ctx = dataclasses.replace(V2_CTX, effective_bytes=800)
+    working = (
+        WorkingItem("ck-1", 1, "継続🙂" * 4, ("未解決" * 3,)),
+        WorkingItem("ck-2", 2, "後回し🚧" * 20, ("大きい" * 20,)),
+    )
+    pack = _build_v2(ctx, working=working)
+    without_working = _build_v2(ctx, working=())
+    working_bytes = pack["rendering"]["byte_count"] - without_working["rendering"][
+        "byte_count"
+    ]
+
+    assert working_bytes <= ctx.effective_bytes // 4
+    assert [
+        section["content"]
+        for section in pack["sections"]
+        if section["partition"] == "working_context"
+    ] == ["継続🙂" * 4 + " Unresolved: " + "未解決" * 3]
+    assert {omission["reason"] for omission in pack["omissions"]} == {
+        "working_context_share"
+    }
+
+
 def test_partitions_stay_separate_and_accepted_renders_first() -> None:
     pack = _build()
     assert [s["partition"] for s in pack["sections"]] == [
@@ -151,7 +312,10 @@ def test_tight_token_budget_drops_optional_sections_but_keeps_notice_and_accepte
     tight = dataclasses.replace(CTX, effective_tokens=mandatory)
     pack = _build(tight, working=(WorkingItem("ck-1", 1, "Obj", ("x",)),))
     assert [s["partition"] for s in pack["sections"]] == ["accepted_knowledge"]
-    assert {o["reason"] for o in pack["omissions"]} == {"budget"}
+    assert {o["reason"] for o in pack["omissions"]} == {
+        "budget",
+        "working_context_share",
+    }
     assert [c["citation_id"] for c in pack["citations"]] == ["cite-1"]
     assert pack["rendering"]["token_count"] <= mandatory
     assert NOTICE in pack["rendering"]["text"]
@@ -175,6 +339,30 @@ def test_an_oversized_optional_section_is_dropped_whole() -> None:
 def test_a_mandatory_rendering_that_cannot_fit_is_refused() -> None:
     with pytest.raises(MandatoryContextTooLarge):
         _build(dataclasses.replace(CTX, effective_tokens=1))
+
+
+def test_byte_only_drops_optional_sections_whole_and_refuses_too_small_mandatory() -> (
+    None
+):
+    mandatory = _build_v2(records=(ACCEPTED,), working=())
+    cap = mandatory["rendering"]["byte_count"]
+    tight = dataclasses.replace(V2_CTX, effective_bytes=cap)
+    packed = _build_v2(tight, records=(ACCEPTED, CANDIDATE), working=V2_WORKING)
+    assert [section["partition"] for section in packed["sections"]] == [
+        "accepted_knowledge"
+    ]
+    assert packed["citations"] == [
+        {
+            "citation_id": "cite-1",
+            "record_ref": {"record_id": "rec-b", "version": "ver-1"},
+        }
+    ]
+    assert {omission["reason"] for omission in packed["omissions"]} == {
+        "budget",
+        "working_context_share",
+    }
+    with pytest.raises(MandatoryContextTooLarge):
+        _build_v2(dataclasses.replace(V2_CTX, effective_bytes=cap - 1), records=(ACCEPTED,), working=())
 
 
 def test_authorized_selection_order_survives_within_a_partition() -> None:
@@ -208,3 +396,101 @@ def test_applicability_is_matched_when_a_record_survives() -> None:
     ctx = dataclasses.replace(CTX, source_coverage=_COVERED)
     pack = _build(ctx, records=(ACCEPTED,))
     assert {a["status"] for a in pack["applicability"]} == {"matched"}
+
+
+SECOND_NOTICE = "Second finding is unverified."
+
+
+def test_mandatory_uncertainties_are_deduped_and_ordered_notice_first() -> None:
+    pack = build_pack(
+        CTX,
+        (ACCEPTED,),
+        (),
+        notice=NOTICE,
+        uncertainties=[SECOND_NOTICE, NOTICE, SECOND_NOTICE, "Third."],
+        omissions=[],
+    )
+    assert pack["uncertainties"] == [NOTICE, SECOND_NOTICE, "Third."]
+    text = pack["rendering"]["text"]
+    assert text.count(f"[uncertainty] {NOTICE}") == 1
+    assert text.count(f"[uncertainty] {SECOND_NOTICE}") == 1
+    assert text.count("[uncertainty] Third.") == 1
+    assert (
+        text.index(f"[uncertainty] {NOTICE}")
+        < text.index(f"[uncertainty] {SECOND_NOTICE}")
+        < text.index("[uncertainty] Third.")
+    )
+
+
+def test_v1_exact_counts_include_every_mandatory_uncertainty() -> None:
+    pack = build_pack(
+        CTX,
+        (ACCEPTED,),
+        (),
+        notice=NOTICE,
+        uncertainties=[SECOND_NOTICE],
+        omissions=[],
+    )
+    text = pack["rendering"]["text"]
+    assert pack["rendering"]["token_count"] == _tokens(text)
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert pack["budget"]["rendered_tokens"] == _tokens(text)
+    assert pack["budget"]["rendered_bytes"] == len(text.encode("utf-8"))
+    assert SECOND_NOTICE in text
+
+
+def test_v2_exact_byte_count_includes_every_mandatory_uncertainty() -> None:
+    pack = build_pack_byte_only(
+        V2_CTX,
+        (ACCEPTED,),
+        (),
+        notice=NOTICE,
+        uncertainties=[SECOND_NOTICE],
+        omissions=[],
+    )
+    text = pack["rendering"]["text"]
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert pack["budget"]["rendered_bytes"] == len(text.encode("utf-8"))
+    assert SECOND_NOTICE in text
+
+
+def test_notices_alone_exceeding_the_budget_raise_mandatory_too_large() -> None:
+    # A budget sized exactly for the single-notice rendering (no sections,
+    # nothing droppable) cannot also fit a second mandatory notice.
+    single_notice_bytes = _build(records=())["rendering"]["byte_count"]
+    with pytest.raises(MandatoryContextTooLarge):
+        build_pack(
+            dataclasses.replace(CTX, effective_bytes=single_notice_bytes),
+            (),
+            (),
+            notice=NOTICE,
+            uncertainties=[SECOND_NOTICE],
+            omissions=[],
+        )
+    with pytest.raises(MandatoryContextTooLarge):
+        build_pack_byte_only(
+            dataclasses.replace(V2_CTX, effective_bytes=single_notice_bytes),
+            (),
+            (),
+            notice=NOTICE,
+            uncertainties=[SECOND_NOTICE],
+            omissions=[],
+        )
+
+
+def test_v1_one_notice_golden_is_unchanged() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v1_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert to_canonical_json(_build()) == expected
+    assert (
+        _build()["pack_id"]
+        == "sha256:270959fb56b2e5f863e521ee67dfe4c27409e9175fe0b94761e558165d4550f8"
+    )
+
+
+def test_v2_one_notice_golden_is_unchanged() -> None:
+    expected = (FIXTURE_DIR / "engineering_context_v2_byte_only_golden.json").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert to_canonical_json(_build_v2()) == expected

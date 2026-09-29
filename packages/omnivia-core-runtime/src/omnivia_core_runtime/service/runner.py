@@ -509,14 +509,25 @@ class ServiceRunner:
             for migration in load_migrations()
         )
 
+        # Two oracles, judged separately so a refusal can name which one failed.
+        # They share the one readiness precondition, because a fingerprint match
+        # implies intact guards; the guard check exists to name the missing guard
+        # trigger rather than to add an independent refusal.
+        schema_oracle_failure = ""
         try:
             assert_guards_intact(connection)
+        except Exception as failure:  # noqa: BLE001 - a refusal is a readiness fact
+            schema_oracle_failure = f"mutation guards: {failure}"
+        try:
             # The expectation comes from the frozen migration artifacts, never from
             # the database being judged.
             verify_fingerprint(connection, canonical_schema_fingerprint())
-            fingerprint_ok = True
-        except Exception:  # noqa: BLE001
-            fingerprint_ok = False
+        except Exception as failure:  # noqa: BLE001 - a refusal is a readiness fact
+            detail = f"schema fingerprint: {failure}"
+            schema_oracle_failure = (
+                f"{schema_oracle_failure}; {detail}" if schema_oracle_failure else detail
+            )
+        fingerprint_ok = not schema_oracle_failure
 
         return ReadinessRequirements(
             compatible_manifest=compatible_manifest,
@@ -527,6 +538,7 @@ class ServiceRunner:
             canonical_migration_checksums=checksums_match,
             integrity_check_passed=not integrity_check(connection),
             exact_schema_and_trigger_fingerprint=fingerprint_ok,
+            schema_oracle_diagnostic=schema_oracle_failure,
             migrations_and_jobs_recovered=recovered,
         )
 
