@@ -32,6 +32,8 @@ from typing import Any
 import pytest
 from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
+    ANALYSIS_REQUEST_PURPOSE,
+    ANALYSIS_START_OPERATION,
     CONTEXT_PACK_BUILD_OPERATION,
     EVIDENCE_SEARCH_OPERATION,
     GRAPH_TRAVERSE_OPERATION,
@@ -120,6 +122,7 @@ PRODUCTION_OPERATIONS = frozenset(
         MEMORY_SEARCH_OPERATION,
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
+        ANALYSIS_START_OPERATION,
     }
 )
 
@@ -424,7 +427,8 @@ def test_3_a_purpose_outside_the_fixed_allowlist_is_denied(purpose: str) -> None
 def test_3b_the_allowlist_is_exactly_the_two_accepted_purposes() -> None:
     """The widened exact set, and the literals as well as the constants.
 
-    Two purposes from Lane A onward and no more (§20.2): `workspace.inspect` **retains**
+    Three purposes from the analysis lane onward (two through Lane D, §20.2):
+    `workspace.inspect` **retains**
     `workspace_inspection` rather than migrating, and one purpose,
     `knowledge_retrieval`, covers every V06-3 read and Context Pack operation. Read
     through the constants alone this would agree with whatever they were renamed to,
@@ -434,8 +438,9 @@ def test_3b_the_allowlist_is_exactly_the_two_accepted_purposes() -> None:
     """
     assert WORKSPACE_INSPECTION_PURPOSE == "workspace_inspection"
     assert KNOWLEDGE_RETRIEVAL_PURPOSE == "knowledge_retrieval"
+    assert ANALYSIS_REQUEST_PURPOSE == "insights_analysis_request"
     assert production_session().purposes == frozenset(
-        {"workspace_inspection", "knowledge_retrieval"}
+        {"workspace_inspection", "knowledge_retrieval", "insights_analysis_request"}
     )
 
 
@@ -516,17 +521,21 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     assert session.operations != APPLICATION_OPERATIONS
     for name in session.operations:
         assert get_operation_metadata(name).scope.side_effect == "none"
-    # Three scopes at six operations: all three searches are still served under
+    # Four scopes at seven operations: all three searches are still served under
     # `memory:read`, which is what the catalogue says and therefore what the derivation
     # must produce, `graph.traverse` brings exactly the one further scope its own frozen
     # entry declares, and `context_pack.build` brings none at all because its own entry
     # requires `memory:read` too. Any other scope appearing here -- or `graph:read` failing
-    # to -- would mean the constructor had started transcribing rather than deriving.
-    assert session.scopes == frozenset({"workspace:read", "memory:read", "graph:read"})
+    # to -- or `insights:read` failing to appear -- would mean the constructor had
+    # started transcribing rather than deriving.
+    assert session.scopes == frozenset(
+        {"workspace:read", "memory:read", "graph:read", "insights:read"}
+    )
     assert session.capabilities == (
         CapabilityRef(id="context_pack.build", version="1.0"),
         CapabilityRef(id="evidence.read", version="1.0"),
         CapabilityRef(id="graph.read", version="1.0"),
+        CapabilityRef(id="insights.analysis", version="1.0"),
         CapabilityRef(id="knowledge.read", version="1.0"),
         CapabilityRef(id="memory.read", version="1.0"),
         CapabilityRef(id="workspace.read", version="1.0"),
@@ -712,7 +721,7 @@ def test_5b_a_mutating_operation_is_denied_under_the_production_session() -> Non
 def test_5c_no_mutating_operation_is_registered_at_all() -> None:
     """The widened exact set again -- §22.1's second carve-out, at the registry side.
 
-    The registry holds the six reads this build's local-owner path serves. The
+    The registry holds the seven reads this build's local-owner path serves. The
     fifteen decision operations are the decision family's own registry
     (`build_decision_registry`), which the compose step holds to the same
     exactness, so a mutating operation reaches a caller only through a family
@@ -728,6 +737,7 @@ def test_5c_no_mutating_operation_is_registered_at_all() -> None:
             MEMORY_SEARCH_OPERATION,
             GRAPH_TRAVERSE_OPERATION,
             CONTEXT_PACK_BUILD_OPERATION,
+            ANALYSIS_START_OPERATION,
         }
     )
     for name in registered:
