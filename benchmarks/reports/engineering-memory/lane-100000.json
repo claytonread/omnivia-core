@@ -1,0 +1,46 @@
+{
+  "lane": "engineering-memory-qualification",
+  "recorded_at": "2026-09-29T06:06:05.110100+00:00",
+  "environment": {
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "cpu_count": 18
+  },
+  "corpus_observations": 100000,
+  "seed_seconds": 3054.4,
+  "operations": {
+    "engineering.search": {
+      "n": 30,
+      "p50_ms": 3316.171,
+      "p95_ms": 3573.158,
+      "p99_ms": 3776.049,
+      "mean_ms": 3329.455
+    },
+    "engineering.search.current_safe": {
+      "n": 30,
+      "p50_ms": 3170.534,
+      "p95_ms": 3501.383,
+      "p99_ms": 3536.027,
+      "mean_ms": 3208.539
+    },
+    "engineering.context.build": {
+      "n": 10,
+      "p50_ms": 29281.146,
+      "p95_ms": 31166.12,
+      "p99_ms": 31166.12,
+      "mean_ms": 29715.957
+    },
+    "engineering.context.build.current_safe": {
+      "outcome": "success",
+      "elapsed_ms": 30128.595
+    },
+    "continuity.checkpoint.append": {
+      "n": 100,
+      "p50_ms": 1.103,
+      "p95_ms": 1.646,
+      "p99_ms": 10.49,
+      "mean_ms": 1.493
+    }
+  }
+}
