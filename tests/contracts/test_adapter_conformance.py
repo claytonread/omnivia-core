@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 151
+    assert len(corpus) == 153
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
