@@ -6525,6 +6525,59 @@
       }
     },
     {
+      "description": "engineering.context.build failing with context_budget_insufficient, carrying its frozen retry class.",
+      "expect": {
+        "branch": "error",
+        "error_code": "context_budget_insufficient",
+        "retry_class": "non_retryable"
+      },
+      "id": "error/context_budget_insufficient",
+      "operation": "engineering.context.build",
+      "request": {
+        "input": {
+          "query": "hello",
+          "targets": [
+            {
+              "snapshot_id": "snap-2",
+              "repository_id": "repo-1",
+              "snapshot_kind": "git_commit"
+            }
+          ],
+          "profile": "investigate",
+          "counting_mode": "byte_only.v1",
+          "budget": {
+            "model_bytes": 1
+          }
+        },
+        "metadata": {
+          "request_id": "req-error-context_budget_insufficient",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.context.build"
+      },
+      "response": {
+        "error": {
+          "code": "context_budget_insufficient",
+          "message": "The operation failed with context_budget_insufficient.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-engineering.context.build",
+          "request_id": "req-error-context_budget_insufficient"
+        }
+      }
+    },
+    {
       "description": "context_pack.build failing with token_limit_exceeded, carrying its frozen retry class.",
       "expect": {
         "branch": "error",
@@ -6576,6 +6629,64 @@
             "stale": false
           },
           "request_id": "req-error-token_limit_exceeded"
+        }
+      }
+    },
+    {
+      "description": "engineering.context.build failing with tokenizer_unavailable, carrying its frozen retry class.",
+      "expect": {
+        "branch": "error",
+        "error_code": "tokenizer_unavailable",
+        "retry_class": "non_retryable"
+      },
+      "id": "error/tokenizer_unavailable",
+      "operation": "engineering.context.build",
+      "request": {
+        "input": {
+          "query": "hello",
+          "targets": [
+            {
+              "snapshot_id": "snap-2",
+              "repository_id": "repo-1",
+              "snapshot_kind": "git_commit"
+            }
+          ],
+          "profile": "investigate",
+          "counting_mode": "exact_tokens.v1",
+          "tokenizer": {
+            "tokenizer_id": "model-tokenizer",
+            "tokenizer_version": "v1"
+          },
+          "budget": {
+            "model_tokens": 4000,
+            "model_bytes": 16384
+          }
+        },
+        "metadata": {
+          "request_id": "req-error-tokenizer_unavailable",
+          "required_capabilities": [
+            {
+              "id": "engineering.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.context.build"
+      },
+      "response": {
+        "error": {
+          "code": "tokenizer_unavailable",
+          "message": "The operation failed with tokenizer_unavailable.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-engineering.context.build",
+          "request_id": "req-error-tokenizer_unavailable"
         }
       }
     },

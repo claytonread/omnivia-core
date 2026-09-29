@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from omnivia_core.contracts.v1 import (
@@ -47,7 +48,12 @@ _PROFILE_TYPE: Final = "memory.fact"
 #: catalogue's own finding/risk/decision types under the engineering domain.
 _ENGINEERING_RECORD_TYPES: Final = ("knowledge.finding", "knowledge.risk", "knowledge.decision")
 _ENGINEERING_DOMAIN: Final = "engineering.codebase"
-_ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
+#: The write-time content cap (§8.1): every engineering observation body is
+#: bounded to this many canonical UTF-8 bytes, so a caller-facing budget
+#: reasoner may use `count * ENGINEERING_CONTENT_CAP_BYTES` as a real,
+#: non-fabricated worst-case bound on what full hydration would read, without
+#: reading a single body.
+ENGINEERING_CONTENT_CAP_BYTES: Final = 65536
 _MESSAGE_INVALID_PROFILE: Final = "the memory claim is outside this supported profile"
 _MESSAGE_EVIDENCE_UNAVAILABLE: Final = (
     "the memory claim's evidence is not currently available"
@@ -98,11 +104,17 @@ class AuthorizedMemoryFrontier:
     view: str
     versions: tuple[AuthorizedVersion, ...]
     support_assembly_ids: tuple[str, ...]
+    support_assembly_ids_by_record: Mapping[str, tuple[str, ...]]
     digest: str
 
 
 def random_identifier(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4()}"
+
+
+#: Our lane's identity-page bound: one stable identity-only page for scoped
+#: frontier authorization. Independent of the shared host-parameter chunk size.
+AUTHORIZED_FRONTIER_PAGE_SIZE: Final = 512
 
 
 def _microseconds(value: str) -> int:
@@ -257,7 +269,7 @@ def _validate_engineering_observation_content(
             "assertion_basis must be one of observed, derived, reported, hypothesis",
         )
     encoded = to_canonical_json(_plain_content(content))
-    if len(encoded.encode("utf-8")) > _ENGINEERING_CONTENT_CAP_BYTES:
+    if len(encoded.encode("utf-8")) > ENGINEERING_CONTENT_CAP_BYTES:
         raise OperationError(
             ERROR_CODE_INVALID_REQUEST,
             "the engineering observation content exceeds the 65536-byte payload cap",
@@ -577,6 +589,7 @@ def read_authorized_memory_frontier(
     label_grant: EvidenceLabelGrant,
     domain_scope: str | None = None,
     body_free: bool = True,
+    record_ids: Sequence[str] | None = None,
 ) -> AuthorizedMemoryFrontier:
     """Select identity and ACL facts only: the admitted versions, hydrating nothing.
 
@@ -600,26 +613,47 @@ def read_authorized_memory_frontier(
     )
     resolved_view = resolve_governed_record_view(view)
     with read_snapshot(connection):
-        domain_filter = "" if domain_scope is None else "AND domain_scope = ? "
-        rows = connection.execute(
+        domain_filter = "" if domain_scope is None else "AND domain_scope = ?"
+        select_versions = (
             "SELECT assembly_id, governed_record_id, governed_record_version_id, layer, "
             "governance_disposition, authority_level, valid_from_us, valid_to_us, "
             "recorded_at_us, append_ordinal, correlation_kind, correlation_id, "
             "record_type, domain_scope, content_digest, evidence_disposition "
-            f"FROM {versions} "
-            f"WHERE workspace_id = ? AND recorded_at_us <= ? {domain_filter}"
-            "ORDER BY governed_record_id, recorded_at_us, append_ordinal, assembly_id",
-            (
-                workspace_id,
-                resolution_instant_us,
-                *(() if domain_scope is None else (domain_scope,)),
-            ),
-        ).fetchall()
+            f"FROM {versions}"
+        )
+        if record_ids is None:
+            rows = connection.execute(
+                f"{select_versions} WHERE workspace_id = ? AND recorded_at_us <= ? "
+                f"{domain_filter} "
+                "ORDER BY governed_record_id, recorded_at_us, append_ordinal, assembly_id",
+                (
+                    workspace_id,
+                    resolution_instant_us,
+                    *(() if domain_scope is None else (domain_scope,)),
+                ),
+            ).fetchall()
+        else:
+            rows = execute_in_rows(
+                connection,
+                select=select_versions,
+                where_before="workspace_id = ? AND recorded_at_us <= ?",
+                in_column="governed_record_id",
+                where_after=domain_filter,
+                leading=(workspace_id, resolution_instant_us),
+                ids=record_ids,
+                trailing=(() if domain_scope is None else (domain_scope,)),
+                order_key=lambda row: (
+                    str(row[1]),
+                    cast("int", row[8]),
+                    cast("int", row[9]),
+                    str(row[0]),
+                ),
+            )
         # This first phase may read only identities and the minimum currentness
         # facts required to select the view.  In particular, do not join the
         # provenance event that carries the public supersession reason until the
         # record's evidence grant has been evaluated below.
-        supersessions = connection.execute(
+        supersession_select = (
             "SELECT r.governed_record_id, r.source_version_id, "
             "r.target_version_id, r.assembly_id, "
             "MAX(r.recorded_at_us, t.recorded_at_us) "
@@ -628,12 +662,25 @@ def read_authorized_memory_frontier(
             "ON s.workspace_id = r.workspace_id AND s.assembly_id = r.assembly_id "
             f"JOIN {versions} t "
             "ON t.workspace_id = r.workspace_id AND t.assembly_id = r.assembly_id "
-            "AND t.governed_record_version_id = r.target_version_id "
-            "WHERE r.workspace_id = ? "
-            "AND MAX(r.recorded_at_us, t.recorded_at_us) <= ? "
-            "ORDER BY r.source_version_id, r.target_version_id, r.assembly_id",
-            (workspace_id, resolution_instant_us),
-        ).fetchall()
+            "AND t.governed_record_version_id = r.target_version_id"
+        )
+        if record_ids is None:
+            supersessions = connection.execute(
+                f"{supersession_select} WHERE r.workspace_id = ? "
+                "AND MAX(r.recorded_at_us, t.recorded_at_us) <= ? "
+                "ORDER BY r.source_version_id, r.target_version_id, r.assembly_id",
+                (workspace_id, resolution_instant_us),
+            ).fetchall()
+        else:
+            supersessions = execute_in_rows(
+                connection,
+                select=supersession_select,
+                where_before="r.workspace_id = ? AND MAX(r.recorded_at_us, t.recorded_at_us) <= ?",
+                in_column="r.governed_record_id",
+                leading=(workspace_id, resolution_instant_us),
+                ids=record_ids,
+                order_key=lambda row: (str(row[1]), str(row[2]), str(row[3])),
+            )
         replaced = {
             str(row[1]): int(row[4]) for row in supersessions
         }
@@ -641,15 +688,28 @@ def read_authorized_memory_frontier(
         # to include every supporting assembly in the evidence-label fold.  All
         # public transition material remains deferred until `authorized_ids` is
         # frozen.
-        application_transition_endpoints = connection.execute(
+        transition_select = (
             "SELECT governed_record_id, source_assembly_id, source_record_version_id, "
             "target_assembly_id, target_record_version_id "
-            "FROM omnivia_application_governance_transitions "
-            "WHERE workspace_id = ? AND settled_at_us <= ? "
-            "ORDER BY governed_record_id, source_record_version_id, "
-            "target_record_version_id, source_assembly_id, target_assembly_id",
-            (workspace_id, resolution_instant_us),
-        ).fetchall()
+            "FROM omnivia_application_governance_transitions"
+        )
+        if record_ids is None:
+            application_transition_endpoints = connection.execute(
+                f"{transition_select} WHERE workspace_id = ? AND settled_at_us <= ? "
+                "ORDER BY governed_record_id, source_record_version_id, "
+                "target_record_version_id, source_assembly_id, target_assembly_id",
+                (workspace_id, resolution_instant_us),
+            ).fetchall()
+        else:
+            application_transition_endpoints = execute_in_rows(
+                connection,
+                select=transition_select,
+                where_before="workspace_id = ? AND settled_at_us <= ?",
+                in_column="governed_record_id",
+                leading=(workspace_id, resolution_instant_us),
+                ids=record_ids,
+                order_key=lambda row: tuple(str(item) for item in row),
+            )
         application_replaced = {
             str(row[2]) for row in application_transition_endpoints
         }
@@ -884,8 +944,64 @@ def read_authorized_memory_frontier(
             view=resolved_view,
             versions=tuple(admitted(assembly_id) for assembly_id in authorized_ids),
             support_assembly_ids=authorized_support_ids,
+            support_assembly_ids_by_record=MappingProxyType(
+                {
+                    record_id: tuple(sorted(support_by_record[record_id]))
+                    for record_id in authorized_record_ids
+                }
+            ),
             digest=_digest(digest_document),
         )
+
+
+def read_memory_record_id_page(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    domain_scope: str,
+    after_record_id: str | None,
+    limit: int = AUTHORIZED_FRONTIER_PAGE_SIZE,
+) -> tuple[str, ...]:
+    """Return one stable identity-only page for scoped frontier authorization.
+
+    Paging by the immutable record id keeps handler memory bounded for 10k/100k
+    workspaces. The caller holds the outer read snapshot, so every page sees the
+    same sealed metadata and the subsequent scoped authorization fold cannot
+    drift between pages.
+    """
+    if not connection.in_transaction:
+        raise ValueError("record-id paging requires the caller's active read snapshot")
+    if limit <= 0 or limit > AUTHORIZED_FRONTIER_PAGE_SIZE:
+        raise ValueError("record-id page limit is outside the supported bound")
+    return tuple(
+        str(row[0])
+        for row in connection.execute(
+            "SELECT governed_record_id "
+            "FROM omnivia_authoritative_governed_version_metadata "
+            "WHERE workspace_id = ? AND recorded_at_us <= ? AND domain_scope = ? "
+            "AND governed_record_id > ? "
+            "GROUP BY governed_record_id ORDER BY governed_record_id LIMIT ?",
+            (
+                workspace_id,
+                resolution_instant_us,
+                domain_scope,
+                "" if after_record_id is None else after_record_id,
+                limit,
+            ),
+        ).fetchall()
+    )
+
+
+def engineering_observation_payload_bytes(content: Mapping[str, Any]) -> int:
+    """The exact canonical UTF-8 byte length of one hydrated observation's body.
+
+    The same canonicalisation `_validate_engineering_observation_content` bounds
+    at write time, read back at hydration time, so a caller counting bytes it
+    actually read reports the same number the write path already enforced --
+    never a fabricated or re-estimated one.
+    """
+    return len(to_canonical_json(_plain_content(dict(content))).encode("utf-8"))
 
 
 def read_authorized_memory_snapshot(

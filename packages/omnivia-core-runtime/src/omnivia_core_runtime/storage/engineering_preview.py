@@ -47,6 +47,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.memory import (
+    AuthorizedMemoryFrontier,
     AuthorizedVersion,
     read_authorized_memory_frontier,
     read_snapshot,
@@ -134,12 +135,14 @@ def read_authorized_previews(
     resolution_instant_us: int,
     view: str | None,
     label_grant: EvidenceLabelGrant,
-) -> tuple[PreviewCandidate, ...]:
-    """The engineering observations one grant admits under `view`, as bounded previews.
+) -> tuple[tuple[PreviewCandidate, ...], str]:
+    """Return bounded previews and their authorization-frontier digest.
 
     One read snapshot holds both reads, so the projection rows are those of the
     frontier's own state. The frontier is read first and carries no preview; the
-    projection is then read for exactly the admitted assemblies.
+    projection is then read for exactly the admitted assemblies. Its digest includes
+    the effective label grant and label-event stream, which lets a continuation bind
+    the ACL epoch even when an attach/withdraw cycle leaves the same rows visible.
     """
     with read_snapshot(connection):
         frontier = read_authorized_memory_frontier(
@@ -150,9 +153,33 @@ def read_authorized_previews(
             label_grant=label_grant,
             domain_scope=OBSERVATION_DOMAIN,
         )
-        held = _read_rows(
-            connection, workspace_id, [version.assembly_id for version in frontier.versions]
+        return (
+            read_previews_for_frontier(
+                connection, workspace_id=workspace_id, frontier=frontier
+            ),
+            frontier.digest,
         )
+
+
+def read_previews_for_frontier(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    frontier: AuthorizedMemoryFrontier,
+) -> tuple[PreviewCandidate, ...]:
+    """Read projections for exactly one already-authorized frozen frontier.
+
+    The caller owns the read snapshot.  This function performs no authorization
+    lookup and opens no transaction; its only projection keys are the admitted
+    assembly ids in ``frontier``.  The bounded projection is the complete search
+    surface, so terms that occur only beyond its first 480 code points do not
+    match without a later exact expansion.
+    """
+    if not connection.in_transaction:
+        raise ValueError("preview reads require the caller's active read snapshot")
+    held = _read_rows(
+        connection, workspace_id, [version.assembly_id for version in frontier.versions]
+    )
     candidates: list[PreviewCandidate] = []
     absent = stale = False
     for version in frontier.versions:
@@ -329,6 +356,7 @@ __all__ = [
     "preview_search_text",
     "rank_previews",
     "read_authorized_previews",
+    "read_previews_for_frontier",
     "rebuild_missing_previews",
     "record_preview",
 ]

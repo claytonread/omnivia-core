@@ -1056,6 +1056,12 @@
     "EngineeringExpandResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandResult"
     },
+    "EngineeringCountingMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringCountingMode"
+    },
+    "EngineeringTokenizerReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringTokenizerReference"
+    },
     "EngineeringBudget": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringBudget"
     },

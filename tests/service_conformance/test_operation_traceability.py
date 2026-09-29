@@ -335,7 +335,7 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
 
 
 # --------------------------------------------------------------------------
-# The referenced 89-case adapter-wire-conformance corpus
+# The referenced 149-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 
@@ -349,7 +349,7 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     assert reference["case_count"] == 151
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_147_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_149_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT

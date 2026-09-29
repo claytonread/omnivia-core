@@ -43,7 +43,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "efeae7ce4c4a799f3e2d1d5af3b0fb43a739450673842cbb12650284a2e9afa1"
+CORPUS_SHA256 = "b1f7f2b6af5423db97f1413920172cdd52e7158e584eb7a75d41bda20ebdc266"
 ADAPTERS = ("in_process", "ipc", "http")
 
 

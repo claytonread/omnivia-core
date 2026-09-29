@@ -102,6 +102,26 @@ def _repo(tmp_path: Path, name: str = "repo") -> Path:
     return root
 
 
+def _clone(source: Path, destination: Path) -> Path:
+    subprocess.run(
+        ["git", "clone", "-q", "--no-local", os.fspath(source), os.fspath(destination)],
+        env=_GIT_ENV,
+        check=True,
+    )
+    return destination
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        env=_GIT_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 class _Env:
     """One real, filesystem-backed installation behind the production registry."""
 
@@ -222,6 +242,18 @@ class _Env:
                 (self.workspace_id, self.installation_id, checkout_root),
             ).fetchone()
             return None if row is None else str(row[0])
+        finally:
+            connection.close()
+
+    def checkout_binding(self, checkout_root: str) -> tuple[str, str] | None:
+        connection = sqlite3.connect(self.workspace / "workspace.sqlite")
+        try:
+            row = connection.execute(
+                "SELECT repository_id, audit_ref FROM omnivia_engineering_checkouts "
+                "WHERE workspace_id = ? AND installation_id = ? AND checkout_hint = ?",
+                (self.workspace_id, self.installation_id, checkout_root),
+            ).fetchone()
+            return None if row is None else (str(row[0]), str(row[1]))
         finally:
             connection.close()
 
@@ -360,6 +392,86 @@ def test_duplicate_basenames_stay_distinct_and_ambiguous_by_label_alone(
             )
     finally:
         connection.close()
+
+
+def test_clones_and_a_fork_require_an_explicit_authorized_reconciliation(
+    env: _Env, tmp_path: Path
+) -> None:
+    """AC-011: shared Git metadata and history are discovery hints, not identity.
+
+    Three independent materialisations share one origin and an initial commit.
+    The fork then diverges. Registration keeps all three logical identities
+    distinct because the service never infers authority from Git data. Only a
+    later authorized registration request may reconcile one clone, and that
+    change is returned as an audited rebind while the fork remains separate.
+    """
+    upstream = _repo(tmp_path, "upstream")
+    clone_a = _clone(upstream, tmp_path / "clone-a")
+    clone_b = _clone(upstream, tmp_path / "clone-b")
+    fork = _clone(upstream, tmp_path / "fork")
+    (fork / "fork_only.py").write_bytes(b"FORK = True\n")
+    subprocess.run(["git", "add", "."], cwd=fork, env=_GIT_ENV, check=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fork"],
+        cwd=fork,
+        env=_GIT_ENV,
+        check=True,
+    )
+
+    origin = _git(clone_a, "config", "--get", "remote.origin.url")
+    assert _git(clone_b, "config", "--get", "remote.origin.url") == origin
+    assert _git(fork, "config", "--get", "remote.origin.url") == origin
+    shared_commit = _git(clone_a, "rev-parse", "HEAD")
+    assert _git(clone_b, "rev-parse", "HEAD") == shared_commit
+    assert _git(fork, "rev-parse", "HEAD^") == shared_commit
+
+    provider_hint = "provider://same-owner/same-repository"
+    _result(
+        env.register(
+            repository_id="erepo-clone-a",
+            display_name="shared-origin",
+            provider_hint=provider_hint,
+            checkout_root=os.fspath(clone_a),
+        )
+    )
+    _result(
+        env.register(
+            repository_id="erepo-clone-b",
+            display_name="shared-origin",
+            provider_hint=provider_hint,
+            checkout_root=os.fspath(clone_b),
+        )
+    )
+    _result(
+        env.register(
+            repository_id="erepo-fork",
+            display_name="shared-origin",
+            provider_hint=provider_hint,
+            checkout_root=os.fspath(fork),
+        )
+    )
+
+    assert env.checkout_owner(os.fspath(clone_a)) == "erepo-clone-a"
+    assert env.checkout_owner(os.fspath(clone_b)) == "erepo-clone-b"
+    assert env.checkout_owner(os.fspath(fork)) == "erepo-fork"
+    before = env.checkout_binding(os.fspath(clone_b))
+    assert before is not None
+
+    reconciled = _result(
+        env.register(
+            repository_id="erepo-clone-a",
+            display_name="shared-origin",
+            provider_hint=provider_hint,
+            checkout_root=os.fspath(clone_b),
+        )
+    )
+    assert reconciled["repository_disposition"] == "already_registered"
+    assert reconciled["checkout_disposition"] == "rebound"
+    after = env.checkout_binding(os.fspath(clone_b))
+    assert after is not None
+    assert after[0] == "erepo-clone-a"
+    assert after[1] != before[1]
+    assert env.checkout_owner(os.fspath(fork)) == "erepo-fork"
 
 
 def test_reregistering_a_repository_id_under_different_metadata_is_a_conflict(

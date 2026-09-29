@@ -208,11 +208,11 @@ build has not heard of — exits 1 rather than 0.
 | 1 | unrecoverable, unreachable, or unrecognised | `internal_non_recoverable` |
 | 2 | usage, or a call refused locally and never sent | `invalid_request` |
 | 3 | authentication, authorization or purpose | `authentication_required`, `authorization_denied`, `workspace_not_granted`, `capability_not_granted`, `invalid_purpose` |
-| 4 | version or migration | `workspace_migration_required`, `incompatible_version`, `upgrade_required` |
+| 4 | version or migration | `workspace_migration_required`, `incompatible_version`, `upgrade_required`, `tokenizer_unavailable` |
 | 5 | conflict or precondition | `conflict`, `mutation_precondition_failed`, `idempotency_conflict`, `workspace_busy`, `bootstrap_in_progress`, `workspace_lease_unavailable` |
 | 6 | out of time | `deadline_exceeded`, `cancelled` |
 | 7 | temporarily unavailable | `projection_unavailable`, `stale_projection`, `rate_limited`, `dependency_unavailable`, `internal_recoverable` |
-| 8 | not found, or over a limit | `not_found`, `size_limit_exceeded`, `token_limit_exceeded` |
+| 8 | not found, or over a limit | `not_found`, `size_limit_exceeded`, `context_budget_insufficient`, `token_limit_exceeded` |
 
 ## Modules
 

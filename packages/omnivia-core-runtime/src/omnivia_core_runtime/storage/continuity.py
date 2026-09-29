@@ -29,9 +29,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
+from omnivia_core_runtime.storage.payload_budget import (
+    PayloadLengthMismatch,
+    PayloadReadBudget,
+)
 
 _SESSIONS_TABLE: Final = "omnivia_engineering_sessions"
 _CHECKPOINTS_TABLE: Final = "omnivia_engineering_checkpoints"
@@ -376,12 +381,147 @@ def read_checkpoints(
     workspace_id: str,
     principal_id: str,
     limit: int = -1,
+    payload_budget: PayloadReadBudget | None = None,
 ) -> list[Any]:
     """`principal_id`'s own checkpoints, newest first, as `(checkpoint_id,
     sequence, payload_json)` rows. Ownership is filtered in SQL before the order
     and `limit` apply (SQLite reads `LIMIT -1` as no limit)."""
-    return connection.execute(
-        f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
-        "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT ?",
+    order_and_limit = (
+        "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT ?"
+    )
+    if payload_budget is None:
+        return connection.execute(
+            f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
+            + order_and_limit,
+            (workspace_id, principal_id, limit),
+        ).fetchall()
+    length_sql = payload_budget.byte_length_sql(connection, "c.payload_json")
+    metadata = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, {length_sql} {_OWNED_CHECKPOINTS} "
+        + order_and_limit,
         (workspace_id, principal_id, limit),
     ).fetchall()
+    expected = [(str(row[0]), int(row[1]), int(row[2])) for row in metadata]
+    if any(not 2 <= row[2] <= CHECKPOINT_PAYLOAD_CAP_BYTES for row in expected):
+        raise PayloadLengthMismatch("a checkpoint payload byte length is invalid")
+    payload_budget.precheck([row[2] for row in expected])
+    rows = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
+        + order_and_limit,
+        (workspace_id, principal_id, limit),
+    ).fetchall()
+    if [(str(row[0]), int(row[1])) for row in rows] != [
+        (row[0], row[1]) for row in expected
+    ]:
+        raise PayloadLengthMismatch(
+            "checkpoint metadata changed inside the read snapshot"
+        )
+    for row, (_checkpoint_id, _sequence, expected_bytes) in zip(
+        rows, expected, strict=True
+    ):
+        payload_budget.consume(str(row[2]), expected_bytes)
+    return rows
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointMetadata:
+    """One checkpoint's identity, sequence and exact stored UTF-8 payload byte
+    length -- never its `payload_json`."""
+
+    checkpoint_id: str
+    sequence: int
+    payload_byte_length: int
+
+
+def list_checkpoint_metadata(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    payload_budget: PayloadReadBudget,
+    limit: int = -1,
+) -> tuple[CheckpointMetadata, ...]:
+    """`principal_id`'s own checkpoint metadata, newest first, without ever
+    selecting `payload_json` -- the same stable order `read_checkpoints` applies
+    (`recorded_at_us DESC, sequence DESC, checkpoint_id`), so a caller planning a
+    budget from this list picks from the same ordering a body read would return.
+    """
+    if not connection.in_transaction:
+        raise ValueError(
+            "checkpoint payload planning requires the caller's active read snapshot"
+        )
+    order_and_limit = (
+        "ORDER BY c.recorded_at_us DESC, c.sequence DESC, c.checkpoint_id LIMIT ?"
+    )
+    length_sql = payload_budget.byte_length_sql(connection, "c.payload_json")
+    rows = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, {length_sql} {_OWNED_CHECKPOINTS} "
+        + order_and_limit,
+        (workspace_id, principal_id, limit),
+    ).fetchall()
+    metadata = tuple(
+        CheckpointMetadata(str(row[0]), int(row[1]), int(row[2])) for row in rows
+    )
+    if any(
+        not 2 <= entry.payload_byte_length <= CHECKPOINT_PAYLOAD_CAP_BYTES
+        for entry in metadata
+    ):
+        raise PayloadLengthMismatch("a checkpoint payload byte length is invalid")
+    return metadata
+
+
+def read_selected_checkpoints(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    selected: tuple[CheckpointMetadata, ...],
+    payload_budget: PayloadReadBudget,
+) -> list[Any]:
+    """Fetch exactly `selected`'s checkpoints, in `selected`'s own order -- never
+    a checkpoint this caller did not choose from `list_checkpoint_metadata`.
+
+    Re-verifies identity, sequence and byte length against a fresh read of
+    exactly these ids before a single payload is decoded, so metadata that
+    changed since it was listed is caught here rather than silently absorbed
+    into the byte precheck. `payload_budget.precheck` runs before the body
+    SELECT and `consume` after it, exactly as `read_checkpoints` already
+    sequences the two.
+    """
+    if not connection.in_transaction:
+        raise ValueError(
+            "selected checkpoint reading requires the caller's active read snapshot"
+        )
+    if not selected:
+        return []
+    checkpoint_ids = tuple(entry.checkpoint_id for entry in selected)
+    placeholders = ", ".join("?" for _ in checkpoint_ids)
+    length_sql = payload_budget.byte_length_sql(connection, "c.payload_json")
+    metadata_rows = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, {length_sql} {_OWNED_CHECKPOINTS} "
+        f"AND c.checkpoint_id IN ({placeholders})",
+        (workspace_id, principal_id, *checkpoint_ids),
+    ).fetchall()
+    fresh = {str(row[0]): (int(row[1]), int(row[2])) for row in metadata_rows}
+    if len(fresh) != len(checkpoint_ids) or any(
+        fresh.get(entry.checkpoint_id) != (entry.sequence, entry.payload_byte_length)
+        for entry in selected
+    ):
+        raise PayloadLengthMismatch(
+            "checkpoint metadata changed inside the read snapshot"
+        )
+    payload_budget.precheck([entry.payload_byte_length for entry in selected])
+    rows = connection.execute(
+        f"SELECT c.checkpoint_id, c.sequence, c.payload_json {_OWNED_CHECKPOINTS} "
+        f"AND c.checkpoint_id IN ({placeholders})",
+        (workspace_id, principal_id, *checkpoint_ids),
+    ).fetchall()
+    by_id = {str(row[0]): row for row in rows}
+    if set(by_id) != set(checkpoint_ids):
+        raise PayloadLengthMismatch(
+            "checkpoint metadata changed inside the read snapshot"
+        )
+    ordered = [by_id[checkpoint_id] for checkpoint_id in checkpoint_ids]
+    for row, entry in zip(ordered, selected, strict=True):
+        payload_budget.consume(str(row[2]), entry.payload_byte_length)
+    return ordered

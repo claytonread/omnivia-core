@@ -101,6 +101,20 @@ def _bootstrap(home: Path) -> None:
     )
 
 
+def _pinned_child_env() -> dict[str, str]:
+    """This checkout's console scripts first on `PATH` for a CLI child.
+
+    The production launcher resolves the managed service through `PATH` so a
+    deliberately shadowed build is honoured. `_locate` already prefers the
+    interpreter's own environment for the direct managed-start calls here; this
+    pins the same choice for the tests that go through the CLI child, which
+    would otherwise resolve a foreign same-named service from `PATH`.
+    """
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
+    return env
+
+
 def _locate() -> str:
     """The service console script, or skip: these tests are about the real one.
 
@@ -1095,6 +1109,7 @@ def test_the_cli_call_reaches_the_service_through_the_shared_managed_start_path(
         text=True,
         timeout=240,
         check=False,
+        env=_pinned_child_env(),
     )
     log_path = home / "run" / "service.log"
     diagnostic = (
@@ -1131,6 +1146,7 @@ def test_the_cli_call_reaches_the_service_through_the_shared_managed_start_path(
         text=True,
         timeout=240,
         check=False,
+        env=_pinned_child_env(),
     )
     assert again.returncode == 0, again.stderr
     assert json.loads(again.stdout)["status"] == "pass"

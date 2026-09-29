@@ -3250,11 +3250,97 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "$ref": "#/$defs/engineering__EngineeringApplicabilityMode",
                 "description": "How applicability qualifies this pack. `diagnostic` (the default) is the pre-existing behaviour: every target statement is `not_evaluated`. `current_safe` requires every target to be a recorded snapshot inside its source stream's contiguous validated coverage, checked before any selection, or the build is refused with `dependency_unavailable` and the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records proven `matched` at every target enter the pack.",
             },
+            "counting_mode": {
+                "$ref": "#/$defs/engineering__EngineeringCountingMode",
+                "description": "Optional explicit counting negotiation. Omission preserves the legacy engineering_context.v1 behavior.",
+            },
+            "tokenizer": {
+                "$ref": "#/$defs/engineering__EngineeringTokenizerReference",
+                "description": "Exact tokenizer requested by exact_tokens.v1. Forbidden for byte_only.v1.",
+            },
         },
         "required": [
             "query",
             "targets",
             "profile",
+        ],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {
+                        "counting_mode": {
+                            "const": "byte_only.v1",
+                        },
+                    },
+                    "required": [
+                        "counting_mode",
+                    ],
+                },
+                "then": {
+                    "required": [
+                        "budget",
+                    ],
+                    "not": {
+                        "required": [
+                            "tokenizer",
+                        ],
+                    },
+                    "properties": {
+                        "budget": {
+                            "required": [
+                                "model_bytes",
+                            ],
+                            "not": {
+                                "required": [
+                                    "model_tokens",
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+            {
+                "if": {
+                    "properties": {
+                        "counting_mode": {
+                            "const": "exact_tokens.v1",
+                        },
+                    },
+                    "required": [
+                        "counting_mode",
+                    ],
+                },
+                "then": {
+                    "required": [
+                        "budget",
+                        "tokenizer",
+                    ],
+                    "properties": {
+                        "budget": {
+                            "required": [
+                                "model_tokens",
+                                "model_bytes",
+                            ],
+                        },
+                    },
+                },
+            },
+            {
+                "if": {
+                    "not": {
+                        "required": [
+                            "counting_mode",
+                        ],
+                    },
+                },
+                "then": {
+                    "not": {
+                        "required": [
+                            "tokenizer",
+                        ],
+                    },
+                },
+            },
         ],
         "$defs": {
             "common__Identifier": {
@@ -3276,7 +3362,12 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
-                "description": "Caller-requested bounded budgets for one engineering context build. Byte and token limits are simultaneous limits, not conversions of one another. Effective budgets are the minimum of the request, the granted profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "description": "Caller-requested bounded budgets for one engineering context build. Exact-token mode applies byte and token limits simultaneously, never converting one into the other; byte-only mode omits the token limit entirely. Effective budgets are the minimum of the request, the server-owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "x-omnivia-typescript-v2-view": {
+                    "omit": [
+                        "model_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3304,8 +3395,23 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                         "minimum": 1,
                         "maximum": 1048576,
                     },
+                    "authorized_candidates": {
+                        "type": "integer",
+                        "description": "Maximum authorized preview candidates examined for the build; the proposed default is 2000 and the hard ceiling 10000.",
+                        "minimum": 1,
+                        "maximum": 10000,
+                    },
                 },
                 "required": [],
+            },
+            "engineering__EngineeringCountingMode": {
+                "title": "EngineeringCountingMode",
+                "description": "Closed, versioned counting contract for an engineering context build. `byte_only.v1` negotiates exact UTF-8 byte accounting without a token estimate. `exact_tokens.v1` requires an exact named tokenizer; a service that has not installed it refuses the request rather than estimating.",
+                "type": "string",
+                "enum": [
+                    "byte_only.v1",
+                    "exact_tokens.v1",
+                ],
             },
             "engineering__EngineeringSnapshotRef": {
                 "title": "EngineeringSnapshotRef",
@@ -3337,6 +3443,26 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "snapshot_id",
                 ],
             },
+            "engineering__EngineeringTokenizerReference": {
+                "title": "EngineeringTokenizerReference",
+                "description": "Exact tokenizer identity and version requested for model-token counting. The pair is replay input, never a model-family guess or permission to download a tokenizer.",
+                "type": "object",
+                "unevaluatedProperties": False,
+                "properties": {
+                    "tokenizer_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact tokenizer identity.",
+                    },
+                    "tokenizer_version": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "Exact tokenizer version.",
+                    },
+                },
+                "required": [
+                    "tokenizer_id",
+                    "tokenizer_version",
+                ],
+            },
             "engineering__EngineeringTopicRef": {
                 "title": "EngineeringTopicRef",
                 "description": "A reference to the evolving question or decision an observation belongs to: either an existing topic entity identity or a proposed namespaced topic key scoped by workspace, project/repository domain and sensitivity boundary. Equal keys in different scopes do not merge.",
@@ -3362,6 +3488,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "EngineeringContextBuildResult",
         "description": "Result of `engineering.context.build`. Nothing is persisted: the pack is regenerated or fails with an explicit replay-inputs error, never silently reissued from absent projections.",
+        "x-omnivia-typescript-v2-view": {},
         "type": "object",
         "unevaluatedProperties": False,
         "properties": {
@@ -3396,7 +3523,12 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringBudget": {
                 "title": "EngineeringBudget",
-                "description": "Caller-requested bounded budgets for one engineering context build. Byte and token limits are simultaneous limits, not conversions of one another. Effective budgets are the minimum of the request, the granted profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "description": "Caller-requested bounded budgets for one engineering context build. Exact-token mode applies byte and token limits simultaneously, never converting one into the other; byte-only mode omits the token limit entirely. Effective budgets are the minimum of the request, the server-owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent values are rejected.",
+                "x-omnivia-typescript-v2-view": {
+                    "omit": [
+                        "model_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3424,12 +3556,26 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                         "minimum": 1,
                         "maximum": 1048576,
                     },
+                    "authorized_candidates": {
+                        "type": "integer",
+                        "description": "Maximum authorized preview candidates examined for the build; the proposed default is 2000 and the hard ceiling 10000.",
+                        "minimum": 1,
+                        "maximum": 10000,
+                    },
                 },
                 "required": [],
             },
             "engineering__EngineeringBudgetOutcome": {
                 "title": "EngineeringBudgetOutcome",
                 "description": "The budget as requested, as effectively applied, and as actually consumed by this build. Actual source-read bytes and hydration counts are reported, so a pack cannot exceed its caps invisibly.",
+                "x-omnivia-typescript-v2-view": {
+                    "legacy_required": [
+                        "rendered_tokens",
+                    ],
+                    "omit": [
+                        "rendered_tokens",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3444,6 +3590,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "rendered_tokens": {
                         "type": "integer",
                         "description": "Tokens actually rendered model-facing.",
+                        "x-omnivia-python-init-required": True,
                         "minimum": 0,
                     },
                     "rendered_bytes": {
@@ -3464,7 +3611,6 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 },
                 "required": [
                     "effective",
-                    "rendered_tokens",
                     "rendered_bytes",
                     "source_bytes_read",
                     "hydrations",
@@ -3526,13 +3672,21 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringContextPack": {
                 "title": "EngineeringContextPack",
-                "description": "The engineering context pack representation (`format_version` `engineering_context.v1`): a non-persisted deterministic view built from a pinned BuildContext and the authorised frontier. `pack_id` equals the canonical artifact checksum computed after removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token: following any citation requires fresh authorisation, and a previously generated pack may no longer be deliverable after revocation even when its bytes are reproducible.",
+                "description": "A non-persisted deterministic engineering context view built from a pinned BuildContext and the authorised frontier. Legacy `engineering_context.v1` retains the pinned pattern-token count. Negotiated `engineering_context.v2` carries exact UTF-8 byte accounting and no token estimate. `pack_id` equals the canonical artifact checksum computed after removing exactly the root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer token: following any citation requires fresh authorisation, and a previously generated pack may no longer be deliverable after revocation even when its bytes are reproducible.",
+                "x-omnivia-typescript-v2-view": {
+                    "const": {
+                        "format_version": "engineering_context.v2",
+                    },
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
                     "format_version": {
                         "type": "string",
-                        "const": "engineering_context.v1",
+                        "enum": [
+                            "engineering_context.v1",
+                            "engineering_context.v2",
+                        ],
                         "description": "The engineering pack representation format. This representation is never decoded as a legacy application-v1 ContextPackBuildResult.",
                     },
                     "pack_id": {
@@ -3639,6 +3793,223 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "reproducibility",
                     "fresh_authorization_required",
                 ],
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {
+                                "format_version": {
+                                    "const": "engineering_context.v1",
+                                },
+                            },
+                            "required": [
+                                "format_version",
+                            ],
+                        },
+                        "then": {
+                            "properties": {
+                                "rendering": {
+                                    "required": [
+                                        "token_count",
+                                    ],
+                                },
+                                "budget": {
+                                    "required": [
+                                        "rendered_tokens",
+                                    ],
+                                    "properties": {
+                                        "effective": {
+                                            "required": [
+                                                "model_tokens",
+                                            ],
+                                        },
+                                    },
+                                },
+                                "normalized_request": {
+                                    "not": {
+                                        "required": [
+                                            "counting_mode",
+                                        ],
+                                    },
+                                },
+                                "reproducibility": {
+                                    "not": {
+                                        "required": [
+                                            "counting_mode",
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "if": {
+                            "properties": {
+                                "format_version": {
+                                    "const": "engineering_context.v2",
+                                },
+                            },
+                            "required": [
+                                "format_version",
+                            ],
+                        },
+                        "then": {
+                            "properties": {
+                                "rendering": {
+                                    "not": {
+                                        "required": [
+                                            "token_count",
+                                        ],
+                                    },
+                                },
+                                "budget": {
+                                    "not": {
+                                        "required": [
+                                            "rendered_tokens",
+                                        ],
+                                    },
+                                    "properties": {
+                                        "requested": {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        "effective": {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                    },
+                                },
+                                "normalized_request": {
+                                    "properties": {
+                                        "counting_mode": {
+                                            "const": "byte_only.v1",
+                                        },
+                                    },
+                                    "required": [
+                                        "counting_mode",
+                                    ],
+                                    "allOf": [
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_id",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_version",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_note",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "token_count",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "rendered_tokens",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                                "reproducibility": {
+                                    "properties": {
+                                        "counting_mode": {
+                                            "const": "byte_only.v1",
+                                        },
+                                    },
+                                    "required": [
+                                        "counting_mode",
+                                    ],
+                                    "allOf": [
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_id",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_version",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "tokenizer_note",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "token_count",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "model_tokens",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "not": {
+                                                "required": [
+                                                    "rendered_tokens",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ],
             },
             "engineering__EngineeringOmission": {
                 "title": "EngineeringOmission",
@@ -3733,7 +4104,15 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
             "engineering__EngineeringRendering": {
                 "title": "EngineeringRendering",
-                "description": "The complete model-facing rendering of a pack: one canonical UTF-8 string containing section labels, content, authority/applicability warnings and compact citations, counted exactly with the pinned tokenizer. Headers, citation labels, warnings and separators count when they are sent to the model; transport metadata that is not sent is separately byte-capped and lives elsewhere.",
+                "description": "The complete model-facing rendering of a pack: one canonical UTF-8 string containing section labels, content, authority/applicability warnings and compact citations. Legacy v1 reports the pinned pattern-token count and exact UTF-8 byte count; byte-only v2 reports only the exact UTF-8 byte count. Headers, citation labels, warnings and separators are part of the measured string; transport metadata that is not sent lives elsewhere.",
+                "x-omnivia-typescript-v2-view": {
+                    "legacy_required": [
+                        "token_count",
+                    ],
+                    "omit": [
+                        "token_count",
+                    ],
+                },
                 "type": "object",
                 "unevaluatedProperties": False,
                 "properties": {
@@ -3750,6 +4129,7 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                     "token_count": {
                         "type": "integer",
                         "description": "Exact token count of `text` under the pinned supported tokenizer.",
+                        "x-omnivia-python-init-required": True,
                         "minimum": 0,
                     },
                     "byte_count": {
@@ -3761,7 +4141,6 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
                 "required": [
                     "text",
                     "renderer_version",
-                    "token_count",
                     "byte_count",
                 ],
             },
