@@ -274,15 +274,21 @@ def test_matching_normalizes_both_sides_by_nfkc_and_case_folding() -> None:
     """
     ligature = frontier(candidate("rec-a", body="the oﬃce ledger"))
 
-    assert ids(rank_governed(ligature, "office", order=None, limit=10)) == (("rec-a", "v1"),)
-    assert ids(rank_governed(ligature, "LEDGER", order=None, limit=10)) == (("rec-a", "v1"),)
+    assert ids(rank_governed(ligature, "office", order=None, limit=10)) == (
+        ("rec-a", "v1"),
+    )
+    assert ids(rank_governed(ligature, "LEDGER", order=None, limit=10)) == (
+        ("rec-a", "v1"),
+    )
     assert ids(rank_governed(ligature, "OFFICE LEDGER", order=None, limit=10)) == (
         ("rec-a", "v1"),
     )
     # And the query side is normalized too, not just the content side.
-    assert ids(rank_governed(frontier(candidate("rec-a", body="office")), "OﬃCE", order=None, limit=10)) == (
-        ("rec-a", "v1"),
-    )
+    assert ids(
+        rank_governed(
+            frontier(candidate("rec-a", body="office")), "OﬃCE", order=None, limit=10
+        )
+    ) == (("rec-a", "v1"),)
 
 
 def test_the_matched_surface_is_independent_of_mapping_insertion_order() -> None:
@@ -301,9 +307,9 @@ def test_the_matched_surface_is_independent_of_mapping_insertion_order() -> None
 
     assert list(forward) != list(backward)
     assert forward == backward
-    assert governed_search_text(record("rec-a", content=forward)) == governed_search_text(
-        record("rec-a", content=backward)
-    )
+    assert governed_search_text(
+        record("rec-a", content=forward)
+    ) == governed_search_text(record("rec-a", content=backward))
 
     # And the property that actually matters: the same content ranks the same either way.
     for order in BOTH_ORDERS:
@@ -347,8 +353,22 @@ def test_relevance_and_recency_are_different_orders_over_one_frontier() -> None:
     ordered_by_count = (("rec-hot", "v1"), ("rec-mid", "v1"), ("rec-cold", "v1"))
     ordered_by_instant = (("rec-cold", "v1"), ("rec-mid", "v1"), ("rec-hot", "v1"))
 
-    assert ids(rank_governed(built, "alpha", order=KNOWLEDGE_SEARCH_ORDER_RELEVANCE, limit=10)) == ordered_by_count
-    assert ids(rank_governed(built, "alpha", order=KNOWLEDGE_SEARCH_ORDER_RECENCY, limit=10)) == ordered_by_instant
+    assert (
+        ids(
+            rank_governed(
+                built, "alpha", order=KNOWLEDGE_SEARCH_ORDER_RELEVANCE, limit=10
+            )
+        )
+        == ordered_by_count
+    )
+    assert (
+        ids(
+            rank_governed(
+                built, "alpha", order=KNOWLEDGE_SEARCH_ORDER_RECENCY, limit=10
+            )
+        )
+        == ordered_by_instant
+    )
 
 
 def test_an_absent_order_is_relevance_rather_than_whatever_ran_first() -> None:
@@ -468,7 +488,9 @@ def test_a_record_outside_the_frontier_changes_neither_membership_nor_order(
     # is the assertion Lane B's first design would have failed: it kept the *page* inside
     # the frontier while letting an excluded artifact's statistics move the members within
     # it, which no membership assertion catches.
-    assert narrow == tuple(item for item in widened if item != ("rec-unauthorized", "v1"))
+    assert narrow == tuple(
+        item for item in widened if item != ("rec-unauthorized", "v1")
+    )
     # The complement: inside the frontier, that same record leads the page under both
     # orderings. So the assertions above are facts about the frontier, not tautologies.
     assert widened[0] == ("rec-unauthorized", "v1")
@@ -501,17 +523,25 @@ def test_the_limit_bounds_the_page_and_not_the_frontier(order: str | None) -> No
     """
     built = frontier(
         *(
-            candidate(f"rec-{index}", body="alpha " * (index + 1), recorded_at_us=BASE_US + index)
+            candidate(
+                f"rec-{index}",
+                body="alpha " * (index + 1),
+                recorded_at_us=BASE_US + index,
+            )
             for index in range(5)
         )
     )
 
     assert len(built.candidates) == 5
     assert len(rank_governed(built, "alpha", order=order, limit=2)) == 2
-    assert ids(rank_governed(built, "alpha", order=order, limit=2)) == ids(
-        rank_governed(built, "alpha", order=order, limit=100)
-    )[:2]
-    assert ids(rank_governed(built, "alpha", order=order, limit=2))[0] == ("rec-4", "v1")
+    assert (
+        ids(rank_governed(built, "alpha", order=order, limit=2))
+        == ids(rank_governed(built, "alpha", order=order, limit=100))[:2]
+    )
+    assert ids(rank_governed(built, "alpha", order=order, limit=2))[0] == (
+        "rec-4",
+        "v1",
+    )
     assert len(built.candidates) == 5
 
 
@@ -580,7 +610,9 @@ def test_the_refusal_does_not_carry_the_supplied_order_back_out() -> None:
     assert sentinel not in str(exc.value)
 
 
-def test_the_refusal_precedes_the_query_and_does_not_depend_on_there_being_a_match() -> None:
+def test_the_refusal_precedes_the_query_and_does_not_depend_on_there_being_a_match() -> (
+    None
+):
     """An empty frontier and an empty query still refuse an unknown order.
 
     Falsifier: validate the order after the early returns and an unknown order is accepted
@@ -662,9 +694,9 @@ def test_isolation_2_the_module_imports_nothing_that_could_reach_a_row() -> None
     ):
         assert forbidden not in imported
 
-    assert not any(
-        name.startswith("omnivia_core_runtime.") for name in imported
-    ), sorted(imported)
+    assert not any(name.startswith("omnivia_core_runtime.") for name in imported), (
+        sorted(imported)
+    )
 
 
 def test_isolation_3_no_module_global_and_no_closure_holds_a_store() -> None:
@@ -865,9 +897,15 @@ def seal_record(
     half-open validity interval, and the inertness of an unsealed assembly.
     """
     content = json.dumps({_PRIMARY_MEMBER[record_type]: text})
-    candidate_assembly, candidate_version = f"asm-{record_id}-cand", f"ver-{record_id}-cand"
+    candidate_assembly, candidate_version = (
+        f"asm-{record_id}-cand",
+        f"ver-{record_id}-cand",
+    )
     governed_assembly, governed_version = f"asm-{record_id}", f"ver-{record_id}"
-    candidate_event, governed_event = f"event-{candidate_assembly}", f"event-{governed_assembly}"
+    candidate_event, governed_event = (
+        f"event-{candidate_assembly}",
+        f"event-{governed_assembly}",
+    )
 
     with fenced_transaction(
         holder.connection,
@@ -905,7 +943,11 @@ def seal_record(
                 correlation_id=audit_ref,
             ),
         )
-        m3.insert(holder.connection, m3.LINKS, m3.link_row(candidate_event, candidate_assembly))
+        m3.insert(
+            holder.connection,
+            m3.LINKS,
+            m3.link_row(candidate_event, candidate_assembly),
+        )
         m3.insert(
             holder.connection,
             m3.SEALS,
@@ -956,7 +998,9 @@ def seal_record(
                 predecessor_version_id=candidate_version,
             ),
         )
-        m3.insert(holder.connection, m3.LINKS, m3.link_row(governed_event, governed_assembly))
+        m3.insert(
+            holder.connection, m3.LINKS, m3.link_row(governed_event, governed_assembly)
+        )
         if seal_governed:
             m3.insert(
                 holder.connection,
@@ -1008,40 +1052,64 @@ def stocked(owned: m2.Owned) -> Iterator[m2.Owned]:
     # Two microseconds apart, inside one millisecond, and named so that identity ordering
     # is the reverse of recency ordering.
     seal_record(
-        owned, record_id="rec-alpha", audit_ref="audit-9",
-        text=f"{QUERY} alpha", recorded_at_us=STORAGE_BASE_US + 2,
+        owned,
+        record_id="rec-alpha",
+        audit_ref="audit-9",
+        text=f"{QUERY} alpha",
+        recorded_at_us=STORAGE_BASE_US + 2,
     )
     seal_record(
-        owned, record_id="rec-zulu", audit_ref="audit-10",
-        text=f"{QUERY} zulu", recorded_at_us=STORAGE_BASE_US + 3,
+        owned,
+        record_id="rec-zulu",
+        audit_ref="audit-10",
+        text=f"{QUERY} zulu",
+        recorded_at_us=STORAGE_BASE_US + 3,
     )
     seal_record(
-        owned, record_id="rec-loud", audit_ref="audit-11",
-        text=f"{QUERY} {QUERY} loud", recorded_at_us=STORAGE_BASE_US + 1,
+        owned,
+        record_id="rec-loud",
+        audit_ref="audit-11",
+        text=f"{QUERY} {QUERY} loud",
+        recorded_at_us=STORAGE_BASE_US + 1,
     )
     seal_record(
-        owned, record_id="rec-decision", audit_ref="audit-12",
-        text=f"{QUERY} decided", record_type="knowledge.decision",
+        owned,
+        record_id="rec-decision",
+        audit_ref="audit-12",
+        text=f"{QUERY} decided",
+        record_type="knowledge.decision",
         recorded_at_us=STORAGE_BASE_US + 4,
     )
     seal_record(
-        owned, record_id="rec-offscope", audit_ref="audit-13",
-        text=f"{QUERY} offscope", scope="product.other",
+        owned,
+        record_id="rec-offscope",
+        audit_ref="audit-13",
+        text=f"{QUERY} offscope",
+        scope="product.other",
         recorded_at_us=STORAGE_BASE_US + 5,
     )
     seal_record(
-        owned, record_id="rec-stale", audit_ref="audit-14",
-        text=f"{QUERY} stale", recorded_at_us=STORAGE_BASE_US + 6,
+        owned,
+        record_id="rec-stale",
+        audit_ref="audit-14",
+        text=f"{QUERY} stale",
+        recorded_at_us=STORAGE_BASE_US + 6,
         valid_to_us=STORAGE_BASE_US + 7,
     )
     seal_record(
-        owned, record_id="rec-early", audit_ref="audit-15",
-        text=f"{QUERY} early", recorded_at_us=STORAGE_BASE_US + 8,
+        owned,
+        record_id="rec-early",
+        audit_ref="audit-15",
+        text=f"{QUERY} early",
+        recorded_at_us=STORAGE_BASE_US + 8,
         valid_from_us=NOT_YET_US,
     )
     seal_record(
-        owned, record_id="rec-unsealed", audit_ref="audit-16",
-        text=f"{QUERY} unsealed", recorded_at_us=STORAGE_BASE_US + 9,
+        owned,
+        record_id="rec-unsealed",
+        audit_ref="audit-16",
+        text=f"{QUERY} unsealed",
+        recorded_at_us=STORAGE_BASE_US + 9,
         seal_governed=False,
     )
     m3.seed_corrected_version(owned)
@@ -1134,7 +1202,9 @@ def search(
     holder: m2.Owned, payload: Any, *, operation: str = KNOWLEDGE_SEARCH_OPERATION
 ) -> KnowledgeSearchResult | MemorySearchResult:
     """One search through the whole production path, as its decoded result."""
-    wire = answered(production_path(holder).dispatch(request_for(operation, payload))).result
+    wire = answered(
+        production_path(holder).dispatch(request_for(operation, payload))
+    ).result
     if operation == KNOWLEDGE_SEARCH_OPERATION:
         return KnowledgeSearchResult.from_wire(wire)
     return MemorySearchResult.from_wire(wire)
@@ -1173,9 +1243,7 @@ class Watcher:
 
 
 @pytest.fixture
-def watcher(
-    stocked: m2.Owned, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Watcher]:
+def watcher(stocked: m2.Owned, monkeypatch: pytest.MonkeyPatch) -> Iterator[Watcher]:
     """The frozen frontier and the connection's statement trace, for one test."""
     seen = Watcher()
     real = knowledge_handlers.rank_governed
@@ -1347,7 +1415,9 @@ def test_lc_b4_the_view_string_alone_cannot_widen_trust(stocked: m2.Owned) -> No
         )
 
     # And the grant the handlers actually hand the validator is that constant.
-    module = ast.parse(Path(inspect.getsourcefile(knowledge_handlers) or "").read_text())
+    module = ast.parse(
+        Path(inspect.getsourcefile(knowledge_handlers) or "").read_text()
+    )
     calls = [
         node
         for node in ast.walk(module)
@@ -1469,7 +1539,9 @@ def test_lc_b5c_an_unauthorized_workspace_reaches_no_record_at_all(
     assert seen[-1].workspace_id == FOREIGN_WORKSPACE_ID
     # The complement, so the emptiness above is the workspace and not the fixture.
     assert set(returned(search(stocked, {"query": QUERY}))) == CANONICAL_MATCHES
-    assert "workspace_id" not in KnowledgeSearchInput.from_wire({"query": QUERY}).to_wire()
+    assert (
+        "workspace_id" not in KnowledgeSearchInput.from_wire({"query": QUERY}).to_wire()
+    )
 
 
 def test_lc_b5d_memory_search_has_no_domain_selector(stocked: m2.Owned) -> None:
@@ -1512,7 +1584,11 @@ def test_lc_b6_exact_stored_microseconds_order_two_records_inside_one_millisecon
     """
     result = search(
         stocked,
-        {"query": QUERY, "order": KNOWLEDGE_SEARCH_ORDER_RECENCY, "record_type": "knowledge.claim"},
+        {
+            "query": QUERY,
+            "order": KNOWLEDGE_SEARCH_ORDER_RECENCY,
+            "record_type": "knowledge.claim",
+        },
     )
     page = returned(result)
 
@@ -1523,7 +1599,8 @@ def test_lc_b6_exact_stored_microseconds_order_two_records_inside_one_millisecon
     assert rendered["rec-alpha"] == rendered["rec-zulu"]
 
     stored = {
-        member.record_id: member.recorded_at_us for member in watcher.frontier.candidates
+        member.record_id: member.recorded_at_us
+        for member in watcher.frontier.candidates
     }
     assert stored["rec-zulu"] == stored["rec-alpha"] + 1
     assert page.index("rec-zulu") < page.index("rec-alpha")
@@ -1542,7 +1619,9 @@ def test_lc_b7_relevance_and_recency_are_wired_and_deterministic(
     relevance = returned(
         search(stocked, {**claims, "order": KNOWLEDGE_SEARCH_ORDER_RELEVANCE})
     )
-    recency = returned(search(stocked, {**claims, "order": KNOWLEDGE_SEARCH_ORDER_RECENCY}))
+    recency = returned(
+        search(stocked, {**claims, "order": KNOWLEDGE_SEARCH_ORDER_RECENCY})
+    )
     absent = returned(search(stocked, claims))
 
     assert relevance[0] == "rec-loud"
@@ -1550,7 +1629,12 @@ def test_lc_b7_relevance_and_recency_are_wired_and_deterministic(
     assert relevance != recency
     assert absent == relevance
     for _ in range(3):
-        assert returned(search(stocked, {**claims, "order": KNOWLEDGE_SEARCH_ORDER_RECENCY})) == recency
+        assert (
+            returned(
+                search(stocked, {**claims, "order": KNOWLEDGE_SEARCH_ORDER_RECENCY})
+            )
+            == recency
+        )
 
 
 def test_lc_b8_the_limit_bounds_the_page_and_the_default_is_the_schema_ceiling(
@@ -1577,9 +1661,7 @@ def test_lc_b8b_search_continuations_are_snapshot_stable_and_request_bound(
 ) -> None:
     dispatcher = production_path(stocked)
     payload = {"query": QUERY, "record_type": "knowledge.claim", "limit": 2}
-    first_wire = answered(
-        dispatcher.dispatch(request_for(operation, payload))
-    ).result
+    first_wire = answered(dispatcher.dispatch(request_for(operation, payload))).result
     result_type = (
         KnowledgeSearchResult
         if operation == KNOWLEDGE_SEARCH_OPERATION
@@ -1597,9 +1679,10 @@ def test_lc_b8b_search_continuations_are_snapshot_stable_and_request_bound(
     assert set(returned(first)).isdisjoint(returned(second))
     unpaged_payload = dict(payload)
     unpaged_payload.pop("limit")
-    assert returned(first) + returned(second) == returned(
-        search(stocked, unpaged_payload, operation=operation)
-    )[:4]
+    assert (
+        returned(first) + returned(second)
+        == returned(search(stocked, unpaged_payload, operation=operation))[:4]
+    )
 
     rebound = refused(
         dispatcher.dispatch(
@@ -1714,7 +1797,9 @@ def test_lc_b10_malformed_input_refuses_with_a_frozen_message_and_no_echo(
     into its default. The first puts caller text on the wire; the second answers a request
     the caller did not make while reporting success.
     """
-    response = refused(production_path(stocked).dispatch(request_for(operation, payload)))
+    response = refused(
+        production_path(stocked).dispatch(request_for(operation, payload))
+    )
     expected = (
         knowledge_handlers._MESSAGE_INVALID_KNOWLEDGE_INPUT
         if operation == KNOWLEDGE_SEARCH_OPERATION
@@ -1839,7 +1924,9 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
     assert OPERATION_PURPOSES[KNOWLEDGE_SEARCH_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[MEMORY_SEARCH_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[GRAPH_TRAVERSE_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
-    assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
+    assert (
+        OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
+    )
     # OPERATION_PURPOSES is the local-owner read policy: every registered read,
     # and no mutation -- the decision stubs' mutations are excluded by design.
     # OPERATION_PURPOSES is the workspace read policy: the seven reads this
@@ -1854,6 +1941,7 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
         "decision.definition.get",
         "decision.model.list",
         "decision.settings.get",
+        "decision.result_use.evaluate",
         # The engineering family's reads live in its own session and derive
         # their purposes from the same table (SPEC-CORE-ENGMEM-001).
         "continuity.handoff.read",

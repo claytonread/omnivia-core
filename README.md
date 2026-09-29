@@ -199,7 +199,7 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Fifty-three are workspace-scoped:
+Fifty-four are workspace-scoped:
 
 ```text
 analysis.start          candidate.approve   candidate.reject    chat.command
@@ -212,7 +212,8 @@ decision.definition.list                   decision.definition.publish
 decision.evaluate       decision.model.activate                decision.model.install
 decision.model.list     decision.model.remove  decision.outcome.submit
 decision.record.get     decision.record.list   decision.settings.get
-decision.settings.update                    decision.status
+decision.result_use.evaluate               decision.settings.update
+decision.status
 engineering.context.build                  engineering.expand
 engineering.repository.register            engineering.review.record
 engineering.search      engineering.source.record

@@ -512,6 +512,8 @@ from .generated import (
     ResolveWait,
     ResponseEnvelope,
     ResponseMetadata,
+    ResultUseEvaluateInput,
+    ResultUseEvaluateResult,
     RetryClass,
     Run,
     RunDefinitionKind,
@@ -910,6 +912,9 @@ from .semantics_operations import (
     get_operation_metadata,
     validate_operation_error,
     validate_operation_request_metadata,
+)
+from .semantics_result_use import (
+    evaluate_result_use,
 )
 from .semantics_runtime import (
     APPROVAL_DECISION_APPROVED,
@@ -1631,6 +1636,8 @@ __all__ = [
     "ResolveWait",
     "ResponseEnvelope",
     "ResponseMetadata",
+    "ResultUseEvaluateInput",
+    "ResultUseEvaluateResult",
     "RetryClass",
     "RetryClassMismatchError",
     "Run",
@@ -1751,6 +1758,7 @@ __all__ = [
     "encode_service_endpoint_descriptor",
     "encode_service_probe_result",
     "encode_success_response",
+    "evaluate_result_use",
     "generated",
     "get_operation_metadata",
     "idempotency_equivalence",

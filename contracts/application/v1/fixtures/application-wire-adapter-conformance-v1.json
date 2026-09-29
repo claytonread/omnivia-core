@@ -10518,6 +10518,104 @@
           "request_id": "req-error-unsupported_minor_version"
         }
       }
+    },
+    {
+      "description": "decision.result_use.evaluate answers a well-formed gate request on the success branch with its typed decision document.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "decision.result_use.evaluate/primary-success",
+      "operation": "decision.result_use.evaluate",
+      "request": {
+        "input": {
+          "request_version": "1.0",
+          "use_class": "current_publication",
+          "subject_digest": "result-digest-1",
+          "completeness": "complete",
+          "continuity": "verified",
+          "freshness_ok": true,
+          "schema_compatible": true,
+          "evidence_available": true,
+          "policy_permits_partial_or_stale": false,
+          "authority_epoch": "epoch-1"
+        },
+        "metadata": {
+          "request_id": "req-drue-success",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.result_use.evaluate"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-drue-success"
+        },
+        "result": {
+          "outcome": "allow",
+          "reasons": [],
+          "subject_digest": "result-digest-1",
+          "authority_epoch": "epoch-1",
+          "valid_until": "2026-09-30T00:00:00Z"
+        }
+      }
+    },
+    {
+      "description": "decision.result_use.evaluate naming a supported major with an unsupported minor is refused with the dedicated typed code.",
+      "expect": {
+        "branch": "error",
+        "error_code": "unsupported_minor_version",
+        "retry_class": "non_retryable"
+      },
+      "id": "error/due-unsupported-minor",
+      "operation": "decision.result_use.evaluate",
+      "request": {
+        "input": {
+          "request_version": "1.7",
+          "use_class": "current_publication",
+          "subject_digest": "result-digest-1",
+          "completeness": "complete",
+          "continuity": "verified",
+          "freshness_ok": true,
+          "schema_compatible": true,
+          "evidence_available": true,
+          "policy_permits_partial_or_stale": false,
+          "authority_epoch": "epoch-1"
+        },
+        "metadata": {
+          "request_id": "req-drue-uminor",
+          "required_capabilities": [
+            {
+              "id": "decision.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "decision:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "decision.result_use.evaluate"
+      },
+      "response": {
+        "error": {
+          "code": "unsupported_minor_version",
+          "message": "payload version 1.7 is not supported; supported version is 1.0",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-drue-uminor"
+        }
+      }
     }
   ],
   "contract_version": "1.0",
