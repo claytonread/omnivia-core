@@ -13,6 +13,7 @@
     "https://contracts.omnivia.dev/application/v1/records.schema.json",
     "https://contracts.omnivia.dev/application/v1/jobs.schema.json",
     "https://contracts.omnivia.dev/application/v1/operations.schema.json",
+    "https://contracts.omnivia.dev/application/v1/analysis.schema.json",
     "https://contracts.omnivia.dev/application/v1/workspace.schema.json",
     "https://contracts.omnivia.dev/application/v1/memory.schema.json",
     "https://contracts.omnivia.dev/application/v1/evidence.schema.json",
@@ -1120,6 +1121,36 @@
     },
     "EngineeringRepositoryRegisterResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterResult"
+    },
+    "AnalysisUseClass": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisUseClass"
+    },
+    "BusinessDate": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/BusinessDate"
+    },
+    "BusinessTimezone": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/BusinessTimezone"
+    },
+    "GovernedMetricReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/GovernedMetricReference"
+    },
+    "GovernedDataViewReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/GovernedDataViewReference"
+    },
+    "AnalysisTarget": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisTarget"
+    },
+    "AnalysisParameter": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisParameter"
+    },
+    "AnalysisOutputBounds": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisOutputBounds"
+    },
+    "AnalysisStartInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartInput"
+    },
+    "AnalysisStartResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartResult"
     }
   }
 }

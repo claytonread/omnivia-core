@@ -9,6 +9,7 @@
 #   contracts/application/v1/schemas/records.schema.json
 #   contracts/application/v1/schemas/jobs.schema.json
 #   contracts/application/v1/schemas/operations.schema.json
+#   contracts/application/v1/schemas/analysis.schema.json
 #   contracts/application/v1/schemas/workspace.schema.json
 #   contracts/application/v1/schemas/memory.schema.json
 #   contracts/application/v1/schemas/evidence.schema.json
@@ -85,6 +86,7 @@ __all__ = [
     "ERROR_CODE_SIZE_LIMIT_EXCEEDED",
     "ERROR_CODE_STALE_PROJECTION",
     "ERROR_CODE_TOKEN_LIMIT_EXCEEDED",
+    "ERROR_CODE_UNSUPPORTED_MINOR_VERSION",
     "ERROR_CODE_UPGRADE_REQUIRED",
     "ERROR_CODE_WORKSPACE_BUSY",
     "ERROR_CODE_WORKSPACE_LEASE_UNAVAILABLE",
@@ -151,6 +153,12 @@ __all__ = [
     "UPGRADE_STATE_REQUIRED",
     "WORKSPACE_ID_PATTERN",
     "WORKSPACE_STATUS_PATTERN",
+    "AnalysisOutputBounds",
+    "AnalysisParameter",
+    "AnalysisStartInput",
+    "AnalysisStartResult",
+    "AnalysisTarget",
+    "AnalysisUseClass",
     "ApiError",
     "Approval",
     "ApprovalDecision",
@@ -159,6 +167,8 @@ __all__ = [
     "AttemptStatus",
     "AuditReference",
     "BudgetSnapshot",
+    "BusinessDate",
+    "BusinessTimezone",
     "CandidateApproveInput",
     "CandidateApproveResult",
     "CandidateAssertion",
@@ -344,6 +354,8 @@ __all__ = [
     "GovernanceLayer",
     "GovernanceRationale",
     "GovernanceState",
+    "GovernedDataViewReference",
+    "GovernedMetricReference",
     "GovernedRecord",
     "GovernedRecordType",
     "GovernedRecordView",
@@ -517,6 +529,8 @@ __all__ = [
     "WorkspaceListInput",
     "WorkspaceListResult",
     "WorkspaceStatus",
+    "analysis_target_from_wire",
+    "analysis_target_to_wire",
     "context_pack_authorized_candidate_from_wire",
     "context_pack_authorized_candidate_to_wire",
     "context_pack_citation_from_wire",
@@ -715,6 +729,7 @@ ERROR_CODE_BOOTSTRAP_IN_PROGRESS: Final = "bootstrap_in_progress"
 ERROR_CODE_WORKSPACE_LEASE_UNAVAILABLE: Final = "workspace_lease_unavailable"
 ERROR_CODE_WORKSPACE_MIGRATION_REQUIRED: Final = "workspace_migration_required"
 ERROR_CODE_INCOMPATIBLE_VERSION: Final = "incompatible_version"
+ERROR_CODE_UNSUPPORTED_MINOR_VERSION: Final = "unsupported_minor_version"
 ERROR_CODE_UPGRADE_REQUIRED: Final = "upgrade_required"
 ERROR_CODE_PROJECTION_UNAVAILABLE: Final = "projection_unavailable"
 ERROR_CODE_STALE_PROJECTION: Final = "stale_projection"
@@ -743,6 +758,7 @@ FROZEN_ERROR_CODES: Final[tuple[str, ...]] = (
     ERROR_CODE_WORKSPACE_LEASE_UNAVAILABLE,
     ERROR_CODE_WORKSPACE_MIGRATION_REQUIRED,
     ERROR_CODE_INCOMPATIBLE_VERSION,
+    ERROR_CODE_UNSUPPORTED_MINOR_VERSION,
     ERROR_CODE_UPGRADE_REQUIRED,
     ERROR_CODE_PROJECTION_UNAVAILABLE,
     ERROR_CODE_STALE_PROJECTION,
@@ -804,6 +820,7 @@ DEFAULT_RETRY_CLASSIFICATION: Final[Mapping[str, str]] = MappingProxyType(
         ERROR_CODE_WORKSPACE_LEASE_UNAVAILABLE: RETRY_CLASS_RETRYABLE_AFTER_DELAY,
         ERROR_CODE_WORKSPACE_MIGRATION_REQUIRED: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_INCOMPATIBLE_VERSION: RETRY_CLASS_NON_RETRYABLE,
+        ERROR_CODE_UNSUPPORTED_MINOR_VERSION: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_UPGRADE_REQUIRED: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_PROJECTION_UNAVAILABLE: RETRY_CLASS_RETRYABLE_AFTER_DELAY,
         ERROR_CODE_STALE_PROJECTION: RETRY_CLASS_RETRYABLE_AFTER_DELAY,
@@ -1915,6 +1932,92 @@ def is_workspace_status(value: object) -> bool:
 
 
 # --- generated types -------------------------------------------------------
+
+AnalysisUseClass: TypeAlias = str
+"""The requested result-use class. `action_input` is deliberately absent from the v1 vocabulary:
+action consumption is denied until an accepted action-input policy exists (UDL-D06), and a
+request naming it is refused as `invalid_request` rather than decoded as an admitted use class.
+"""
+
+BusinessDate: TypeAlias = str
+"""A calendar date in the business timezone, without a time or offset. Distinct from a UTC instant:
+the envelope records instants; this type records a business-date boundary.
+"""
+
+BusinessTimezone: TypeAlias = str
+"""An IANA timezone identifier interpreting the request's business dates, such as
+`Australia/Brisbane`. A fixed offset is not a timezone and is refused.
+"""
+
+@dataclass(frozen=True, slots=True)
+class AnalysisOutputBounds:
+    """Explicit bounded output. Requested bounds narrow the host and runtime limits; they never
+    override them and never grant execution.
+    """
+
+    max_rows: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.max_rows is not None:
+            wire["max_rows"] = self.max_rows
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "AnalysisOutputBounds") -> AnalysisOutputBounds:
+        """Decode a wire payload into a AnalysisOutputBounds.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_max_rows: int | None = None
+        if "max_rows" in mapping:
+            raw_max_rows = mapping["max_rows"]
+            if raw_max_rows is None:
+                raise ContractDecodeError(
+                    f"{path}.max_rows: null is not a valid value"
+                )
+            field_max_rows = _decode_int(raw_max_rows, f"{path}.max_rows")
+        return cls(
+            max_rows=field_max_rows,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisStartResult:
+    """Result of `analysis.start`. Reserved in milestone 1: the milestone-1 build never returns
+    a success result, so this type declares no members. It exists so the catalogue's result
+    reference resolves and so a later milestone extends this shape additively rather than
+    inventing a second result type.
+    """
+
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "AnalysisStartResult") -> AnalysisStartResult:
+        """Decode a wire payload into a AnalysisStartResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        _require_mapping(payload, path)
+        return cls(
+        )
+
 
 ContractVersion: TypeAlias = str
 """A `major.minor` contract version. Major changes are breaking; minor changes are additive and
@@ -4073,6 +4176,126 @@ class WorkspaceInspectInput:
         """
         _require_mapping(payload, path)
         return cls(
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GovernedMetricReference:
+    """A governed analysis target that is a metric, named by its exact immutable revision
+    identifier. A mutable `latest` alias is not accepted: the revision must be stated.
+    """
+
+    kind: str
+    metric_revision_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["kind"] = self.kind
+        wire["metric_revision_id"] = self.metric_revision_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "GovernedMetricReference"
+    ) -> GovernedMetricReference:
+        """Decode a wire payload into a GovernedMetricReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_metric_revision_id = _decode_str(
+            _require_field(mapping, "metric_revision_id", path),
+            f"{path}.metric_revision_id",
+        )
+        return cls(
+            kind=field_kind,
+            metric_revision_id=field_metric_revision_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GovernedDataViewReference:
+    """A governed analysis target that is a Data View, named by its exact immutable revision
+    identifier. A mutable `latest` alias is not accepted: the revision must be stated.
+    """
+
+    kind: str
+    data_view_revision_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["kind"] = self.kind
+        wire["data_view_revision_id"] = self.data_view_revision_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "GovernedDataViewReference"
+    ) -> GovernedDataViewReference:
+        """Decode a wire payload into a GovernedDataViewReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_data_view_revision_id = _decode_str(
+            _require_field(mapping, "data_view_revision_id", path),
+            f"{path}.data_view_revision_id",
+        )
+        return cls(
+            kind=field_kind,
+            data_view_revision_id=field_data_view_revision_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisParameter:
+    """One exact typed parameter: a bounded parameter name and its JSON data value. Values are
+    data, never expressions: an executable fragment is not a representable parameter value,
+    and the server interprets parameter meaning only through the governed definition the
+    target names.
+    """
+
+    name: Identifier
+    value: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["name"] = self.name
+        wire["value"] = _encode_json_object(self.value)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "AnalysisParameter") -> AnalysisParameter:
+        """Decode a wire payload into a AnalysisParameter.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_name = _decode_str(_require_field(mapping, "name", path), f"{path}.name")
+        field_value = _decode_json_object(_require_field(mapping, "value", path), f"{path}.value")
+        return cls(
+            name=field_name,
+            value=field_value,
         )
 
 
@@ -10532,6 +10755,39 @@ class CoreTargetV1:
         )
 
 
+AnalysisTarget: TypeAlias = GovernedMetricReference | GovernedDataViewReference
+"""Exactly one governed analysis target: an exact metric revision or an exact Data View revision.
+The union is discriminated by the required `kind` member unique to each branch.
+"""
+
+
+def analysis_target_from_wire(
+    payload: object, path: str = "AnalysisTarget"
+) -> AnalysisTarget:
+    """Decode a wire payload into exactly one AnalysisTarget branch.
+
+    The branches are mutually exclusive by construction: a payload carrying more than one
+    discriminator, or none at all, is rejected rather than guessed at.
+    """
+    mapping = _require_mapping(payload, path)
+    discriminators = ("metric_revision_id", "data_view_revision_id")
+    matched = tuple(key for key in discriminators if key in mapping)
+    if len(matched) != 1:
+        raise ContractDecodeError(
+            f"{path}: expected exactly one of {discriminators}, found {matched}"
+        )
+    if matched[0] == "metric_revision_id":
+        return GovernedMetricReference.from_wire(mapping, path)
+    if matched[0] == "data_view_revision_id":
+        return GovernedDataViewReference.from_wire(mapping, path)
+    raise ContractDecodeError(f"{path}: unreachable discriminator state")
+
+
+def analysis_target_to_wire(value: AnalysisTarget) -> dict[str, Any]:
+    """Render one AnalysisTarget branch as a JSON-compatible mapping."""
+    return value.to_wire()
+
+
 @dataclass(frozen=True, slots=True)
 class ChatCommandInput:
     """Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's
@@ -15792,6 +16048,138 @@ class WorkspaceListInput:
         return cls(
             limit=field_limit,
             page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisStartInput:
+    """Input for `analysis.start`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier. Exactly one temporal scope is stated: an `as_of` business date or an explicit
+    `period` half-open interval, never both and never neither.
+    """
+
+    request_version: ContractVersion
+    target: AnalysisTarget
+    business_timezone: BusinessTimezone
+    use_class: AnalysisUseClass
+    purpose_reference: Identifier
+    as_of_date: BusinessDate | None = None
+    period_start: BusinessDate | None = None
+    period_end: BusinessDate | None = None
+    parameters: tuple[AnalysisParameter, ...] | None = None
+    output_bounds: AnalysisOutputBounds | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["request_version"] = self.request_version
+        wire["target"] = analysis_target_to_wire(self.target)
+        if self.as_of_date is not None:
+            wire["as_of_date"] = self.as_of_date
+        if self.period_start is not None:
+            wire["period_start"] = self.period_start
+        if self.period_end is not None:
+            wire["period_end"] = self.period_end
+        wire["business_timezone"] = self.business_timezone
+        wire["use_class"] = self.use_class
+        if self.parameters is not None:
+            wire["parameters"] = [item.to_wire() for item in self.parameters]
+        if self.output_bounds is not None:
+            wire["output_bounds"] = self.output_bounds.to_wire()
+        wire["purpose_reference"] = self.purpose_reference
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "AnalysisStartInput") -> AnalysisStartInput:
+        """Decode a wire payload into a AnalysisStartInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_request_version = _decode_str(
+            _require_field(mapping, "request_version", path),
+            f"{path}.request_version",
+        )
+        field_target = analysis_target_from_wire(
+            _require_field(mapping, "target", path),
+            f"{path}.target",
+        )
+        field_as_of_date: BusinessDate | None = None
+        if "as_of_date" in mapping:
+            raw_as_of_date = mapping["as_of_date"]
+            if raw_as_of_date is None:
+                raise ContractDecodeError(
+                    f"{path}.as_of_date: null is not a valid value"
+                )
+            field_as_of_date = _decode_str(raw_as_of_date, f"{path}.as_of_date")
+        field_period_start: BusinessDate | None = None
+        if "period_start" in mapping:
+            raw_period_start = mapping["period_start"]
+            if raw_period_start is None:
+                raise ContractDecodeError(
+                    f"{path}.period_start: null is not a valid value"
+                )
+            field_period_start = _decode_str(raw_period_start, f"{path}.period_start")
+        field_period_end: BusinessDate | None = None
+        if "period_end" in mapping:
+            raw_period_end = mapping["period_end"]
+            if raw_period_end is None:
+                raise ContractDecodeError(
+                    f"{path}.period_end: null is not a valid value"
+                )
+            field_period_end = _decode_str(raw_period_end, f"{path}.period_end")
+        field_business_timezone = _decode_str(
+            _require_field(mapping, "business_timezone", path),
+            f"{path}.business_timezone",
+        )
+        field_use_class = _decode_str(
+            _require_field(mapping, "use_class", path),
+            f"{path}.use_class",
+        )
+        field_parameters: tuple[AnalysisParameter, ...] | None = None
+        if "parameters" in mapping:
+            raw_parameters = mapping["parameters"]
+            if raw_parameters is None:
+                raise ContractDecodeError(
+                    f"{path}.parameters: null is not a valid value"
+                )
+            field_parameters_items = _decode_sequence(raw_parameters, f"{path}.parameters")
+            field_parameters = tuple(
+                AnalysisParameter.from_wire(item, f"{path}.parameters[{index}]")
+                for index, item in enumerate(field_parameters_items)
+            )
+        field_output_bounds: AnalysisOutputBounds | None = None
+        if "output_bounds" in mapping:
+            raw_output_bounds = mapping["output_bounds"]
+            if raw_output_bounds is None:
+                raise ContractDecodeError(
+                    f"{path}.output_bounds: null is not a valid value"
+                )
+            field_output_bounds = AnalysisOutputBounds.from_wire(
+                raw_output_bounds,
+                f"{path}.output_bounds",
+            )
+        field_purpose_reference = _decode_str(
+            _require_field(mapping, "purpose_reference", path),
+            f"{path}.purpose_reference",
+        )
+        return cls(
+            request_version=field_request_version,
+            target=field_target,
+            as_of_date=field_as_of_date,
+            period_start=field_period_start,
+            period_end=field_period_end,
+            business_timezone=field_business_timezone,
+            use_class=field_use_class,
+            parameters=field_parameters,
+            output_bounds=field_output_bounds,
+            purpose_reference=field_purpose_reference,
         )
 
 
@@ -23271,6 +23659,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="analysis.start",
+        scope=OperationScope(
+            required_scopes=("insights:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/analysis.schema.json"
+            "#/$defs/AnalysisStartInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/analysis.schema.json"
+            "#/$defs/AnalysisStartResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="insights.analysis",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "unsupported_minor_version",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),
