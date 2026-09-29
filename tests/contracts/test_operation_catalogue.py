@@ -138,22 +138,22 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_fifty_five_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 55
+def test_the_catalogue_holds_exactly_the_frozen_fifty_six_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 56
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
     # The original twenty-eight are alphabetical; the fifteen Decision Runtime
     # operations from ADR-042, the ten engineering-memory operations
     # (SPEC-CORE-ENGMEM-001) and the repository registration operation (spec
     # §16.3) are appended after them in amendment order.
-    assert len(set(FROZEN_NAMES)) == 55
+    assert len(set(FROZEN_NAMES)) == 56
 
 
-def test_two_operations_are_installation_scoped_and_fifty_three_are_workspace_scoped() -> None:
+def test_two_operations_are_installation_scoped_and_fifty_four_are_workspace_scoped() -> None:
     installation = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "installation"]
     workspace = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "workspace"]
     assert installation == ["workspace.create", "workspace.list"]
-    assert len(workspace) == 53
-    assert len(installation) + len(workspace) == 55
+    assert len(workspace) == 54
+    assert len(installation) + len(workspace) == 56
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
@@ -930,7 +930,7 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
     documented = installation + workspace
 
     assert sorted(documented) == sorted(FROZEN_NAMES)
-    assert len(documented) == len(set(documented)) == 55
+    assert len(documented) == len(set(documented)) == 56
     assert installation == [
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "installation"
     ]
