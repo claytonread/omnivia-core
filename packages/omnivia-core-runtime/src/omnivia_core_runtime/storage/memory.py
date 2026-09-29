@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,6 +34,7 @@ from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
 )
 from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
+from omnivia_core_runtime.storage.sql_in import execute_in_rows
 
 if TYPE_CHECKING:
     from omnivia_core_runtime.storage.engineering_source import DependencyManifest
@@ -102,39 +103,6 @@ class AuthorizedMemoryFrontier:
 
 def random_identifier(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4()}"
-
-
-#: SQLite's host-parameter ceiling (32 766 on current builds, historically 999)
-#: is an implementation limit, not a design boundary: a 100 000-record workspace
-#: crosses it the first time a frontier folds evidence by `IN (...)` list. The
-#: id list is therefore issued in fixed chunks and the merged rows re-sorted in
-#: Python by the statement's own ORDER BY keys, which reproduces the unchunked
-#: statement's rows in its order exactly at any list size (BINARY collation on
-#: TEXT is code-point order, and the sort columns here are non-null keys).
-_SQL_VARIABLE_CHUNK: Final = 512
-
-
-def _execute_in_rows(
-    connection: sqlite3.Connection,
-    *,
-    select: str,
-    pre: str,
-    in_column: str,
-    post: str = "",
-    leading: tuple[object, ...] = (),
-    ids: Sequence[str],
-    trailing: tuple[object, ...] = (),
-    order_key: Callable[[tuple[object, ...]], tuple[object, ...]],
-) -> list[tuple[object, ...]]:
-    """One `IN (...)` query issued in host-parameter chunks, merged in order."""
-    rows: list[tuple[object, ...]] = []
-    for start in range(0, len(ids), _SQL_VARIABLE_CHUNK):
-        chunk = ids[start : start + _SQL_VARIABLE_CHUNK]
-        placeholders = ", ".join("?" for _ in chunk)
-        statement = f"{select} WHERE {pre} AND {in_column} IN ({placeholders}) {post}"
-        rows.extend(connection.execute(statement, (*leading, *chunk, *trailing)).fetchall())
-    rows.sort(key=order_key)
-    return rows
 
 
 def _microseconds(value: str) -> int:
@@ -770,11 +738,11 @@ def read_authorized_memory_frontier(
         evidence_rows: list[tuple[object, ...]] = []
         label_rows: list[tuple[object, ...]] = []
         if support_ids:
-            evidence_rows = _execute_in_rows(
+            evidence_rows = execute_in_rows(
                 connection,
                 select="SELECT assembly_id, evidence_id "
                 "FROM omnivia_governed_version_evidence_links",
-                pre="workspace_id = ?",
+                where_before="workspace_id = ?",
                 in_column="assembly_id",
                 leading=(workspace_id,),
                 ids=support_ids,
@@ -782,11 +750,11 @@ def read_authorized_memory_frontier(
             )
             evidence_ids = tuple(sorted({str(row[1]) for row in evidence_rows}))
             if evidence_ids:
-                label_rows = _execute_in_rows(
+                label_rows = execute_in_rows(
                     connection,
                     select="SELECT evidence_id, label_sequence, label_action, permission_label "
                     "FROM omnivia_evidence_permission_labels",
-                    pre="workspace_id = ?",
+                    where_before="workspace_id = ?",
                     in_column="evidence_id",
                     leading=(workspace_id,),
                     ids=evidence_ids,
@@ -832,7 +800,7 @@ def read_authorized_memory_frontier(
         )
         application_transitions: list[tuple[object, ...]] = []
         if authorized_record_ids:
-            application_transitions = _execute_in_rows(
+            application_transitions = execute_in_rows(
                 connection,
                 select="SELECT governed_record_id, source_assembly_id, "
                 "source_record_version_id, target_assembly_id, "
@@ -840,9 +808,9 @@ def read_authorized_memory_frontier(
                 "rationale_digest, rationale_byte_length, reason_code, "
                 "reason_comment, actor_id, actor_kind, audit_ref, settled_at_us "
                 "FROM omnivia_application_governance_transitions",
-                pre="workspace_id = ?",
+                where_before="workspace_id = ?",
                 in_column="governed_record_id",
-                post="AND settled_at_us <= ?",
+                where_after="AND settled_at_us <= ?",
                 leading=(workspace_id,),
                 ids=authorized_record_ids,
                 trailing=(resolution_instant_us,),
