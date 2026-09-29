@@ -1,6 +1,14 @@
 # Engineering memory: decision handoff — resolutions required
 
 Date: 2026-09-28
+**Update 2026-09-29:** D-1–D-8 are now recorded in
+`omnivia-pm` `docs/decision-briefs/2026-09-29-engineering-memory-decisions-d1-d8-owner-resolution.md`
+(decision `OMNIVIA-CORE-ENGMEM-DEC-001-RESOLUTION-001`), and the D-8 task is
+chartered at `omnivia-pm` `docs/tasks/2026-09-29-omnivia-core-decision-runtime-distribution-and-first-party-trust-integration.md`.
+G-5 was retrieved against and is closed as **unrecovered**: the SPEC-CORE-DEC-001
+plan §2 gate table is absent from every local source; three unrelated G-5s were
+checked and excluded. PR-5 remains gated on G-2 + G-5, and G-5 definition
+recovery is assigned to Codex.
 
 Audience: owner (Clayton Read) and Codex (PM / integration controller).
 This document resolves nothing. Each item names the decision, the options,
