@@ -199,11 +199,9 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
         print("pack percentiles:", _percentiles(pack_samples), flush=True)
 
         # --- context pack, current_safe ---------------------------------------
-        # Not asserted to pass at scale: unlike search, the pack builder still
-        # hydrates its authorized frontier's bodies before any query filter
-        # narrows it (a separate pending change), so this probe only records
-        # whatever the current implementation does -- a pack or a refusal --
-        # diagnostically, at this corpus size.
+        # The pack pages the authorized identity/preview frontier and keeps only
+        # bounded top selections, so the 10k and 100k lanes must succeed without
+        # hydrating the corpus.
         safe_pack_input = {
             **pack_input,
             "query": _query(0),
@@ -212,11 +210,9 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
         safe_pack_started = time.perf_counter()
         safe_pack_response = ws.call("engineering.context.build", safe_pack_input)
         safe_pack_elapsed_ms = (time.perf_counter() - safe_pack_started) * 1000.0
-        safe_pack_outcome = (
-            "success"
-            if isinstance(safe_pack_response, sc.SuccessResponseEnvelope)
-            else safe_pack_response.error.code
-        )
+        assert isinstance(safe_pack_response, sc.SuccessResponseEnvelope)
+        safe_pack_outcome = "success"
+        assert safe_pack_response.result["pack"]["budget"]["hydrations"] <= 8
         print(
             f"current_safe pack probe: {safe_pack_outcome} in {safe_pack_elapsed_ms:.1f}ms",
             flush=True,

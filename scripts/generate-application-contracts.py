@@ -107,6 +107,8 @@ JSON_OBJECT_DEFINITION = "JsonObject"
 
 #: The canonical operation catalogue, and the definition every entry materializes.
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
+PYTHON_INIT_REQUIRED_ANNOTATION = "x-omnivia-python-init-required"
+TYPESCRIPT_V2_VIEW_ANNOTATION = "x-omnivia-typescript-v2-view"
 OPERATION_METADATA_DEFINITION = "OperationMetadata"
 
 _REF_RE = re.compile(rf"^{re.escape(BASE_URI)}(?P<file>[a-z0-9-]+)\.schema\.json#/\$defs/(?P<name>\w+)$")
@@ -150,6 +152,7 @@ class Property:
     name: str
     type: TypeRef
     required: bool
+    python_init_required: bool
     description: str
 
 
@@ -176,6 +179,12 @@ class Definition:
     members: tuple[str, ...] = ()
     discriminators: tuple[tuple[str, str], ...] = ()
     dependencies: frozenset[str] = field(default_factory=frozenset)
+    typescript_v2_view: bool = False
+    typescript_v2_legacy_required: tuple[str, ...] = ()
+    typescript_v2_omit: tuple[str, ...] = ()
+    typescript_v2_consts: tuple[
+        tuple[str, str | int | float | bool | None], ...
+    ] = ()
 
 
 @dataclass(frozen=True)
@@ -410,6 +419,90 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
     if unknown_required:
         raise UnsupportedSchemaError(f"{location}: required names undeclared properties {unknown_required}")
 
+    typescript_v2_view = TYPESCRIPT_V2_VIEW_ANNOTATION in node
+    raw_typescript_v2_view = (
+        node[TYPESCRIPT_V2_VIEW_ANNOTATION] if typescript_v2_view else {}
+    )
+    if not isinstance(raw_typescript_v2_view, dict) or set(raw_typescript_v2_view) - {
+        "legacy_required",
+        "omit",
+        "const",
+    }:
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r} must be an object containing "
+            "only `legacy_required`, `omit`, and `const`"
+        )
+
+    def view_names(key: str) -> tuple[str, ...]:
+        value = raw_typescript_v2_view.get(key, [])
+        if (
+            not isinstance(value, list)
+            or not all(isinstance(item, str) for item in value)
+            or len(set(value)) != len(value)
+        ):
+            raise UnsupportedSchemaError(
+                f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.{key} must be an "
+                "array of unique property names"
+            )
+        return tuple(value)
+
+    typescript_v2_legacy_required = view_names("legacy_required")
+    typescript_v2_omit = view_names("omit")
+    raw_typescript_v2_consts = raw_typescript_v2_view.get("const", {})
+    if not isinstance(raw_typescript_v2_consts, dict) or not all(
+        isinstance(name, str)
+        and (
+            value is None
+            or isinstance(value, (str, int, float, bool))
+        )
+        for name, value in raw_typescript_v2_consts.items()
+    ):
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.const must map property "
+            "names to JSON scalar literals"
+        )
+    unknown_typescript_v2_names = sorted(
+        (
+            set(typescript_v2_legacy_required)
+            | set(typescript_v2_omit)
+            | set(raw_typescript_v2_consts)
+        )
+        - set(raw_properties)
+    )
+    if unknown_typescript_v2_names:
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r} names undeclared "
+            f"properties {unknown_typescript_v2_names}"
+        )
+    legacy_not_omitted = sorted(
+        set(typescript_v2_legacy_required) - set(typescript_v2_omit)
+    )
+    if legacy_not_omitted:
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.legacy_required must be "
+            f"a subset of omit; missing {legacy_not_omitted}"
+        )
+    required_omissions = sorted(set(typescript_v2_omit) & set(required))
+    if required_omissions:
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.omit cannot name "
+            f"wire-required properties {required_omissions}"
+        )
+    overlapping_consts = sorted(set(raw_typescript_v2_consts) & set(typescript_v2_omit))
+    if overlapping_consts:
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.const and omit overlap "
+            f"on {overlapping_consts}"
+        )
+    optional_typescript_v2_consts = sorted(
+        set(raw_typescript_v2_consts) - set(required)
+    )
+    if optional_typescript_v2_consts:
+        raise UnsupportedSchemaError(
+            f"{location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.const names non-required "
+            f"properties {optional_typescript_v2_consts}"
+        )
+
     properties: list[Property] = []
     dependencies: set[str] = set()
     for property_name, property_node in raw_properties.items():
@@ -422,11 +515,51 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
                 "identifiers in every generated language"
             )
         type_ref = parse_type(property_node, property_location)
+        if property_name in raw_typescript_v2_consts:
+            literal = raw_typescript_v2_consts[property_name]
+            scalar_matches = (
+                (type_ref.kind == "string" and isinstance(literal, str))
+                or (
+                    type_ref.kind == "integer"
+                    and isinstance(literal, int)
+                    and not isinstance(literal, bool)
+                )
+                or (
+                    type_ref.kind == "number"
+                    and isinstance(literal, (int, float))
+                    and not isinstance(literal, bool)
+                )
+                or (type_ref.kind == "boolean" and isinstance(literal, bool))
+            )
+            if not scalar_matches:
+                raise UnsupportedSchemaError(
+                    f"{property_location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.const "
+                    "must match an inline scalar property's type"
+                )
+            declared_values = property_node.get("enum")
+            if isinstance(declared_values, list) and (
+                literal not in declared_values
+            ):
+                raise UnsupportedSchemaError(
+                    f"{property_location}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r}.const "
+                    "must use a declared enum value"
+                )
+        python_init_required = property_node.get(PYTHON_INIT_REQUIRED_ANNOTATION, False)
+        if not isinstance(python_init_required, bool):
+            raise UnsupportedSchemaError(
+                f"{property_location}: {PYTHON_INIT_REQUIRED_ANNOTATION!r} must be a boolean"
+            )
+        if python_init_required and property_name in required:
+            raise UnsupportedSchemaError(
+                f"{property_location}: {PYTHON_INIT_REQUIRED_ANNOTATION!r} is redundant "
+                "for a wire-required property"
+            )
         properties.append(
             Property(
                 name=property_name,
                 type=type_ref,
                 required=property_name in required,
+                python_init_required=python_init_required,
                 description=_description(property_node, property_location),
             )
         )
@@ -440,6 +573,10 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
         description=description,
         properties=tuple(properties),
         dependencies=frozenset(dependencies),
+        typescript_v2_view=typescript_v2_view,
+        typescript_v2_legacy_required=typescript_v2_legacy_required,
+        typescript_v2_omit=typescript_v2_omit,
+        typescript_v2_consts=tuple(raw_typescript_v2_consts.items()),
     )
 
 
@@ -1032,11 +1169,18 @@ def emit_python_dataclass(definition: Definition, by_name: dict[str, Definition]
     lines += docstring(definition.description, "    ")
     lines.append("")
 
-    required = [prop for prop in definition.properties if prop.required]
-    optional = [prop for prop in definition.properties if not prop.required]
-    for prop in required:
-        lines.append(f"    {prop.name}: {python_annotation(prop.type, by_name)}")
-    for prop in optional:
+    init_required = [
+        prop for prop in definition.properties if prop.required or prop.python_init_required
+    ]
+    init_optional = [
+        prop for prop in definition.properties if not prop.required and not prop.python_init_required
+    ]
+    for prop in init_required:
+        annotation = python_annotation(prop.type, by_name)
+        if not prop.required:
+            annotation += " | None"
+        lines.append(f"    {prop.name}: {annotation}")
+    for prop in init_optional:
         lines.append(f"    {prop.name}: {python_annotation(prop.type, by_name)} | None = None")
     lines.append("")
 
@@ -1600,6 +1744,105 @@ def typescript_annotation(type_ref: TypeRef) -> str:
     return JSON_OBJECT_DEFINITION
 
 
+def _typescript_refers_to_v2_view(
+    type_ref: TypeRef, v2_definitions: frozenset[str] | set[str]
+) -> bool:
+    """Return whether a type contains a definition with a generated v2 view."""
+    if type_ref.kind == "definition":
+        assert type_ref.name is not None
+        return type_ref.name in v2_definitions
+    if type_ref.kind in {"array", "map"}:
+        return _typescript_refers_to_v2_view(type_ref.inner, v2_definitions)
+    return False
+
+
+def _typescript_v2_annotation(
+    type_ref: TypeRef, v2_definitions: frozenset[str] | set[str]
+) -> str:
+    """Render a type reference with every versioned dependency using its v2 view."""
+    if type_ref.kind == "definition":
+        assert type_ref.name is not None
+        suffix = "V2" if type_ref.name in v2_definitions else ""
+        return f"{type_ref.name}{suffix}"
+    if type_ref.kind == "array":
+        return f"readonly {_typescript_v2_annotation(type_ref.inner, v2_definitions)}[]"
+    if type_ref.kind == "map":
+        inner = _typescript_v2_annotation(type_ref.inner, v2_definitions)
+        return f"Readonly<Record<string, {inner}>>"
+    return typescript_annotation(type_ref)
+
+
+def _typescript_v2_definitions(contract: Contract) -> frozenset[str]:
+    """Return the object definitions explicitly publishing a TypeScript v2 view."""
+    definitions = {definition.name: definition for definition in contract.definitions}
+    versioned = {
+        definition.name
+        for definition in contract.definitions
+        if definition.kind == "object" and definition.typescript_v2_view
+    }
+    collisions = sorted(f"{name}V2" for name in versioned if f"{name}V2" in definitions)
+    if collisions:
+        raise UnsupportedSchemaError(
+            f"generated TypeScript v2 view names collide with definitions: {collisions}"
+        )
+    return frozenset(versioned)
+
+
+def emit_typescript_v2_view(
+    definition: Definition, v2_definitions: frozenset[str]
+) -> list[str]:
+    """Emit the byte-only view while retaining the existing name as the v1 ABI."""
+    omitted_names = set(definition.typescript_v2_omit)
+    consts = dict(definition.typescript_v2_consts)
+    omitted = [
+        prop
+        for prop in definition.properties
+        if prop.name in omitted_names
+        or _typescript_refers_to_v2_view(prop.type, v2_definitions)
+        or prop.name in consts
+    ]
+    replacements = [
+        prop
+        for prop in omitted
+        if prop.name not in omitted_names
+        and (
+            _typescript_refers_to_v2_view(prop.type, v2_definitions)
+            or prop.name in consts
+        )
+    ]
+    if not omitted:
+        raise UnsupportedSchemaError(
+            f"{definition.name}: {TYPESCRIPT_V2_VIEW_ANNOTATION!r} does not change any field"
+        )
+    keys = " | ".join(json.dumps(prop.name) for prop in omitted)
+    lines = typescript_doc(
+        "The explicit byte-only v2 view. The established type name remains the strict v1 "
+        "consumer surface; this view removes v1-only fields and substitutes v2 views for "
+        "nested versioned values.",
+        "",
+    )
+    name = f"{definition.name}V2"
+    if not replacements:
+        lines.append(f"export type {name} = Omit<{definition.name}, {keys}>;")
+        return lines
+
+    lines.append(f"export type {name} = Omit<")
+    lines.append(f"  {definition.name},")
+    lines.append(f"  {keys}")
+    lines.append("> & {")
+    for prop in replacements:
+        lines += typescript_doc(prop.description, "  ")
+        optional = "" if prop.required else "?"
+        annotation = (
+            json.dumps(consts[prop.name])
+            if prop.name in consts
+            else _typescript_v2_annotation(prop.type, v2_definitions)
+        )
+        lines.append(f"  readonly {prop.name}{optional}: {annotation};")
+    lines.append("};")
+    return lines
+
+
 def typescript_doc(description: str, indent: str) -> list[str]:
     """Render a TSDoc block at a fixed indent."""
     wrapped = wrap(description, f"{indent} * ")
@@ -2093,6 +2336,7 @@ def emit_typescript(contract: Contract) -> str:
     lines.append(f'export const SCHEMA_BASE_URI = "{BASE_URI}" as const;')
     lines.append("")
 
+    typescript_v2_definitions = _typescript_v2_definitions(contract)
     for definition in contract.definitions:
         if definition.kind == "string":
             lines += typescript_doc(definition.description, "")
@@ -2153,13 +2397,19 @@ def emit_typescript(contract: Contract) -> str:
         else:
             lines += typescript_doc(definition.description, "")
             lines.append(f"export interface {definition.name} {{")
+            legacy_required = set(definition.typescript_v2_legacy_required)
             for prop in definition.properties:
                 lines += typescript_doc(prop.description, "  ")
-                optional = "" if prop.required else "?"
+                optional = "" if prop.required or prop.name in legacy_required else "?"
                 lines.append(
                     f"  readonly {prop.name}{optional}: {typescript_annotation(prop.type)};"
                 )
             lines.append("}")
+            if definition.name in typescript_v2_definitions:
+                lines.append("")
+                lines += emit_typescript_v2_view(
+                    definition, typescript_v2_definitions
+                )
             if definition.name == "ServiceEndpointDescriptor":
                 lines.append("")
                 lines += typescript_doc(
