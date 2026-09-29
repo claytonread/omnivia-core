@@ -13,6 +13,7 @@ import pytest
 from omnivia_core_runtime.ownership.discovery import discover, publish
 from omnivia_core_runtime.ownership.fencing import (
     close_guard,
+    expected_trigger_names,
     fenced_transaction,
     open_guard,
     read_guard,
@@ -237,6 +238,52 @@ def test_sb02_offline_schema_drift_refuses_writable_readiness(
         runner.stop()
 
 
+# The two schema/trigger oracles are judged separately so a refusal names which
+# one failed. A dropped guard trigger fails both (the fingerprint covers trigger
+# names), and the diagnostic must say so; an added table fails only the
+# fingerprint oracle, and the refusal must not blame the guards.
+def test_a_dropped_guard_trigger_is_named_in_the_readiness_refusal(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    workspace, _installation, _settings = served
+    guard = expected_trigger_names()[0]
+    offline = sqlite3.connect(workspace.database_path)
+    offline.execute(f"DROP TRIGGER {guard}")
+    offline.commit()
+    offline.close()
+
+    runner = ServiceRunner(settings=served[2], clock=FakeClock())
+    report = runner.start()
+    try:
+        assert not report.ready, report.to_dict()
+        assert "exact_schema_and_trigger_fingerprint" in report.unmet
+        assert "mutation guards" in report.reason, report.to_dict()
+        assert guard in report.reason, report.to_dict()
+        assert "schema fingerprint" in report.reason, report.to_dict()
+    finally:
+        runner.stop()
+
+
+def test_an_offline_table_addition_blames_only_the_fingerprint_oracle(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    workspace, _installation, _settings = served
+    offline = sqlite3.connect(workspace.database_path)
+    offline.execute("CREATE TABLE illicit_schema_drift (id INTEGER PRIMARY KEY)")
+    offline.commit()
+    offline.close()
+
+    runner = ServiceRunner(settings=served[2], clock=FakeClock())
+    report = runner.start()
+    try:
+        assert not report.ready, report.to_dict()
+        assert "exact_schema_and_trigger_fingerprint" in report.unmet
+        assert "schema fingerprint" in report.reason, report.to_dict()
+        assert "mutation guards" not in report.reason, report.to_dict()
+    finally:
+        runner.stop()
+
+
 # SB-02 regression
 def test_sb02_the_schema_oracle_does_not_read_the_database_it_judges(
     served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
@@ -279,8 +326,14 @@ def test_lc02_lc03_readiness_requires_all_nine_preconditions(
         assert report.ready, report.to_dict()
         assert report.state == ServiceState.READY.value
         assert runner.lifecycle.readiness.satisfied
-        # Nine distinct preconditions, all true.
-        assert len(vars(runner.lifecycle.readiness)) == 9
+        # Nine distinct preconditions, all true. The schema-oracle diagnostic is
+        # carried alongside them and is not a tenth condition.
+        conditions = {
+            name: value
+            for name, value in vars(runner.lifecycle.readiness).items()
+            if name != "schema_oracle_diagnostic"
+        }
+        assert len(conditions) == 9
         assert runner.lifecycle.readiness.unmet() == []
 
         # Readiness is advertised only after the state is READY.
