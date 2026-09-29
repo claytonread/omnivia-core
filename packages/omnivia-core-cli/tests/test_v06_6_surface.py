@@ -155,7 +155,7 @@ def test_the_fifty_five_application_commands_are_declared_in_order() -> None:
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 55
+    assert len(APPLICATION_COMMANDS) == 56
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:
