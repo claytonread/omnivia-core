@@ -136,14 +136,14 @@ def read_authorized_previews(
     view: str | None,
     label_grant: EvidenceLabelGrant,
     record_ids: Sequence[str] | None = None,
-) -> tuple[PreviewCandidate, ...]:
-    """The engineering observations one grant admits under `view`, as bounded previews.
+) -> tuple[tuple[PreviewCandidate, ...], str]:
+    """Return bounded previews and their authorization-frontier digest.
 
     One read snapshot holds both reads, so the projection rows are those of the
     frontier's own state. The frontier is read first and carries no preview; the
-    projection is then read for exactly the admitted assemblies. ``record_ids`` is
-    the durable-processor seam: when supplied, authorization and projection reads
-    are confined to that indexed stable-record page.
+    projection is then read for exactly the admitted assemblies. Its digest includes
+    the effective label grant and label-event stream, which lets a continuation bind
+    the ACL epoch even when an attach/withdraw cycle leaves the same rows visible.
     """
     with read_snapshot(connection):
         frontier = read_authorized_memory_frontier(
@@ -155,8 +155,11 @@ def read_authorized_previews(
             domain_scope=OBSERVATION_DOMAIN,
             record_ids=record_ids,
         )
-        return read_previews_for_frontier(
-            connection, workspace_id=workspace_id, frontier=frontier
+        return (
+            read_previews_for_frontier(
+                connection, workspace_id=workspace_id, frontier=frontier
+            ),
+            frontier.digest,
         )
 
 

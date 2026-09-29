@@ -1,0 +1,74 @@
+{
+  "invoices": [
+    {
+      "invoice_id": "INV-J",
+      "customer_id": "CUST-1",
+      "amount_cents": 50000,
+      "currency": "AUD",
+      "due_date": "2026-09-01"
+    },
+    {
+      "invoice_id": "INV-K",
+      "customer_id": "CUST-1",
+      "amount_cents": 70000,
+      "currency": "AUD",
+      "due_date": "2026-09-01"
+    },
+    {
+      "invoice_id": "INV-L",
+      "customer_id": "CUST-2",
+      "amount_cents": 50000,
+      "currency": "AUD",
+      "due_date": "2026-09-01"
+    },
+    {
+      "invoice_id": "INV-M",
+      "customer_id": "CUST-2",
+      "amount_cents": 50000,
+      "currency": "AUD",
+      "due_date": "2026-09-01"
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "PROJ-CUST-1-1",
+      "customer_id": "CUST-1",
+      "active": true
+    },
+    {
+      "project_id": "PROJ-CUST-1-2",
+      "customer_id": "CUST-1",
+      "active": true
+    },
+    {
+      "project_id": "PROJ-CUST-1-3",
+      "customer_id": "CUST-1",
+      "active": true
+    },
+    {
+      "project_id": "PROJ-CUST-1-INACTIVE",
+      "customer_id": "CUST-1",
+      "active": false
+    },
+    {
+      "project_id": "PROJ-CUST-2-1",
+      "customer_id": "CUST-2",
+      "active": true
+    },
+    {
+      "project_id": "PROJ-CUST-2-2",
+      "customer_id": "CUST-2",
+      "active": true
+    },
+    {
+      "project_id": "PROJ-CUST-2-3",
+      "customer_id": "CUST-2",
+      "active": true
+    },
+    {
+      "project_id": "PROJ-404",
+      "customer_id": "CUST-404",
+      "active": true
+    }
+  ]
+}

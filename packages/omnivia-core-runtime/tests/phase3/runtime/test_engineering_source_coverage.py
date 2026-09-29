@@ -1155,6 +1155,15 @@ def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
     assert pack["omissions"] == []
     assert ranked and denied_ids.isdisjoint(ranked)
 
+    cited_ref = next(
+        citation["record_ref"]
+        for citation in pack["citations"]
+        if citation["record_ref"]["record_id"] == open_a["record_id"]
+    )
+    assert workspace.ok(
+        "engineering.expand", {"anchor": cited_ref}, session=reader
+    )["nodes"] == [cited_ref]
+
     # Access revocation: the open evidence gains the restricted label.
     pinned = search("candidates", limit=1)["page"]["continuation_token"]
     m2.write(
@@ -1173,6 +1182,9 @@ def test_diagnostic_reads_never_reveal_label_denied_records_to_another_reader(
     assert search("candidates")["previews"] == search("accepted")["previews"] == []
     revoked = workspace.ok("engineering.context.build", build, session=reader)["pack"]
     assert revoked["citations"] == [] and revoked["omissions"] == []
+    assert workspace.refused(
+        "engineering.expand", {"anchor": cited_ref}, session=reader
+    )[0] == "not_found"
 
 
 def _accept(workspace: Workspace, record: dict[str, str]) -> dict[str, str]:
@@ -1724,6 +1736,74 @@ def test_malformed_or_unanchored_dependency_manifests_are_refused(
     assert workspace.holder.connection.execute(
         "SELECT COUNT(*) FROM omnivia_governed_version_assemblies"
     ).fetchone()[0] == governed
+
+
+def test_oversized_multibyte_observation_is_refused_without_partial_content(
+    workspace: Workspace,
+) -> None:
+    """AC-031: the 64 KiB cap counts UTF-8 bytes and never truncates on save."""
+    connection = workspace.holder.connection
+    tables = (
+        "omnivia_governed_records",
+        "omnivia_governed_version_assemblies",
+        "omnivia_governed_provenance_events",
+        "omnivia_governed_version_seals",
+        "omnivia_engineering_preview_projection",
+    )
+    before = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in tables
+    }
+    payload = _observation(None, evidence=False)
+    payload["content"]["additional_context"] = "🧪" * 20_000
+
+    code, message, retry = workspace.refused("memory.create", payload)
+
+    assert code == "invalid_request"
+    assert retry == "non_retryable"
+    assert "65536-byte payload cap" in message
+    assert "🧪" not in message
+    assert {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in tables
+    } == before
+
+
+def test_authority_workspace_and_reviewer_claims_cannot_escape_the_content_boundary(
+    workspace: Workspace,
+) -> None:
+    """AC-006: outer authority smuggling fails; nested claims remain inert content."""
+    outer = _observation(None, evidence=False)
+    outer.update(
+        {
+            "workspace_id": "ws-attacker",
+            "governance_state": "accepted",
+            "authority_level": "canonical",
+            "reviewer": "reviewer-attacker",
+        }
+    )
+    assert workspace.refused("memory.create", outer)[0] == "invalid_request"
+
+    nested = _observation(None, evidence=False)
+    nested["content"].update(
+        {
+            "workspace_id": "ws-attacker",
+            "governance_state": "accepted",
+            "authority_level": "canonical",
+            "reviewer": "reviewer-attacker",
+        }
+    )
+    created = workspace.ok("memory.create", nested)
+    identity = created["record"]["provenance"]["identity"]
+    row = workspace.holder.connection.execute(
+        "SELECT workspace_id, layer, authority_level, governance_disposition, "
+        "decision_source_kind, decision_source_id "
+        "FROM omnivia_governed_version_assemblies "
+        "WHERE governed_record_id = ? AND governed_record_version_id = ?",
+        (identity["record_id"], identity["version"]),
+    ).fetchone()
+    assert row == (WORKSPACE_ID, "candidate", "proposed", None, None, None)
+    assert "reviewer" not in created["record"]
 
 
 @pytest.mark.parametrize("wrong", [[], {}, ["git_commit"], {"complete": 1}])

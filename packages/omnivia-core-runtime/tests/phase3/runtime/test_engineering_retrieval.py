@@ -235,6 +235,48 @@ def test_the_query_selects_within_the_frozen_frontier(tmp_path: Any) -> None:
         holder.connection.close()
 
 
+def test_near_duplicate_observations_with_different_snapshots_remain_distinct(
+    tmp_path: Any,
+) -> None:
+    """AC-030: similarity never destructively merges separate occurrences."""
+    holder = _owned(tmp_path)
+    try:
+        first_content = dict(_OBSERVATION_CONTENT)
+        first_content["applicability"] = {
+            "repository_id": "erepo-auth",
+            "snapshot_id": "esnap-main",
+        }
+        second_content = dict(_OBSERVATION_CONTENT)
+        second_content["summary"] = (
+            "The fixture authenticates but still fails on the experimental snapshot."
+        )
+        second_content["applicability"] = {
+            "repository_id": "erepo-auth",
+            "snapshot_id": "esnap-experiment",
+        }
+
+        first = _settle_create(holder, marker="near-duplicate-1", content=first_content)
+        second = _settle_create(holder, marker="near-duplicate-2", content=second_content)
+        first_identity = first.result["record"]["provenance"]["identity"]
+        second_identity = second.result["record"]["provenance"]["identity"]
+
+        assert first_identity["record_id"] != second_identity["record_id"]
+        assert first_identity["version"] != second_identity["version"]
+        previews = {
+            preview["record_id"]: preview
+            for preview in _search(holder, view="candidates")["previews"]
+        }
+        assert {first_identity["record_id"], second_identity["record_id"]} <= previews.keys()
+        assert previews[first_identity["record_id"]]["snapshot_id"] == "esnap-main"
+        assert previews[second_identity["record_id"]]["snapshot_id"] == "esnap-experiment"
+        assert {
+            previews[first_identity["record_id"]]["governance_state"],
+            previews[second_identity["record_id"]]["governance_state"],
+        } == {"candidate"}
+    finally:
+        holder.connection.close()
+
+
 def test_working_context_reads_the_checkpoint_index(tmp_path: Any) -> None:
     holder = _owned(tmp_path)
     try:

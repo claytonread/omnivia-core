@@ -397,7 +397,7 @@ def _authorized_endpoint_pair(
                     resolution_instant_us=run.resolution_instant_us,
                     view=view,
                     label_grant=label_grant,
-                )
+                )[0]
             )
         if run.anchor_assembly_id not in admitted or other_assembly_id not in admitted:
             # The same refusal covers absent, rejected, stale and ACL-denied exact
@@ -647,7 +647,7 @@ def _authorized_preview_frontier(
             view=view,
             label_grant=label_grant,
             record_ids=record_ids,
-        ):
+        )[0]:
             if candidate.assembly_id not in eligible:
                 continue
             prior = visible.setdefault(candidate.assembly_id, candidate)
@@ -1743,7 +1743,7 @@ def read_authorized_relation_candidates(
     """Return one view's pending relations after both endpoints are authorized."""
 
     with read_snapshot(connection):
-        previews = read_authorized_previews(
+        previews, _frontier_digest = read_authorized_previews(
             connection,
             workspace_id=workspace_id,
             resolution_instant_us=resolution_instant_us,

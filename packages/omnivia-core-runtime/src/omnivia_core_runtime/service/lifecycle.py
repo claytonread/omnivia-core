@@ -117,9 +117,16 @@ class ReadinessRequirements:
     integrity_check_passed: bool = False
     exact_schema_and_trigger_fingerprint: bool = False
     migrations_and_jobs_recovered: bool = False
+    # A diagnostic, not a precondition: which schema/trigger oracle failed and
+    # why. Never counted by `unmet`, never published as its own condition.
+    schema_oracle_diagnostic: str = ""
 
     def unmet(self) -> list[str]:
-        return [name for name, value in vars(self).items() if not value]
+        return [
+            name
+            for name, value in vars(self).items()
+            if not value and name != "schema_oracle_diagnostic"
+        ]
 
     @property
     def satisfied(self) -> bool:
@@ -202,8 +209,11 @@ class ServiceLifecycle:
         self.readiness = requirements
         if not requirements.satisfied:
             self.fail(f"readiness refused; unmet: {requirements.unmet()}")
+            diagnostic = requirements.schema_oracle_diagnostic
+            detail = f" (failed schema/trigger oracle: {diagnostic})" if diagnostic else ""
             raise ReadinessRefused(
-                f"writable readiness refused; unmet preconditions: {requirements.unmet()}"
+                f"writable readiness refused; unmet preconditions: "
+                f"{requirements.unmet()}{detail}"
             )
         return self.transition_to(ServiceState.READY)
 

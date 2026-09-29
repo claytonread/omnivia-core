@@ -80,6 +80,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize_application_request,
 )
 from omnivia_core_runtime.service.chat_submit import resolve_chat_command
+from omnivia_core_runtime.service.handlers.analysis import analysis_start
 from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
     CHAT_EVENTS_OPERATION,
@@ -179,6 +180,7 @@ KNOWLEDGE_SEARCH_OPERATION: Final = "knowledge.search"
 MEMORY_SEARCH_OPERATION: Final = "memory.search"
 GRAPH_TRAVERSE_OPERATION: Final = "graph.traverse"
 CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
+ANALYSIS_START_OPERATION: Final = "analysis.start"
 
 #: The purpose each granted operation is served under. There is no purpose registry in
 #: the contract -- purposes are pattern-validated at the boundary and then checked
@@ -216,6 +218,10 @@ CONTINUITY_HANDOFF_PURPOSE: Final = "continuity_handoff"
 ENGINEERING_SEARCH_PURPOSE: Final = "engineering_search"
 ENGINEERING_EXPAND_PURPOSE: Final = "engineering_expand"
 ENGINEERING_CONTEXT_PURPOSE: Final = "engineering_context"
+#: Governed analysis (SPEC-CORE-DATA-001): the milestone-1 refusal boundary is
+#: its own purpose rather than a restatement of `knowledge_retrieval`, because
+#: the analysis grant is negotiated separately from the knowledge surface.
+ANALYSIS_REQUEST_PURPOSE: Final = "insights_analysis_request"
 
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -236,6 +242,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.search": ENGINEERING_SEARCH_PURPOSE,
         "engineering.expand": ENGINEERING_EXPAND_PURPOSE,
         "engineering.context.build": ENGINEERING_CONTEXT_PURPOSE,
+        ANALYSIS_START_OPERATION: ANALYSIS_REQUEST_PURPOSE,
     }
 )
 
@@ -272,9 +279,9 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: and a read-only local owner holding a mutation is precisely the failure that
 #: constructor exists to prevent. The seven authority families are unchanged.
 JOB_OBSERVATION_PURPOSE: Final = "job_observation"
-INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = (
-    JOB_FAMILY_OPERATIONS | {EVIDENCE_CAPTURE_OPERATION}
-)
+INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
+    EVIDENCE_CAPTURE_OPERATION
+}
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
@@ -560,7 +567,9 @@ def local_owner_session(
     # Asserted from the catalogue, never from the literal list, so this is a property of
     # what was granted rather than a restatement of it (§6.2 constraint 3). One line,
     # and it makes the parameterised shape structurally unable to grant a mutation.
-    mutating = tuple(entry.name for entry in entries if entry.scope.side_effect != "none")
+    mutating = tuple(
+        entry.name for entry in entries if entry.scope.side_effect != "none"
+    )
     if mutating:
         raise ValueError(
             "a local-owner session grants read-only operations; "
@@ -617,7 +626,9 @@ def installation_owner_session(
     operations = frozenset(INSTALLATION_OPERATION_PURPOSES)
     entries = tuple(get_operation_metadata(name) for name in sorted(operations))
     if any(entry.scope.scope_kind != SCOPE_KIND_INSTALLATION for entry in entries):
-        raise ValueError("an installation-owner session may grant only installation scope")
+        raise ValueError(
+            "an installation-owner session may grant only installation scope"
+        )
     return AuthenticatedSession(
         principal_id=principal_id,
         roles=frozenset({INSTALLATION_ADMINISTRATOR_ROLE}),
@@ -731,7 +742,9 @@ def build_job_registry(
     that is a different question from which module implements each of them.
     """
     registry = ApplicationOperationRegistry()
-    registry.register(IMPORT_START_OPERATION, cast(OperationHandler, handlers.import_start))
+    registry.register(
+        IMPORT_START_OPERATION, cast(OperationHandler, handlers.import_start)
+    )
     registry.register(
         EVIDENCE_CAPTURE_OPERATION, cast(OperationHandler, evidence.evidence_capture)
     )
@@ -1115,10 +1128,18 @@ def build_governance_registry(
     handlers: GovernanceHandlers,
 ) -> ApplicationOperationRegistry:
     registry = ApplicationOperationRegistry()
-    registry.register("knowledge.propose", cast(OperationHandler, handlers.knowledge_propose))
-    registry.register("candidate.approve", cast(OperationHandler, handlers.candidate_approve))
-    registry.register("candidate.reject", cast(OperationHandler, handlers.candidate_reject))
-    registry.register("record.supersede", cast(OperationHandler, handlers.record_supersede))
+    registry.register(
+        "knowledge.propose", cast(OperationHandler, handlers.knowledge_propose)
+    )
+    registry.register(
+        "candidate.approve", cast(OperationHandler, handlers.candidate_approve)
+    )
+    registry.register(
+        "candidate.reject", cast(OperationHandler, handlers.candidate_reject)
+    )
+    registry.register(
+        "record.supersede", cast(OperationHandler, handlers.record_supersede)
+    )
     return registry
 
 
@@ -1217,8 +1238,6 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
     return registry
 
 
-
-
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -1255,6 +1274,7 @@ def build_application_registry(
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
+    registry.register(ANALYSIS_START_OPERATION, cast(OperationHandler, analysis_start))
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
     return registry
@@ -1282,7 +1302,9 @@ def build_installation_registry(
     # callable with the workspace context type. The application dispatcher selects
     # the context from frozen catalogue scope before invocation, so this cast adapts
     # only that legacy annotation; it does not widen runtime authority.
-    registry.register(WORKSPACE_CREATE_OPERATION, cast(OperationHandler, workspace_create))
+    registry.register(
+        WORKSPACE_CREATE_OPERATION, cast(OperationHandler, workspace_create)
+    )
     registry.register(WORKSPACE_LIST_OPERATION, cast(OperationHandler, workspace_list))
     return registry
 
@@ -1392,17 +1414,27 @@ class ProductionApplicationSurface:
             raise ValueError(
                 "the production application routes do not exactly match the registry"
             )
-        distinct_routes = tuple({id(route): route for route in routes.values()}.values())
+        distinct_routes = tuple(
+            {id(route): route for route in routes.values()}.values()
+        )
         if len(distinct_routes) != 9:
             raise ValueError(
                 "the production surface requires exactly nine authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
-            raise ValueError("every production application family must act as one principal")
-        if any(route.probe.grant.principal != self._principal for route in distinct_routes):
-            raise ValueError("every production application fallback must keep one principal")
+            raise ValueError(
+                "every production application family must act as one principal"
+            )
+        if any(
+            route.probe.grant.principal != self._principal for route in distinct_routes
+        ):
+            raise ValueError(
+                "every production application fallback must keep one principal"
+            )
         if self.probe.grant.principal != self._principal:
-            raise ValueError("the production application surface and probe disagree on principal")
+            raise ValueError(
+                "the production application surface and probe disagree on principal"
+            )
         if self.adapters != frozenset({"in_process", "ipc", "http"}):
             raise ValueError(
                 "the production application surface requires in_process, ipc and http"

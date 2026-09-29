@@ -241,6 +241,27 @@ def test_a_pack_is_built_with_exact_counts_and_a_self_verifying_checksum(
         holder.connection.close()
 
 
+def test_engineering_context_build_does_not_persist_a_pack_body(tmp_path: Any) -> None:
+    """AC-048: the engineering v1 build is a read, including on success."""
+    holder = _owned(tmp_path)
+    try:
+        _settle_create(holder, marker="obs-non-persisting", content=dict(_CONTENT))
+        before_rows = holder.connection.execute(
+            "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+        ).fetchall()
+        before_changes = holder.connection.total_changes
+
+        built = _build(holder)["pack"]
+
+        assert built["pack_id"].startswith("sha256:")
+        assert holder.connection.total_changes == before_changes
+        assert holder.connection.execute(
+            "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+        ).fetchall() == before_rows
+    finally:
+        holder.connection.close()
+
+
 def test_an_empty_frontier_builds_a_honest_empty_pack(tmp_path: Any) -> None:
     holder = _owned(tmp_path)
     try:

@@ -74,7 +74,11 @@ EXPECTED_COMMANDS = (
     (("decisions", "configure"), "decision.settings.update", "decision_configuration"),
     # Engineering memory (SPEC-CORE-ENGMEM-001), appended in amendment order.
     (("continuity", "register"), "continuity.session.register", "continuity_session"),
-    (("continuity", "checkpoint"), "continuity.checkpoint.append", "continuity_checkpoint"),
+    (
+        ("continuity", "checkpoint"),
+        "continuity.checkpoint.append",
+        "continuity_checkpoint",
+    ),
     (("continuity", "close"), "continuity.session.close", "continuity_session"),
     (("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"),
     (("engineering", "search"), "engineering.search", "engineering_search"),
@@ -92,6 +96,11 @@ EXPECTED_COMMANDS = (
         ("repository", "register"),
         "engineering.repository.register",
         "engineering_repository",
+    ),
+    (
+        ("analysis", "start"),
+        "analysis.start",
+        "insights_analysis_request",
     ),
 )
 
