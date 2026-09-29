@@ -214,7 +214,8 @@
         "engineering.review.record",
         "engineering.source.record",
         "engineering.repository.register",
-        "analysis.start"
+        "analysis.start",
+        "decision.result_use.evaluate"
       ]
     },
     {
@@ -470,7 +471,8 @@
         "engineering.review.record",
         "engineering.source.record",
         "engineering.repository.register",
-        "analysis.start"
+        "analysis.start",
+        "decision.result_use.evaluate"
       ]
     },
     {
@@ -534,7 +536,8 @@
         "engineering.review.record",
         "engineering.source.record",
         "engineering.repository.register",
-        "analysis.start"
+        "analysis.start",
+        "decision.result_use.evaluate"
       ]
     },
     {

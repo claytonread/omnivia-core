@@ -1295,6 +1295,126 @@
         "profile_id"
       ],
       "unevaluatedProperties": false
+    },
+    "ResultUseEvaluateInput": {
+      "title": "ResultUseEvaluateInput",
+      "description": "Input for `decision.result_use.evaluate`: the deterministic result-use gate over one pinned analytical subject. Every input is a claim the evaluation checks; none grants anything. Completeness and continuity unknowns deny by default.",
+      "type": "object",
+      "properties": {
+        "request_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Payload schema version; milestone 1 supports 1.0."
+        },
+        "use_class": {
+          "type": "string",
+          "enum": [
+            "exploration",
+            "historical_display",
+            "current_publication",
+            "action_input"
+          ],
+          "description": "The use the result is requested for."
+        },
+        "subject_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Exact digest of the analytical subject being gated."
+        },
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unknown"
+          ],
+          "description": "Coverage of the required authorised scope at the recorded cutoff."
+        },
+        "continuity": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "gap_detected",
+            "unknown",
+            "not_applicable"
+          ],
+          "description": "Whether the applied history is contiguous for the declared scope."
+        },
+        "freshness_ok": {
+          "type": "boolean",
+          "description": "Whether the strongest verification evidence satisfies the requested freshness."
+        },
+        "schema_compatible": {
+          "type": "boolean",
+          "description": "Whether the approved mappings still apply to the observed schema."
+        },
+        "evidence_available": {
+          "type": "boolean",
+          "description": "Whether retained proof can be accessed and replayed under current policy."
+        },
+        "policy_permits_partial_or_stale": {
+          "type": "boolean",
+          "description": "Whether the controlling use policy permits the declared partial/stale class."
+        },
+        "authority_epoch": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The authority epoch the evaluation is bound to."
+        }
+      },
+      "required": [
+        "request_version",
+        "use_class",
+        "subject_digest",
+        "completeness",
+        "continuity",
+        "freshness_ok",
+        "schema_compatible",
+        "evidence_available",
+        "policy_permits_partial_or_stale",
+        "authority_epoch"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ResultUseEvaluateResult": {
+      "title": "ResultUseEvaluateResult",
+      "description": "The deterministic result-use decision: outcome, every applicable reason, the subject and policy digests it was bound to, and an upper-bound validity instant. A decision is an eligibility statement, never an effect grant.",
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "allow_with_warning",
+            "deny"
+          ],
+          "description": "allow, allow_with_warning or deny. Never an effect grant."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "description": "Machine-readable reason codes in evaluation order."
+        },
+        "subject_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Digest of the gated subject, echoed for binding."
+        },
+        "authority_epoch": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The authority epoch bound into the decision."
+        },
+        "valid_until": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Upper bound of validity; earlier invalidation by revocation or new gap evidence."
+        }
+      },
+      "required": [
+        "outcome",
+        "reasons",
+        "subject_digest",
+        "authority_epoch",
+        "valid_until"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }
