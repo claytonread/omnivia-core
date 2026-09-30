@@ -51,8 +51,10 @@ from omnivia_core_runtime.service.application import (
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    ContinuityAssociationProvenance,
     Grant,
     ServiceBinding,
+    TrustedContinuityAssociation,
 )
 from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
@@ -63,6 +65,11 @@ from omnivia_core_runtime.service.chat_provider_route import provider_route_from
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
+)
+from omnivia_core_runtime.service.engineering_relation_assessment import (
+    EngineeringRelationAssessmentExecutor,
+    RelationAssessmentPolicy,
+    RelationAssessmentProvider,
 )
 from omnivia_core_runtime.service.engineering_source_capture_execution import (
     EngineeringSourceCaptureExecutor,
@@ -386,6 +393,12 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=decision,
+        local_continuity_association=TrustedContinuityAssociation(
+            association_id="core-local-application",
+            principal_id=LOCAL_PRINCIPAL,
+            workspace_id=started.workspace_id,
+            provenance=ContinuityAssociationProvenance.CORE_LOCAL_CONNECTION,
+        ),
     )
     return compose_production_application_surface(
         installation=installation,
@@ -569,11 +582,12 @@ def _serve_until_stopped(
     interrupted (EINTR) and the signal runs immediately -- but polling is harmless
     there too, so one path serves both platforms.
 
-    The poll is also the service-owned source scheduler. ``source_work`` is a bounded,
-    internally rate-limited pass, so it advances sealed or registered checkouts while
-    both transports are idle and under HTTP-only traffic. Git and filesystem work run
-    without the shared SQLite gate; the pass acquires that gate only for short reads,
-    fenced settlement and lease renewal.
+    The poll is also the service-owned source scheduler and invalidation recovery
+    seam. ``source_work`` is a bounded, internally rate-limited pass, so it advances
+    sealed or registered checkouts while both transports are idle and under HTTP-only
+    traffic. Git and filesystem work run without the shared SQLite gate; the pass
+    acquires that gate only for short reads, fenced settlement and lease renewal.
+    ``drain_pending_invalidation()`` is also bounded and cheap when no backlog exists.
 
     A renewal this instance can no longer show succeeded ends the run, through the
     same unwind and the same reverse resource order a signal takes. Nothing keeps
@@ -601,6 +615,9 @@ def _serve_until_stopped(
                     except Exception:  # noqa: BLE001 - same structural output below
                         renewal_failed = True
                         break
+            drain_invalidation = getattr(runner, "drain_pending_invalidation", None)
+            if drain_invalidation is not None:
+                drain_invalidation()
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.
@@ -731,6 +748,8 @@ def main(
     resolve_credential: CredentialResolver | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    relation_assessment_policy: RelationAssessmentPolicy | None = None,
+    relation_assessment_provider: RelationAssessmentProvider | None = None,
 ) -> int:
     """Own one workspace until told to stop.
 
@@ -953,10 +972,28 @@ def main(
             principal_id=LOCAL_PRINCIPAL,
         )
         source_work = source_executor.run_pending
+        assessment_policy = relation_assessment_policy or RelationAssessmentPolicy()
+        assessment_executor = (
+            EngineeringRelationAssessmentExecutor(
+                connection=started.connection,
+                identity=started.identity,
+                workspace_id=started.workspace_id,
+                fencing_generation=started.generation,
+                clock=started.clock,
+                policy=assessment_policy,
+                provider=relation_assessment_provider,
+            )
+            if assessment_policy.enabled
+            else None
+        )
 
         def service_work() -> None:
             executor.run_pending()
             conflict_executor.run_pending()
+            if assessment_executor is not None:
+                # Discovery has returned and committed before an assessment request is
+                # staged. The executor likewise closes staging before provider egress.
+                assessment_executor.run_pending()
 
         server = LocalSocketServer(
             router=router,

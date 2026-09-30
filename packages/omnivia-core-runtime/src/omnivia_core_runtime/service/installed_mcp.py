@@ -18,8 +18,8 @@ the day the catalogue moves, and no copy of it can go stale in between.
 **Least privilege is the shape of the data, not a rule about it.** The rights are
 stored one row per right and read back the same way; there is no pattern, no
 prefix, no "all of namespace x", and the schema refuses a `*` or a `?` in a
-granted value outright. A `restricted` principal holds fourteen operations, six
-scopes, nine capabilities, nine purposes and one role, and an `authoring` one
+granted value outright. A `restricted` principal holds thirteen operations, six
+scopes, nine capabilities, eight purposes and one role, and an `authoring` one
 holds those plus exactly five operations, two scopes, four capabilities and
 three purposes. It gains no additional role.
 
@@ -32,9 +32,8 @@ one `McpGrantKind.ROLE` row, `workspace_contributor` and nothing else -- rather
 than derived at authentication time from the profile, from the public MCP
 configuration file or from anything a caller says about itself. That makes it
 durable state this service wrote under an administrator, revoked with every other
-right the moment the setup generation advances, and it is why `restricted`
-carries no role row and why no path here can produce `knowledge_reviewer` or
-`installation_administrator`.
+right the moment the setup generation advances, and no path here can produce
+`knowledge_reviewer` or `installation_administrator`.
 
 **Nothing a caller says is authority.** Configure mints the principal, the
 credential reference and the secret itself, inside the write transaction, after
@@ -65,7 +64,11 @@ from omnivia_core.contracts.v1 import (
     CapabilityRef,
     get_operation_metadata,
 )
-from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ContinuityAssociationProvenance,
+    TrustedContinuityAssociation,
+)
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
     WORKSPACE_CONTRIBUTOR_ROLE,
@@ -121,7 +124,7 @@ _MESSAGE_NOT_AUTHENTICATED: Final = (
 # --- the two exact profiles ---------------------------------------------------
 #
 # The operation and the purpose are the MCP exposure manifest's (`manifest.py`,
-# `MANIFEST_VERSION` 2.2) and are restated here because the runtime must not
+# `MANIFEST_VERSION` 2.3) and are restated here because the runtime must not
 # import the MCP package: an agent-facing allow-list is a decision that package
 # owns, and a dependency in this direction would make the service unable to start
 # without it. Everything else about each operation is read from the catalogue.
@@ -136,7 +139,6 @@ _RESTRICTED_OPERATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("engineering.search", "engineering_search"),
     ("engineering.expand", "engineering_expand"),
     ("engineering.context.build", "engineering_context"),
-    ("continuity.handoff.read", "continuity_handoff"),
     ("decision.evaluate", "decision_evaluation"),
     ("decision.record.get", "decision_record"),
     ("decision.record.list", "decision_record"),
@@ -205,7 +207,7 @@ def _derive_policy(entries: tuple[tuple[str, str], ...]) -> tuple[McpGrant, ...]
 #: `INSTALLATION_ADMINISTRATOR_ROLE`, which administers this catalogue.
 _AUTHORING_ROLE: Final = McpGrant(McpGrantKind.ROLE, WORKSPACE_CONTRIBUTOR_ROLE)
 
-#: The restricted grant: exactly the manifest's restricted fourteen and what they
+#: The restricted grant: exactly the manifest's restricted thirteen and what they
 #: need. `decision.evaluate` is a mutation the restricted manifest admits, and
 #: the mutation coordinator serves it under the one workspace-contributor role,
 #: so the restricted principal holds that role -- and nothing else.
@@ -426,25 +428,26 @@ class InstalledMcpAuthority:
         credential it holds was ever real, and there is nothing an honest client
         does differently between them.
 
-        The resulting session grants exactly the durable rows: one workspace, the
-        stored operations, scopes, purposes, capabilities and roles, and no
-        installation authority at all. A restricted principal authenticates
-        perfectly well and simply cannot reach a mutation, because no mutation is
-        among its operations and no role row is among its rights.
+        The durable rows must still equal the current frozen policy for their
+        profile.  This fail-closed comparison makes a withdrawn tool take effect
+        for already-provisioned setups instead of leaving an old bearer holding
+        retired authority until an operator happens to rotate it.  A matching
+        session grants exactly those rows and no installation authority at all.
 
-        **Roles come from rows and from nowhere else.** There is no branch here
-        that reads the profile, the authoring intent, the MCP configuration file or
-        anything a caller presented beyond the bearer itself; a setup whose stored
-        rights contain no `ROLE` row authenticates with no role, whatever else it
-        says about itself. So a revocation or a rotation drops the role in the same
-        statement that drops every other right -- the previous generation's rows
-        stop being anybody's policy -- and a role can only ever have got here by
-        `configure` writing one profile's frozen policy under an administrator.
+        **Roles come from rows and from nowhere else.** The profile selects only
+        the exact current policy used for the equality check; it does not synthesize
+        any right. A setup whose stored rights contain no `ROLE` row therefore
+        authenticates with no role. Revocation or rotation drops the role in the
+        same statement that drops every other right, and a role can only have got
+        here by `configure` writing one profile's frozen policy under an
+        administrator.
         """
         resolved = self._store.resolve_mcp_credential(credential)
         if resolved is None:
             raise InstalledMcpAuthenticationError(_MESSAGE_NOT_AUTHENTICATED)
         setup = resolved.setup
+        if resolved.grants != profile_policy(setup.profile):
+            raise InstalledMcpAuthenticationError(_MESSAGE_NOT_AUTHENTICATED)
         operations: set[str] = set()
         scopes: set[str] = set()
         purposes: set[str] = set()
@@ -472,6 +475,12 @@ class InstalledMcpAuthority:
             scopes=frozenset(scopes),
             purposes=frozenset(purposes),
             capabilities=tuple(capabilities),
+            continuity_association=TrustedContinuityAssociation(
+                association_id=f"{setup.setup_id}.g{setup.setup_generation}",
+                principal_id=setup.principal_id,
+                workspace_id=setup.workspace_id,
+                provenance=ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION,
+            ),
         )
         return AuthenticatedMcpPrincipal(session=session, setup=setup)
 

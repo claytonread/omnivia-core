@@ -50,6 +50,9 @@ from omnivia_core_runtime.storage.engineering_source import (
     captured_coverage_digest,
     valid_path,
 )
+from omnivia_core_runtime.storage.engineering_source_producer import (
+    enqueue_capture_in_transaction,
+)
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 from omnivia_core_runtime.workspace.blob_publication import (
     publish_blob as _publish_blob,
@@ -1324,11 +1327,16 @@ def capture_working_tree_snapshot_owned(
     snapshot_id: str,
     manifest: WorkingTreeManifest | None = None,
     renew_lease: Callable[[], object] | None = None,
+    producer_expected_frontier: int | None = None,
+    producer_expected_predecessor_snapshot_id: str | None = None,
 ) -> WorkingTreeSnapshotResult:
     """Seal one frozen manifest through an already-owned service runner.
 
     The caller may supply the manifest it just captured so a producer can derive the
-    snapshot identity from those exact frozen bytes. No second checkout walk and no
+    snapshot identity from those exact frozen bytes. A live producer also supplies the
+    exact stream frontier and predecessor observed before the filesystem read; those
+    values are queued in the same transaction as the immutable capture seal. Generic
+    maintenance captures leave both values unset. No second checkout walk and no
     second workspace lease is opened. ``renew_lease`` is called around filesystem and
     publication work so the installed service can keep its existing lease current.
     """
@@ -1421,9 +1429,18 @@ def capture_working_tree_snapshot_owned(
                 capture_status=capture_status,
                 coverage=coverage,
             )
+            captured_row = runner.connection.execute(
+                "SELECT captured_at_us FROM omnivia_engineering_snapshot_captures "
+                "WHERE workspace_id = ? AND snapshot_id = ?",
+                (runner.workspace_id, snapshot_id),
+            ).fetchone()
+            if captured_row is None:  # pragma: no cover - validated immediately above
+                raise SourceCaptureRefused("the snapshot capture seal is unavailable")
+            captured_at_us = int(captured_row[0])
             status = "already_captured"
         else:
             now_us = time.time_ns() // 1000
+            captured_at_us = now_us
             audit_ref = f"aud-local-{uuid.uuid4().hex}"
             runner.connection.execute(
                 "INSERT INTO omnivia_application_audit_events "
@@ -1499,6 +1516,19 @@ def capture_working_tree_snapshot_owned(
                     audit_ref,
                 ),
             )
+        enqueue_capture_in_transaction(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            installation_id=runner.identity.installation_id,
+            snapshot_id=snapshot_id,
+            repository_id=repository_id,
+            checkout_id=checkout_id,
+            captured_at_us=captured_at_us,
+            expected_frontier=producer_expected_frontier,
+            expected_predecessor_snapshot_id=(
+                producer_expected_predecessor_snapshot_id
+            ),
+        )
     return WorkingTreeSnapshotResult(
         status=status,
         workspace_id=runner.workspace_id,

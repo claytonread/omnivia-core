@@ -133,6 +133,8 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.engineering_pack import (
     WORKING_CONTEXT_SHARE_DIVISOR,
     BuildContext,
+    ConflictGroup,
+    ConflictRecord,
     MandatoryContextTooLarge,
     PackRecord,
     WorkingItem,
@@ -279,6 +281,10 @@ _MESSAGE_SOURCE_READ_BOUND: Final = (
 _MESSAGE_AUTHORIZED_CANDIDATE_BOUND: Final = (
     "the authorized engineering frontier exceeds its bounded candidate budget"
 )
+_AUTHORIZATION_SAFETY_NOTICE: Final = (
+    "Some otherwise eligible content was withheld because its safe use could not "
+    "be established under the current authorization."
+)
 _MESSAGE_PAYLOAD_INVALID: Final = (
     "an engineering source payload failed its stored byte-length check"
 )
@@ -286,7 +292,7 @@ _MESSAGE_PAYLOAD_INVALID: Final = (
 CONTEXT_BUILD_SECTION_CAP: Final = 24
 CONTEXT_BUILD_ABSOLUTE_SECTION_CAP: Final = 64
 CONTEXT_BUILD_CHECKPOINT_CAP: Final = 5
-CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-3"
+CONTEXT_BUILD_SELECTION_PROFILE: Final = "eng-preview-select-4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1663,6 +1669,7 @@ class EngineeringHandlers:
         )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
+
     # --- engineering.review.record -------------------------------------------------
 
     def engineering_review_record(
@@ -1920,11 +1927,15 @@ class EngineeringHandlers:
         selected_previews: list[
             tuple[PreviewCandidate, str, tuple[str, ...]]
         ] = []
+        selected_conflict_components: list[
+            tuple[engineering_conflicts.ConflictComponent, bool]
+        ] = []
         values: tuple[Any, ...] = ()
         evaluated = unproven = 0
         selection_omitted = False
         source_budget_omitted = False
         working_share_omitted = False
+        authorization_safety_omitted = False
         authorized_candidate_count = eligible_count = 0
         normalized_query = normalize_query(request.query)
         label_grant = self._label_grant(context)
@@ -2163,19 +2174,92 @@ class EngineeringHandlers:
             best_accepted.sort(key=selection_key)
             best_candidates.sort(key=selection_key)
             selection_omitted = eligible_count > record_capacity
-            ranked_previews = (*best_accepted, *best_candidates)
+            ranked_previews: tuple[
+                tuple[PreviewCandidate, str, tuple[str, ...]], ...
+            ] = (*best_accepted, *best_candidates)
+            try:
+                conflict_read = (
+                    engineering_conflicts.read_authorized_conflict_components(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        resolution_instant_us=resolved_at_us,
+                        label_grant=label_grant,
+                        eligible_endpoints=tuple(
+                            engineering_conflicts.RelationEndpoint(
+                                candidate.assembly_id,
+                                candidate.record_id,
+                                candidate.version,
+                                candidate.content_digest,
+                            )
+                            for candidate, _partition, _support in ranked_previews
+                        ),
+                    )
+                )
+            except engineering_conflicts.ContextConflictLimitExceeded as error:
+                raise application_refusal(
+                    ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+                    _MESSAGE_AUTHORIZED_CANDIDATE_BOUND,
+                ) from error
+
+            conflict_components = conflict_read.components
+
+            ranked_by_assembly = {
+                item[0].assembly_id: item for item in ranked_previews
+            }
+            ranked_order = {
+                item[0].assembly_id: ordinal
+                for ordinal, item in enumerate(ranked_previews)
+            }
+            conflict_by_assembly = {
+                endpoint.assembly_id: component
+                for component in conflict_components
+                for endpoint in component.endpoints
+            }
+            handled_conflicts: set[tuple[str, ...]] = set()
             admitted_components: set[tuple[str, str]] = set()
             planned_payload_bytes = 0
             for item in ranked_previews:
                 if len(selected_previews) == record_capacity:
                     break
-                candidate, _partition, support = item
+                candidate = item[0]
+                if candidate.assembly_id in conflict_read.withheld_endpoint_ids:
+                    authorization_safety_omitted = True
+                    continue
+                conflict = conflict_by_assembly.get(candidate.assembly_id)
+                group: tuple[
+                    tuple[PreviewCandidate, str, tuple[str, ...]], ...
+                ]
+                if conflict is None:
+                    group = (item,)
+                else:
+                    conflict_key = tuple(
+                        endpoint.assembly_id for endpoint in conflict.endpoints
+                    )
+                    if conflict_key in handled_conflicts:
+                        continue
+                    handled_conflicts.add(conflict_key)
+                    group = tuple(
+                        sorted(
+                            (
+                                ranked_by_assembly[endpoint.assembly_id]
+                                for endpoint in conflict.endpoints
+                            ),
+                            key=lambda grouped: ranked_order[grouped[0].assembly_id],
+                        )
+                    )
+                    if len(selected_previews) + len(group) > record_capacity:
+                        selected_conflict_components.append((conflict, True))
+                        selection_omitted = True
+                        continue
                 try:
                     plan = plan_authorized_governed_payload(
                         connection,
                         workspace_id=context.workspace_id,
                         resolution_instant_us=resolved_at_us,
-                        authorized_support={candidate.assembly_id: support},
+                        authorized_support={
+                            grouped[0].assembly_id: grouped[2]
+                            for grouped in group
+                        },
                         payload_budget=payload_budget,
                     )
                 except (PayloadBudgetExceeded, PayloadLengthMismatch) as error:
@@ -2195,8 +2279,12 @@ class EngineeringHandlers:
                     > payload_budget.remaining
                 ):
                     source_budget_omitted = True
+                    if conflict is not None:
+                        selected_conflict_components.append((conflict, True))
                     continue
-                selected_previews.append(item)
+                selected_previews.extend(group)
+                if conflict is not None:
+                    selected_conflict_components.append((conflict, False))
                 planned_payload_bytes += incremental_bytes
                 admitted_components.update(
                     (kind, identity)
@@ -2271,6 +2359,11 @@ class EngineeringHandlers:
                 "Target applicability is not evaluated in this build; every "
                 "applicability statement is `not_evaluated`."
             )
+        if authorization_safety_omitted:
+            omissions.append(
+                {"field": "sections", "reason": "authorization_safety"}
+            )
+            selection_uncertainties.append(_AUTHORIZATION_SAFETY_NOTICE)
         if selection_omitted:
             omissions.append({"field": "sections", "reason": "selection_limit"})
             selection_uncertainties.append(
@@ -2372,6 +2465,17 @@ class EngineeringHandlers:
                 notice=notice,
                 uncertainties=[notice, *selection_uncertainties],
                 omissions=omissions,
+                conflict_groups=tuple(
+                    ConflictGroup(
+                        records=tuple(
+                            ConflictRecord(endpoint.record_id, endpoint.version)
+                            for endpoint in component.endpoints
+                        ),
+                        status=component.status,
+                        omitted=omitted,
+                    )
+                    for component, omitted in selected_conflict_components
+                ),
             )
         except MandatoryContextTooLarge as error:
             error_code = (

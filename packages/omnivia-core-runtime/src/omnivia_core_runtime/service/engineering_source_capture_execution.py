@@ -3,9 +3,9 @@
 The executor shares the live ``ServiceRunner`` connection, lease and fencing
 generation. Each bounded pass coordinates one execution budget across two lanes:
 chain-proven recovery of sealed captures left by a crash, and capture of a
-registered checkout from local registration state. While one executor remains
-live, neither lane may starve the other across bounded passes; see
-``run_pending`` for the fairness rule.
+registered checkout from local registration state. Durable lane and keyset
+cursors keep either lane from starving across bounded passes and service
+restarts; see ``run_pending`` for the fairness rule.
 Filesystem paths stay inside the trusted capture primitive and never enter an
 application request or result.
 """
@@ -26,12 +26,14 @@ from omnivia_core.contracts.v1 import (
     RequestMetadata,
     SuccessResponseEnvelope,
 )
+from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
     capture_working_tree_manifest,
     capture_working_tree_snapshot_owned,
 )
+from omnivia_core_runtime.storage import engineering_source_producer
 from omnivia_core_runtime.storage.connection import StorageError
 
 DEFAULT_EXECUTION_BUDGET: Final = 2
@@ -89,9 +91,6 @@ class EngineeringSourceCaptureExecutor:
     principal_id: str
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     _next_poll: float = 0.0
-    _checkout_cursor: str | None = None
-    _seal_cursor: tuple[int, str] | None = None
-    _pending_turn: bool = True
 
     def run_pending(
         self,
@@ -101,18 +100,11 @@ class EngineeringSourceCaptureExecutor:
     ) -> SourceProducerPass:
         """Run at most ``budget`` recovery/capture units and never drain forever.
 
-        The budget is split across two lanes so neither can starve the other:
-        pending-seal recovery and live-checkout capture. For ``budget >= 2``,
-        pending recovery is capped at ``budget - 1`` so at least one unit is
-        always available to checkout capture when it has work; the reserved
-        unit is handed back to pending if checkout turns out to have none.
-        For ``budget == 1`` there is no unit to reserve, so lane priority
-        alternates every pass instead (``_pending_turn``, in-memory only -- a
-        restart resets it, but the following pass still reaches the other
-        lane). If a preferred lane has no work, the other lane may use the
-        unit rather than idling. Durable rotation across restarts needs
-        scheduler schema; this in-memory scheme is the migration-free
-        safeguard.
+        The durable scheduler alternates the first lane before doing any
+        filesystem or application work. For ``budget >= 2``, the first lane is
+        capped at ``budget - 1`` so the other lane keeps one unit. If either lane
+        has no work, the other may use the unused budget. Legacy pre-0058 seals
+        are indexed into the queue in a separate bounded batch.
         """
 
         if budget <= 0:
@@ -122,16 +114,12 @@ class EngineeringSourceCaptureExecutor:
             return SourceProducerPass(inspected=0, captured=0, committed=0)
         self._next_poll = now + max(self.poll_interval_seconds, 0.0)
 
-        if budget == 1:
-            pending_first = self._pending_turn
-            self._pending_turn = not self._pending_turn
-        else:
-            pending_first = True
-
         tally = _Tally()
         try:
+            self._seed_legacy_captures()
+            first_lane = self._take_lane_turn()
             first_cap = budget - 1 if budget >= 2 else budget
-            if pending_first:
+            if first_lane == "recovery":
                 self._run_pending_lane(tally, limit=first_cap)
                 self._run_checkout_lane(tally, limit=budget - tally.inspected)
                 if tally.inspected < budget:
@@ -139,6 +127,8 @@ class EngineeringSourceCaptureExecutor:
             else:
                 self._run_checkout_lane(tally, limit=first_cap)
                 self._run_pending_lane(tally, limit=budget - tally.inspected)
+                if tally.inspected < budget:
+                    self._run_checkout_lane(tally, limit=budget - tally.inspected)
         except (StorageError, sqlite3.Error):
             # Lost ownership and SQLite contention belong to this service pass, not
             # to a capture. Durable headers/events remain the recovery truth.
@@ -156,16 +146,25 @@ class EngineeringSourceCaptureExecutor:
 
         if limit <= 0:
             return
-        # Read one bounded candidate batch once. The in-memory cursor prevents a
-        # refused oldest seal from consuming every later pass. Durable rotation
-        # across restarts needs scheduler schema; this is the migration-free
-        # safeguard.
-        for repository_id, snapshot_id, stream_id in self._pending_seals(limit=limit):
+        for item in self._take_queue_items(limit=limit):
             tally.inspected += 1
             try:
-                self._commit(repository_id, snapshot_id, stream_id)
+                if self._snapshot_already_committed(item.snapshot_id, item.stream_id):
+                    self._mark_queue_settled(item.snapshot_id)
+                    continue
+                self._commit(
+                    item.repository_id,
+                    item.snapshot_id,
+                    item.stream_id,
+                    expected_frontier=item.expected_frontier,
+                    expected_predecessor_snapshot_id=(
+                        item.expected_predecessor_snapshot_id
+                    ),
+                )
             except SourceCaptureRefused:
+                self._mark_queue_retry(item.snapshot_id)
                 continue
+            self._mark_queue_settled(item.snapshot_id)
             tally.committed += 1
 
     def _run_checkout_lane(self, tally: _Tally, *, limit: int) -> None:
@@ -173,7 +172,7 @@ class EngineeringSourceCaptureExecutor:
 
         consumed = 0
         while consumed < limit:
-            checkout = self._next_checkout()
+            checkout = self._take_next_checkout()
             if checkout is None:
                 break
             repository_id, checkout_id, checkout_hint = checkout
@@ -182,8 +181,7 @@ class EngineeringSourceCaptureExecutor:
 
             assert self.runner.workspace_id is not None
             assert self.runner.identity is not None
-            stream_id = _derived(
-                "src-stream",
+            stream_id = engineering_source_producer.source_stream_id(
                 self.runner.workspace_id,
                 repository_id,
                 self.runner.identity.installation_id,
@@ -193,8 +191,8 @@ class EngineeringSourceCaptureExecutor:
             # Capturing another head would leave more unusable seals behind. The
             # observed frontier is revalidated at commit time so a concurrent
             # append or gap fails this attempt closed rather than misattaching.
-            expected_frontier = self._stream_accepts_new_head(repository_id, stream_id)
-            if expected_frontier is None:
+            plan = self._stream_accepts_new_head(repository_id, stream_id)
+            if plan is None:
                 continue
 
             def renew_lease() -> bool:
@@ -214,7 +212,7 @@ class EngineeringSourceCaptureExecutor:
                 checkout_id,
                 manifest_digest,
             )
-            if self._snapshot_already_committed(snapshot_id):
+            if self._snapshot_already_committed(snapshot_id, stream_id):
                 continue
             result = capture_working_tree_snapshot_owned(
                 self.runner,
@@ -223,127 +221,143 @@ class EngineeringSourceCaptureExecutor:
                 snapshot_id=snapshot_id,
                 manifest=manifest,
                 renew_lease=renew_lease,
+                producer_expected_frontier=plan.sequence - 1,
+                producer_expected_predecessor_snapshot_id=(
+                    plan.predecessor_snapshot_id
+                ),
             )
             tally.captured += int(result.status == "captured")
+            if result.status != "captured":
+                # An existing seal is owned by its durable queue row. In
+                # particular, a retry must respect available_at_us instead of
+                # being redispatched by every checkout turn.
+                continue
             try:
                 self._commit(
                     repository_id,
                     snapshot_id,
                     stream_id,
-                    expected_frontier=expected_frontier,
+                    expected_frontier=plan.sequence - 1,
+                    expected_predecessor_snapshot_id=plan.predecessor_snapshot_id,
                 )
             except SourceCaptureRefused:
                 # The seal stays durable. A later pass may use it only if durable
                 # chain metadata names it, or may re-observe the checkout and bind
                 # that fresh capture to the then-current frontier.
+                self._mark_queue_retry(snapshot_id)
                 continue
             else:
+                self._mark_queue_settled(snapshot_id)
                 tally.committed += 1
 
-    def _pending_seals(self, *, limit: int) -> tuple[tuple[str, str, str], ...]:
+    def _seed_legacy_captures(self) -> None:
         connection, workspace_id, installation_id = self._owned_facts()
-        cursor = self._seal_cursor
+        identity, generation = self._ownership_token()
         with self.runner.sqlite_gate:
-            rows = connection.execute(
-                "SELECT c.repository_id, c.snapshot_id, c.checkout_id, "
-                "c.captured_at_us "
-                "FROM omnivia_engineering_snapshot_captures c "
-                "WHERE c.workspace_id = ? AND c.installation_id = ? "
-                "AND NOT EXISTS (SELECT 1 FROM omnivia_engineering_source_events e "
-                " WHERE e.workspace_id = c.workspace_id "
-                "AND e.snapshot_id = c.snapshot_id) "
-                "AND (? IS NULL OR c.captured_at_us > ? OR "
-                "(c.captured_at_us = ? AND c.snapshot_id > ?)) "
-                "ORDER BY c.captured_at_us, c.snapshot_id LIMIT ?",
-                (
-                    workspace_id,
-                    installation_id,
-                    None if cursor is None else cursor[1],
-                    None if cursor is None else cursor[0],
-                    None if cursor is None else cursor[0],
-                    None if cursor is None else cursor[1],
-                    limit,
-                ),
-            ).fetchall()
-            if not rows and cursor is not None:
-                rows = connection.execute(
-                    "SELECT c.repository_id, c.snapshot_id, c.checkout_id, "
-                    "c.captured_at_us "
-                    "FROM omnivia_engineering_snapshot_captures c "
-                    "WHERE c.workspace_id = ? AND c.installation_id = ? "
-                    "AND NOT EXISTS (SELECT 1 "
-                    "FROM omnivia_engineering_source_events e "
-                    "WHERE e.workspace_id = c.workspace_id "
-                    "AND e.snapshot_id = c.snapshot_id) "
-                    "ORDER BY c.captured_at_us, c.snapshot_id LIMIT ?",
-                    (workspace_id, installation_id, limit),
-                ).fetchall()
-        if rows:
-            self._seal_cursor = (int(rows[-1][3]), str(rows[-1][1]))
-        else:
-            self._seal_cursor = None
-        return tuple(
-            (
-                str(repository_id),
-                str(snapshot_id),
-                _derived(
-                    "src-stream",
-                    workspace_id,
-                    str(repository_id),
-                    installation_id,
-                    str(checkout_id),
-                ),
+            engineering_source_producer.seed_legacy_captures(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                installation_id=installation_id,
+                fencing_generation=generation,
+                now_us=self._now_us(),
             )
-            for repository_id, snapshot_id, checkout_id, _captured_at_us in rows
-        )
 
-    def _next_checkout(self) -> tuple[str, str, str] | None:
+    def _take_lane_turn(self) -> str:
         connection, workspace_id, installation_id = self._owned_facts()
-        cursor = self._checkout_cursor
+        identity, generation = self._ownership_token()
         with self.runner.sqlite_gate:
-            row = connection.execute(
-                "SELECT repository_id, checkout_id, checkout_hint "
-                "FROM omnivia_engineering_checkouts "
-                "WHERE workspace_id = ? AND installation_id = ? "
-                "AND (? IS NULL OR checkout_id > ?) ORDER BY checkout_id LIMIT 1",
-                (workspace_id, installation_id, cursor, cursor),
-            ).fetchone()
-            if row is None and cursor is not None:
-                row = connection.execute(
-                    "SELECT repository_id, checkout_id, checkout_hint "
-                    "FROM omnivia_engineering_checkouts "
-                    "WHERE workspace_id = ? AND installation_id = ? "
-                    "ORDER BY checkout_id LIMIT 1",
-                    (workspace_id, installation_id),
-                ).fetchone()
-        if row is None:
-            self._checkout_cursor = None
-            return None
-        repository_id, checkout_id, checkout_hint = map(str, row)
-        self._checkout_cursor = checkout_id
-        return repository_id, checkout_id, checkout_hint
+            return engineering_source_producer.take_lane_turn(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                installation_id=installation_id,
+                fencing_generation=generation,
+                now_us=self._now_us(),
+            )
 
-    def _snapshot_already_committed(self, snapshot_id: str) -> bool:
+    def _take_queue_items(
+        self, *, limit: int
+    ) -> tuple[engineering_source_producer.SourceQueueItem, ...]:
+        connection, workspace_id, installation_id = self._owned_facts()
+        identity, generation = self._ownership_token()
+        with self.runner.sqlite_gate:
+            return engineering_source_producer.take_queue_items(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                installation_id=installation_id,
+                fencing_generation=generation,
+                now_us=self._now_us(),
+                limit=limit,
+            )
+
+    def _take_next_checkout(self) -> tuple[str, str, str] | None:
+        connection, workspace_id, installation_id = self._owned_facts()
+        identity, generation = self._ownership_token()
+        with self.runner.sqlite_gate:
+            return engineering_source_producer.take_next_checkout(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                installation_id=installation_id,
+                fencing_generation=generation,
+                now_us=self._now_us(),
+            )
+
+    def _mark_queue_retry(self, snapshot_id: str) -> None:
+        connection, workspace_id, installation_id = self._owned_facts()
+        identity, generation = self._ownership_token()
+        with self.runner.sqlite_gate:
+            engineering_source_producer.mark_queue_retry(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                installation_id=installation_id,
+                snapshot_id=snapshot_id,
+                fencing_generation=generation,
+                now_us=self._now_us(),
+            )
+
+    def _mark_queue_settled(self, snapshot_id: str) -> None:
+        connection, workspace_id, installation_id = self._owned_facts()
+        identity, generation = self._ownership_token()
+        with self.runner.sqlite_gate:
+            engineering_source_producer.mark_queue_settled(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                installation_id=installation_id,
+                snapshot_id=snapshot_id,
+                fencing_generation=generation,
+                now_us=self._now_us(),
+            )
+
+    def _snapshot_already_committed(self, snapshot_id: str, stream_id: str) -> bool:
         connection, workspace_id, _installation_id = self._owned_facts()
         with self.runner.sqlite_gate:
-            return (
-                connection.execute(
-                    "SELECT 1 FROM omnivia_engineering_source_events "
-                    "WHERE workspace_id = ? AND snapshot_id = ?",
-                    (workspace_id, snapshot_id),
-                ).fetchone()
-                is not None
+            row = connection.execute(
+                "SELECT stream_id, manifest_format "
+                "FROM omnivia_engineering_source_events "
+                "WHERE workspace_id = ? AND snapshot_id = ?",
+                (workspace_id, snapshot_id),
+            ).fetchone()
+        if row is None:
+            return False
+        if (str(row[0]), str(row[1])) != (stream_id, "captured_v1"):
+            raise SourceCaptureRefused(
+                "the sealed snapshot is already bound to another source event"
             )
+        return True
 
     def _stream_accepts_new_head(
         self, repository_id: str, stream_id: str
-    ) -> int | None:
-        """Return the announced-sequence frontier a fresh capture may extend.
+    ) -> _CommitPlan | None:
+        """Return the exact stream head a fresh capture may extend.
 
         ``None`` means a new head must not be attempted (repository mismatch or
-        an open gap); ``0`` means the stream does not exist yet. The caller
-        must hand this value back to ``_commit`` so the frontier is revalidated
-        at commit time under the fencing gate.
+        an open gap). The caller persists this plan with the capture seal and
+        hands it back to ``_commit`` for revalidation under the fencing gate.
         """
         connection, workspace_id, _installation_id = self._owned_facts()
         with self.runner.sqlite_gate:
@@ -353,11 +367,17 @@ class EngineeringSourceCaptureExecutor:
                 "WHERE workspace_id = ? AND stream_id = ?",
                 (workspace_id, stream_id),
             ).fetchone()
-        if row is None:
-            return 0
-        if str(row[0]) != repository_id or int(row[1]) != int(row[2]):
-            return None
-        return int(row[1])
+            if row is None:
+                return _CommitPlan(sequence=1, predecessor_snapshot_id=None)
+            if str(row[0]) != repository_id or int(row[1]) != int(row[2]):
+                return None
+            announced = int(row[1])
+            return _CommitPlan(
+                sequence=announced + 1,
+                predecessor_snapshot_id=self._snapshot_at(
+                    connection, workspace_id, stream_id, announced
+                ),
+            )
 
     def _commit(
         self,
@@ -366,6 +386,7 @@ class EngineeringSourceCaptureExecutor:
         stream_id: str,
         *,
         expected_frontier: int | None = None,
+        expected_predecessor_snapshot_id: str | None = None,
     ) -> None:
         connection, workspace_id, installation_id = self._owned_facts()
         with self.runner.sqlite_gate:
@@ -381,8 +402,7 @@ class EngineeringSourceCaptureExecutor:
             ):
                 raise SourceCaptureRefused("the sealed source capture is unavailable")
             checkout_id = str(seal[2])
-            if stream_id != _derived(
-                "src-stream",
+            if stream_id != engineering_source_producer.source_stream_id(
                 workspace_id,
                 repository_id,
                 installation_id,
@@ -398,6 +418,9 @@ class EngineeringSourceCaptureExecutor:
                 stream_id=stream_id,
                 snapshot_id=snapshot_id,
                 expected_frontier=expected_frontier,
+                expected_predecessor_snapshot_id=(
+                    expected_predecessor_snapshot_id
+                ),
             )
             payload: dict[str, object] = {
                 "repository_id": repository_id,
@@ -460,14 +483,29 @@ class EngineeringSourceCaptureExecutor:
         stream_id: str,
         snapshot_id: str,
         expected_frontier: int | None,
+        expected_predecessor_snapshot_id: str | None,
     ) -> _CommitPlan:
         """Choose the only append that can extend this stream's durable chain.
 
-        ``expected_frontier`` is the announced-sequence frontier observed
-        before a fresh checkout capture, or ``None`` for pending-seal recovery.
-        An arbitrary recovered seal may only ever fill an exact, named gap; it
-        may never become ``announced_sequence + 1`` on a contiguous stream.
+        ``expected_frontier`` and ``expected_predecessor_snapshot_id`` are the
+        exact head observed before a fresh checkout capture. Both are rechecked
+        here. A generic recovered seal has no expected frontier and may only
+        initialize an absent stream or fill an exact, named gap; it may never
+        become ``announced_sequence + 1`` on a contiguous stream.
         """
+
+        if (
+            expected_frontier is None
+            and expected_predecessor_snapshot_id is not None
+        ) or (
+            expected_frontier == 0
+            and expected_predecessor_snapshot_id is not None
+        ) or (
+            expected_frontier is not None
+            and expected_frontier > 0
+            and expected_predecessor_snapshot_id is None
+        ):
+            raise SourceCaptureRefused("the captured source intent is incomplete")
 
         stream = connection.execute(
             "SELECT repository_id, announced_sequence, covered_sequence "
@@ -476,6 +514,12 @@ class EngineeringSourceCaptureExecutor:
             (workspace_id, stream_id),
         ).fetchone()
         if stream is None:
+            if expected_frontier not in (None, 0) or (
+                expected_predecessor_snapshot_id is not None
+            ):
+                raise SourceCaptureRefused(
+                    "the captured source stream frontier has changed"
+                )
             return _CommitPlan(sequence=1, predecessor_snapshot_id=None)
         if str(stream[0]) != repository_id:
             raise SourceCaptureRefused(
@@ -497,6 +541,9 @@ class EngineeringSourceCaptureExecutor:
         announced, covered = int(stream[1]), int(stream[2])
         if covered < announced:
             missing = covered + 1
+            durable_predecessor = self._snapshot_at(
+                connection, workspace_id, stream_id, covered
+            )
             successor = connection.execute(
                 "SELECT sequence, predecessor_snapshot_id "
                 "FROM omnivia_engineering_source_events "
@@ -513,22 +560,33 @@ class EngineeringSourceCaptureExecutor:
                 raise SourceCaptureRefused(
                     "the sealed capture is not the next missing stream predecessor"
                 )
+            if expected_frontier is not None and (
+                missing != expected_frontier + 1
+                or durable_predecessor
+                != expected_predecessor_snapshot_id
+            ):
+                raise SourceCaptureRefused(
+                    "the captured source stream frontier has changed"
+                )
             return _CommitPlan(
                 sequence=missing,
-                predecessor_snapshot_id=self._snapshot_at(
-                    connection, workspace_id, stream_id, covered
-                ),
+                predecessor_snapshot_id=durable_predecessor,
             )
 
-        if expected_frontier is None or announced != expected_frontier:
+        predecessor = self._snapshot_at(
+            connection, workspace_id, stream_id, announced
+        )
+        if (
+            expected_frontier is None
+            or announced != expected_frontier
+            or predecessor != expected_predecessor_snapshot_id
+        ):
             raise SourceCaptureRefused(
                 "an unmatched sealed capture cannot extend the stream head"
             )
         return _CommitPlan(
             sequence=announced + 1,
-            predecessor_snapshot_id=self._snapshot_at(
-                connection, workspace_id, stream_id, announced
-            ),
+            predecessor_snapshot_id=predecessor,
         )
 
     @staticmethod
@@ -548,6 +606,14 @@ class EngineeringSourceCaptureExecutor:
         if row is None:
             raise SourceCaptureRefused("the source stream predecessor is unavailable")
         return str(row[0])
+
+    def _now_us(self) -> int:
+        return max(1, int(self.runner.clock.wall_time().timestamp() * 1_000_000))
+
+    def _ownership_token(self) -> tuple[ServiceInstanceIdentity, int]:
+        if self.runner.identity is None or self.runner.generation is None:
+            raise SourceCaptureRefused("workspace ownership is not active")
+        return self.runner.identity, self.runner.generation
 
     def _owned_facts(self) -> tuple[sqlite3.Connection, str, str]:
         if (

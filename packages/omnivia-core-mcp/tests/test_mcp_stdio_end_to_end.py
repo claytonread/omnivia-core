@@ -36,7 +36,7 @@ the probe then runs whichever `omnivia_core_mcp` is installed rather than the on
 under test, and the failure looks like a stale one-tool manifest rather than like
 a harness bug. `_environment()` is what stops that.
 
-**One session calls all fourteen, and "all fourteen" is read off the manifest.**
+**One session calls all thirteen, and "all thirteen" is read off the manifest.**
 :data:`ARGUMENTS` is keyed by tool name and is asserted to be exactly
 `EXPOSURE_MANIFEST`'s tool names in order, so a seventh tool cannot be exposed
 without an end-to-end call for it: the coverage check fails first.
@@ -124,7 +124,6 @@ ARGUMENTS: dict[str, dict[str, Any]] = {
         "targets": [{"snapshot_id": "esnap-e2e", "snapshot_kind": "working_tree"}],
         "profile": "investigate",
     },
-    "continuity_handoff_read": {"checkpoint_id": "eck-e2e-1"},
     "decision_evaluate": {
         "input": {
             "schema_version": "decision.1",
@@ -173,7 +172,6 @@ DECISION_OUTCOMES: dict[str, str] = {
     "decision_record_list": "success",
     "decision_record_get": "refused:not_found",
     "decision_evaluate": "refused:capability_not_granted",
-    "continuity_handoff_read": "refused:not_found",
 }
 
 #: The tools a live session must answer successfully.
@@ -215,7 +213,7 @@ NEVER_A_TOOL: tuple[tuple[str, str], ...] = (
 
 
 #: The purposes the exposure manifest claims. A configuration that allow-lists
-#: exactly these is the one under which all fourteen tools are callable; the
+#: exactly these is the one under which all thirteen tools are callable; the
 #: adversarial suite is where a narrower one refuses.
 ALL_PURPOSES = (
     "workspace_inspection",
@@ -223,7 +221,6 @@ ALL_PURPOSES = (
     "engineering_search",
     "engineering_expand",
     "engineering_context",
-    "continuity_handoff",
     "decision_evaluation",
     "decision_record",
     "decision_status",
@@ -494,7 +491,7 @@ def test_every_advertised_tool_is_read_only_and_closed(
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.2"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.3"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -502,16 +499,16 @@ def test_every_advertised_tool_is_read_only_and_closed(
     assert inspect["input_schema"]["required"] == []
 
 
-# --- one session calls all fourteen -------------------------------------------
+# --- one session calls all thirteen -------------------------------------------
 
 
-def test_the_session_calls_exactly_the_advertised_fourteen(
+def test_the_session_calls_exactly_the_advertised_thirteen(
     observed: dict[str, Any],
 ) -> None:
     """The coverage check, and the reason a fifteenth tool cannot land untested.
 
     Order and membership, against the manifest rather than against a literal, so
-    this file cannot drift into calling thirteen of fourteen and passing.
+    this file cannot drift into calling thirteen of thirteen and passing.
     """
     assert list(ARGUMENTS) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
     assert list(observed["calls"]) == list(ARGUMENTS)
@@ -847,7 +844,7 @@ def test_a_root_nobody_configured_refuses_before_anything_is_started(
 def test_a_purpose_outside_the_configuration_refuses_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """The same fourteen tools are listed; only the granted purpose is callable.
+    """The same thirteen tools are listed; only the granted purpose is callable.
 
     `tools/list` stays deterministic -- it is not filtered by authority, which
     would make one host's listing differ from another's -- so the model can see
@@ -1022,11 +1019,11 @@ async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
 def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """`mutation_enabled: true` in the trusted file, and still the restricted fourteen.
+    """`mutation_enabled: true` in the trusted file, and still the restricted thirteen.
 
     This is the upgrade rule and the security property together: the public
     configuration is a ceiling, not a switch, and the probe here is started the
-    way production starts one -- no admission injected. A model sees the same fourteen
+    way production starts one -- no admission injected. A model sees the same thirteen
     tools it saw before, and `memory_create` is not merely absent from the
     listing but unresolvable at the call.
     """
@@ -1046,7 +1043,7 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
-def test_an_admitted_authoring_session_lists_nineteen_and_calls_every_new_tool(
+def test_an_admitted_authoring_session_lists_eighteen_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
@@ -1061,7 +1058,7 @@ def test_an_admitted_authoring_session_lists_nineteen_and_calls_every_new_tool(
 
     What each call proves, in one session:
 
-    * the listing is the nineteen, in manifest order, and the four mutations
+    * the listing is the eighteen, in manifest order, and the four mutations
       advertise the closed wrapper with the read hints inverted;
     * `evidence_capture` writes -- the content travels in the call, with no path,
       URL or credential anywhere in it -- and the artifact is then findable
@@ -1397,7 +1394,7 @@ def test_a_lost_capture_response_replays_after_a_real_service_restart(
 
 
 def test_the_authoring_calls_cover_every_tool_the_profile_adds() -> None:
-    """The coverage check for the wider profile, matching the restricted fourteen.
+    """The coverage check for the wider profile, matching the restricted thirteen.
 
     By set rather than by order, because :func:`authoring_calls` is ordered by
     what the calls depend on -- the capture before the memory that cites it --
@@ -1478,7 +1475,7 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     """R004-07: stdout is protocol-only, proved against a server trying to break it.
 
     The probe writes to `sys.stdout` twice from inside a live handler, on every
-    call -- fourteen of them now. If any reached the wire the session below would fail
+    call -- thirteen of them now. If any reached the wire the session below would fail
     to parse a frame; instead every call completes and the strings are nowhere in
     what the client received.
 

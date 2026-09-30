@@ -151,7 +151,6 @@ from omnivia_core.contracts.v1 import (
     EVIDENCE_CAPTURE_MAX_CONTENT_BYTES,
     CapabilityRequirement,
     ClientIdentity,
-    ContinuityHandoffReadInput,
     ContractDecodeError,
     ContractSemanticError,
     DecisionEvaluateInput,
@@ -291,7 +290,7 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 #: copy refusing valid input.
 #:
 #: Only the five the `authoring` profile adds, the four decision tools, the three
-#: Engineering Memory reads, and continuity handoff need local canonical
+#: Engineering Memory reads need local canonical
 #: decoders. The original six reads are unchanged accepted behaviour and are
 #: validated where they always were -- at the service, which answers with its
 #: own typed refusal. The newer reads decode through the generated contract
@@ -310,7 +309,6 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "engineering.search": EngineeringSearchInput.from_wire,
     "engineering.expand": EngineeringExpandInput.from_wire,
     "engineering.context.build": EngineeringContextBuildInput.from_wire,
-    "continuity.handoff.read": ContinuityHandoffReadInput.from_wire,
 }
 
 
@@ -1428,8 +1426,8 @@ async def serve(*, session: ConnectedSession) -> None:
 #: are the requirement's own figures, and a build whose manifest has moved fails
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
-    RESTRICTED_PROFILE: 14,
-    AUTHORING_PROFILE: 19,
+    RESTRICTED_PROFILE: 13,
+    AUTHORING_PROFILE: 18,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

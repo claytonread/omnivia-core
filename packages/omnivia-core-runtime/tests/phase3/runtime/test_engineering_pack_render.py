@@ -15,6 +15,8 @@ from omnivia_core_runtime.service import engineering_pack
 from omnivia_core_runtime.service.engineering_pack import (
     BYTE_ONLY_COUNTING_MODE,
     BuildContext,
+    ConflictGroup,
+    ConflictRecord,
     MandatoryContextTooLarge,
     PackRecord,
     WorkingItem,
@@ -126,6 +128,15 @@ def test_rendered_pack_matches_the_published_result_schema() -> None:
         _build(),
         _build(dataclasses.replace(CTX, requested_budget={"model_tokens": 1000})),
         _build_v2(),
+        build_pack(
+            CTX,
+            (CANDIDATE, ACCEPTED),
+            (),
+            notice=NOTICE,
+            uncertainties=[NOTICE],
+            omissions=[],
+            conflict_groups=(_conflict(CANDIDATE, ACCEPTED),),
+        ),
     ):
         assert [
             (list(error.absolute_path), error.message)
@@ -494,3 +505,177 @@ def test_v2_one_notice_golden_is_unchanged() -> None:
         encoding="utf-8"
     ).strip()
     assert to_canonical_json(_build_v2()) == expected
+
+
+def _conflict(*records: PackRecord) -> ConflictGroup:
+    return ConflictGroup(
+        tuple(ConflictRecord(record.record_id, record.version) for record in records)
+    )
+
+
+def test_material_conflict_is_atomic_cited_and_rendered_before_its_claims() -> None:
+    pack = build_pack(
+        CTX,
+        (CANDIDATE, ACCEPTED),
+        (),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+        conflict_groups=(_conflict(CANDIDATE, ACCEPTED),),
+    )
+
+    assert pack["conflicts"] == [
+        {
+            "records": [
+                {"record_id": "rec-b", "version": "ver-1"},
+                {"record_id": "rec-a", "version": "ver-2"},
+            ],
+            "status": "unresolved",
+            "note": engineering_pack.CONFLICT_NOTE,
+        }
+    ]
+    assert [section["partition"] for section in pack["sections"]] == [
+        "accepted_knowledge",
+        "candidate_findings",
+    ]
+    text = pack["rendering"]["text"]
+    assert text.index("[conflict unresolved]") < text.index("[accepted_knowledge]")
+    assert "[cite-1] [cite-2]" in text
+    assert pack["rendering"]["token_count"] == _tokens(text)
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+
+
+def test_duplicate_overlapping_conflicts_form_one_stable_connected_component() -> None:
+    third = PackRecord(
+        "rec-c", "ver-3", "candidate_findings", "Third", "A third claim."
+    )
+    groups = (
+        _conflict(CANDIDATE, ACCEPTED),
+        _conflict(third, CANDIDATE),
+        _conflict(ACCEPTED, CANDIDATE),
+    )
+    first = build_pack(
+        CTX,
+        (third, CANDIDATE, ACCEPTED),
+        (),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+        conflict_groups=groups,
+    )
+    second = build_pack(
+        CTX,
+        (third, CANDIDATE, ACCEPTED),
+        (),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+        conflict_groups=tuple(reversed(groups)),
+    )
+
+    assert to_canonical_json(first) == to_canonical_json(second)
+    assert len(first["conflicts"]) == 1
+    assert len(first["conflicts"][0]["records"]) == 3
+    assert first["rendering"]["text"].count("[conflict unresolved]") == 1
+
+
+def test_preselected_warning_only_group_needs_no_hydrated_pack_record() -> None:
+    group = ConflictGroup(
+        records=(
+            ConflictRecord("rec-hidden-from-sections-a", "ver-1"),
+            ConflictRecord("rec-hidden-from-sections-b", "ver-2"),
+        ),
+        status="unresolved_overlap",
+        omitted=True,
+    )
+    pack = build_pack(
+        CTX,
+        (),
+        (),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+        conflict_groups=(group,),
+    )
+
+    assert pack["sections"] == []
+    assert pack["conflicts"][0]["status"] == "unresolved_overlap"
+    assert [citation["record_ref"] for citation in pack["citations"]] == [
+        {"record_id": "rec-hidden-from-sections-a", "version": "ver-1"},
+        {"record_id": "rec-hidden-from-sections-b", "version": "ver-2"},
+    ]
+    assert "[conflict unresolved_overlap]" in pack["rendering"]["text"]
+    assert engineering_pack.OMITTED_OVERLAP_NOTE in pack["rendering"]["text"]
+    assert pack["omissions"] == [
+        {"field": "sections", "reason": "conflict_group_selection"}
+    ]
+
+
+def test_oversized_conflict_group_is_omitted_whole_but_warning_and_citations_remain() -> None:
+    huge_accepted = dataclasses.replace(ACCEPTED, body="accepted " * 5000)
+    huge_candidate = dataclasses.replace(CANDIDATE, body="candidate " * 5000)
+    pack = build_pack(
+        CTX,
+        (huge_candidate, huge_accepted),
+        (),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+        conflict_groups=(_conflict(huge_candidate, huge_accepted),),
+    )
+
+    assert pack["sections"] == []
+    assert [citation["citation_id"] for citation in pack["citations"]] == [
+        "cite-1",
+        "cite-2",
+    ]
+    assert pack["conflicts"][0]["note"] == engineering_pack.OMITTED_CONFLICT_NOTE
+    assert pack["omissions"] == [
+        {"field": "sections", "reason": "conflict_group_budget"}
+    ]
+    assert engineering_pack.OMITTED_CONFLICT_NOTE in pack["rendering"]["text"]
+
+    with pytest.raises(MandatoryContextTooLarge):
+        build_pack(
+            dataclasses.replace(
+                CTX,
+                effective_bytes=pack["rendering"]["byte_count"] - 1,
+            ),
+            (huge_candidate, huge_accepted),
+            (),
+            notice=NOTICE,
+            uncertainties=[NOTICE],
+            omissions=[],
+            conflict_groups=(_conflict(huge_candidate, huge_accepted),),
+        )
+
+
+def test_byte_only_conflict_warning_has_exact_utf8_accounting_and_refuses_below_minimum() -> None:
+    huge_accepted = dataclasses.replace(ACCEPTED, body="認証🙂" * 5000)
+    huge_candidate = dataclasses.replace(CANDIDATE, body="候補🚧" * 5000)
+    pack = build_pack_byte_only(
+        V2_CTX,
+        (huge_candidate, huge_accepted),
+        (),
+        notice=NOTICE,
+        uncertainties=[NOTICE],
+        omissions=[],
+        conflict_groups=(_conflict(huge_candidate, huge_accepted),),
+    )
+    text = pack["rendering"]["text"]
+    assert pack["sections"] == []
+    assert pack["rendering"]["byte_count"] == len(text.encode("utf-8"))
+    assert "token_count" not in pack["rendering"]
+    with pytest.raises(MandatoryContextTooLarge):
+        build_pack_byte_only(
+            dataclasses.replace(
+                V2_CTX,
+                effective_bytes=pack["rendering"]["byte_count"] - 1,
+            ),
+            (huge_candidate, huge_accepted),
+            (),
+            notice=NOTICE,
+            uncertainties=[NOTICE],
+            omissions=[],
+            conflict_groups=(_conflict(huge_candidate, huge_accepted),),
+        )

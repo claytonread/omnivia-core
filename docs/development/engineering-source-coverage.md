@@ -5,8 +5,9 @@ Date: 2026-09-27
 Originated on `codex/engineering-applicability-evidence` and continued on
 `codex/engineering-memory-completion`. This is a bounded
 implementation candidate for review, not a release. It does not claim all
-AC-001 through AC-064 scenarios as complete. Migrations 0050, 0051 and 0052
-and the additive captured-source migration 0056 are pinned to reviewed content.
+AC-001 through AC-064 scenarios as complete. Migrations 0050, 0051 and 0052,
+the captured-source migration 0056 and the producer-queue migration 0058 are
+pinned to reviewed content.
 
 This slice delivers one bounded vertical:
 
@@ -53,16 +54,15 @@ converge. Its pass result contains counts only and
 application/capture results contain no local path, checkout hint, file list or raw
 manifest.
 
-Pending seals are inspected in deterministic bounded batches with an in-memory cursor,
-so refused oldest seals do not consume every later pass. The current schema has no
-durable work-queue cursor or pending-capture index, however. Persisted round-robin
-fairness across service restarts and history-independent pending lookup remain a `NEXT`
-schema dependency: a
-service-owned source-capture work queue keyed by workspace, installation and snapshot,
-with checkout/stream identity, pending/retry/settled state, bounded retry timing and a
-durable per-installation cursor, plus indexes for the next eligible item and capture
-identity. No release claim should treat the in-memory checkout cursor as that durable
-guarantee.
+Migration 0058 gives every capture an atomic, payload-free producer queue row keyed by
+workspace, installation and snapshot. Live captures persist the exact source frontier
+and predecessor observed before the filesystem effect. Recovery revalidates that intent
+and refuses a stale head after a competing append. Pending/retry selection, checkout
+rotation and lane priority use persisted per-installation keyset cursors, so fairness
+survives restart. A finite, indexed legacy seeder processes at most 64 pre-0058 headers
+per pass up to a frozen watermark; ordinary scheduling reads the next-eligible queue
+index rather than scanning capture history. Retry timing is persisted and capped, and a
+successful captured event settles its matching queue projection in the same transaction.
 
 The trusted CLI route is `engineering capture`; the operation is deliberately omitted
 from model-facing MCP with reason `mutation`. Platform filesystem notifications remain
@@ -358,7 +358,7 @@ covered target. It reads only and writes nothing.
 
 | Family | Shape |
 |---|---|
-| `omnivia_engineering_source_streams` | Stream binding (principal, repository), announced head, covered barrier. Identity is immutable and both sequences only advance. A new stream starts at barrier 0. The old barrier was validated when written and never decreases, so each advance validates only the newly covered range (OLD, NEW]: it must hold exactly NEW − OLD present events and span at most one 64-event pending window. That is one primary-key range scan, independent of the stream's lifetime history. Writers must be the owner's audited `engineering.source.record`. No DELETE. |
+| `omnivia_engineering_source_streams` | Stream binding (principal, repository), announced head, covered barrier. Identity is immutable and both sequences only advance. A new stream starts at barrier 0. The old barrier was validated when written and never decreases, so each advance validates only the newly covered range (OLD, NEW]: it must hold exactly NEW − OLD present events and span at most one 64-event pending window. That is one primary-key range scan, independent of the stream's lifetime history. Writers must be the owner's audited `engineering.source.record` or `engineering.source.capture.commit`. No DELETE. |
 | `omnivia_engineering_source_events` | Immutable event: snapshot (FK to 0047), predecessor link and canonical manifest body. The digest must equal the snapshot row's, and the entry count must match the body. The event must lie within the announced head and agree with stored neighbours. Unique snapshot per workspace. Append-only. |
 | `omnivia_engineering_dependency_sets` | One per exact record version: baseline (a recorded event of the stated stream and repository), producer and version, coverage. It seals exactly its dependency rows, and every whole-file row must carry a digest. It is written only by `memory.create`'s audited mutation, or carried by 0051 (below). Append-only. |
 | `omnivia_engineering_dependencies` (0049) | `ADD COLUMN expected_digest` (nullable, `sha256:` format), an index on (workspace, record, version), and a 0050 insert guard: once a version's set row exists, no further dependency row is accepted for it, so a sealed set never changes. |
