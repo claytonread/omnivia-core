@@ -160,8 +160,10 @@ from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import (
     engineering_conflicts,
-    engineering_invalidation as invalidation_storage,
     repository_identity,
+)
+from omnivia_core_runtime.storage import (
+    engineering_invalidation as invalidation_storage,
 )
 from omnivia_core_runtime.storage import engineering_source as source_storage
 from omnivia_core_runtime.storage.engineering_preview import (
