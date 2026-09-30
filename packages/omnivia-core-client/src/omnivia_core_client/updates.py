@@ -24,8 +24,6 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import re
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
@@ -207,19 +205,19 @@ def _https_refusal() -> UpdateCheckError:
 
 
 def default_fetch_channel(url: str) -> Any:
-    """The production fetch: HTTPS only, bounded size and time."""
+    """The production fetch: HTTPS only, bounded size and time.
+
+    Routed through :mod:`omnivia_core_client.http_transport` — the one module
+    this distribution may reach the network from — rather than importing
+    ``urllib`` here.
+    """
+    from omnivia_core_client.http_transport import fetch_https_bytes
+
     if not url.startswith("https://"):
         raise UpdateCheckError("check_failed", "the channel URL must be HTTPS")
-    return json.loads(urlopen_bounded(url))
-
-
-def urlopen_bounded(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        data: bytes = response.read(MAX_CHANNEL_BYTES + 1)
-    if len(data) > MAX_CHANNEL_BYTES:
-        raise UpdateCheckError("check_failed", "the channel document exceeds the size limit")
-    return data
+    return json.loads(
+        fetch_https_bytes(url, timeout_seconds=10.0, max_bytes=MAX_CHANNEL_BYTES)
+    )
 
 
 def installed_packages(
@@ -310,7 +308,7 @@ def check_for_updates(
         return UpdateCheckResult(
             status=error.status, reason=error.reason, **result_base
         )
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         return UpdateCheckResult(
             status="check_failed", reason=str(error), **result_base
         )

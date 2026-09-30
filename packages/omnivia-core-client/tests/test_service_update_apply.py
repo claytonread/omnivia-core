@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from omnivia_core_cli.updates_apply import (
+from omnivia_core_client.updates_apply import (
     BUNDLE_ASSET_NAME,
     InstallationLock,
     OperationRecord,

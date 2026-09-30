@@ -38,7 +38,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import subprocess
 import sys
 import time
 from collections.abc import Mapping
@@ -540,7 +539,7 @@ def _run_update_check(*, json_output: bool) -> int:
     the answer is one bounded check result, rendered as the update-check
     adapter document in JSON mode or as one human line otherwise.
     """
-    from omnivia_core_cli.updates import (
+    from omnivia_core_client.updates import (
         check_for_updates,
         default_fetch_channel,
         installed_packages,
@@ -609,11 +608,12 @@ def _run_update(
     Interactive by design: the confirmation prompt is the approval. Unattended
     flags are out of scope for this revision.
     """
-    from omnivia_core_cli.updates import (
+    from omnivia_core_client.managed_local import spawn_detached_worker
+    from omnivia_core_client.updates import (
         default_fetch_channel,
         installed_packages,
     )
-    from omnivia_core_cli.updates_apply import coordinate_update
+    from omnivia_core_client.updates_apply import coordinate_update
 
     def fetch_bytes(address: str) -> bytes:
         import urllib.request
@@ -632,7 +632,7 @@ def _run_update(
             arguments, deadline
         ),
         confirm=_interactive_confirm,
-        spawn_worker=subprocess.Popen,
+        spawn_worker=spawn_detached_worker,
         python_executable=sys.executable,
         cli_executable=str(cli_executable),
         checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

@@ -257,10 +257,4 @@ def test_the_production_package_contains_only_the_declared_cli_modules() -> None
         "py.typed",
         "safe_status.py",
         "surface.py",
-        # The v0.4 update-check machinery: channel validation, version
-        # comparison and the six honest statuses. A separate module because it
-        # is a local, network-touching command class of its own.
-        "updates.py",
-        # The coordinator and detached worker for `service update` (U2).
-        "updates_apply.py",
     }

@@ -25,7 +25,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import subprocess
 import sys
 import time
 import zipfile
@@ -34,7 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Self
 
-from omnivia_core_cli.updates import (
+from omnivia_core_client.managed_local import run_first_party_command
+from omnivia_core_client.updates import (
     FIRST_PARTY_PACKAGES,
     _version_key,
 )
@@ -504,7 +504,7 @@ def coordinate_update(
             operation=existing,
         )
     try:
-        from omnivia_core_cli.updates import check_for_updates
+        from omnivia_core_client.updates import check_for_updates
 
         check = check_for_updates(
             fetch_channel=fetch_channel,
@@ -592,7 +592,7 @@ def coordinate_update(
             [
                 python_executable,
                 "-m",
-                "omnivia_core_cli.updates_apply",
+                "omnivia_core_client.updates_apply",
                 "worker",
                 str(instruction_path),
             ],
@@ -618,7 +618,7 @@ def coordinate_update(
 def main_worker(argv: list[str]) -> int:
     """The detached worker's entry point: one instruction file, one outcome."""
     instruction = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
-    outcome = run_worker(instruction, runner=subprocess.run)
+    outcome = run_worker(instruction, runner=run_first_party_command)
     sys.stdout.write(f"{outcome}\n")
     return 0 if outcome == "updated" else 1
 
@@ -629,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     if arguments and arguments[0] == "worker":
         return main_worker(arguments[1:])
     sys.stderr.write(
-        "usage: python -m omnivia_core_cli.updates_apply worker <instruction.json>\n"
+        "usage: python -m omnivia_core_client.updates_apply worker <instruction.json>\n"
     )
     return 2
 

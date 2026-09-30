@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from omnivia_core_cli.updates import (
+from omnivia_core_client.updates import (
     DEFAULT_UPDATE_CHANNEL_URL,
     MAX_CHANNEL_BYTES,
     UpdateCheckError,
@@ -177,7 +177,7 @@ def test_installed_packages_maps_missing_distributions_away(monkeypatch: pytest.
         return importlib.metadata.PackageNotFoundError(name)
 
     monkeypatch.setattr(
-        "omnivia_core_cli.updates._probe_distribution",
+        "omnivia_core_client.updates._probe_distribution",
         probe,
     )
     installed = installed_packages()

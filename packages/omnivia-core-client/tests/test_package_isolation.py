@@ -40,6 +40,7 @@ ALLOWED_IMPORTS = frozenset(
         "fcntl",
         "hashlib",
         "http",
+        "importlib",
         "ipaddress",
         "json",
         "math",
@@ -62,6 +63,10 @@ ALLOWED_IMPORTS = frozenset(
         "time",
         "typing",
         "urllib",
+        # The update coordinator digests staged wheels and mints operation ids;
+        # the worker unpacks the verified candidate bundle.
+        "uuid",
+        "zipfile",
     }
 )
 
@@ -174,6 +179,13 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "service_client.py",
         "transport.py",
         "windows_pipe.py",
+        # The v0.4 update machinery: channel validation/check (updates.py) and
+        # the coordinator + detached worker (updates_apply.py). Added
+        # deliberately to this packet's module set; their process, lock and
+        # network primitives route through managed_local and http_transport,
+        # which is what the tests below pin.
+        "updates.py",
+        "updates_apply.py",
     }
 
 
@@ -300,8 +312,9 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     being exempted from this test.
     """
     shared = {
-        "hashlib": {"installed_credentials.py"},
+        "hashlib": {"installed_credentials.py", "updates_apply.py"},
         "subprocess": {"owner_private.py"},
+        "sys": {"updates_apply.py"},
         "tempfile": {"installed_credentials.py", "owner_private.py"},
     }
     for imported in (
