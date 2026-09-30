@@ -146,18 +146,17 @@ EXPECTED_ALLOCATION = (
         "candidate",
     ),
     (
-        57,
-        "0057_engineering_relation_assessments.sql",
+        58,
+        "0058_engineering_relation_assessments.sql",
         "Engineering Memory",
         "candidate",
     ),
     (
-        58,
-        "0058_engineering_source_producer_queue.sql",
+        59,
+        "0059_engineering_source_producer_queue.sql",
         "Engineering Memory",
         "candidate",
     ),
-    (59, "0059_engineering_invalidation.sql", "Engineering Memory", "candidate"),
     (
         60,
         "0060_engineering_continuity_lifecycle.sql",
