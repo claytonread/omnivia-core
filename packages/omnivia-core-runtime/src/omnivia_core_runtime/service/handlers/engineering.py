@@ -158,7 +158,11 @@ from omnivia_core_runtime.service.pagination import (
 )
 from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
-from omnivia_core_runtime.storage import engineering_conflicts, repository_identity
+from omnivia_core_runtime.storage import (
+    engineering_conflicts,
+    engineering_invalidation as invalidation_storage,
+    repository_identity,
+)
 from omnivia_core_runtime.storage import engineering_source as source_storage
 from omnivia_core_runtime.storage.engineering_preview import (
     PREVIEW_MAX_CODEPOINTS,
@@ -1411,6 +1415,16 @@ class EngineeringHandlers:
 
         outcome = self._execute(
             context, connection, identity, guard, equivalence, mutate, valid_result
+        )
+        # Both lanes' semantics preserved: a captured commit advances coverage
+        # exactly like a plain source record, so it also gets the same
+        # best-effort durable invalidation catch-up (migration 0054).
+        self._drain_invalidation(
+            connection,
+            identity,
+            guard,
+            workspace_id=context.workspace_id,
+            stream_id=request.stream_id,
         )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
