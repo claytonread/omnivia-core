@@ -307,7 +307,7 @@ def test_the_operation_catalogue_is_a_generated_dataclass_graph() -> None:
 
     assert "OPERATION_CATALOGUE" in generated_all
     assert isinstance(OPERATION_CATALOGUE, tuple)
-    assert len(OPERATION_CATALOGUE) == 56
+    assert len(OPERATION_CATALOGUE) == 57
     for entry in OPERATION_CATALOGUE:
         assert isinstance(entry, OperationMetadata)
         assert isinstance(entry.allowed_errors, tuple)

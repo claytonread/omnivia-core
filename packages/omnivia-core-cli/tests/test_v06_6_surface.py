@@ -102,6 +102,11 @@ EXPECTED_COMMANDS = (
         "analysis.start",
         "insights_analysis_request",
     ),
+    (
+        ("decisions", "result-use"),
+        "decision.result_use.evaluate",
+        "decision_result_use",
+    ),
 )
 
 EXPECTED_PROBES = (
@@ -148,14 +153,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_fifty_five_application_commands_are_declared_in_order() -> None:
+def test_the_fifty_six_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 56
+    assert len(APPLICATION_COMMANDS) == 57
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

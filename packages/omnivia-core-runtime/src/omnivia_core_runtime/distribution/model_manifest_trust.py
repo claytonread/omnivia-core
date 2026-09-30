@@ -199,10 +199,19 @@ def _identity_digest(value: Any) -> str:
 
 
 def _non_empty_name(value: Any) -> str:
-    """One logical artifact name: a non-empty single path segment."""
+    """One artifact name: a non-empty relative path inside the distribution.
+
+    Real model payloads name artifacts by repo-relative path (a CoreML package
+    is a directory of files), so internal separators are expected and allowed.
+    What is never allowed: absolute paths, ``..`` segments, backslashes, or
+    anything that could walk outside the distribution root.
+    """
     if not isinstance(value, str) or not value:
         raise _refuse(ModelTrustRefusal.METADATA_INVALID)
-    if value in {".", ".."} or "/" in value or "\\" in value:
+    if value.startswith(("/", "\\")) or ":" in value:
+        raise _refuse(ModelTrustRefusal.METADATA_INVALID)
+    segments = value.replace("\\", "/").split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
         raise _refuse(ModelTrustRefusal.METADATA_INVALID)
     return value
 

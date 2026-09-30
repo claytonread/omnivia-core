@@ -1476,7 +1476,39 @@ class EngineeringHandlers:
         outcome = self._execute(
             context, connection, identity, guard, equivalence, mutate, valid_result
         )
+        self._drain_invalidation(
+            connection,
+            identity,
+            guard,
+            workspace_id=context.workspace_id,
+            stream_id=record.stream_id,
+        )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
+    def _drain_invalidation(
+        self, connection: Any, identity: Any, guard: Any, *, workspace_id: str, stream_id: str
+    ) -> None:
+        """Best-effort catch-up for the stream this record just advanced coverage on.
+
+        Runs after the record's own mutation has already committed, in its own
+        fenced transaction(s): the trusted source event is durable either way,
+        and invalidation progress is itself durable and resumable (migration
+        0054), so a failure here -- including this instance's fencing
+        generation having been superseded in the meantime -- is left for the
+        next call or the next restart's recovery pass rather than failing a
+        request whose own write already succeeded.
+        """
+        try:
+            invalidation_storage.drain_invalidation(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                stream_id=stream_id,
+                fencing_generation=guard.fencing_generation,
+                now_us=int(self.clock.wall_time().timestamp() * 1_000_000),
+            )
+        except Exception:  # noqa: BLE001,S110 - best-effort; the record already committed
+            pass
 
     # --- engineering.repository.register --------------------------------------------
 

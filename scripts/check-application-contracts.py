@@ -1627,6 +1627,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("insights:read",), "none", "insights.analysis",
         "analysis", "AnalysisStart", "ANALYSIS_START", False,
     ),
+    "decision.result_use.evaluate": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "ResultUseEvaluate", "ANALYSIS_START", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
