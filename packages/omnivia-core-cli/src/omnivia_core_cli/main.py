@@ -39,6 +39,7 @@ import argparse
 import json
 import math
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -531,6 +532,47 @@ def _readiness(client: ServiceClient, deadline: Deadline) -> ServiceProbeResult:
     return dispatch_probe(client, command, deadline=deadline)
 
 
+def _run_update_check(*, json_output: bool) -> int:
+    """One user-initiated discovery pass against the first-party channel.
+
+    Installs nothing, stops nothing, downloads no release assets (v0.4 §5.3):
+    the answer is one bounded check result, rendered as the update-check
+    adapter document in JSON mode or as one human line otherwise.
+    """
+    from omnivia_core_cli.updates import (
+        check_for_updates,
+        default_fetch_channel,
+        installed_packages,
+    )
+
+    result = check_for_updates(
+        fetch_channel=default_fetch_channel,
+        installed=installed_packages(),
+        checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    document = result.to_wire()
+    ok = result.status not in {"check_failed", "unsupported_install"}
+    document["ok"] = ok
+    if json_output:
+        sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+        return 0 if ok else 1
+    if result.status == "up_to_date":
+        sys.stdout.write("up to date\n")
+    elif result.status == "update_available":
+        assert result.candidate_version is not None
+        sys.stdout.write(f"update available: {result.candidate_version}\n")
+        if result.release_url is not None:
+            sys.stdout.write(f"{result.release_url}\n")
+    elif result.status == "ahead_of_channel":
+        sys.stdout.write("the installed release is ahead of the channel\n")
+    elif result.status == "no_release":
+        sys.stdout.write("the channel recommends no release\n")
+    else:
+        assert result.reason is not None
+        sys.stderr.write(f"{result.reason}\n")
+    return 0 if ok else 1
+
+
 def _run_lifecycle(
     arguments: argparse.Namespace,
     command: LifecycleCommand,
@@ -539,7 +581,7 @@ def _run_lifecycle(
 ) -> int:
     """Run one explicit ``service`` administration command.
 
-    Application and probe counts remain exactly 20 and 3.  These three commands
+    Application and probe counts remain exactly 20 and 3.  These commands
     are a separate administrative class and always address the explicit
     installation-state/workspace pair supplied to the root parser.
     """
@@ -555,6 +597,9 @@ def _run_lifecycle(
         workspace_id=arguments.workspace_id,
     )
     deadline = Deadline.after_ms(arguments.timeout_ms)
+
+    if action == "update-check":
+        return _run_update_check(json_output=json_output)
 
     if action == "stop":
         result = stop_managed_local(config, deadline=deadline)
