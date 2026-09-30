@@ -1,6 +1,6 @@
 {
   "lane": "engineering-memory-qualification",
-  "recorded_at": "2026-09-30T22:18:24.205052+00:00",
+  "recorded_at": "2026-09-30T23:08:18.210467+00:00",
   "environment": {
     "platform": "macOS-27.0-arm64-arm-64bit",
     "machine": "arm64",
@@ -8,39 +8,44 @@
     "cpu_count": 18
   },
   "corpus_observations": 10000,
-  "seed_seconds": 76.0,
+  "seed_seconds": 139.8,
+  "corpus": {
+    "seed_scheme": "engineering-memory-qualification:10000",
+    "digest": "841384163b5d10b0a7e5a55e351f4d6071b09c8b12a9af3334daac3bd59efe16"
+  },
+  "discovery_backlog": 10000,
   "operations": {
     "engineering.search": {
       "n": 100,
-      "p50_ms": 203.756,
-      "p95_ms": 248.131,
-      "p99_ms": 268.33,
-      "mean_ms": 208.932
+      "p50_ms": 275.067,
+      "p95_ms": 336.7,
+      "p99_ms": 370.056,
+      "mean_ms": 280.139
     },
     "engineering.search.current_safe": {
       "n": 100,
-      "p50_ms": 207.17,
-      "p95_ms": 238.691,
-      "p99_ms": 246.517,
-      "mean_ms": 210.354
+      "p50_ms": 245.867,
+      "p95_ms": 268.598,
+      "p99_ms": 292.395,
+      "mean_ms": 246.866
     },
     "engineering.context.build": {
       "n": 30,
-      "p50_ms": 944.431,
-      "p95_ms": 1104.338,
-      "p99_ms": 1136.442,
-      "mean_ms": 967.32
+      "p50_ms": 988.154,
+      "p95_ms": 1051.115,
+      "p99_ms": 1131.984,
+      "mean_ms": 990.698
     },
     "engineering.context.build.current_safe": {
       "outcome": "success",
-      "elapsed_ms": 924.789
+      "elapsed_ms": 985.367
     },
     "continuity.checkpoint.append": {
       "n": 100,
-      "p50_ms": 1.193,
-      "p95_ms": 1.445,
-      "p99_ms": 8.292,
-      "mean_ms": 1.452
+      "p50_ms": 1.239,
+      "p95_ms": 1.66,
+      "p99_ms": 8.476,
+      "mean_ms": 1.434
     }
   }
 }
