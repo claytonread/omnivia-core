@@ -9,7 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service import installed_mcp
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ContinuityAssociationProvenance,
+)
 from omnivia_core_runtime.service.installed_mcp import (
     AUTHORING_POLICY,
     RESTRICTED_POLICY,
@@ -138,7 +142,6 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "engineering.search",
         "engineering.expand",
         "engineering.context.build",
-        "continuity.handoff.read",
         "decision.evaluate",
         "decision.record.get",
         "decision.record.list",
@@ -158,7 +161,6 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "engineering_search",
         "engineering_expand",
         "engineering_context",
-        "continuity_handoff",
         "decision_evaluation",
         "decision_record",
         "decision_status",
@@ -518,6 +520,57 @@ def test_authentication_yields_exactly_the_durable_policy(tmp_path: Path) -> Non
         assert session.roles == kinds(AUTHORING_POLICY, McpGrantKind.ROLE)
         assert session.roles == frozenset({"workspace_contributor"})
         assert session.installations == frozenset()
+        association = session.continuity_association
+        assert association is not None
+        assert association.association_id == (
+            f"{provisioning.setup.setup_id}.g{provisioning.setup.setup_generation}"
+        )
+        assert association.principal_id == session.principal_id
+        assert association.workspace_id == "ws-one"
+        assert (
+            association.provenance
+            is ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION
+        )
+
+
+def test_a_pre_withdrawal_setup_cannot_authenticate_with_retired_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_policy = installed_mcp._derive_policy(
+        (
+            *installed_mcp._RESTRICTED_OPERATIONS,
+            ("continuity.handoff.read", "continuity_handoff"),
+        )
+    )
+    with installation(tmp_path) as (store, authority):
+        with monkeypatch.context() as legacy:
+            legacy.setitem(
+                installed_mcp._POLICIES,
+                McpProfile.RESTRICTED,
+                legacy_policy,
+            )
+            provisioning = authority.configure(
+                administrator(),
+                host=McpHost.CLAUDE_CODE,
+                workspace_id="ws-one",
+                profile=McpProfile.RESTRICTED,
+                authoring_intent=False,
+            )
+        assert provisioning.secret is not None
+        assert "continuity.handoff.read" in kinds(
+            store.mcp_grants(
+                provisioning.setup.setup_id,
+                provisioning.setup.setup_generation,
+            ),
+            McpGrantKind.OPERATION,
+        )
+
+        with pytest.raises(InstalledMcpAuthenticationError) as refusal:
+            authority.authenticate(provisioning.secret.reveal())
+        assert str(refusal.value) == (
+            "the presented credential does not resolve to live installed MCP authority"
+        )
 
 
 @pytest.mark.parametrize("presented", ["", "not-the-secret", "x" * 43])

@@ -26,7 +26,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ContinuityAssociationProvenance,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher, Grant
 from omnivia_core_runtime.service.installation_host import (
     AUTHORITY_DESCRIPTOR_NAME,
@@ -748,6 +751,13 @@ def test_a_follower_reaches_the_owner_and_never_the_database(tmp_path: Path) -> 
         assert session.roles == frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
         assert session.installations == frozenset()
         assert "evidence.capture" in session.operations
+        assert session.continuity_association is not None
+        assert session.continuity_association.principal_id == session.principal_id
+        assert session.continuity_association.workspace_id == "ws-one"
+        assert (
+            session.continuity_association.provenance
+            is ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION
+        )
 
         # The same round trip for a restricted setup carries the one role (its
         # profile admits the decision mutation), and nothing beyond it: what
@@ -794,6 +804,7 @@ SESSION_VIEW: Mapping[str, object] = {
     "purposes": [],
     "roles": [],
     "capabilities": [],
+    "continuity_association": None,
 }
 
 
@@ -846,6 +857,59 @@ def test_a_forwarded_session_comes_back_holding_at_most_the_one_bounded_role() -
 
     # An answer holding no role is admitted holding none: nothing is defaulted in.
     assert following(answering(SESSION_VIEW)).authenticate("anything").roles == frozenset()
+
+
+def test_a_forwarded_installed_mcp_association_retains_exact_identity() -> None:
+    association = {
+        "association_id": "mcp-setup-one.g7",
+        "principal_id": "mcp-claude-code-forged",
+        "workspace_id": "ws-one",
+        "provenance": ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION.value,
+    }
+    session = following(
+        answering({**SESSION_VIEW, "continuity_association": association})
+    ).authenticate("anything")
+    assert session.continuity_association is not None
+    assert session.continuity_association.association_id == "mcp-setup-one.g7"
+    assert session.continuity_association.principal_id == session.principal_id
+    assert session.continuity_association.workspace_id == "ws-one"
+    assert (
+        session.continuity_association.provenance
+        is ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION
+    )
+
+
+@pytest.mark.parametrize(
+    "association",
+    [
+        pytest.param(
+            {
+                "association_id": "mcp-setup-one.g7",
+                "principal_id": "somebody-else",
+                "workspace_id": "ws-one",
+                "provenance": "installed_mcp_connection",
+            },
+            id="another principal",
+        ),
+        pytest.param(
+            {
+                "association_id": "mcp-setup-one.g7",
+                "principal_id": "mcp-claude-code-forged",
+                "workspace_id": "ws-one",
+                "provenance": "authenticated_http_connection",
+            },
+            id="another adapter provenance",
+        ),
+    ],
+)
+def test_a_forged_forwarded_association_is_unavailable(
+    association: Mapping[str, object],
+) -> None:
+    with pytest.raises(LocalControlRefusal) as refused:
+        following(
+            answering({**SESSION_VIEW, "continuity_association": association})
+        ).authenticate("anything")
+    assert refused.value.code is LocalControlError.UNAVAILABLE
 
 
 @pytest.mark.parametrize(
@@ -913,6 +977,23 @@ def test_a_forwarded_reply_this_build_cannot_admit_is_unavailable(
 ) -> None:
     """Nothing off this wire is read-and-ignored, and nothing is defaulted."""
     follower = following(answering(result, **overrides))
+    with pytest.raises(LocalControlRefusal) as refused:
+        follower.authenticate("anything")
+    assert refused.value.code is LocalControlError.UNAVAILABLE
+
+
+def test_a_v1_owner_reply_is_unavailable_to_the_v2_follower() -> None:
+    legacy_view = {
+        key: value
+        for key, value in SESSION_VIEW.items()
+        if key != "continuity_association"
+    }
+    follower = following(
+        answering(
+            legacy_view,
+            **{LOCAL_CONTROL_RESULT_FIELD: "omnivia.local-control.v1"},
+        )
+    )
     with pytest.raises(LocalControlRefusal) as refused:
         follower.authenticate("anything")
     assert refused.value.code is LocalControlError.UNAVAILABLE

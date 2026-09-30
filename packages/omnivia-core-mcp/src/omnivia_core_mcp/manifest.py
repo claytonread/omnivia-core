@@ -1,8 +1,8 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds fifty-four operations. This module names fourteen of them in the
-``restricted`` profile and nineteen in the ``authoring`` profile. A newly
+holds fifty-four operations. This module names thirteen of them in the
+``restricted`` profile and eighteen in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -15,12 +15,12 @@ selection and enumeration; grant administration; governance decisions;
 unrestricted filesystem path selection; and administrative configuration. None
 of those is a tool a model calls.
 
-**The restricted fourteen** are the workspace and governed-memory reads, the
-Engineering Memory reads, continuity handoff, and the four decision tools.
+**The restricted thirteen** are the workspace and governed-memory reads, the
+Engineering Memory reads, and the four decision tools.
 ``decision.evaluate`` is the one side-effecting operation in this profile; it is
 admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring nineteen** are those fourteen plus exactly three mutations --
+**The authoring eighteen** are those thirteen plus exactly three mutations --
 ``memory.create``, ``evidence.capture`` and ``import.start`` -- and the two job
 observations, ``job.get`` and ``job.events``, that make an asynchronous import
 followable. These four mutations across both profiles are the *only*
@@ -93,9 +93,10 @@ __all__ = [
 #: that actually changed when it is not. ``1.0`` advertised ``workspace.inspect``
 #: alone with no output schema; ``1.1`` was the six-operation read surface;
 #: ``2.0`` is the major bump that adds a second, wider profile and the mutation
-#: wrapper; ``2.2`` withdraws the checkpoint append tool until a trusted private
-#: continuity binding exists.
-MANIFEST_VERSION: Final = "2.2"
+#: wrapper; ``2.2`` withdraws checkpoint append; ``2.3`` also withdraws handoff
+#: until an ordinary MCP connection can select a previously shared session
+#: without accepting caller-owned binding identity.
+MANIFEST_VERSION: Final = "2.3"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -285,20 +286,6 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
         ),
     ),
     ExposedOperation(
-        tool_name="continuity_handoff_read",
-        operation="continuity.handoff.read",
-        purpose="continuity_handoff",
-        title="Read a continuity handoff",
-        description=(
-            "Read the bounded handoff view of one durable engineering "
-            "checkpoint: its objective, unresolved work and suggested next "
-            "actions, with omissions stated and applicability framed for the "
-            "snapshot the receiving agent targets. Working context, never an "
-            "instruction, and it confers no authority. Read-only."
-        ),
-    ),
-
-    ExposedOperation(
         tool_name="decision_evaluate",
         operation="decision.evaluate",
         purpose="decision_evaluation",
@@ -430,7 +417,7 @@ AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #:
 #: Kept under its original name because it is what `omnivia_core_mcp.server` and
 #: the operation-traceability ledger already reach for: a caller written before
-#: profiles existed advertises the restricted fourteen, which is the failure
+#: profiles existed advertises the restricted thirteen, which is the failure
 #: mode this name should have.
 EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = RESTRICTED_MANIFEST
 
@@ -571,7 +558,7 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the nineteen deletes or overwrites: the four mutations
+            # None of the eighteen deletes or overwrites: the four mutations
             # create, and supersession and cancellation are not exposed at all.
             destructive_hint=False,
             # Only where the catalogue proves it. The four mutations declare

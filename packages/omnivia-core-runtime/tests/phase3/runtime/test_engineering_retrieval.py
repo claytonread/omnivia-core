@@ -9,6 +9,7 @@ states `not_evaluated`, and the continuity checkpoint surface answers the
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,10 @@ import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.service.application import authorize_application_request
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    TrustedContinuityBinding,
+)
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.memory import create_memory_record
@@ -23,6 +28,7 @@ from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
+    ContinuitySessionBinding,
     get_operation_metadata,
 )
 
@@ -60,6 +66,7 @@ def _context(
     entry: Any,
     operation_input: dict[str, Any],
     *,
+    session: AuthenticatedSession | None = None,
     stated_version: str | None = None,
 ) -> OperationContext:
     overrides: dict[str, Any] = {}
@@ -72,7 +79,7 @@ def _context(
     envelope = s0.envelope_for(entry, operation_input=operation_input, **overrides)
     authorized = authorize_application_request(
         envelope,
-        session=s0.session_for(entry),
+        session=s0.session_for(entry) if session is None else session,
         binding=s0.BINDING,
         supported_capabilities=s0.SUPPORTED,
     )
@@ -308,6 +315,12 @@ def test_working_context_reads_the_checkpoint_index(tmp_path: Any) -> None:
         )
         reg_outcome = register_handlers.continuity_session_register(reg_context)
         session_id = reg_outcome.result["session"]["session_id"]
+        binding = TrustedContinuityBinding.from_registration(
+            ContinuitySessionBinding.from_wire(reg_outcome.result["session"])
+        )
+        append_session = dataclasses.replace(
+            s0.session_for(append_entry), continuity_binding=binding
+        )
 
         append_input = {
             "session_id": session_id,
@@ -320,6 +333,7 @@ def test_working_context_reads_the_checkpoint_index(tmp_path: Any) -> None:
             holder,
             append_entry,
             append_input,
+            session=append_session,
             stated_version="seq-0",
         )
         continuity.continuity_checkpoint_append(append_context)

@@ -119,6 +119,8 @@ EXPECTED_LIFECYCLE = (
     (("service", "start"), "start"),
     (("service", "stop"), "stop"),
     (("service", "status"), "status"),
+    (("service", "update-check"), "update-check"),
+    (("service", "update"), "update"),
 )
 
 EXPECTED_EXITS = {
@@ -187,7 +189,7 @@ def test_the_probe_commands_are_exactly_the_three_runtime_probes() -> None:
     assert not hasattr(PROBE_COMMANDS[0], "purpose")
 
 
-def test_lifecycle_is_a_separate_three_command_administrative_surface() -> None:
+def test_lifecycle_is_a_separate_administrative_surface_with_a_local_check() -> None:
     assert tuple((item.path, item.action) for item in LIFECYCLE_COMMANDS) == (
         EXPECTED_LIFECYCLE
     )

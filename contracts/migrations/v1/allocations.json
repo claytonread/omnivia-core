@@ -456,7 +456,7 @@
       "state": "candidate",
       "predecessor": 57,
       "sha256": "464975d081d01cb756b4e012e767edf1ff28471816ac0ef543385100eb76707b",
-      "introduced_commit": "d68f6a7ad6c2a7e80f052f42572007f719888426",
+      "introduced_commit": "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
       "accepted_commit": null
     },
     {
@@ -467,7 +467,18 @@
       "state": "candidate",
       "predecessor": 58,
       "sha256": "6ce70ea6b2d94e04ac1505b277b54a0c6950a1bfad9544bd46629f0aab4d53b6",
-      "introduced_commit": "d68f6a7ad6c2a7e80f052f42572007f719888426",
+      "introduced_commit": "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
+      "accepted_commit": null
+    },
+    {
+      "number": 60,
+      "filename": "0060_engineering_continuity_lifecycle.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 59,
+      "sha256": "a406360999ebf98ffea59d3ad5fb2699adad6742db4c14a35962299bc1385657",
+      "introduced_commit": "1d49d70a561c34db9a6e088cce4f869f6554fe56",
       "accepted_commit": null
     }
   ]

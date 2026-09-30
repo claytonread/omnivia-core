@@ -507,7 +507,18 @@ def test_authorization_never_touches_storage() -> None:
 
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "sqlite3" not in source
-    assert "connection" not in source.lower()
+    # The continuity provenance vocabulary legitimately names the *transport*
+    # seams ("..._connection" enum values); what must never appear is any
+    # storage coupling: a database handle, cursor or driver import.
+    for storage_coupling in (
+        "sqlite3.connect",
+        ".cursor(",
+        "CREATE TABLE",
+        "INSERT INTO",
+        "UPDATE omnivia_",
+        "DELETE FROM",
+    ):
+        assert storage_coupling not in source
 
 
 # --- B10: CLI and MCP are clients --------------------------------------------

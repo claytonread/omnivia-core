@@ -157,6 +157,12 @@ EXPECTED_ALLOCATION = (
         "Engineering Memory",
         "candidate",
     ),
+    (
+        60,
+        "0060_engineering_continuity_lifecycle.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -213,13 +219,16 @@ CANDIDATE_INTRODUCED_COMMITS = {
     52: "4e4a6ed3ef4b1d8ce0145e8ffe52325fde0f80be",
     53: "97ada9ba23e3a8ef890cfdd1ee0bd03a468bf34d",
     # 0054 was introduced by the durable invalidation worker (PR #150); the
-    # #155 renumber landed 0055-0057 at b4f89ef4; this lane adds 0058-0059.
+    # #155 renumber landed 0055-0057 at b4f89ef4; the durable-queue lane's
+    # renumber commit d68f6a7a and main's post-merge repair fc2ab5e6 both
+    # carry the renumbered 0058-0059 content, so the allocation follows
+    # main's pushed history (fc2ab5e6).
     54: "f481702094db91779f9052de53ef48d7635560b2",
     55: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
     56: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
     57: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
-    58: "d68f6a7ad6c2a7e80f052f42572007f719888426",
-    59: "d68f6a7ad6c2a7e80f052f42572007f719888426",
+    58: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
+    59: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

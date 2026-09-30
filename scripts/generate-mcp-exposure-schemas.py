@@ -91,7 +91,6 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "engineering.search",
     "engineering.expand",
     "engineering.context.build",
-    "continuity.handoff.read",
     "decision.evaluate",
     "decision.record.get",
     "decision.record.list",

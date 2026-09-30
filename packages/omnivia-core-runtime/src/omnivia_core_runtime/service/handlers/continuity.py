@@ -43,7 +43,9 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
+    ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
+    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
@@ -60,6 +62,7 @@ from omnivia_core.contracts.v1 import (
     idempotency_equivalence,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
+from omnivia_core_runtime.service.authorization import TrustedContinuityBinding
 from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
     MutationPreconditionFailed,
@@ -78,6 +81,7 @@ from omnivia_core_runtime.storage.continuity import (
     ParentCheckpointMismatch,
     PayloadTooLarge,
     SequencePreconditionFailed,
+    SessionBindingMismatch,
     SessionNotActive,
     SessionNotFound,
 )
@@ -95,6 +99,54 @@ _MESSAGE_CONFLICT: Final = (
 _MESSAGE_PRECONDITION: Final = (
     "the continuity session advanced under this request; re-read and re-decide"
 )
+_MESSAGE_UNACCOUNTED_PAYLOAD_FIELD: Final = (
+    "the stored continuity checkpoint carries a payload field this handoff has no policy for"
+)
+_MESSAGE_INTEGRITY: Final = (
+    "the stored continuity checkpoint failed an internal integrity check"
+)
+_MESSAGE_BINDING_REQUIRED: Final = (
+    "this continuity operation requires a server-established session binding"
+)
+
+# A handoff is a deliberately small projection of checkpoint evidence.  These
+# regions either require their own current authorisation check, describe the
+# sender's runtime, or could be mistaken for authority to act.  The receiver is
+# told which *region* was withheld, never which record, source, run or effect was
+# inside it.  A tuple gives both the response and its digest one stable order.
+# `checkpoint_kind` is here too: it is sender-side taxonomy, not delivered
+# working context, and is withheld the same way as the other redacted regions.
+_HANDOFF_OMITTED_REGIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("accepted_record_refs", "retrieve_current_separately"),
+    ("candidate_record_refs", "working_context_redacted"),
+    ("checkpoint_kind", "working_context_redacted"),
+    ("completed_work", "working_context_redacted"),
+    ("context_receipt", "not_a_persisted_handle"),
+    ("external_effects", "owner_reconciliation_required"),
+    ("external_run_ref", "sender_runtime_context"),
+    ("failed_approaches", "working_context_redacted"),
+    ("observations", "requires_fresh_authorization"),
+    ("relevant_sources", "requires_fresh_authorization"),
+    ("repository_snapshots", "requires_fresh_authorization"),
+)
+
+#: The fields a handoff renders directly, rather than omitting with a reason.
+_HANDOFF_RENDERED_FIELDS: Final[frozenset[str]] = frozenset(
+    {"objective", "unresolved_work", "next_actions"}
+)
+
+#: Every field of the persisted checkpoint payload this handoff accounts for,
+#: rendered or omitted.  A field the payload contract adds and this set does
+#: not name has no handoff policy yet; `continuity_handoff_read` fails closed
+#: rather than silently passing it through or silently dropping it uncounted.
+_HANDOFF_KNOWN_FIELDS: Final[frozenset[str]] = _HANDOFF_RENDERED_FIELDS | frozenset(
+    field for field, _reason in _HANDOFF_OMITTED_REGIONS
+)
+
+# The stored checkpoint is already capped at 256 KiB, but a handoff is intended
+# to be a compact receiver view.  Bound each textual list independently so the
+# response shape is predictable even for a valid checkpoint near that cap.
+_HANDOFF_TEXT_ITEM_LIMIT: Final = 32
 
 _ERROR_FOR_STORAGE: Final[tuple[tuple[type[BaseException], str, str], ...]] = (
     (
@@ -104,6 +156,11 @@ _ERROR_FOR_STORAGE: Final[tuple[tuple[type[BaseException], str, str], ...]] = (
     ),
     (
         SessionNotActive,
+        ERROR_CODE_CONFLICT,
+        _MESSAGE_CONFLICT,
+    ),
+    (
+        SessionBindingMismatch,
         ERROR_CODE_CONFLICT,
         _MESSAGE_CONFLICT,
     ),
@@ -154,8 +211,63 @@ def _timestamp(us: int) -> str:
     )
 
 
+def _handoff_text_region(
+    payload: Mapping[str, Any],
+    field: str,
+    omissions: list[dict[str, str]],
+) -> list[str] | None:
+    """Render one bounded textual region and account for a partial projection."""
+    raw = payload.get(field)
+    if not isinstance(raw, list) or not raw:
+        return None
+    rendered = [str(item)[:2000] for item in raw[:_HANDOFF_TEXT_ITEM_LIMIT]]
+    if len(raw) > _HANDOFF_TEXT_ITEM_LIMIT:
+        omissions.append({"field": field, "reason": "bounded"})
+    return rendered
+
+
+def _handoff_omissions(payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Describe withheld regions without disclosing any identity inside them."""
+    return [
+        {"field": field, "reason": reason}
+        for field, reason in _HANDOFF_OMITTED_REGIONS
+        if field in payload
+    ]
+
+
+def _require_continuity_binding(
+    context: OperationContext,
+    *,
+    requested_session_id: str | None = None,
+) -> TrustedContinuityBinding:
+    """Return the adapter-established binding, never one derived from payload.
+
+    An absent binding is an authority failure.  A principal/workspace mismatch
+    or a different session selector is deliberately indistinguishable from a
+    missing continuity record, preserving the existing cross-principal hiding
+    rule while refusing same-principal session substitution before storage.
+    """
+    binding = getattr(context.authorization, "continuity_binding", None)
+    if not isinstance(binding, TrustedContinuityBinding):
+        raise OperationError(
+            ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_BINDING_REQUIRED
+        )
+    if (
+        binding.principal_id != context.principal
+        or binding.workspace_id != context.workspace_id
+        or (
+            requested_session_id is not None
+            and requested_session_id != binding.session_id
+        )
+    ):
+        raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+    return binding
+
+
 def _session_version(
-    fenced: sqlite3.Connection, context: OperationContext, session_id: str
+    fenced: sqlite3.Connection,
+    context: OperationContext,
+    binding: TrustedContinuityBinding,
 ) -> str:
     """The version append and close compare, read under the fence as the caller.
 
@@ -163,15 +275,46 @@ def _session_version(
     before the stated version is compared, so its head is never disclosed as a
     precondition failure.
     """
-    session = storage.read_session(
+    session = storage.read_bound_session(
         fenced,
         workspace_id=context.workspace_id,
-        session_id=session_id,
+        session_id=binding.session_id,
         principal_id=context.principal,
+        binding_generation=binding.binding_generation,
     )
     if session is None:
-        raise SessionNotFound(session_id)
+        raise SessionNotFound(binding.session_id)
     return f"seq-{session['last_checkpoint_sequence'] or 0}"
+
+
+def _require_current_binding(
+    connection: sqlite3.Connection,
+    context: OperationContext,
+    binding: TrustedContinuityBinding,
+) -> None:
+    """Refuse a stale binding before the idempotency replay path can answer.
+
+    ``execute_mutation`` deliberately resolves a committed replay before it
+    calls the record-version reader.  That is correct for a lost response, but
+    the binding generation is authority rather than a record precondition and
+    must govern replays too.  This read rejects a binding already stale when
+    dispatch begins.  The fenced domain write checks it again before any new
+    mutation settles.
+    """
+    try:
+        session = storage.read_bound_session(
+            connection,
+            workspace_id=context.workspace_id,
+            session_id=binding.session_id,
+            principal_id=context.principal,
+            binding_generation=binding.binding_generation,
+        )
+    except SessionBindingMismatch as error:
+        raise _as_operation_error(error) from error
+    if session is None:
+        raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+    if session["state"] in {"expired", "revoked"}:
+        raise _as_operation_error(SessionNotActive(str(session["state"])))
 
 
 @dataclass(frozen=True)
@@ -204,10 +347,32 @@ class ContinuityHandlers:
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
         connection, identity, guard = self._authority()
+        association = context.authorization.continuity_association
+        association_precondition = None
+        if association is not None:
+            association_precondition = (
+                storage.read_association_registration_precondition(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    principal_id=context.principal,
+                    association_key=association.storage_key,
+                )
+            )
+        equivalence_input: Mapping[str, Any] = request.to_wire()
+        if association is not None:
+            # Idempotency keys are principal/workspace scoped by the public
+            # contract.  The trusted adapter association is narrower authority:
+            # including its one-way server key in the fingerprint prevents two
+            # same-principal clients that happen to reuse a key from replaying
+            # one another's registration result.
+            equivalence_input = {
+                "request": equivalence_input,
+                "trusted_adapter_association": association.storage_key,
+            }
         equivalence = idempotency_equivalence(
             context.request.operation,
             context.request.metadata,
-            request.to_wire(),
+            equivalence_input,
             principal_id=context.principal,
             workspace_id=context.workspace_id,
         )
@@ -232,13 +397,25 @@ class ContinuityHandlers:
                 )
             session_id = self.allocate_identifier("esess")
             now_us = settlement.settled_at_us
-            storage.register_session(
+            binding_generation = 1
+            host_session_ref = request.host_session_ref
+            if association is not None:
+                host_session_ref = storage.associated_host_session_ref(
+                    association.storage_key,
+                    request.host_session_ref,
+                )
+            binding_generation = storage.register_session(
                 fenced,
                 settlement,
                 workspace_id=context.workspace_id,
                 session_id=session_id,
                 principal_id=context.principal,
-                host_session_ref=request.host_session_ref,
+                binding_generation=binding_generation,
+                association_key=(
+                    None if association is None else association.storage_key
+                ),
+                association_precondition=association_precondition,
+                host_session_ref=host_session_ref,
                 checkout_hint=request.checkout_hint,
                 repository_target=(
                     None if request.repository_target is None
@@ -246,13 +423,21 @@ class ContinuityHandlers:
                 ),
                 registered_at_us=now_us,
             )
+            stored_session = storage.read_session(
+                fenced,
+                workspace_id=context.workspace_id,
+                session_id=session_id,
+                principal_id=context.principal,
+            )
+            if stored_session is None:
+                raise SessionNotFound(session_id)
             session_wire: dict[str, Any] = {
                 "session_id": session_id,
                 "principal_id": context.principal,
                 "workspace_id": context.workspace_id,
-                "binding_generation": 1,
+                "binding_generation": binding_generation,
                 "lease_expires_at": _timestamp(
-                    now_us + storage.SESSION_LEASE_SECONDS * 1_000_000
+                    int(stored_session["lease_expires_at_us"])
                 ),
                 "state": "active",
             }
@@ -279,6 +464,9 @@ class ContinuityHandlers:
             request = ContinuityCheckpointAppendInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        continuity_binding = _require_continuity_binding(
+            context, requested_session_id=request.session_id
+        )
         connection, identity, guard = self._authority()
         equivalence = idempotency_equivalence(
             context.request.operation,
@@ -294,6 +482,11 @@ class ContinuityHandlers:
             guard=guard,
             equivalence=equivalence,
             clock=self.clock,
+        )
+        _require_current_binding(
+            connection,
+            context,
+            continuity_binding,
         )
 
         def mutate(
@@ -312,7 +505,8 @@ class ContinuityHandlers:
                 workspace_id=context.workspace_id,
                 principal_id=context.principal,
                 checkpoint_id=self.allocate_identifier("eck"),
-                session_id=request.session_id,
+                session_id=continuity_binding.session_id,
+                binding_generation=continuity_binding.binding_generation,
                 parent_checkpoint_id=request.parent_checkpoint_id,
                 expected_parent_sequence=request.expected_parent_sequence,
                 checkpoint_kind=request.payload.checkpoint_kind,
@@ -337,10 +531,27 @@ class ContinuityHandlers:
                 return False
             return True
 
-        def precondition(fenced: Any) -> str:
-            return _session_version(fenced, context, request.session_id)
+        def replay_authority(fenced: sqlite3.Connection) -> None:
+            _require_current_binding(
+                fenced,
+                context,
+                continuity_binding,
+            )
 
-        outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
+        def precondition(fenced: Any) -> str:
+            return _session_version(fenced, context, continuity_binding)
+
+        outcome = self._execute(
+            context,
+            connection,
+            identity,
+            grant,
+            equivalence,
+            mutate,
+            valid_result,
+            precondition,
+            replay_authority,
+        )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- continuity.session.close ---------------------------------------------
@@ -352,6 +563,9 @@ class ContinuityHandlers:
             request = ContinuitySessionCloseInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        continuity_binding = _require_continuity_binding(
+            context, requested_session_id=request.session_id
+        )
         connection, identity, guard = self._authority()
         equivalence = idempotency_equivalence(
             context.request.operation,
@@ -368,6 +582,11 @@ class ContinuityHandlers:
             equivalence=equivalence,
             clock=self.clock,
         )
+        _require_current_binding(
+            connection,
+            context,
+            continuity_binding,
+        )
 
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
@@ -378,7 +597,8 @@ class ContinuityHandlers:
                 settlement,
                 workspace_id=context.workspace_id,
                 principal_id=context.principal,
-                session_id=request.session_id,
+                session_id=continuity_binding.session_id,
+                binding_generation=continuity_binding.binding_generation,
                 expected_sequence=request.expected_sequence,
                 final_checkpoint=None if final is None else final.to_wire(),
                 final_checkpoint_id=self.allocate_identifier("eck"),
@@ -408,10 +628,27 @@ class ContinuityHandlers:
                 return False
             return True
 
-        def precondition(fenced: Any) -> str:
-            return _session_version(fenced, context, request.session_id)
+        def replay_authority(fenced: sqlite3.Connection) -> None:
+            _require_current_binding(
+                fenced,
+                context,
+                continuity_binding,
+            )
 
-        outcome = self._execute(context, connection, identity, grant, equivalence, mutate, valid_result, precondition)
+        def precondition(fenced: Any) -> str:
+            return _session_version(fenced, context, continuity_binding)
+
+        outcome = self._execute(
+            context,
+            connection,
+            identity,
+            grant,
+            equivalence,
+            mutate,
+            valid_result,
+            precondition,
+            replay_authority,
+        )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     # --- continuity.handoff.read -----------------------------------------------
@@ -423,10 +660,24 @@ class ContinuityHandlers:
             request = ContinuityHandoffReadInput.from_wire(context.request.input)
         except (ContractDecodeError, ContractSemanticError) as error:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
-        if request.checkpoint_id is None and (
-            request.session_id is None or request.sequence is None
-        ):
+        # Exactly one selector shape is valid: `checkpoint_id` alone, or
+        # `session_id` and `sequence` together. Any other combination -- both
+        # named at once (whether or not they agree), or only one half of the
+        # session pair -- is refused here, before any database access.
+        valid_selector = (
+            request.checkpoint_id is not None
+            and request.session_id is None
+            and request.sequence is None
+        ) or (
+            request.checkpoint_id is None
+            and request.session_id is not None
+            and request.sequence is not None
+        )
+        if not valid_selector:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        continuity_binding = _require_continuity_binding(
+            context, requested_session_id=request.session_id
+        )
         connection, _identity, _guard = self._authority()
         # One statement resolves the checkpoint and its session's owner before the
         # payload is loaded: another principal's checkpoint is `not_found` below.
@@ -434,6 +685,8 @@ class ContinuityHandlers:
             connection,
             workspace_id=context.workspace_id,
             principal_id=context.principal,
+            bound_session_id=continuity_binding.session_id,
+            binding_generation=continuity_binding.binding_generation,
             checkpoint_id=request.checkpoint_id,
             session_id=request.session_id,
             sequence=request.sequence,
@@ -441,29 +694,41 @@ class ContinuityHandlers:
         if record is None:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
         payload = record["payload"]
+        # The stored payload must still be exactly what its own content_digest
+        # covers -- recomputed with the same canonicalization storage used when
+        # writing it -- before any of it is interpreted or rendered. This is the
+        # original stored payload's digest, never the rendered view's own.
+        if content_digest(canonical_document(payload)) != record["content_digest"]:
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_INTEGRITY)
+        # Every persisted payload field must be either rendered or explicitly
+        # omitted with a reason. A field the payload contract added without a
+        # handoff policy is never disclosed by default: fail closed instead.
+        if set(payload) - _HANDOFF_KNOWN_FIELDS:
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_UNACCOUNTED_PAYLOAD_FIELD
+            )
+        omissions = _handoff_omissions(payload)
         view: dict[str, Any] = {
             "format_version": "continuity_handoff.v1",
             "checkpoint_id": record["checkpoint_id"],
-            "content_digest": content_digest(
-                canonical_document(
-                    {
-                        "checkpoint_id": record["checkpoint_id"],
-                        "sequence": record["sequence"],
-                        "payload": payload,
-                    }
-                )
-            ),
-            "redacted": False,
             "objective": str(payload.get("objective", ""))[:2000] or "(no objective recorded)",
             "applicability": (
                 "not_evaluated" if request.target_snapshot is None else "unknown"
             ),
         }
-        if payload.get("unresolved_work"):
-            view["unresolved_work"] = [str(item)[:2000] for item in payload["unresolved_work"]]
-        if payload.get("next_actions"):
-            view["next_actions"] = [str(item)[:2000] for item in payload["next_actions"]]
-        view["omissions"] = []
+        for field in ("unresolved_work", "next_actions"):
+            rendered = _handoff_text_region(payload, field, omissions)
+            if rendered is not None:
+                view[field] = rendered
+        omissions.sort(key=lambda omission: (omission["field"], omission["reason"]))
+        view["omissions"] = omissions
+        view["redacted"] = bool(omissions)
+
+        # A digest cannot literally include itself.  The canonical handoff digest
+        # therefore covers every delivered field except `content_digest`, including
+        # the exact bounded text, redaction label and omission diagnostics.  It never
+        # covers sender-only checkpoint content that was not delivered.
+        view["content_digest"] = content_digest(canonical_document(view))
         return {"handoff": view}
 
     def _execute(
@@ -476,6 +741,7 @@ class ContinuityHandlers:
         mutate: Any,
         valid_result: Any,
         precondition: Any = None,
+        replay_authority: Any = None,
     ) -> Any:
         try:
             return execute_mutation(
@@ -485,6 +751,7 @@ class ContinuityHandlers:
                 context=context.authorization,
                 equivalence=equivalence,
                 precondition=precondition,
+                replay_authority=replay_authority,
                 mutate=mutate,
                 validate_result=valid_result,
                 clock=self.clock,
@@ -494,11 +761,17 @@ class ContinuityHandlers:
             raise OperationError(
                 error.code, error.message, retry_class=error.retry_class
             ) from error
-        except (SessionNotFound, SessionNotActive, ParentCheckpointMismatch,
-                SequencePreconditionFailed, PayloadTooLarge,
-                repo_identity.RepositoryNotFound,
-                repo_identity.RepositoryAmbiguous,
-                repo_identity.SnapshotNotFound) as error:
+        except (
+            SessionNotFound,
+            SessionNotActive,
+            SessionBindingMismatch,
+            ParentCheckpointMismatch,
+            SequencePreconditionFailed,
+            PayloadTooLarge,
+            repo_identity.RepositoryNotFound,
+            repo_identity.RepositoryAmbiguous,
+            repo_identity.SnapshotNotFound,
+        ) as error:
             raise _as_operation_error(error) from error
         except MutationPreconditionFailed as error:
             raise OperationError(

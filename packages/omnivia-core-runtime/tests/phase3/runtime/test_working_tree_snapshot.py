@@ -39,6 +39,7 @@ from omnivia_core_runtime.service.source_capture import (
 from omnivia_core_runtime.service.versions import SERVER_VERSION
 from omnivia_core_runtime.service.workspace_init import initialise_workspace
 from omnivia_core_runtime.storage import (
+    engineering_invalidation,
     engineering_source,
     engineering_source_producer,
     repository_identity,
@@ -423,6 +424,47 @@ def test_failed_publication_leaves_no_acknowledged_snapshot(
 
     monkeypatch.setattr(source_capture, "publish_blob", real)
     assert env.snapshot("repo-1", root).status == "captured"
+
+
+def test_captured_commit_triggers_the_invalidation_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    capture = env.snapshot("repo-1", root, "captured-trigger")
+    calls: list[tuple[str, str, int]] = []
+
+    def drain(
+        _connection: object,
+        _identity: object,
+        *,
+        workspace_id: str,
+        stream_id: str,
+        fencing_generation: int,
+        now_us: int,
+        **_kwargs: object,
+    ) -> None:
+        assert now_us > 0
+        calls.append((workspace_id, stream_id, fencing_generation))
+
+    monkeypatch.setattr(engineering_invalidation, "drain_invalidation", drain)
+    result = env.commit(
+        {
+            "repository_id": "repo-1",
+            "stream_id": "captured-trigger-stream",
+            "sequence": 1,
+            "snapshot_id": "captured-trigger",
+            "expected_manifest_digest": capture.manifest_digest,
+        },
+        key="capture-trigger-key",
+        request_id="capture-trigger",
+    )
+
+    assert isinstance(result, SuccessResponseEnvelope)
+    assert len(calls) == 1
+    assert calls[0][1] == "captured-trigger-stream"
+    assert calls[0][2] > 0
 
 
 def test_captured_commit_replays_and_recovers_a_gap_across_restarts(
@@ -2365,10 +2407,17 @@ def test_0059_upgrade_seeds_a_preexisting_0058_capture(
             fencing_generation=old.holder.generation,
             workspace_id=captured_schema.WORKSPACE_ID,
         )
-        assert [item.version for item in applied] == [59]
+        assert [item.version for item in applied] == [58, 59, 60]
         assert old.holder.connection.execute(
             "SELECT COUNT(*) FROM omnivia_engineering_source_producer_queue"
         ).fetchone() == (0,)
+        assert old.holder.connection.execute(
+            "SELECT covered_sequence, processed_sequence, "
+            "pending_dependent_record_id, pending_dependent_version "
+            "FROM omnivia_engineering_source_streams WHERE workspace_id = ? "
+            "AND stream_id = ?",
+            (captured_schema.WORKSPACE_ID, legacy.stream_id),
+        ).fetchone() == (1, 0, None, None)
         seeded = engineering_source_producer.seed_legacy_captures(
             old.holder.connection,
             old.holder.identity,

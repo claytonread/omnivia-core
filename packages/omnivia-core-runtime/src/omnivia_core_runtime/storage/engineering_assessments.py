@@ -371,7 +371,7 @@ def build_authorized_assessment_input(
                 view=view,
                 label_grant=label_grant,
                 record_ids=record_ids,
-            ):
+            )[0]:
                 if preview.assembly_id in {
                     visible.endpoint_a.assembly_id,
                     visible.endpoint_b.assembly_id,

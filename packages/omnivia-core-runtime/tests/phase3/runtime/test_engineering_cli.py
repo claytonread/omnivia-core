@@ -188,7 +188,8 @@ def test_the_continuity_vertical_runs_through_the_installed_cli(home: Path) -> N
     )
     view = handoff["handoff"]
     assert view["format_version"] == "continuity_handoff.v1"
-    assert view["redacted"] is False
+    # `checkpoint_kind` is never delivered, so every handoff is redacted.
+    assert view["redacted"] is True
     assert "Root cause still unconfirmed" in view["unresolved_work"]
 
     # Search: the working-context view answers over the real projection.
