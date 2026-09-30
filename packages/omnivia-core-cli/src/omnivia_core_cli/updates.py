@@ -79,6 +79,7 @@ class ChannelRelease:
     version: str
     release_url: str
     packages: dict[str, str]
+    bundle_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,7 @@ class UpdateCheckResult:
     checked_at: str
     candidate_version: str | None = None
     release_url: str | None = None
+    bundle_sha256: str | None = None
     channel_url: str = ""
 
     def to_wire(self) -> dict[str, Any]:
@@ -109,6 +111,8 @@ class UpdateCheckResult:
             document["candidate_version"] = self.candidate_version
         if self.release_url is not None:
             document["release_url"] = self.release_url
+        if self.bundle_sha256 is not None:
+            document["bundle_sha256"] = self.bundle_sha256
         return document
 
 
@@ -140,12 +144,26 @@ def validate_channel_document(document: Any) -> ChannelRelease | None:
     release = document["release"]
     if release is None:
         return None
-    if not isinstance(release, dict) or set(release) != {
+    if not isinstance(release, dict) or not {
         "version",
         "release_url",
         "packages",
-    }:
+    } <= set(release):
         raise UpdateCheckError("check_failed", "channel release member is malformed")
+    unknown_members = set(release) - {
+        "version",
+        "release_url",
+        "packages",
+        # Deliberately added for the update path (v0.4 §5.2: add fields
+        # deliberately): the built candidate bundle's checksum, so the
+        # coordinator can verify the downloaded archive before staging it.
+        "bundle_sha256",
+    }
+    if unknown_members:
+        raise UpdateCheckError(
+            "check_failed",
+            f"channel release has unexpected members: {sorted(unknown_members)}",
+        )
     version = release["version"]
     if not isinstance(version, str) or not _VERSION_RE.match(version):
         raise UpdateCheckError(
@@ -165,8 +183,20 @@ def validate_channel_document(document: Any) -> ChannelRelease | None:
     release_url = release["release_url"]
     if not isinstance(release_url, str) or not release_url.startswith("https://"):
         raise _https_refusal()
+    bundle_sha256 = release.get("bundle_sha256")
+    if bundle_sha256 is not None and (
+        not isinstance(bundle_sha256, str) or len(bundle_sha256) != 71
+        or not bundle_sha256.startswith("sha256:")
+        or any(c not in "0123456789abcdef" for c in bundle_sha256[7:])
+    ):
+        raise UpdateCheckError(
+            "check_failed", f"channel bundle_sha256 {bundle_sha256!r} is malformed"
+        )
     return ChannelRelease(
-        version=version, release_url=release_url, packages=dict(packages)
+        version=version,
+        release_url=release_url,
+        packages=dict(packages),
+        bundle_sha256=bundle_sha256,
     )
 
 
@@ -186,7 +216,7 @@ def default_fetch_channel(url: str) -> Any:
 def urlopen_bounded(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=10) as response:
-        data = response.read(MAX_CHANNEL_BYTES + 1)
+        data: bytes = response.read(MAX_CHANNEL_BYTES + 1)
     if len(data) > MAX_CHANNEL_BYTES:
         raise UpdateCheckError("check_failed", "the channel document exceeds the size limit")
     return data
@@ -286,7 +316,6 @@ def check_for_updates(
         )
     if release is None:
         return UpdateCheckResult(status="no_release", reason=None, **result_base)
-
     comparisons: list[int] = []
     for name in FIRST_PARTY_PACKAGES:
         installed_key = _version_key(installed[name])
@@ -312,5 +341,6 @@ def check_for_updates(
         reason=None,
         candidate_version=release.version if status == "update_available" else None,
         release_url=release.release_url if status == "update_available" else None,
+        bundle_sha256=release.bundle_sha256 if status == "update_available" else None,
         **result_base,
     )

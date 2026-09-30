@@ -263,6 +263,7 @@ LIFECYCLE_COMMANDS: Final[tuple[LifecycleCommand, ...]] = (
     LifecycleCommand(("service", "stop"), "stop"),
     LifecycleCommand(("service", "status"), "status"),
     LifecycleCommand(("service", "update-check"), "update-check"),
+    LifecycleCommand(("service", "update"), "update"),
 )
 
 #: R004 section 9.2's required installed experience, in its order. Three paths,

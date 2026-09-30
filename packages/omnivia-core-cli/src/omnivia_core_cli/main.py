@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import subprocess
 import sys
 import time
 from collections.abc import Mapping
@@ -573,6 +574,86 @@ def _run_update_check(*, json_output: bool) -> int:
     return 0 if ok else 1
 
 
+def _interactive_confirm(summary: str) -> bool:
+    """One interactive confirmation; a non-interactive stdin is a refusal."""
+    if not sys.stdin.isatty():
+        sys.stderr.write("interactive confirmation required (no terminal attached)\n")
+        return False
+    try:
+        return input(summary).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _probe_service_running(arguments: argparse.Namespace, deadline: Deadline) -> bool:
+    """Whether this installation currently serves the selected workspace."""
+    config = InstallationServiceConfig(
+        installation_state=arguments.installation_state,
+        workspace_id=arguments.workspace_id,
+    )
+    try:
+        client = ServiceClient.connect(config, deadline=deadline)
+    except (EndpointUnavailableError, CompatibilityError):
+        return False
+    return client is not None
+
+
+def _run_update(
+    arguments: argparse.Namespace,
+    *,
+    json_output: bool,
+    deadline: Deadline,
+) -> int:
+    """One user-initiated, user-approved Core update (v0.4 §6.1, §7–§11).
+
+    Interactive by design: the confirmation prompt is the approval. Unattended
+    flags are out of scope for this revision.
+    """
+    from omnivia_core_cli.updates import (
+        default_fetch_channel,
+        installed_packages,
+    )
+    from omnivia_core_cli.updates_apply import coordinate_update
+
+    def fetch_bytes(address: str) -> bytes:
+        import urllib.request
+
+        with urllib.request.urlopen(address, timeout=600) as response:
+            data: bytes = response.read()
+        return data
+
+    cli_executable = Path(sys.executable).parent / "omnivia"
+    outcome = coordinate_update(
+        installation_state=Path(arguments.installation_state),
+        installed=installed_packages(),
+        fetch_channel=default_fetch_channel,
+        fetch_bytes=fetch_bytes,
+        probe_running=lambda workspace_id: _probe_service_running(
+            arguments, deadline
+        ),
+        confirm=_interactive_confirm,
+        spawn_worker=subprocess.Popen,
+        python_executable=sys.executable,
+        cli_executable=str(cli_executable),
+        checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    document = outcome.to_wire()
+    if json_output:
+        sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+    else:
+        if outcome.status == "updated":
+            sys.stdout.write("updated\n")
+        elif outcome.status == "update_already_running":
+            sys.stdout.write("an update is already running for this installation\n")
+        elif outcome.status == "cancelled":
+            sys.stdout.write("cancelled; nothing changed\n")
+        else:
+            sys.stdout.write(f"{outcome.status}\n")
+            if outcome.reason:
+                sys.stderr.write(f"{outcome.reason}\n")
+    return outcome.returncode
+
+
 def _run_lifecycle(
     arguments: argparse.Namespace,
     command: LifecycleCommand,
@@ -600,6 +681,13 @@ def _run_lifecycle(
 
     if action == "update-check":
         return _run_update_check(json_output=json_output)
+
+    if action == "update":
+        return _run_update(
+            arguments,
+            json_output=json_output,
+            deadline=deadline,
+        )
 
     if action == "stop":
         result = stop_managed_local(config, deadline=deadline)
