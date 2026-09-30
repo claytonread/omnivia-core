@@ -66,7 +66,7 @@ TABLES = (
     "omnivia_engineering_relation_candidates",
     "omnivia_engineering_discovery_candidate_observations",
 )
-ASSESSMENT_MIGRATION_VERSION = 57
+ASSESSMENT_MIGRATION_VERSION = 58
 ASSESSMENT_MIGRATION_NAME = "0058_engineering_relation_assessments.sql"
 ASSESSMENT_TABLES = (
     "omnivia_engineering_relation_assessment_requests",
