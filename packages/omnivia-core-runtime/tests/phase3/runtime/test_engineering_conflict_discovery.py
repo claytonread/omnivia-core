@@ -67,8 +67,8 @@ TABLES = (
     "omnivia_engineering_relation_candidates",
     "omnivia_engineering_discovery_candidate_observations",
 )
-ASSESSMENT_MIGRATION_VERSION = 57
-ASSESSMENT_MIGRATION_NAME = "0057_engineering_relation_assessments.sql"
+ASSESSMENT_MIGRATION_VERSION = 58
+ASSESSMENT_MIGRATION_NAME = "0058_engineering_relation_assessments.sql"
 ASSESSMENT_TABLES = (
     "omnivia_engineering_relation_assessment_requests",
     "omnivia_engineering_relation_assessment_results",
@@ -1450,10 +1450,10 @@ def test_0057_is_additive_append_only_and_follows_captured_source(
         item for item in migrations if item.version == ASSESSMENT_MIGRATION_VERSION
     )
     assert migration.name == ASSESSMENT_MIGRATION_NAME
-    assert migrations[migrations.index(migration) - 1].version == 56
+    assert migrations[migrations.index(migration) - 1].version == 57
     assert "UPDATE omnivia_engineering_relation_candidates" not in migration.sql
     assert "INSERT INTO omnivia_application_governance_transitions" not in migration.sql
-    assert applied_migrations(workspace.holder.connection)[57] == migration.checksum
+    assert applied_migrations(workspace.holder.connection)[ASSESSMENT_MIGRATION_VERSION] == migration.checksum
     present = {
         str(row[0])
         for row in workspace.holder.connection.execute(
