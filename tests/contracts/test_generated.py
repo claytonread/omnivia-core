@@ -488,7 +488,7 @@ def test_the_parser_accepts_the_canonical_annotation() -> None:
     """
     assert generator.OPERATION_METADATA_DEFINITION in BY_NAME
     parsed = generator.parse_operation_catalogue(_operations_document(), BY_NAME)
-    assert len(parsed) == 56
+    assert len(parsed) == 57
     assert all(value.kind == "object" for value in parsed)
     assert all(value.name == generator.OPERATION_METADATA_DEFINITION for value in parsed)
 

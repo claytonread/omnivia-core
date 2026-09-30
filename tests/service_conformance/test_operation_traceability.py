@@ -154,8 +154,8 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
     assert len(OPERATION_CATALOGUE) == 57
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 56
-    assert len(set(FIXTURE_NAMES)) == 56
+    assert len(FIXTURE_NAMES) == 57
+    assert len(set(FIXTURE_NAMES)) == 57
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
