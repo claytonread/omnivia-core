@@ -144,6 +144,8 @@ def read_authorized_previews(
     projection is then read for exactly the admitted assemblies. Its digest includes
     the effective label grant and label-event stream, which lets a continuation bind
     the ACL epoch even when an attach/withdraw cycle leaves the same rows visible.
+    ``record_ids`` is the durable-processor seam: when supplied, authorization and
+    projection reads are confined to that indexed stable-record page.
     """
     with read_snapshot(connection):
         frontier = read_authorized_memory_frontier(

@@ -471,6 +471,8 @@ __all__ = [
     "ResolveWait",
     "ResponseEnvelope",
     "ResponseMetadata",
+    "ResultUseEvaluateInput",
+    "ResultUseEvaluateResult",
     "RetryClass",
     "Run",
     "RunDefinitionKind",
@@ -6316,6 +6318,174 @@ class DecisionModelRemoveResult:
         )
         return cls(
             profile=field_profile,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResultUseEvaluateInput:
+    """Input for `decision.result_use.evaluate`: the deterministic result-use gate over one
+    pinned analytical subject. Every input is a claim the evaluation checks; none grants
+    anything. Completeness and continuity unknowns deny by default.
+    """
+
+    request_version: ContractVersion
+    use_class: str
+    subject_digest: Identifier
+    completeness: str
+    continuity: str
+    freshness_ok: bool
+    schema_compatible: bool
+    evidence_available: bool
+    policy_permits_partial_or_stale: bool
+    authority_epoch: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["request_version"] = self.request_version
+        wire["use_class"] = self.use_class
+        wire["subject_digest"] = self.subject_digest
+        wire["completeness"] = self.completeness
+        wire["continuity"] = self.continuity
+        wire["freshness_ok"] = self.freshness_ok
+        wire["schema_compatible"] = self.schema_compatible
+        wire["evidence_available"] = self.evidence_available
+        wire["policy_permits_partial_or_stale"] = self.policy_permits_partial_or_stale
+        wire["authority_epoch"] = self.authority_epoch
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ResultUseEvaluateInput"
+    ) -> ResultUseEvaluateInput:
+        """Decode a wire payload into a ResultUseEvaluateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_request_version = _decode_str(
+            _require_field(mapping, "request_version", path),
+            f"{path}.request_version",
+        )
+        field_use_class = _decode_str(
+            _require_field(mapping, "use_class", path),
+            f"{path}.use_class",
+        )
+        field_subject_digest = _decode_str(
+            _require_field(mapping, "subject_digest", path),
+            f"{path}.subject_digest",
+        )
+        field_completeness = _decode_str(
+            _require_field(mapping, "completeness", path),
+            f"{path}.completeness",
+        )
+        field_continuity = _decode_str(
+            _require_field(mapping, "continuity", path),
+            f"{path}.continuity",
+        )
+        field_freshness_ok = _decode_bool(
+            _require_field(mapping, "freshness_ok", path),
+            f"{path}.freshness_ok",
+        )
+        field_schema_compatible = _decode_bool(
+            _require_field(mapping, "schema_compatible", path),
+            f"{path}.schema_compatible",
+        )
+        field_evidence_available = _decode_bool(
+            _require_field(mapping, "evidence_available", path),
+            f"{path}.evidence_available",
+        )
+        field_policy_permits_partial_or_stale = _decode_bool(
+            _require_field(mapping, "policy_permits_partial_or_stale", path),
+            f"{path}.policy_permits_partial_or_stale",
+        )
+        field_authority_epoch = _decode_str(
+            _require_field(mapping, "authority_epoch", path),
+            f"{path}.authority_epoch",
+        )
+        return cls(
+            request_version=field_request_version,
+            use_class=field_use_class,
+            subject_digest=field_subject_digest,
+            completeness=field_completeness,
+            continuity=field_continuity,
+            freshness_ok=field_freshness_ok,
+            schema_compatible=field_schema_compatible,
+            evidence_available=field_evidence_available,
+            policy_permits_partial_or_stale=field_policy_permits_partial_or_stale,
+            authority_epoch=field_authority_epoch,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResultUseEvaluateResult:
+    """The deterministic result-use decision: outcome, every applicable reason, the subject and
+    policy digests it was bound to, and an upper-bound validity instant. A decision is an
+    eligibility statement, never an effect grant.
+    """
+
+    outcome: str
+    reasons: tuple[Identifier, ...]
+    subject_digest: Identifier
+    authority_epoch: Identifier
+    valid_until: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["outcome"] = self.outcome
+        wire["reasons"] = list(self.reasons)
+        wire["subject_digest"] = self.subject_digest
+        wire["authority_epoch"] = self.authority_epoch
+        wire["valid_until"] = self.valid_until
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ResultUseEvaluateResult"
+    ) -> ResultUseEvaluateResult:
+        """Decode a wire payload into a ResultUseEvaluateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_outcome = _decode_str(_require_field(mapping, "outcome", path), f"{path}.outcome")
+        field_reasons_items = _decode_sequence(
+            _require_field(mapping, "reasons", path),
+            f"{path}.reasons",
+        )
+        field_reasons = tuple(
+            _decode_str(item, f"{path}.reasons[{index}]")
+            for index, item in enumerate(field_reasons_items)
+        )
+        field_subject_digest = _decode_str(
+            _require_field(mapping, "subject_digest", path),
+            f"{path}.subject_digest",
+        )
+        field_authority_epoch = _decode_str(
+            _require_field(mapping, "authority_epoch", path),
+            f"{path}.authority_epoch",
+        )
+        field_valid_until = _decode_str(
+            _require_field(mapping, "valid_until", path),
+            f"{path}.valid_until",
+        )
+        return cls(
+            outcome=field_outcome,
+            reasons=field_reasons,
+            subject_digest=field_subject_digest,
+            authority_epoch=field_authority_epoch,
+            valid_until=field_valid_until,
         )
 
 
@@ -24059,6 +24229,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         ),
         required_capability=CapabilityRequirement(
             id="insights.analysis",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "unsupported_minor_version",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="decision.result_use.evaluate",
+        scope=OperationScope(
+            required_scopes=("decision:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/decision.schema.json"
+            "#/$defs/ResultUseEvaluateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/decision.schema.json"
+            "#/$defs/ResultUseEvaluateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="decision.read",
             minimum_version="1.0",
             required=True,
         ),

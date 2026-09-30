@@ -151,10 +151,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 56
+    assert len(OPERATION_CATALOGUE) == 57
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 56
-    assert len(set(FIXTURE_NAMES)) == 56
+    assert len(FIXTURE_NAMES) == 57
+    assert len(set(FIXTURE_NAMES)) == 57
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -281,7 +281,7 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 18
+    assert len(exposed) == 19
     assert len(omitted) == 38
 
 
@@ -329,12 +329,13 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         "workflow.inspect",
         "workflow.review",
         "analysis.start",
+        "decision.result_use.evaluate",
         "workspace.list",
     }
 
 
 # --------------------------------------------------------------------------
-# The referenced 149-case adapter-wire-conformance corpus
+# The referenced 153-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 
@@ -345,18 +346,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 154
+    assert reference["case_count"] == 156
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_154_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_156_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 154
-    assert len(set(case_ids)) == 154
-    assert len(case_ids) == 154
-    assert len(set(case_ids)) == 154
+    assert len(case_ids) == 156
+    assert len(set(case_ids)) == 156
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

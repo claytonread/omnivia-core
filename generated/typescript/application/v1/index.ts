@@ -4021,6 +4021,82 @@ export interface DecisionModelRemoveResult {
 }
 
 /**
+ * Input for `decision.result_use.evaluate`: the deterministic result-use gate over one pinned
+ * analytical subject. Every input is a claim the evaluation checks; none grants anything.
+ * Completeness and continuity unknowns deny by default.
+ */
+export interface ResultUseEvaluateInput {
+  /**
+   * Payload schema version; milestone 1 supports 1.0.
+   */
+  readonly request_version: ContractVersion;
+  /**
+   * The use the result is requested for.
+   */
+  readonly use_class: string;
+  /**
+   * Exact digest of the analytical subject being gated.
+   */
+  readonly subject_digest: Identifier;
+  /**
+   * Coverage of the required authorised scope at the recorded cutoff.
+   */
+  readonly completeness: string;
+  /**
+   * Whether the applied history is contiguous for the declared scope.
+   */
+  readonly continuity: string;
+  /**
+   * Whether the strongest verification evidence satisfies the requested freshness.
+   */
+  readonly freshness_ok: boolean;
+  /**
+   * Whether the approved mappings still apply to the observed schema.
+   */
+  readonly schema_compatible: boolean;
+  /**
+   * Whether retained proof can be accessed and replayed under current policy.
+   */
+  readonly evidence_available: boolean;
+  /**
+   * Whether the controlling use policy permits the declared partial/stale class.
+   */
+  readonly policy_permits_partial_or_stale: boolean;
+  /**
+   * The authority epoch the evaluation is bound to.
+   */
+  readonly authority_epoch: Identifier;
+}
+
+/**
+ * The deterministic result-use decision: outcome, every applicable reason, the subject and
+ * policy digests it was bound to, and an upper-bound validity instant. A decision is an
+ * eligibility statement, never an effect grant.
+ */
+export interface ResultUseEvaluateResult {
+  /**
+   * allow, allow_with_warning or deny. Never an effect grant.
+   */
+  readonly outcome: string;
+  /**
+   * Machine-readable reason codes in evaluation order.
+   */
+  readonly reasons: readonly Identifier[];
+  /**
+   * Digest of the gated subject, echoed for binding.
+   */
+  readonly subject_digest: Identifier;
+  /**
+   * The authority epoch bound into the decision.
+   */
+  readonly authority_epoch: Identifier;
+  /**
+   * Upper bound of validity; earlier invalidation by revocation or new gap evidence.
+   */
+  readonly valid_until: Timestamp;
+}
+
+/**
  * A reference to one immutable captured source state within a registered repository. A working-
  * tree snapshot is never asserted to be its base commit, and a branch label is advisory
  * provenance only: it is never a unique identity or an applicability proof.
@@ -12697,6 +12773,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartResult",
     required_capability: { id: "insights.analysis", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "unsupported_minor_version",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.result_use.evaluate",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/ResultUseEvaluateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/ResultUseEvaluateResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },
     idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },

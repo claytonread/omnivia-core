@@ -983,8 +983,7 @@ def covered_snapshot(
     )
     row = connection.execute(
         "SELECT st.repository_id, e.stream_id, e.sequence, st.covered_sequence, "
-        f"{manifest_projection}, e.manifest_digest, sn.capture_status, "
-        "e.manifest_format "
+        f"{manifest_projection}, e.manifest_digest, sn.capture_status, e.manifest_format "
         "FROM omnivia_engineering_source_events e "
         "JOIN omnivia_engineering_source_streams st "
         "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
@@ -1002,15 +1001,15 @@ def covered_snapshot(
             cache[cache_key] = None
         return None
     representation = str(row[7])
+    manifest_json = ""
+    manifest: Mapping[str, str] = {}
     if representation == "flat_v1":
         if payload_budget is None:
             manifest_json = str(row[4])
         else:
             expected_bytes = int(row[4])
             if not 2 <= expected_bytes <= MAX_MANIFEST_BYTES:
-                raise PayloadLengthMismatch(
-                    "the source manifest byte length is invalid"
-                )
+                raise PayloadLengthMismatch("the source manifest byte length is invalid")
             payload_budget.precheck([expected_bytes])
             payload_row = connection.execute(
                 "SELECT manifest_json FROM omnivia_engineering_source_events "
@@ -1027,8 +1026,12 @@ def covered_snapshot(
             if cache is not None:
                 cache[cache_key] = None
             return None
-        manifest: Mapping[str, str] = json.loads(manifest_json)
+        manifest = json.loads(manifest_json)
     elif representation == "captured_v1":
+        # The rich manifest is never hydrated here: only the bounded paths
+        # `evaluate_applicability` later resolves through
+        # `omnivia_engineering_snapshot_files`, so the budget is not consumed
+        # for this representation.
         header = connection.execute(
             "SELECT repository_id, rich_manifest_digest, capture_status "
             "FROM omnivia_engineering_snapshot_captures "
@@ -1046,8 +1049,6 @@ def covered_snapshot(
             return None
         manifest = {}
     else:  # pragma: no cover - manifest_format is a closed, migration-enforced column
-        if cache is not None:
-            cache[cache_key] = None
         return None
     covered = CoveredSnapshot(
         repository_id=str(row[0]),
@@ -1108,7 +1109,6 @@ class SequencedEvent:
     stream_id: str
     sequence: int
     snapshot_id: str
-    manifest_format: str
     capture_status: str
     manifest: Mapping[str, str]
     audit_ref: str
@@ -1131,7 +1131,7 @@ def sequenced_event(
     """
     row = connection.execute(
         "SELECT e.snapshot_id, e.manifest_json, e.manifest_digest, e.audit_ref, "
-        "sn.capture_status, e.manifest_format "
+        "sn.capture_status "
         "FROM omnivia_engineering_source_events e "
         "JOIN omnivia_engineering_snapshots sn "
         "ON sn.workspace_id = e.workspace_id AND sn.snapshot_id = e.snapshot_id "
@@ -1140,37 +1140,17 @@ def sequenced_event(
     ).fetchone()
     if row is None:
         return None
-    manifest_format = str(row[5])
-    if manifest_format == "flat_v1":
-        if content_digest(str(row[1])) != str(row[2]):
-            return None
-        manifest = json.loads(str(row[1]))
-    elif manifest_format == "captured_v1":
-        if str(row[1]) != "{}":
-            return None
-        try:
-            capture = _sealed_capture(
-                connection, workspace_id=workspace_id, snapshot_id=str(row[0])
-            )
-        except (CapturedSourceNotFound, SourceConflict):
-            return None
-        if (
-            capture.rich_manifest_digest != str(row[2])
-            or capture.capture_status != str(row[4])
-        ):
-            return None
-        manifest = {}
-    else:  # pragma: no cover - the migration constrains this closed set
+    if content_digest(str(row[1])) != str(row[2]):
         return None
     return SequencedEvent(
         stream_id=stream_id,
         sequence=sequence,
         snapshot_id=str(row[0]),
-        manifest_format=manifest_format,
         capture_status=str(row[4]),
-        manifest=manifest,
+        manifest=json.loads(str(row[1])),
         audit_ref=str(row[3]),
     )
+
 
 
 def parse_dependency_manifest(raw: object) -> DependencyManifest:

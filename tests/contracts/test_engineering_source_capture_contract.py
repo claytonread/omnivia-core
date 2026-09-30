@@ -326,8 +326,8 @@ def test_result_unknown_keys_are_refused() -> None:
 # --- accepted operation metadata ---------------------------------------------------
 
 
-def test_the_operation_catalogue_accepts_capture_commit_as_entry_55() -> None:
-    assert len(OPERATION_CATALOGUE) == 55
+def test_the_operation_catalogue_accepts_capture_commit_as_entry_53() -> None:
+    assert len(OPERATION_CATALOGUE) == 57
     entry = next(
         item
         for item in OPERATION_CATALOGUE

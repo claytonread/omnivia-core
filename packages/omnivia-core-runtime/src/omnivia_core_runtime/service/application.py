@@ -222,6 +222,7 @@ ENGINEERING_CONTEXT_PURPOSE: Final = "engineering_context"
 #: its own purpose rather than a restatement of `knowledge_retrieval`, because
 #: the analysis grant is negotiated separately from the knowledge surface.
 ANALYSIS_REQUEST_PURPOSE: Final = "insights_analysis_request"
+DECISION_RESULT_USE_PURPOSE: Final = "decision_result_use"
 
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -243,6 +244,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.expand": ENGINEERING_EXPAND_PURPOSE,
         "engineering.context.build": ENGINEERING_CONTEXT_PURPOSE,
         ANALYSIS_START_OPERATION: ANALYSIS_REQUEST_PURPOSE,
+        "decision.result_use.evaluate": DECISION_RESULT_USE_PURPOSE,
     }
 )
 
@@ -832,6 +834,10 @@ def build_decision_registry(
     registry.register(
         "decision.record.list",
         cast(OperationHandler, handlers.decision_record_list),
+    )
+    registry.register(
+        "decision.result_use.evaluate",
+        cast(OperationHandler, handlers.decision_result_use_evaluate),
     )
     registry.register(
         "decision.status", cast(OperationHandler, handlers.decision_status)

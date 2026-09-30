@@ -642,7 +642,7 @@ class ServiceRunner:
                 (self.generation,),
             )
 
-        # Engineering source invalidation (migration 0059): a stream left mid-event
+        # Engineering source invalidation (migration 0054): a stream left mid-event
         # or simply behind when the previous instance stopped resumes from its own
         # durable watermark, exactly as the job sweep above resumes from durable
         # job state. Best-effort and never a readiness precondition -- `current_safe`

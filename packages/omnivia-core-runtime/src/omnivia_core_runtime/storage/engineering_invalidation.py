@@ -1,13 +1,11 @@
 """Engineering source invalidation worker (SPEC-CORE-ENGMEM-001; spec §15.3;
-AC-057/AC-061; migration 0059).
+AC-057/AC-061; migration 0054).
 
 `engineering.source.record` (`storage.engineering_source.record_source_event`)
-and `engineering.source.capture.commit`
-(`storage.engineering_source.record_captured_source_event`) both announce one
-stream's new head and advance its coverage barrier atomically, inside the
-caller's fenced mutation. The gap between that barrier
+already announces one stream's new head and advances its coverage barrier
+atomically, inside the caller's fenced mutation. The gap between that barrier
 (`covered_sequence`) and this module's own watermark (`processed_sequence`,
-migration 0059) *is* the durable invalidation queue: no event is ever
+migration 0054) *is* the durable invalidation queue: no event is ever
 enqueued as a separate row, because the coverage barrier's own advance is
 already the durable, atomic announcement that new work exists, and the
 watermark lagging behind it is already a durable, resumable cursor over that
@@ -20,16 +18,11 @@ adds is the missing producer for the `diagnostic`-mode assessment history
 change to a depended-on file gets a conservative, durable record without
 waiting for a review or a new snapshot registration to trigger one.
 
-One bounded step (`advance_invalidation`) processes at most one covered source
-event of one stream. It pages dependency sets through migration 0059's
-repository/stream scope index, then reads at most the 64 sealed whole-file
-selectors of each returned set. For a bounded inline manifest it compares those
-selectors with the changed-path set; for a captured manifest it probes only those
-selectors through the two captured-file primary-key prefixes and never hydrates
-the manifest's 10,000 possible paths. An incomplete capture or a change between
-the two representations
-rechecks every scoped dependency conservatively. The worker then re-runs the
-existing conservative evaluator
+One bounded step (`advance_invalidation`) processes at most one covered
+source event of one stream: it diffs that event's manifest against its
+stored predecessor's, looks up every exact-version dependency whose
+whole-file selector names a changed path (bounded and indexed by migration
+0054's reverse index), and re-runs the existing conservative evaluator
 (`storage.engineering_source.evaluate_applicability`) for each affected
 (record, version) against this event as the target -- appending a
 `deterministic` assessment for every one of them. Nothing here invents a new
@@ -45,12 +38,10 @@ ordinary new dependency-less path at its new one.
 
 Bounded fan-out is the one thing a single covered event does not otherwise
 guarantee: many exact record versions can depend on the same changed file. A
-step therefore pages through the stream's dependency sets (`batch_limit` raw
-rows per step,
+step therefore pages through the affected set (`batch_limit` per step,
 tracked by a durable keyset cursor, `pending_dependent_record_id` /
 `pending_dependent_version`) and only advances `processed_sequence` once
-every scoped set has been checked and every affected dependent has a durable
-assessment; until
+every affected dependent of that exact event has a durable assessment; until
 then the unfinished event's progress is itself the durable, explicit "there
 is unresolved work here" record, rather than a silent skip. Recovery after a
 restart is exactly calling this again: every fact it needs
@@ -65,8 +56,8 @@ outstanding work at all, for the live per-record trigger in
 `service.runner.ServiceRunner.drain_pending_invalidation`.
 
 The cursor is a *keyset* over `(record_id, version)`, not a row count: each
-page's query resumes strictly past the last dependency-set row a prior page of
-this exact event durably scanned, rather than
+page's query resumes strictly past the last key a prior page of this exact
+event durably assessed (`_affected_dependents`'s `after`), rather than
 skipping a stated number of rows into a result the next page re-queries
 fresh. A row count is unsafe here because the affected set is read fresh on
 every page while other fenced writes keep landing between pages (a
@@ -76,28 +67,29 @@ two pages, at a key behind the offset a count would resume from, shifts
 every row after it by one position, so the next OFFSET-based page silently
 re-reads one row it already assessed and drops one it had not reached yet
 -- a duplicate that also, one page later, becomes a skip. A keyset cursor
-has no such position to shift: any row at or behind the last scanned key was
-already checked (and assessed when affected) or, if it did not exist yet when
-this page ran, is simply outside this event's cohort. Every row strictly ahead
-of that key is read exactly once, in order, however many rows land behind or
+has no such position to shift: any row at or behind the last assessed key is
+either already durably assessed or, if it did not exist yet when this page
+ran, simply outside this event's cohort, and every row strictly ahead of
+that key is read exactly once, in order, however many rows land behind or
 ahead of it in between. A dependency set created after this event's fan-out
 began and sealed at a key behind the cursor is not a correctness gap: it is
 in exactly the same position as a version whose dependency did not exist
 before the previous event, or a version created between two events entirely
 -- current-state evaluation is `current_safe`'s job, proved directly from
 the same evaluator on every read and never sourced from this history, and
-the very next covered event pages that dependency set afresh. A
+the very next covered event whose diff touches one of that version's
+dependencies calls `_affected_dependents` fresh and finds it then. A
 dependency set sealed at a key at or ahead of the cursor, by contrast, is
-checked by the very next page -- and assessed if affected -- never skipped and
-never assessed twice for an event already finished with it.
+picked up by the very next page -- assessed against this event a little
+earlier than strictly owed to it, never skipped and never assessed twice for
+an event already finished with it.
 
 Every write here runs inside `ownership.fencing.fenced_transaction`, the same
 generation-fenced single-writer authority every other guarded write in this
 service uses, and reuses the audit lineage of the exact source event being
-processed -- the same principal's `engineering.source.record` or
-`engineering.source.capture.commit` audit event the streams-table guard
-trigger already requires -- rather than minting a new one. A writer whose
-fencing generation has been superseded is
+processed -- the same principal's same `engineering.source.record` audit
+event the streams-table guard trigger already requires -- rather than
+minting a new one. A writer whose fencing generation has been superseded is
 refused by that same seam before anything commits, exactly as any other
 fenced writer is.
 """
@@ -115,10 +107,10 @@ from omnivia_core_runtime.storage import engineering_applicability as app_storag
 from omnivia_core_runtime.storage import engineering_source as source_storage
 from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 
-#: How many scoped dependency-set rows of one source event a step may inspect
-#: before it must persist its cursor and yield. Reuses the stream's own pending
-#: coverage window (0050) rather than inventing a second bound: both exist to
-#: keep one pass over one stream's backlog finite.
+#: How many affected dependents of one source event one step may durably
+#: assess before it must persist its cursor and yield. Reuses the stream's own
+#: pending-coverage window (0050) rather than inventing a second bound: both
+#: exist to keep one bounded pass over one stream's backlog finite.
 DEPENDENT_BATCH_LIMIT: Final = source_storage.PENDING_WINDOW
 
 #: How many bounded steps `drain_invalidation` takes before yielding control
@@ -134,7 +126,6 @@ DRAIN_STEP_LIMIT: Final = source_storage.PENDING_WINDOW
 TICK_STREAM_LIMIT: Final = source_storage.PENDING_WINDOW
 
 _BASIS_DETERMINISTIC: Final = "deterministic"
-_DEPENDENCY_SCOPE_INDEX: Final = "omnivia_idx_engineering_dependency_sets_scope"
 
 
 class InvalidationWorkerFault(RuntimeError):
@@ -196,139 +187,53 @@ def _changed_paths(
     )
 
 
-def _scoped_dependency_page(
+def _affected_dependents(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     repository_id: str,
     stream_id: str,
+    changed_paths: frozenset[str],
     limit: int,
     after: tuple[str, str] | None,
-) -> tuple[tuple[tuple[str, str], ...], bool]:
-    """Read one bounded raw page of dependency sets for a repository stream.
-
-    The worker pages this raw scope before filtering affected rows, so neither a
-    flat event with arbitrarily many same-path dependencies in other scopes nor a
-    captured event with 10,000 manifest paths can make one step scan unbounded
-    history. Migration 0059's composite index skips unrelated repositories and
-    streams by its prefix. ``limit + 1`` is a bounded exhaustion sentinel.
-    """
-    if limit < 1:
-        raise ValueError("the dependency page limit must be positive")
-    keyset = ""
-    params: list[Any] = [workspace_id, repository_id, stream_id]
-    if after is not None:
-        keyset = "AND (record_id, version) > (?, ?) "
-        params.extend(after)
-    params.append(limit + 1)
-    rows = connection.execute(
-        "SELECT record_id, version FROM omnivia_engineering_dependency_sets "
-        f"INDEXED BY {_DEPENDENCY_SCOPE_INDEX} "
-        "WHERE workspace_id = ? AND repository_id = ? AND stream_id = ? "
-        f"{keyset}"
-        "ORDER BY record_id, version LIMIT ?",
-        params,
-    ).fetchall()
-    page = tuple((str(row[0]), str(row[1])) for row in rows[:limit])
-    return page, len(rows) <= limit
-
-
-def _whole_file_paths(
-    connection: sqlite3.Connection,
-    *,
-    workspace_id: str,
-    record_id: str,
-    version: str,
-) -> tuple[str, ...]:
-    """The bounded whole-file selectors of one sealed dependency set."""
-    rows = connection.execute(
-        "SELECT selector FROM omnivia_engineering_dependencies "
-        "INDEXED BY omnivia_idx_engineering_dependencies_version "
-        "WHERE workspace_id = ? AND record_id = ? AND version = ? "
-        "AND selector_type = 'whole_file' ORDER BY selector LIMIT ?",
-        (workspace_id, record_id, version, source_storage.MAX_DEPENDENCIES + 1),
-    ).fetchall()
-    if len(rows) > source_storage.MAX_DEPENDENCIES:
-        raise InvalidationWorkerFault("a dependency set exceeds its sealed selector bound")
-    return tuple(dict.fromkeys(str(row[0]) for row in rows))
-
-
-def _flat_affected_dependents(
-    connection: sqlite3.Connection,
-    *,
-    workspace_id: str,
-    page: tuple[tuple[str, str], ...],
-    changed_paths: frozenset[str],
 ) -> tuple[tuple[str, str], ...]:
-    """Filter one raw dependency page by a bounded inline-manifest diff.
+    """The affected (record_id, version) pairs of one page, indexed and bounded.
 
-    The raw page is already restricted to one repository stream and at most the
-    configured batch size. Each set contributes at most 64 indexed selectors, so
-    same-path dependencies in any other repository or stream cannot enlarge the
-    work done by this tick.
+    Bounded by `changed_paths` (at most twice the manifest entry cap) through
+    migration 0054's reverse index on `(workspace_id, selector_type,
+    selector)`, joined to the recorded baseline's own repository and stream so
+    a path match in another repository never crosses over. `after`, when
+    given, is the last (record_id, version) a prior page of this exact event
+    durably assessed: the keyset predicate below resumes strictly past it, so
+    a dependency set some other fenced write commits between two pages --
+    whatever key it lands at -- never shifts which row this page starts from,
+    unlike an `OFFSET` into a result the next page re-queries fresh.
     """
     if not changed_paths:
         return ()
-    return tuple(
-        (record_id, version)
-        for record_id, version in page
-        if any(
-            path in changed_paths
-            for path in _whole_file_paths(
-                connection,
-                workspace_id=workspace_id,
-                record_id=record_id,
-                version=version,
-            )
-        )
-    )
-
-
-def _captured_affected_dependents(
-    connection: sqlite3.Connection,
-    *,
-    workspace_id: str,
-    page: tuple[tuple[str, str], ...],
-    previous: source_storage.SequencedEvent | None,
-    current: source_storage.SequencedEvent,
-) -> tuple[tuple[str, str], ...]:
-    """Filter one raw dependency page by a bounded captured-snapshot diff.
-
-    Each dependency set names at most 64 selectors. Only those paths are read from
-    the two ``omnivia_engineering_snapshot_files`` primary-key prefixes, so a
-    10,000-file capture and arbitrarily many unrelated snapshot rows are never
-    hydrated or scanned in Python. An incomplete capture is handled by the caller as
-    an all-dependent page because omissions make a path-level diff insufficient.
-    """
-    affected: list[tuple[str, str]] = []
-    for record_id, version in page:
-        paths = _whole_file_paths(
-            connection,
-            workspace_id=workspace_id,
-            record_id=record_id,
-            version=version,
-        )
-        if not paths:
-            continue
-        current_files = source_storage.captured_manifest_lookup(
-            connection,
-            workspace_id=workspace_id,
-            snapshot_id=current.snapshot_id,
-            paths=paths,
-        )
-        previous_files = (
-            {}
-            if previous is None
-            else source_storage.captured_manifest_lookup(
-                connection,
-                workspace_id=workspace_id,
-                snapshot_id=previous.snapshot_id,
-                paths=paths,
-            )
-        )
-        if any(previous_files.get(path) != current_files.get(path) for path in paths):
-            affected.append((record_id, version))
-    return tuple(affected)
+    ordered_paths = sorted(changed_paths)
+    placeholders = ",".join("?" for _ in ordered_paths)
+    keyset = ""
+    params: list[Any] = [workspace_id, *ordered_paths, repository_id, stream_id]
+    if after is not None:
+        keyset = "AND (s.record_id > ? OR (s.record_id = ? AND s.version > ?)) "
+        params.extend([after[0], after[0], after[1]])
+    params.append(limit)
+    rows = connection.execute(
+        "SELECT DISTINCT s.record_id, s.version "
+        "FROM omnivia_engineering_dependencies d "
+        "INDEXED BY omnivia_idx_engineering_dependencies_selector "
+        "JOIN omnivia_engineering_dependency_sets s "
+        "ON s.workspace_id = d.workspace_id AND s.record_id = d.record_id "
+        "AND s.version = d.version "
+        "WHERE d.workspace_id = ? AND d.selector_type = 'whole_file' "
+        f"AND d.selector IN ({placeholders}) "
+        "AND s.repository_id = ? AND s.stream_id = ? "
+        f"{keyset}"
+        "ORDER BY s.record_id, s.version LIMIT ?",
+        params,
+    ).fetchall()
+    return tuple((str(row[0]), str(row[1])) for row in rows)
 
 
 def _evidence_available(
@@ -364,7 +269,7 @@ def pending_streams(
     """Stream ids of this workspace whose invalidation watermark lags coverage.
 
     A read; it writes nothing and takes no fence. Ordered by stream id, and --
-    like `_scoped_dependency_page` -- a *keyset* over that order:
+    like `_affected_dependents`'s own page -- a *keyset* over that order:
     `after`, when given, resumes strictly past it rather than skipping a row
     count into a result a later call re-queries fresh, and `limit`, when
     given, bounds how many stream ids one call returns. Both default to
@@ -481,17 +386,14 @@ def advance_invalidation(
 
     `None` when the stream is not registered. Otherwise the stream's current
     progress if it already has no covered work left, or -- if it has -- the
-    result of inspecting at most `batch_limit` scoped dependency sets for the
-    next unprocessed event, assessing the affected subset, and either completing
-    that event (the watermark advances, its keyset cursor resets to `None`) or
-    persisting the last raw key this page reached (the watermark holds, its
-    cursor advances to that key).
+    result of assessing at most `batch_limit` of the next unprocessed event's
+    affected dependents and either completing that event (the watermark
+    advances, its keyset cursor resets to `None`) or persisting the last key
+    this page reached (the watermark holds, its cursor advances to that key).
     Both outcomes commit together with every assessment in the one fenced
     transaction opened here; a caller loops (`drain_invalidation`) to walk
     further.
     """
-    if batch_limit < 1:
-        raise ValueError("the invalidation batch limit must be positive")
     with fenced_transaction(
         connection,
         identity,
@@ -546,39 +448,16 @@ def advance_invalidation(
                 f"stream {stream_id!r} covers sequence {target_sequence} but its "
                 "predecessor event is unreadable"
             )
-        previous_complete = previous is None or previous.capture_status == "complete"
-        same_format = previous is None or previous.manifest_format == current.manifest_format
-        requires_full_recheck = (
-            current.capture_status != "complete" or not previous_complete or not same_format
-        )
-        scanned, exhausted = _scoped_dependency_page(
+        changed = _changed_paths(None if previous is None else previous.manifest, current.manifest)
+        dependents = _affected_dependents(
             fenced,
             workspace_id=workspace_id,
             repository_id=repository_id,
             stream_id=stream_id,
+            changed_paths=changed,
             limit=batch_limit,
             after=after,
         )
-        if requires_full_recheck:
-            dependents = scanned
-        elif current.manifest_format == "captured_v1":
-            dependents = _captured_affected_dependents(
-                fenced,
-                workspace_id=workspace_id,
-                page=scanned,
-                previous=previous,
-                current=current,
-            )
-        else:
-            changed = _changed_paths(
-                None if previous is None else previous.manifest, current.manifest
-            )
-            dependents = _flat_affected_dependents(
-                fenced,
-                workspace_id=workspace_id,
-                page=scanned,
-                changed_paths=changed,
-            )
 
         target = source_storage.covered_snapshot(
             fenced,
@@ -616,10 +495,10 @@ def advance_invalidation(
                 assessed_at_us=now_us,
             )
 
-        if exhausted:
+        if len(dependents) < batch_limit:
             new_processed, new_after = target_sequence, None
         else:
-            new_processed, new_after = processed, scanned[-1]
+            new_processed, new_after = processed, dependents[-1]
         # A caller's clock can read behind this row's own last write -- a
         # step backward, or simply this call landing before another fenced
         # write already stamped a later instant -- and the streams-table

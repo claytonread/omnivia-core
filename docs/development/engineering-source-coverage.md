@@ -419,7 +419,7 @@ No table, column or index is added, and no existing migration is rewritten.
 Both are candidates owned by Engineering Memory, with `accepted_commit` null
 until the normal acceptance process records a landing.
 
-## Source invalidation (migration 0059; spec §15.3; AC-057/AC-061)
+## Source invalidation (migration 0054; spec §15.3; AC-057/AC-061)
 
 The gap this slice closes: recording a new source event always advanced
 coverage, but nothing durable ever re-assessed the dependents of a covered
@@ -431,47 +431,41 @@ had no better answer than `not_evaluated` or a stale legacy row.
 - **No new queue table.** `omnivia_engineering_source_streams` gains
   `processed_sequence` (the worker's watermark) and a nullable
   `pending_dependent_record_id` / `pending_dependent_version` pair: a durable
-  *keyset* cursor into the *next* unprocessed event's scoped dependency sets,
+  *keyset* cursor into the *next* unprocessed event's affected dependents,
   for an event whose fan-out does not fit one bounded step.
-  The flat `record_source_event` and captured
-  `record_captured_source_event` writes announce new work the instant
-  `covered_sequence` advances past the watermark: that gap *is* the durable
-  invalidation queue, announced and enqueued in the same atomic write as the
-  covered source event.
+  `record_source_event`'s existing, unmodified write already announces new
+  work the instant `covered_sequence` advances past the watermark: that gap
+  *is* the durable invalidation queue, announced and enqueued in the exact
+  same atomic write that was already there.
 - **One bounded step at a time, paged by a stable keyset.**
-  (`storage.engineering_invalidation.advance_invalidation`): for a bounded
-  `flat_v1` event, diff its inline manifest against its stored predecessor. For
-  every event, page raw dependency sets through the new
-  `(workspace_id, repository_id, stream_id, record_id, version)` scope index
-  and inspect only each set's at-most-64 indexed whole-file selectors. Inline
-  events compare those selectors with their bounded changed-path set. A
-  `captured_v1` manifest can hold 10,000 paths, so captured events probe only
-  those selectors in the two captured-file indexes; they never hydrate or scan
-  the captured manifest in Python. Same-path history in another repository or
-  stream is skipped by the scope-index prefix. A transition with an incomplete
-  capture or a representation change
-  rechecks every scoped dependency conservatively. The unmodified evaluator
-  runs for each selected `(record, version)` against the event target, and
-  every result is appended as a `basis: "deterministic"` row in the
+  (`storage.engineering_invalidation.advance_invalidation`): diff the next
+  unprocessed covered event's manifest against its stored predecessor's,
+  look up every exact-version dependency whose whole-file selector names a
+  changed path -- through a new reverse index on
+  `(workspace_id, selector_type, selector)`, since the existing 0050 version
+  index only serves the opposite direction -- and re-run the unmodified
+  evaluator for each affected `(record, version)` against the event as the
+  target. Every result is appended as a `basis: "deterministic"` row in the
   0049 assessment history (the value the schema reserved and left unused until
-  now). A batch too large for one step persists the *last* scoped (record_id,
-  version) it durably scanned, not a row count, and the next page resumes
-  strictly past that key. The watermark itself holds as the
+  now). A batch too large for one step persists the *last* (record_id,
+  version) it durably assessed, not a row count, and the next page resumes
+  strictly past that key; the watermark itself holds, which is itself the
   durable, explicit statement that work remains -- never a silent skip. A row
   count was tried first and rejected: it counts positions in a query re-run
   fresh on every page, and a dependency set some other fenced write (an
   unrelated `memory.create`) seals between two pages shifts every later
   position by one, so the next page silently re-reads a row it already
-  checked and, one page later, drops one it had not reached yet -- a
+  assessed and, one page later, drops one it had not reached yet -- a
   duplicate that becomes a skip. A keyset cursor has no position to shift: a
-  row at or behind it was already checked (and assessed when affected) or fell outside this
+  row at or behind it is either already durably assessed or fell outside this
   event's cohort because it did not exist when this page ran, and
   current-state evaluation of that row is never this history's job --
   `current_safe` proves it directly, from the same evaluator, on every read --
   and the very next covered event whose diff touches one of its dependencies
   re-runs the lookup fresh and finds it. A row ahead of the cursor, by
-  contrast, is checked by the very next page and assessed when affected, never
-  skipped and never assessed twice for an event already finished with it.
+  contrast, is picked up by the very next page: assessed a little earlier
+  than strictly owed to it, never skipped and never assessed twice for an
+  event already finished with it.
 - **The same evaluator, so the same rules.** A changed digest is
   `potentially_stale`, an absence under complete capture is `invalid`, and an
   incomplete capture or an unqualified set is `unknown` -- identically to a
@@ -495,10 +489,8 @@ had no better answer than `not_evaluated` or a stale legacy row.
   every assessment keeps the caller's own, unclamped reading, so nothing is
   backdated, and only this liveness bookkeeping column is held to its
   existing monotonic invariant.
-- **Where it runs.** Both
-  `service.handlers.engineering.engineering_source_record` and
-  `engineering_source_capture_commit` best-effort drain the just-advanced
-  stream after their own mutation commits;
+- **Where it runs.** `service.handlers.engineering.engineering_source_record`
+  best-effort drains the just-advanced stream after its own mutation commits;
   `service.runner.ServiceRunner._recover` best-effort drains, on startup, up to
   `TICK_STREAM_LIMIT` streams with outstanding work, each up to
   `DRAIN_STEP_LIMIT` bounded steps; and
@@ -532,25 +524,26 @@ had no better answer than `not_evaluated` or a stale legacy row.
 
 ### Migration pin
 
-Allocation 59 is a candidate owned by Engineering Memory, with predecessor 58.
+Allocation 54 is a candidate owned by Engineering Memory, with predecessor 53.
 Its normalized SHA-256 is
-`8ddb101c387fd3ac354864a773d81346a8c81f6efef5401872484327cbb59c22`, pinned in
+`81597383d614d95c3c19fba2c1e2dad8b8bf936f6444152f5441dafcd39e2467`, pinned in
 `contracts/migrations/v1/allocations.json` at introducing commit
-`30a8fc5a9f6f423aa32fe9795b6c1a6a2615fad8` -- the repository's two-step
-migration-pin workflow, since the migration file must exist at a real commit
-before that commit's hash can be recorded. `accepted_commit` stays null until
-the normal acceptance process records a landing.
+`f481702094db91779f9052de53ef48d7635560b2` -- the same two-step pattern every
+prior Engineering Memory migration (47 through 53) followed, since the
+migration file's own content has to exist at a real commit before that
+commit's hash can be recorded. `accepted_commit` stays null until the normal
+acceptance process records a landing.
 
 ## Producer → consumer map
 
 | Producer | Writes | Consumers |
 |---|---|---|
-| `engineering.source.record` and `engineering.source.capture.commit` (trusted source, `engineering:source`) | repository/stream bindings, flat or captured snapshot event, head and barrier | `covered_snapshot` (targets and baselines), the evaluator, `current_safe` search and build, the dependency-set trigger, the invalidation worker |
-| `memory.create` with `dependency_manifest` (contributor) | governed proposal, 0049 dependency rows, dependency set | the evaluator, the invalidation worker's scoped lookup |
+| `engineering.source.record` (trusted source, `engineering:source`) | repository (first use), stream, 0047 snapshot, source event, head and barrier | `covered_snapshot` (targets and baselines), the evaluator, `current_safe` search and build, the dependency-set trigger, the invalidation worker |
+| `memory.create` with `dependency_manifest` (contributor) | governed proposal, 0049 dependency rows, dependency set | the evaluator, the invalidation worker's reverse lookup |
 | `knowledge.propose`, `candidate.approve` (claim-preserving governance) | the new exact version's carried dependency rows and set, when the source's set is consistent | the evaluator |
 | Evaluator (read-only) | nothing | `current_safe` search (frontier admission, preview `matched`) and `current_safe` pack build (sections, per-target status, omissions); also called by the invalidation worker |
 | `engineering.review.record` (unchanged) | attestation plus conservative assessment | `diagnostic` search only; never the evaluator |
-| Invalidation worker (migration 0059, service-owned, generation-fenced) | `deterministic` assessments; the stream's `processed_sequence` and its keyset cursor (`pending_dependent_record_id`/`pending_dependent_version`) | `diagnostic` search's re-assessment of stored rows; never `current_safe`, which still proves every version directly |
+| Invalidation worker (migration 0054, service-owned, generation-fenced) | `deterministic` assessments; the stream's `processed_sequence` and its keyset cursor (`pending_dependent_record_id`/`pending_dependent_version`) | `diagnostic` search's re-assessment of stored rows; never `current_safe`, which still proves every version directly |
 
 ## Deferred and unsupported
 
@@ -568,7 +561,7 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
 - **Renames:** there is no rename field. A renamed required file reads as absent
   at the target, which is `invalid` under complete capture.
 - **No serving projection beyond the assessment history itself:** migration
-  0059 adds the background invalidation worker (see above), but there is
+  0054 adds the background invalidation worker (see above), but there is
   still no separate cache or projection it serves reads from -- it only
   appends to the same 0049 assessment history `diagnostic` search already
   reads through `assess_against_registered_head`. A stored `invalid` or

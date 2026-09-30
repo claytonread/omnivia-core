@@ -1,5 +1,5 @@
 """Engineering source invalidation worker (SPEC-CORE-ENGMEM-001; spec §15.3;
-AC-057/AC-061; migration 0059).
+AC-057/AC-061; migration 0054).
 
 Reuses `test_engineering_source_coverage`'s production `Workspace` harness for
 setup (recording source events, observing dependency-qualified proposals) but
@@ -14,7 +14,6 @@ by `test_engineering_source_coverage.py`'s own end-to-end vertical test.
 from __future__ import annotations
 
 import itertools
-import sqlite3
 import threading
 import time
 import uuid
@@ -22,15 +21,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import test_engineering_captured_source_coverage as captured
 import test_engineering_source_coverage as esc
-from omnivia_core_runtime.ownership.fencing import StaleGeneration, fenced_transaction
+from omnivia_core_runtime.ownership.fencing import StaleGeneration
 from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.service.handlers import engineering as handlers
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.storage import engineering_invalidation as inv
 from omnivia_core_runtime.storage import engineering_source
-from omnivia_core_runtime.storage.migrations import applied_migrations, load_migrations
 
 Workspace = esc.Workspace
 WORKSPACE_ID = esc.WORKSPACE_ID
@@ -38,7 +35,7 @@ REPOSITORY = esc.REPOSITORY
 STREAM = esc.STREAM
 FILES_A = esc.FILES_A
 
-SCOPE_INDEX = "omnivia_idx_engineering_dependency_sets_scope"
+INDEX = "omnivia_idx_engineering_dependencies_selector"
 
 #: A stream row's `updated_at_us` only ever advances (migration 0050), and
 #: `record_source_event` already stamped it with a real wall-clock reading at
@@ -115,86 +112,6 @@ def _drain(
         now_us=_now_us() if now_us is None else now_us,
         **kwargs,
     )
-
-
-def test_0059_preserves_captured_source_authority_and_adds_the_scope_index(
-    workspace: Workspace,
-) -> None:
-    migration = next(item for item in load_migrations() if item.version == 59)
-    assert migration.name == "0059_engineering_invalidation.sql"
-    assert applied_migrations(workspace.holder.connection)[59] == migration.checksum
-    assert [
-        str(row[2])
-        for row in workspace.holder.connection.execute(
-            f"PRAGMA index_info('{SCOPE_INDEX}')"
-        ).fetchall()
-    ] == ["workspace_id", "repository_id", "stream_id", "record_id", "version"]
-    for trigger_name in (
-        "omnivia_guard_omnivia_engineering_source_streams_insert",
-        "omnivia_guard_omnivia_engineering_source_streams_update",
-    ):
-        sql = workspace.holder.connection.execute(
-            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?",
-            (trigger_name,),
-        ).fetchone()[0]
-        assert "engineering.source.record" in sql
-        assert "engineering.source.capture.commit" in sql
-
-
-def test_0059_cursor_guard_allows_equality_but_refuses_partial_or_regressing_pairs(
-    workspace: Workspace,
-) -> None:
-    workspace.record(esc._source(1, "esnap-a", FILES_A))
-    _drain(workspace)
-    for index in range(2):
-        workspace.observe(
-            esc._observation(esc._manifest(), title=f"Cursor guard record {index}")
-        )
-    workspace.record(
-        esc._source(
-            2,
-            "esnap-b",
-            {**FILES_A, "src/auth.py": esc.AUTH_V2},
-            predecessor="esnap-a",
-        )
-    )
-    progress = _advance(workspace, batch_limit=1)
-    assert progress is not None and progress.pending_dependent_after is not None
-    record_id, version = progress.pending_dependent_after
-
-    # A source-head update preserves an in-progress cursor byte-for-byte. The
-    # trigger must admit that equality while still rejecting malformed or older
-    # progress written under an otherwise valid fence and source audit lineage.
-    with fenced_transaction(
-        workspace.holder.connection,
-        workspace.holder.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=workspace.holder.generation,
-    ) as fenced:
-        fenced.execute(
-            "UPDATE omnivia_engineering_source_streams SET "
-            "pending_dependent_record_id = ?, pending_dependent_version = ? "
-            "WHERE workspace_id = ? AND stream_id = ?",
-            (record_id, version, WORKSPACE_ID, STREAM),
-        )
-
-    for replacement in ((record_id, None), ("0", "0")):
-        with (
-            pytest.raises(sqlite3.DatabaseError, match="never regresses"),
-            fenced_transaction(
-                workspace.holder.connection,
-                workspace.holder.identity,
-                workspace_id=WORKSPACE_ID,
-                fencing_generation=workspace.holder.generation,
-            ) as fenced,
-        ):
-            fenced.execute(
-                "UPDATE omnivia_engineering_source_streams SET "
-                "pending_dependent_record_id = ?, pending_dependent_version = ? "
-                "WHERE workspace_id = ? AND stream_id = ?",
-                (*replacement, WORKSPACE_ID, STREAM),
-            )
-    assert _progress(workspace) == (2, 1, (record_id, version))
 
 
 # --- announcement vs. processing are two separately durable facts -------------------
@@ -330,45 +247,6 @@ def test_a_duplicate_event_advances_neither_the_watermark_nor_the_assessment_his
     assert progress is not None
     assert (progress.processed_sequence, progress.assessed, progress.caught_up) == (2, 0, True)
     assert _assessments(workspace, record["record_id"]) == after_first_drain
-
-
-def test_a_new_event_can_commit_while_the_previous_event_has_a_pending_cursor(
-    workspace: Workspace,
-) -> None:
-    workspace.record(esc._source(1, "esnap-a", FILES_A))
-    _drain(workspace)
-    records = [
-        workspace.observe(
-            esc._observation(esc._manifest(), title=f"Pending cursor record {index}")
-        )
-        for index in range(3)
-    ]
-    second_files = {**FILES_A, "src/auth.py": esc.AUTH_V2}
-    workspace.record(esc._source(2, "esnap-b", second_files, predecessor="esnap-a"))
-    first_page = _advance(workspace, batch_limit=1)
-    assert first_page is not None and not first_page.caught_up
-    assert first_page.pending_dependent_after is not None
-    pending_cursor = first_page.pending_dependent_after
-
-    third_files = {**second_files, "src/auth.py": esc._sha("auth v3")}
-    result = workspace.record(
-        esc._source(3, "esnap-c", third_files, predecessor="esnap-b")
-    )
-    assert result["coverage"] == {
-        "state": "current",
-        "covered_sequence": 3,
-        "announced_sequence": 3,
-    }
-    assert _progress(workspace) == (3, 1, pending_cursor)
-
-    progress = _drain(workspace, batch_limit=1)
-    assert progress is not None and progress.caught_up
-    assert _progress(workspace) == (3, 3, None)
-    for record in records:
-        assert [row[0] for row in _assessments(workspace, record["record_id"])] == [
-            "esnap-b",
-            "esnap-c",
-        ]
 
 
 def test_out_of_order_gap_then_recovery_resumes_from_the_durable_cursor(
@@ -509,28 +387,6 @@ def test_a_dirty_working_tree_target_is_scored_like_any_other_snapshot(
     ]
 
 
-def test_a_source_change_keeps_evidence_unavailable_versions_unknown(
-    workspace: Workspace,
-) -> None:
-    workspace.record(esc._source(1, "esnap-a", FILES_A))
-    _drain(workspace)
-    record = workspace.observe(esc._observation(esc._manifest(), evidence=False))
-    workspace.record(
-        esc._source(
-            2,
-            "esnap-b",
-            {**FILES_A, "README.md": esc._sha("context changed without evidence")},
-            predecessor="esnap-a",
-        )
-    )
-
-    progress = _drain(workspace)
-    assert progress is not None and progress.caught_up
-    assert _assessments(workspace, record["record_id"]) == [
-        ("esnap-b", "unknown", "deterministic")
-    ]
-
-
 # --- bounded fan-out and its durable cursor --------------------------------------------
 
 
@@ -581,277 +437,44 @@ def test_a_large_events_fan_out_persists_its_cursor_across_bounded_steps(
         ]
 
 
-# --- the scoped lookup is indexed and bounded ------------------------------------------
+# --- the reverse lookup is indexed and bounded -----------------------------------------
 
 
-def test_the_dependency_page_seeks_the_repository_stream_scope_index(
-    workspace: Workspace,
-) -> None:
+def test_the_changed_path_lookup_seeks_the_reverse_index(workspace: Workspace) -> None:
+    """Mirrors `_affected_dependents`'s page-2-and-later shape: the keyset
+    predicate is an extra filter on `s`, not a reason for the planner to stop
+    seeking `d` by the reverse index."""
+    workspace.record(esc._source(1, "esnap-a", FILES_A))
+    workspace.observe(esc._observation(esc._manifest()))
+    connection = workspace.holder.connection
     plan = [
         str(row[3])
-        for row in workspace.holder.connection.execute(
-            "EXPLAIN QUERY PLAN SELECT record_id, version "
-            "FROM omnivia_engineering_dependency_sets "
-            f"INDEXED BY {SCOPE_INDEX} "
-            "WHERE workspace_id = ? AND repository_id = ? AND stream_id = ? "
-            "AND (record_id, version) > (?, ?) "
-            "ORDER BY record_id, version LIMIT ?",
+        for row in connection.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT DISTINCT s.record_id, s.version "
+            "FROM omnivia_engineering_dependencies d "
+            "INDEXED BY omnivia_idx_engineering_dependencies_selector "
+            "JOIN omnivia_engineering_dependency_sets s "
+            "ON s.workspace_id = d.workspace_id AND s.record_id = d.record_id "
+            "AND s.version = d.version "
+            "WHERE d.workspace_id = ? AND d.selector_type = 'whole_file' "
+            "AND d.selector IN (?, ?) AND s.repository_id = ? AND s.stream_id = ? "
+            "AND (s.record_id > ? OR (s.record_id = ? AND s.version > ?)) "
+            "ORDER BY s.record_id, s.version LIMIT ?",
             (
                 WORKSPACE_ID,
+                "src/auth.py",
+                "src/util.py",
                 REPOSITORY,
                 STREAM,
+                "rec-0",
                 "rec-0",
                 "v0",
                 64,
             ),
         ).fetchall()
     ]
-    assert any(SCOPE_INDEX in line and line.startswith("SEARCH") for line in plan), plan
-    assert any(
-        "(record_id,version)>(?,?)" in line.replace(" ", "") for line in plan
-    ), plan
-
-
-def test_flat_tick_ignores_large_same_path_history_outside_its_scope(
-    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace.record(esc._source(1, "esnap-a", FILES_A))
-    _drain(workspace)
-    target = workspace.observe(
-        esc._observation(
-            esc._manifest(
-                dependencies=[esc._dependency("src/auth.py", esc.AUTH_V1)]
-            ),
-            title="Target-scope dependency",
-        )
-    )
-
-    other_repository = "erepo-unrelated"
-    other_stream = "estream-unrelated"
-    other_snapshot = "esnap-unrelated"
-    workspace.record(
-        esc._source(
-            1,
-            other_snapshot,
-            FILES_A,
-            repository=other_repository,
-            stream=other_stream,
-        )
-    )
-    unrelated = [
-        workspace.observe(
-            esc._observation(
-                esc._manifest(
-                    snapshot_id=other_snapshot,
-                    repository=other_repository,
-                    stream=other_stream,
-                    dependencies=[esc._dependency("src/auth.py", esc.AUTH_V1)],
-                ),
-                title=f"Same-path dependency outside target scope {index}",
-            )
-        )
-        for index in range(80)
-    ]
-    calls: list[tuple[str, str]] = []
-    real = inv._whole_file_paths
-
-    def counted(*args: Any, **kwargs: Any) -> tuple[str, ...]:
-        calls.append((str(kwargs["record_id"]), str(kwargs["version"])))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(inv, "_whole_file_paths", counted)
-    workspace.record(
-        esc._source(
-            2,
-            "esnap-b",
-            {**FILES_A, "src/auth.py": esc.AUTH_V2},
-            predecessor="esnap-a",
-        )
-    )
-
-    progress = _advance(workspace, batch_limit=8)
-    assert progress is not None and progress.caught_up
-    assert calls == [(target["record_id"], target["version"])]
-    assert _assessments(workspace, target["record_id"]) == [
-        ("esnap-b", "potentially_stale", "deterministic")
-    ]
-    assert all(_assessments(workspace, item["record_id"]) == [] for item in unrelated)
-
-
-def test_captured_source_changes_reassess_only_the_affected_dependency(
-    workspace: Workspace,
-) -> None:
-    files = captured._files(300)
-    first_base_us = _now_us()
-    captured._seal(
-        workspace,
-        repository_id=REPOSITORY,
-        stream_id=STREAM,
-        principal_id=esc.PRINCIPAL,
-        checkout_id="co-invalidation",
-        snapshot_id="csnap-a",
-        files=files,
-        base_us=first_base_us,
-    )
-    first = _drain(workspace)
-    assert first is not None and first.caught_up
-    changed = workspace.observe(
-        esc._observation(
-            esc._manifest(
-                snapshot_id="csnap-a",
-                dependencies=[
-                    esc._dependency("src/module_00000.py", files["src/module_00000.py"])
-                ],
-            ),
-            title="Captured changed dependency",
-        )
-    )
-    unchanged = workspace.observe(
-        esc._observation(
-            esc._manifest(
-                snapshot_id="csnap-a",
-                dependencies=[
-                    esc._dependency("src/module_00001.py", files["src/module_00001.py"])
-                ],
-            ),
-            title="Captured unchanged dependency",
-        )
-    )
-    next_files = {**files, "src/module_00000.py": esc._sha("captured v2")}
-    second_base_us = _now_us()
-    captured._seal(
-        workspace,
-        repository_id=REPOSITORY,
-        stream_id=STREAM,
-        principal_id=esc.PRINCIPAL,
-        checkout_id="co-invalidation",
-        snapshot_id="csnap-b",
-        files=next_files,
-        base_us=second_base_us,
-    )
-
-    progress = _drain(workspace)
-    assert progress is not None and progress.caught_up
-    assert _assessments(workspace, changed["record_id"]) == [
-        ("csnap-b", "potentially_stale", "deterministic")
-    ]
-    assert _assessments(workspace, unchanged["record_id"]) == []
-
-
-def test_captured_incomplete_capture_rechecks_every_scoped_dependency_as_unknown(
-    workspace: Workspace,
-) -> None:
-    files = captured._files(257)
-    first_base_us = _now_us()
-    captured._seal(
-        workspace,
-        repository_id=REPOSITORY,
-        stream_id=STREAM,
-        principal_id=esc.PRINCIPAL,
-        checkout_id="co-incomplete",
-        snapshot_id="csnap-complete",
-        files=files,
-        base_us=first_base_us,
-    )
-    _drain(workspace)
-    record = workspace.observe(
-        esc._observation(
-            esc._manifest(
-                snapshot_id="csnap-complete",
-                dependencies=[
-                    esc._dependency("src/module_00001.py", files["src/module_00001.py"])
-                ],
-            ),
-            title="Captured incomplete target",
-        )
-    )
-    second_base_us = _now_us()
-    captured._seal(
-        workspace,
-        repository_id=REPOSITORY,
-        stream_id=STREAM,
-        principal_id=esc.PRINCIPAL,
-        checkout_id="co-incomplete",
-        snapshot_id="csnap-incomplete",
-        files=files,
-        capture_status="incomplete",
-        base_us=second_base_us,
-    )
-
-    progress = _drain(workspace)
-    assert progress is not None and progress.caught_up
-    assert _assessments(workspace, record["record_id"]) == [
-        ("csnap-incomplete", "unknown", "deterministic")
-    ]
-
-
-def test_captured_large_unrelated_history_is_paged_and_converges(
-    workspace: Workspace,
-) -> None:
-    files = captured._files(300)
-    first_base_us = _now_us()
-    captured._seal(
-        workspace,
-        repository_id=REPOSITORY,
-        stream_id=STREAM,
-        principal_id=esc.PRINCIPAL,
-        checkout_id="co-large-history",
-        snapshot_id="csnap-history-a",
-        files=files,
-        base_us=first_base_us,
-    )
-    _drain(workspace)
-    unrelated = [
-        workspace.observe(
-            esc._observation(
-                esc._manifest(
-                    snapshot_id="csnap-history-a",
-                    dependencies=[
-                        esc._dependency(
-                            "src/module_00001.py", files["src/module_00001.py"]
-                        )
-                    ],
-                ),
-                title=f"Unrelated captured dependency {index}",
-            )
-        )
-        for index in range(40)
-    ]
-    affected = workspace.observe(
-        esc._observation(
-            esc._manifest(
-                snapshot_id="csnap-history-a",
-                dependencies=[
-                    esc._dependency("src/module_00000.py", files["src/module_00000.py"])
-                ],
-            ),
-            title="Affected captured dependency",
-        )
-    )
-    next_files = {**files, "src/module_00000.py": esc._sha("large history v2")}
-    second_base_us = _now_us()
-    captured._seal(
-        workspace,
-        repository_id=REPOSITORY,
-        stream_id=STREAM,
-        principal_id=esc.PRINCIPAL,
-        checkout_id="co-large-history",
-        snapshot_id="csnap-history-b",
-        files=next_files,
-        base_us=second_base_us,
-    )
-
-    steps = 0
-    while _progress(workspace)[1] < 2:
-        progress = _advance(workspace, batch_limit=8)
-        assert progress is not None
-        steps += 1
-        assert steps <= 6
-    assert steps > 1
-    assert _assessments(workspace, affected["record_id"]) == [
-        ("csnap-history-b", "potentially_stale", "deterministic")
-    ]
-    assert all(_assessments(workspace, item["record_id"]) == [] for item in unrelated)
+    assert any(line.startswith(f"SEARCH d USING INDEX {INDEX}") for line in plan), plan
 
 
 # --- keyset pagination is stable under concurrent inserts ------------------------------
@@ -943,7 +566,7 @@ def test_a_regressing_clock_reading_is_clamped_forward_not_raised(
 ) -> None:
     """`advance_invalidation` writes the stream row's own `updated_at_us`
     alongside its watermark advance, and the streams-table guard trigger
-    (migrations 0050/0059) rejects any UPDATE that would move that column
+    (migrations 0050/0054) rejects any UPDATE that would move that column
     backward. A caller's clock can still read behind the row's own last
     write -- a real clock steps backward under correction, and nothing
     otherwise excludes a fenced writer's own reading landing earlier than a
