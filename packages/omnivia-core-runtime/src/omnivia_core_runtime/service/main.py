@@ -562,7 +562,9 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
     there is no scheduler here.** Renewal has to run on the thread that opened the
     exclusive connection, this loop already runs there, and `renew_lease_if_due()`
     decides for itself whether the interval has elapsed -- so nothing is written on
-    the other 39 ticks out of 40.
+    the other 39 ticks out of 40. `drain_pending_invalidation()` shares the same
+    tick: it is a bounded, best-effort step and cheap when there is no backlog, so
+    it runs every 250ms rather than on its own schedule.
 
     A renewal this instance can no longer show succeeded ends the run, through the
     same unwind and the same reverse resource order a signal takes. Nothing keeps
@@ -578,6 +580,7 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
             except Exception:  # noqa: BLE001 - the public message is structural only
                 renewal_failed = True
                 break
+            runner.drain_pending_invalidation()
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.

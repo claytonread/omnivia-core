@@ -131,6 +131,7 @@ EXPECTED_ALLOCATION = (
     (51, "0051_engineering_dependency_carry.sql", "Engineering Memory", "candidate"),
     (52, "0052_engineering_dependency_lookup.sql", "Engineering Memory", "candidate"),
     (53, "0053_engineering_preview_projection.sql", "Engineering Memory", "candidate"),
+    (54, "0054_engineering_invalidation.sql", "Engineering Memory", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
