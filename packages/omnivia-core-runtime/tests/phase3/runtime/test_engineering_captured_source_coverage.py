@@ -1,5 +1,5 @@
 """Engineering Memory captured-source storage foundation
-(SPEC-CORE-ENGMEM-001, plan P0-04; spec §6.3, §15; migration 0056).
+(SPEC-CORE-ENGMEM-001, plan P0-04; spec §6.3, §15; migration 0057).
 
 Proves the additive migration, its guards, legacy `flat_v1` compatibility and
 captured-index reads. Rows are assembled directly against the migrated schema
@@ -37,8 +37,8 @@ from omnivia_core_runtime.storage.migrations import (
 Workspace = esc.Workspace
 WORKSPACE_ID = esc.WORKSPACE_ID
 
-MIGRATION_VERSION = 56
-MIGRATION_NAME = "0056_engineering_captured_source_coverage.sql"
+MIGRATION_VERSION = 57
+MIGRATION_NAME = "0057_engineering_captured_source_coverage.sql"
 NEW_TABLES = (
     "omnivia_engineering_snapshot_files",
     "omnivia_engineering_snapshot_captures",
@@ -357,14 +357,14 @@ def _seal(
 # --- the migration itself -----------------------------------------------------------
 
 
-def test_0056_is_the_additive_successor_and_creates_guarded_tables(
+def test_0057_is_the_additive_successor_and_creates_guarded_tables(
     workspace: esc.Workspace,
 ) -> None:
     migrations = load_migrations()
     migration = next(item for item in migrations if item.version == MIGRATION_VERSION)
     assert migration.name == MIGRATION_NAME
-    assert migrations[migrations.index(migration) - 1].version == 55
-    assert applied_migrations(workspace.holder.connection)[56] == migration.checksum
+    assert migrations[migrations.index(migration) - 1].version == 56
+    assert applied_migrations(workspace.holder.connection)[57] == migration.checksum
     present = {
         str(row[0])
         for row in workspace.holder.connection.execute(
@@ -380,11 +380,11 @@ def test_0056_is_the_additive_successor_and_creates_guarded_tables(
     assert foreign_key_check(workspace.holder.connection) == []
 
 
-def test_the_0056_alter_backfills_existing_events_and_defaults_new_ones_to_flat_v1(
+def test_the_0057_alter_backfills_existing_events_and_defaults_new_ones_to_flat_v1(
     workspace: esc.Workspace,
 ) -> None:
-    """The exact 0056 ALTER covers rows written before and after the upgrade."""
-    migration = next(item for item in load_migrations() if item.version == 56)
+    """The exact 0057 ALTER covers rows written before and after the upgrade."""
+    migration = next(item for item in load_migrations() if item.version == 57)
     alter_sql = migration.sql.split(
         "CREATE TABLE IF NOT EXISTS omnivia_engineering_snapshot_files", 1
     )[0]

@@ -1,4 +1,4 @@
-"""Durable engineering conflict discovery (migrations 0054-0055).
+"""Durable engineering conflict discovery (migrations 0055-0056).
 
 The suite covers atomic enqueue, indexed resumable processing, exact provenance,
 authorization-safe structural and lexical matching, restart/replay, production
@@ -47,8 +47,8 @@ from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
 from omnivia_core.contracts.v1 import MutationPrecondition
 
 WORKSPACE_ID = esc.WORKSPACE_ID
-MIGRATION_VERSION = 54
-MIGRATION_NAME = "0054_engineering_conflict_discovery.sql"
+MIGRATION_VERSION = 55
+MIGRATION_NAME = "0055_engineering_conflict_discovery.sql"
 TABLES = (
     "omnivia_engineering_discovery_runs",
     "omnivia_engineering_discovery_run_events",
@@ -238,16 +238,16 @@ def _finish_run(
     raise AssertionError("the target discovery run did not complete")
 
 
-def test_0054_is_the_additive_successor_and_creates_guarded_tables(
+def test_0055_is_the_additive_successor_and_creates_guarded_tables(
     workspace: esc.Workspace,
 ) -> None:
     migrations = load_migrations()
     migration = next(item for item in migrations if item.version == MIGRATION_VERSION)
     assert migration.name == MIGRATION_NAME
-    assert migrations[migrations.index(migration) - 1].version == 53
+    assert migrations[migrations.index(migration) - 1].version == 54
     assert "INSERT INTO omnivia_governed" not in migration.sql
     assert "UPDATE omnivia_governed" not in migration.sql
-    assert applied_migrations(workspace.holder.connection)[54] == migration.checksum
+    assert applied_migrations(workspace.holder.connection)[55] == migration.checksum
     present = {
         str(row[0])
         for row in workspace.holder.connection.execute(
@@ -870,12 +870,12 @@ def test_discovery_facts_survive_restart(workspace: esc.Workspace) -> None:
     )
 
 
-def test_0055_adds_an_indexed_append_only_scan_watermark(
+def test_0056_adds_an_indexed_append_only_scan_watermark(
     workspace: esc.Workspace,
 ) -> None:
-    migration = next(item for item in load_migrations() if item.version == 55)
-    assert migration.name == "0055_engineering_conflict_scan_progress.sql"
-    assert applied_migrations(workspace.holder.connection)[55] == migration.checksum
+    migration = next(item for item in load_migrations() if item.version == 56)
+    assert migration.name == "0056_engineering_conflict_scan_progress.sql"
+    assert applied_migrations(workspace.holder.connection)[56] == migration.checksum
     plan = workspace.holder.connection.execute(
         "EXPLAIN QUERY PLAN SELECT governed_record_id "
         "FROM omnivia_governed_records "
@@ -1302,7 +1302,7 @@ def test_service_executor_reaches_terminal_runs_and_expand_filters_endpoints(
     assert edge_capped["truncated"] is True
 
 
-def test_0054_does_not_backfill_old_versions_and_the_next_write_enqueues(
+def test_0055_does_not_backfill_old_versions_and_the_next_write_enqueues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     old_dir = tmp_path / "old"
@@ -1318,7 +1318,7 @@ def test_0054_does_not_backfill_old_versions_and_the_next_write_enqueues(
         old.observe(
             esc._observation(None, title="Pre-migration provider", evidence=False)
         )
-        assert 54 not in applied_migrations(old.holder.connection)
+        assert 55 not in applied_migrations(old.holder.connection)
         old.holder.connection.close()
 
     with m2.migration_catalogue_through(MIGRATION_VERSION):
