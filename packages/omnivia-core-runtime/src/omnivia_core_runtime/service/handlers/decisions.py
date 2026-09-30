@@ -66,6 +66,7 @@ from omnivia_core.contracts.v1 import (
     DecisionStatusResult,
     JobReference,
     RequestMetadata,
+    evaluate_result_use,
     idempotency_equivalence,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
@@ -188,6 +189,23 @@ class DecisionHandlers:
         return connection, identity, guard
 
     # --- decision.evaluate ---------------------------------------------------
+
+    def decision_result_use_evaluate(
+        self, context: OperationContext
+    ) -> Mapping[str, Any]:
+        """The deterministic result-use gate (T-0716, §13.3).
+
+        Pure evaluation over the declared facts: no storage write, no effect.
+        Malformed requests are `invalid_request`; a well-formed request always
+        receives its classified decision document.
+        """
+        try:
+            decision = evaluate_result_use(context.request.input)
+        except (TypeError, ValueError) as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, f"invalid result-use request: {error}"
+            ) from error
+        return {"decision": decision}
 
     def decision_evaluate(self, context: OperationContext) -> AuditedOperationResult:
         request: DecisionEvaluateInput | None = None

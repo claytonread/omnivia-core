@@ -247,6 +247,9 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("analysis", "start"), "analysis.start", "insights_analysis_request"
     ),
+    ApplicationCommand(
+        ("decisions", "result-use"), "decision.result_use.evaluate", "decision_result_use"
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

@@ -1571,6 +1571,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "decision_status", "decision_definition_list", "decision_definition_get",
             "decision_definition_publish", "decision_definition_disable",
             "decision_outcome_submit", "decision_model_list",
+            "decision_result_use_evaluate",
             "decision_settings_get", "decision_settings_update",
             "decision_model_not_implemented")})(),
     ).operations)

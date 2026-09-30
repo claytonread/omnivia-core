@@ -110,7 +110,9 @@ def _purpose(operation: str) -> str:
     return DECISION_FAMILY_PURPOSES[operation]
 
 
-def _request(operation: str, payload: dict[str, Any], **overrides: Any) -> RequestEnvelope:
+def _request(
+    operation: str, payload: dict[str, Any], **overrides: Any
+) -> RequestEnvelope:
     entry = _ENTRY[operation]
     fields: dict[str, Any] = {
         "request_id": "req-decision-1",
@@ -197,9 +199,7 @@ def _error(response: Any) -> tuple[str, str]:
     return str(response.error.code), str(response.error.message)
 
 
-def _update_settings(
-    environment: Any, revision: int, processing: str, key: str
-) -> Any:
+def _update_settings(environment: Any, revision: int, processing: str, key: str) -> Any:
     return _dispatch(
         environment,
         _request(
@@ -215,7 +215,9 @@ def _update_settings(
 
 
 def _enable(environment: Any, revision: int = 0) -> int:
-    payload = _payload(_update_settings(environment, revision, "advisory", f"enable-{revision}"))
+    payload = _payload(
+        _update_settings(environment, revision, "advisory", f"enable-{revision}")
+    )
     return int(payload["settings"]["revision"])
 
 
@@ -274,7 +276,9 @@ def test_the_default_capability_is_off_and_status_says_so(environment: Any) -> N
     assert payload["host_engine_available"] is True
 
 
-def test_an_evaluation_while_disabled_is_refused_without_records(environment: Any) -> None:
+def test_an_evaluation_while_disabled_is_refused_without_records(
+    environment: Any,
+) -> None:
     response = _evaluate(environment, "core.ticket_priority", "1.0.0", {})
     code, _message = _error(response)
     assert code == ERROR_CODE_CAPABILITY_NOT_GRANTED
@@ -308,7 +312,9 @@ def test_a_deterministic_evaluation_commits_its_records_and_event(
     enabled_with_definition: Any,
 ) -> None:
     environment = enabled_with_definition.environment
-    response = _evaluate(environment, "core.ticket_priority", "1.0.0", {"severity": "critical"})
+    response = _evaluate(
+        environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}
+    )
     payload = _payload(response)
     evaluation_id = payload["evaluation_id"]
     assert payload["schema_version"] == "decision.1"
@@ -321,7 +327,10 @@ def test_a_deterministic_evaluation_commits_its_records_and_event(
         )
     )["record"]
     assert record["status"] == "succeeded"
-    assert record["definition_ref"] == {"id": "core.ticket_priority", "version": "1.0.0"}
+    assert record["definition_ref"] == {
+        "id": "core.ticket_priority",
+        "version": "1.0.0",
+    }
     assert record["prediction"]["selected_option_id"] == "high"
     assert record["prediction"]["probability_semantics"] == "deterministic_rule"
     assert record["disposition"]["code"] == "advisory_only"
@@ -346,7 +355,11 @@ def test_an_idempotent_replay_returns_the_same_evaluation(
     enabled_with_definition: Any,
 ) -> None:
     environment = enabled_with_definition.environment
-    first = _payload(_evaluate(environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}))
+    first = _payload(
+        _evaluate(
+            environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}
+        )
+    )
     second = _payload(
         _evaluate(
             environment,
@@ -384,12 +397,16 @@ def test_an_unmatched_state_abstains_and_does_not_guess(
     enabled_with_definition: Any,
 ) -> None:
     environment = enabled_with_definition.environment
-    response = _evaluate(environment, "core.ticket_priority", "1.0.0", {"severity": "odd"})
+    response = _evaluate(
+        environment, "core.ticket_priority", "1.0.0", {"severity": "odd"}
+    )
     payload = _payload(response)
     record = _payload(
         _dispatch(
             environment,
-            _request("decision.record.get", {"evaluation_id": payload["evaluation_id"]}),
+            _request(
+                "decision.record.get", {"evaluation_id": payload["evaluation_id"]}
+            ),
         )
     )["record"]
     assert record["status"] == "abstained"
@@ -413,7 +430,9 @@ def test_a_model_route_fails_closed_and_records_the_attempt(
     record = _payload(
         _dispatch(
             environment,
-            _request("decision.record.get", {"evaluation_id": payload["evaluation_id"]}),
+            _request(
+                "decision.record.get", {"evaluation_id": payload["evaluation_id"]}
+            ),
         )
     )["record"]
     assert record["status"] == "failed"
@@ -432,14 +451,18 @@ def test_record_list_reports_the_newest_first_and_filters(
 ) -> None:
     environment = enabled_with_definition.environment
     first = _evaluate(
-        environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}, key="k-1"
+        environment,
+        "core.ticket_priority",
+        "1.0.0",
+        {"severity": "critical"},
+        key="k-1",
     )
     second = _evaluate(
         environment, "core.ticket_priority", "1.0.0", {"severity": "minor"}, key="k-2"
     )
-    listed = _payload(
-        _dispatch(environment, _request("decision.record.list", {}))
-    )["records"]
+    listed = _payload(_dispatch(environment, _request("decision.record.list", {})))[
+        "records"
+    ]
     assert [row["evaluation_id"] for row in listed] == [
         _payload(second)["evaluation_id"],
         _payload(first)["evaluation_id"],
@@ -447,9 +470,7 @@ def test_record_list_reports_the_newest_first_and_filters(
     empty = _payload(
         _dispatch(
             environment,
-            _request(
-                "decision.record.list", {"definition_id": "core.nope"}
-            ),
+            _request("decision.record.list", {"definition_id": "core.nope"}),
         )
     )
     assert empty["records"] == []
@@ -503,7 +524,9 @@ def test_disabling_a_definition_stops_new_admissions_only(
     enabled_with_definition: Any,
 ) -> None:
     environment = enabled_with_definition.environment
-    first = _evaluate(environment, "core.ticket_priority", "1.0.0", {"severity": "critical"})
+    first = _evaluate(
+        environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}
+    )
     disabled = _dispatch(
         environment,
         _request(
@@ -521,7 +544,10 @@ def test_disabling_a_definition_stops_new_admissions_only(
     history = _payload(
         _dispatch(
             environment,
-            _request("decision.record.get", {"evaluation_id": _payload(first)["evaluation_id"]}),
+            _request(
+                "decision.record.get",
+                {"evaluation_id": _payload(first)["evaluation_id"]},
+            ),
         )
     )
     assert history["record"]["status"] == "succeeded"
@@ -544,7 +570,9 @@ def test_an_outcome_is_appended_with_provenance_and_can_supersede(
 ) -> None:
     environment = enabled_with_definition.environment
     evaluation = _payload(
-        _evaluate(environment, "core.ticket_priority", "1.0.0", {"severity": "critical"})
+        _evaluate(
+            environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}
+        )
     )["evaluation_id"]
     first = _payload(
         _dispatch(
@@ -611,7 +639,9 @@ def test_disabling_the_capability_stops_admissions_and_keeps_history(
     enabled_with_definition: Any,
 ) -> None:
     environment = enabled_with_definition.environment
-    kept = _evaluate(environment, "core.ticket_priority", "1.0.0", {"severity": "critical"})
+    kept = _evaluate(
+        environment, "core.ticket_priority", "1.0.0", {"severity": "critical"}
+    )
     current = _dispatch(environment, _request("decision.settings.get", {}))
     revision = int(_payload(current)["settings"]["revision"])
     _update_settings(environment, revision, "off", "disable-capability")
@@ -627,18 +657,23 @@ def test_disabling_the_capability_stops_admissions_and_keeps_history(
     history = _payload(
         _dispatch(
             environment,
-            _request("decision.record.get", {"evaluation_id": _payload(kept)["evaluation_id"]}),
+            _request(
+                "decision.record.get",
+                {"evaluation_id": _payload(kept)["evaluation_id"]},
+            ),
         )
     )
     assert history["record"]["status"] == "succeeded"
 
 
-def test_the_decision_surface_is_exactly_the_fifteen_catalogue_operations() -> None:
+def test_the_decision_surface_is_exactly_the_sixteen_catalogue_operations() -> None:
     from omnivia_core_runtime.service.application import (
         DECISION_FAMILY_OPERATIONS,
     )
 
-    assert len(DECISION_FAMILY_OPERATIONS) == 15
+    assert len(DECISION_FAMILY_OPERATIONS) == 16
     assert DECISION_FAMILY_OPERATIONS == frozenset(
-        entry.name for entry in OPERATION_CATALOGUE if entry.name.startswith("decision.")
+        entry.name
+        for entry in OPERATION_CATALOGUE
+        if entry.name.startswith("decision.")
     )

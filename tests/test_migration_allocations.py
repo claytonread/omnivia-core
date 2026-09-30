@@ -131,28 +131,29 @@ EXPECTED_ALLOCATION = (
     (51, "0051_engineering_dependency_carry.sql", "Engineering Memory", "candidate"),
     (52, "0052_engineering_dependency_lookup.sql", "Engineering Memory", "candidate"),
     (53, "0053_engineering_preview_projection.sql", "Engineering Memory", "candidate"),
-    (54, "0054_engineering_conflict_discovery.sql", "Engineering Memory", "candidate"),
-    (
-        55,
-        "0055_engineering_conflict_scan_progress.sql",
-        "Engineering Memory",
-        "candidate",
-    ),
+    (54, "0054_engineering_invalidation.sql", "Engineering Memory", "candidate"),
+    (55, "0055_engineering_conflict_discovery.sql", "Engineering Memory", "candidate"),
     (
         56,
-        "0056_engineering_captured_source_coverage.sql",
+        "0056_engineering_conflict_scan_progress.sql",
         "Engineering Memory",
         "candidate",
     ),
     (
         57,
-        "0057_engineering_relation_assessments.sql",
+        "0057_engineering_captured_source_coverage.sql",
         "Engineering Memory",
         "candidate",
     ),
     (
         58,
-        "0058_engineering_source_producer_queue.sql",
+        "0058_engineering_relation_assessments.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
+    (
+        59,
+        "0059_engineering_source_producer_queue.sql",
         "Engineering Memory",
         "candidate",
     ),
@@ -211,11 +212,14 @@ CANDIDATE_INTRODUCED_COMMITS = {
     51: "3fcc8d5a9c618b201c9223c19f4b381d555911d9",
     52: "4e4a6ed3ef4b1d8ce0145e8ffe52325fde0f80be",
     53: "97ada9ba23e3a8ef890cfdd1ee0bd03a468bf34d",
-    54: "1ac651d29c6bc45ab08ab2b404b9568caeffd729",
-    55: "25ffae20558536205ed2c1a1291c9fbdc215cae2",
-    56: "403c02c706393054110355f0c39b58418d44f7d9",
-    57: "309b7c815d730c885032aae155368413502453fc",
-    58: "ab2e334aba3f9d2abdcfbff8ed8ba6148ebd627a",
+    # 0054 was introduced by the durable invalidation worker (PR #150); the
+    # #155 renumber landed 0055-0057 at b4f89ef4; this lane adds 0058-0059.
+    54: "f481702094db91779f9052de53ef48d7635560b2",
+    55: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
+    56: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
+    57: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
+    58: "309b7c815d730c885032aae155368413502453fc",
+    59: "ab2e334aba3f9d2abdcfbff8ed8ba6148ebd627a",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

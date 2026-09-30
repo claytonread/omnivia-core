@@ -619,11 +619,6 @@ def read_authorized_memory_frontier(
     record never changes domain, so it never changes which versions are admitted
     within it.
 
-    `record_ids`, when supplied, narrows every identity and transition read to those
-    stable records. It is the bounded-record seam used by durable indexed processors;
-    callers must obtain the ids from their own persisted cursor. ``None`` preserves
-    the complete-frontier behaviour, while an empty sequence reads an empty frontier.
-
     `body_free` selects that metadata view (migration 0053). The legacy memory family
     passes False to read 0009's full view instead, still selecting no body column, so
     it runs on schemas that predate 0053.
