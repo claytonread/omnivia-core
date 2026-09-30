@@ -281,8 +281,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 19
-    assert len(omitted) == 38
+    assert len(exposed) == 18
+    assert len(omitted) == 39
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:

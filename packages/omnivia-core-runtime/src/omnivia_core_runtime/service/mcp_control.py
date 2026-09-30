@@ -482,9 +482,12 @@ def _session_from_view(answer: Mapping[str, object]) -> AuthenticatedSession:
                 provenance=ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION,
             )
         except (TypeError, ValueError):
-            raise LocalControlRefusal(LocalControlError.UNAVAILABLE) from None
+            association = None
+        if association is None:
+            raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
+    parsed: AuthenticatedSession | None = None
     try:
-        return AuthenticatedSession(
+        parsed = AuthenticatedSession(
             principal_id=_text(answer.get("principal_id")),
             workspaces=frozenset(_texts(answer.get("workspaces"))),
             operations=frozenset(_texts(answer.get("operations"))),
@@ -495,7 +498,10 @@ def _session_from_view(answer: Mapping[str, object]) -> AuthenticatedSession:
             continuity_association=association,
         )
     except (TypeError, ValueError):
-        raise LocalControlRefusal(LocalControlError.UNAVAILABLE) from None
+        parsed = None
+    if parsed is None:
+        raise LocalControlRefusal(LocalControlError.UNAVAILABLE)
+    return parsed
 
 
 def _admitted_answer(
