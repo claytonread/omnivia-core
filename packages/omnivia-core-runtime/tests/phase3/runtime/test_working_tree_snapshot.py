@@ -7,20 +7,45 @@ import json
 import os
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
-from omnivia_core_runtime.service import source_capture
+from omnivia_core_runtime.service import (
+    engineering_source_capture_execution,
+    source_capture,
+)
+from omnivia_core_runtime.service.application import (
+    build_engineering_application_dispatcher,
+)
+from omnivia_core_runtime.service.authorization import Grant
+from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.engineering_source_capture_execution import (
+    EngineeringSourceCaptureExecutor,
+)
+from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
+    capture_working_tree_manifest,
     capture_working_tree_snapshot,
+    capture_working_tree_snapshot_owned,
 )
 from omnivia_core_runtime.service.versions import SERVER_VERSION
 from omnivia_core_runtime.service.workspace_init import initialise_workspace
-from omnivia_core_runtime.storage import repository_identity
+from omnivia_core_runtime.storage import engineering_source, repository_identity
+
+from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    CapabilityRequirement,
+    ClientIdentity,
+    ErrorResponseEnvelope,
+    RequestEnvelope,
+    RequestMetadata,
+    SuccessResponseEnvelope,
+)
 
 pytestmark = pytest.mark.skipif(
     not source_capture._NO_FOLLOW_WALK, reason="host lacks no-follow checkout walk"
@@ -127,6 +152,61 @@ class _Env:
             core_version=SERVER_VERSION,
         )
 
+    def commit(
+        self,
+        payload: dict[str, object],
+        *,
+        key: str,
+        request_id: str,
+    ) -> SuccessResponseEnvelope | ErrorResponseEnvelope:
+        runner = self._runner()
+        try:
+            assert runner.workspace_id is not None and runner.identity is not None
+            principal = "local-user"
+            fallback = Dispatcher.for_service_operations(
+                Grant(
+                    principal=principal,
+                    workspaces=frozenset({runner.workspace_id}),
+                    operations=frozenset(SERVICE_OPERATIONS),
+                ),
+                None,
+            )
+            dispatcher = build_engineering_application_dispatcher(
+                service=runner,
+                principal_id=principal,
+                installation_id=runner.identity.installation_id,
+                workspace_id=runner.workspace_id,
+                fallback=fallback,
+            )
+            return dispatcher.dispatch(
+                RequestEnvelope(
+                    operation="engineering.source.capture.commit",
+                    metadata=RequestMetadata(
+                        request_id=request_id,
+                        correlation_id=f"cor-{request_id}",
+                        trace_id=f"trc-{request_id}",
+                        api_version=CONTRACT_VERSION,
+                        client=ClientIdentity(id="capture-test", version="1.0.0"),
+                        workspace_id=runner.workspace_id,
+                        scopes=("engineering:source",),
+                        purpose="engineering_source",
+                        required_capabilities=(
+                            CapabilityRequirement(
+                                id="engineering.source",
+                                minimum_version="1.0",
+                                required=True,
+                            ),
+                        ),
+                        idempotency_key=key,
+                        mutation_precondition=None,
+                        principal_claim=None,
+                    ),
+                    input=payload,
+                )
+            )
+        finally:
+            runner.stop()
+
     def rows(self, table: str) -> int:
         connection = sqlite3.connect(self.workspace / "workspace.sqlite")
         try:
@@ -179,6 +259,28 @@ def test_snapshot_persists_resolvable_manifest_and_bytes_across_restart(
             "WHERE source_native_id = 'working-tree-manifest.snap-1'"
         ).fetchone()
         assert evidence == (result.manifest_evidence_id, result.manifest_digest)
+        header = connection.execute(
+            "SELECT repository_id, manifest_evidence_id, rich_manifest_digest, "
+            "coverage_digest, file_count, capture_status "
+            "FROM omnivia_engineering_snapshot_captures WHERE snapshot_id = ?",
+            ("snap-1",),
+        ).fetchone()
+        assert header is not None
+        assert header[:3] == (
+            "repo-1",
+            result.manifest_evidence_id,
+            result.manifest_digest,
+        )
+        assert header[4:] == (2, "complete")
+        indexed = dict(
+            connection.execute(
+                "SELECT path, content_digest FROM omnivia_engineering_snapshot_files "
+                "WHERE snapshot_id = ? ORDER BY path",
+                ("snap-1",),
+            )
+        )
+        assert set(indexed) == {"a.py", "new.txt"}
+        assert header[3] == engineering_source.captured_coverage_digest(indexed)
         for digest in (result.manifest_digest, hashlib.sha256(b"dirty\n").hexdigest()):
             digest = digest.removeprefix("sha256:")
             assert connection.execute(
@@ -214,6 +316,8 @@ def test_snapshot_retry_is_idempotent_and_conflict_refuses(tmp_path: Path) -> No
         first.manifest_evidence_id,
     )
     assert env.rows("omnivia_engineering_snapshots") == 1
+    assert env.rows("omnivia_engineering_snapshot_captures") == 1
+    assert env.rows("omnivia_engineering_snapshot_files") == first.file_count
 
     (root / "a.py").write_bytes(b"different\n")
     with pytest.raises(SourceCaptureRefused, match="different content"):
@@ -271,7 +375,10 @@ def test_snapshot_preserves_incomplete_coverage(tmp_path: Path) -> None:
     assert result.capture_status == "incomplete"
     manifest = json.loads(env.blob(result.manifest_digest))
     assert manifest["complete"] is False
-    assert {"path": "link", "reason": "symlink"} in manifest["omissions"]
+    assert {
+        "path": "link",
+        "reason": "missing_or_unsupported",
+    } in manifest["omissions"]
 
 
 def test_failed_publication_leaves_no_acknowledged_snapshot(
@@ -299,3 +406,1011 @@ def test_failed_publication_leaves_no_acknowledged_snapshot(
 
     monkeypatch.setattr(source_capture, "publish_blob", real)
     assert env.snapshot("repo-1", root).status == "captured"
+
+
+def test_captured_commit_replays_and_recovers_a_gap_across_restarts(
+    tmp_path: Path,
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    first = env.snapshot("repo-1", root, "captured-1")
+    stream_id = "captured-stream-1"
+
+    def payload(
+        sequence: int,
+        snapshot_id: str,
+        *,
+        predecessor: str | None = None,
+        expected: str | None = None,
+    ) -> dict[str, object]:
+        value: dict[str, object] = {
+            "repository_id": "repo-1",
+            "stream_id": stream_id,
+            "sequence": sequence,
+            "snapshot_id": snapshot_id,
+        }
+        if predecessor is not None:
+            value["predecessor"] = {
+                "sequence": sequence - 1,
+                "snapshot_id": predecessor,
+            }
+        if expected is not None:
+            value["expected_manifest_digest"] = expected
+        return value
+
+    request = payload(1, "captured-1", expected=first.manifest_digest)
+    recorded = env.commit(request, key="capture-key-1", request_id="capture-1")
+    assert isinstance(recorded, SuccessResponseEnvelope)
+    first_result = recorded.to_wire()["result"]
+    assert first_result["disposition"] == "recorded"
+    assert first_result["coverage"] == {
+        "state": "current",
+        "covered_sequence": 1,
+        "announced_sequence": 1,
+    }
+
+    replay = env.commit(request, key="capture-key-1", request_id="capture-1-replay")
+    assert isinstance(replay, SuccessResponseEnvelope)
+    assert replay.to_wire()["result"] == first_result
+    duplicate = env.commit(request, key="capture-key-1b", request_id="capture-1-dup")
+    assert isinstance(duplicate, SuccessResponseEnvelope)
+    assert duplicate.to_wire()["result"]["disposition"] == "already_recorded"
+
+    (root / "a.py").write_bytes(b"second\n")
+    second = env.snapshot("repo-1", root, "captured-2")
+    (root / "a.py").write_bytes(b"third\n")
+    third = env.snapshot("repo-1", root, "captured-3")
+
+    pending = env.commit(
+        payload(3, "captured-3", predecessor="captured-2"),
+        key="capture-key-3",
+        request_id="capture-3",
+    )
+    assert isinstance(pending, SuccessResponseEnvelope)
+    assert pending.to_wire()["result"]["coverage"] == {
+        "state": "pending",
+        "covered_sequence": 1,
+        "announced_sequence": 3,
+    }
+
+    mismatch = env.commit(
+        payload(
+            2,
+            "captured-2",
+            predecessor="captured-1",
+            expected="sha256:" + "f" * 64,
+        ),
+        key="capture-key-2-bad",
+        request_id="capture-2-bad",
+    )
+    assert isinstance(mismatch, ErrorResponseEnvelope)
+    assert mismatch.error.code == "mutation_precondition_failed"
+
+    converged = env.commit(
+        payload(
+            2,
+            "captured-2",
+            predecessor="captured-1",
+            expected=second.manifest_digest,
+        ),
+        key="capture-key-2",
+        request_id="capture-2",
+    )
+    assert isinstance(converged, SuccessResponseEnvelope)
+    assert converged.to_wire()["result"]["coverage"] == {
+        "state": "current",
+        "covered_sequence": 3,
+        "announced_sequence": 3,
+    }
+
+    serialized = json.dumps(converged.to_wire()["result"])
+    assert str(root) not in serialized
+    assert all(
+        word not in serialized for word in ("checkout_hint", "files", "manifest_json")
+    )
+    connection = sqlite3.connect(env.workspace / "workspace.sqlite")
+    try:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_source_events "
+                "WHERE stream_id = ?",
+                (stream_id,),
+            ).fetchone()[0]
+            == 3
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_source_stream_origins "
+                "WHERE stream_id = ?",
+                (stream_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        resolved = engineering_source.covered_snapshot(
+            connection,
+            workspace_id=str(
+                connection.execute(
+                    "SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1"
+                ).fetchone()[0]
+            ),
+            snapshot_id="captured-3",
+            repository_id="repo-1",
+        )
+        assert resolved is not None and resolved.representation == "captured_v1"
+        assert resolved.manifest_digest == third.manifest_digest
+    finally:
+        connection.close()
+
+
+def test_installed_producer_captures_and_commits_a_registered_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    runner = env._runner()
+    try:
+        assert runner.workspace_id is not None and runner.identity is not None
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        dispatcher = build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+        dispatched: list[RequestEnvelope] = []
+
+        def dispatch(request: RequestEnvelope) -> object:
+            dispatched.append(request)
+            return dispatcher.dispatch(request)
+
+        renewals: list[bool] = []
+        real_renew = runner.renew_lease_if_due
+
+        def observe_renewal(*, gate_already_held: bool = False) -> bool:
+            renewals.append(gate_already_held)
+            return real_renew(gate_already_held=gate_already_held)
+
+        monkeypatch.setattr(runner, "renew_lease_if_due", observe_renewal)
+        executor = EngineeringSourceCaptureExecutor(
+            runner=runner,
+            application=SimpleNamespace(dispatch=dispatch),
+            principal_id=principal,
+        )
+        outcome = executor.run_pending(budget=1, force=True)
+
+        assert (outcome.inspected, outcome.captured, outcome.committed) == (1, 1, 1)
+        assert len(renewals) >= 10 and not any(renewals)
+        assert len(dispatched) == 1
+        request = dispatched[0]
+        assert request.operation == "engineering.source.capture.commit"
+        seal = runner.connection.execute(
+            "SELECT snapshot_id, rich_manifest_digest "
+            "FROM omnivia_engineering_snapshot_captures"
+        ).fetchone()
+        assert seal is not None
+        assert request.input == {
+            "repository_id": "repo-1",
+            "stream_id": request.input["stream_id"],
+            "sequence": 1,
+            "snapshot_id": str(seal[0]),
+            "expected_manifest_digest": str(seal[1]),
+        }
+        assert runner.connection.execute(
+            "SELECT manifest_format FROM omnivia_engineering_source_events "
+            "WHERE snapshot_id = ?",
+            (seal[0],),
+        ).fetchone() == ("captured_v1",)
+        assert all(
+            not hasattr(outcome, field)
+            for field in ("checkout_hint", "path", "files", "content", "manifest")
+        )
+    finally:
+        runner.stop()
+
+
+def test_installed_producer_recovers_a_sealed_capture_without_rereading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    runner = env._runner()
+    try:
+        assert runner.workspace_id is not None and runner.identity is not None
+        renewals: list[int] = []
+        frozen = capture_working_tree_manifest(checkout_root=root)
+        sealed = capture_working_tree_snapshot_owned(
+            runner,
+            repository_id="repo-1",
+            checkout_root=root,
+            snapshot_id="pending-capture-1",
+            manifest=frozen,
+            renew_lease=lambda: renewals.append(1),
+        )
+        assert sealed.status == "captured"
+        assert len(renewals) >= 3
+
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        dispatcher = build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+        executor = EngineeringSourceCaptureExecutor(
+            runner=runner, application=dispatcher, principal_id=principal
+        )
+
+        def unexpected_capture(
+            *, checkout_root: Path, heartbeat: object | None = None
+        ) -> object:
+            raise AssertionError(f"recovery reread {checkout_root}")
+
+        monkeypatch.setattr(
+            engineering_source_capture_execution,
+            "capture_working_tree_manifest",
+            unexpected_capture,
+        )
+        outcome = executor.run_pending(budget=1, force=True)
+        assert outcome.inspected == outcome.committed == 1
+        assert outcome.captured == 0
+        assert not hasattr(outcome, "checkout_hint")
+        assert (
+            runner.connection.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_source_events "
+                "WHERE snapshot_id = 'pending-capture-1'"
+            ).fetchone()[0]
+            == 1
+        )
+
+        # The poll interval prevents repeated work immediately after settlement.
+        assert executor.run_pending(budget=1).inspected == 0
+        assert (
+            runner.connection.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_source_events "
+                "WHERE snapshot_id = 'pending-capture-1'"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        runner.stop()
+
+
+def test_producer_skips_an_old_unusable_seal_and_fills_the_contiguous_gap(
+    tmp_path: Path,
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+
+    poison = env.snapshot("repo-1", root, "captured-poison")
+    (root / "a.py").write_bytes(b"first\n")
+    first = env.snapshot("repo-1", root, "captured-gap-1")
+    (root / "a.py").write_bytes(b"second\n")
+    env.snapshot("repo-1", root, "captured-gap-2")
+    (root / "a.py").write_bytes(b"third\n")
+    third = env.snapshot("repo-1", root, "captured-gap-3")
+
+    connection = sqlite3.connect(env.workspace / "workspace.sqlite")
+    try:
+        workspace_id = str(
+            connection.execute(
+                "SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1"
+            ).fetchone()[0]
+        )
+        installation_id, checkout_id = map(
+            str,
+            connection.execute(
+                "SELECT installation_id, checkout_id "
+                "FROM omnivia_engineering_snapshot_captures "
+                "WHERE snapshot_id = 'captured-gap-1'"
+            ).fetchone(),
+        )
+    finally:
+        connection.close()
+    stream_id = engineering_source_capture_execution._derived(
+        "src-stream",
+        workspace_id,
+        "repo-1",
+        installation_id,
+        checkout_id,
+    )
+
+    def payload(
+        sequence: int,
+        snapshot_id: str,
+        manifest_digest: str,
+        predecessor: str | None = None,
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "repository_id": "repo-1",
+            "stream_id": stream_id,
+            "sequence": sequence,
+            "snapshot_id": snapshot_id,
+            "expected_manifest_digest": manifest_digest,
+        }
+        if predecessor is not None:
+            result["predecessor"] = {
+                "sequence": sequence - 1,
+                "snapshot_id": predecessor,
+            }
+        return result
+
+    assert isinstance(
+        env.commit(
+            payload(1, "captured-gap-1", first.manifest_digest),
+            key="gap-first",
+            request_id="gap-first",
+        ),
+        SuccessResponseEnvelope,
+    )
+    announced = env.commit(
+        payload(
+            3,
+            "captured-gap-3",
+            third.manifest_digest,
+            predecessor="captured-gap-2",
+        ),
+        key="gap-third",
+        request_id="gap-third",
+    )
+    assert isinstance(announced, SuccessResponseEnvelope)
+    assert announced.result["coverage"]["state"] == "pending"
+
+    runner = env._runner()
+    try:
+        assert runner.workspace_id is not None and runner.identity is not None
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        application = build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+        executor = EngineeringSourceCaptureExecutor(
+            runner=runner, application=application, principal_id=principal
+        )
+        skipped = executor.run_pending(budget=1, force=True)
+        live_turn = executor.run_pending(budget=1, force=True)
+        outcome = executor.run_pending(budget=1, force=True)
+
+        assert skipped == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert live_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert outcome == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=1
+        )
+        assert runner.connection is not None
+        events = runner.connection.execute(
+            "SELECT sequence, snapshot_id FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (runner.workspace_id, stream_id),
+        ).fetchall()
+        assert events == [
+            (1, "captured-gap-1"),
+            (2, "captured-gap-2"),
+            (3, "captured-gap-3"),
+        ]
+        assert runner.connection.execute(
+            "SELECT covered_sequence, announced_sequence "
+            "FROM omnivia_engineering_source_streams "
+            "WHERE workspace_id = ? AND stream_id = ?",
+            (runner.workspace_id, stream_id),
+        ).fetchone() == (3, 3)
+        assert (
+            runner.connection.execute(
+                "SELECT 1 FROM omnivia_engineering_source_events WHERE snapshot_id = ?",
+                (poison.snapshot_id,),
+            ).fetchone()
+            is None
+        )
+    finally:
+        runner.stop()
+
+
+def test_producer_never_promotes_a_stale_poison_seal_to_the_stream_head(
+    tmp_path: Path,
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+
+    poison = env.snapshot("repo-1", root, "captured-poison")
+    (root / "a.py").write_bytes(b"first\n")
+    first = env.snapshot("repo-1", root, "captured-gap-1")
+    (root / "a.py").write_bytes(b"second\n")
+    env.snapshot("repo-1", root, "captured-gap-2")
+    (root / "a.py").write_bytes(b"third\n")
+    third = env.snapshot("repo-1", root, "captured-gap-3")
+
+    connection = sqlite3.connect(env.workspace / "workspace.sqlite")
+    try:
+        workspace_id = str(
+            connection.execute(
+                "SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1"
+            ).fetchone()[0]
+        )
+        installation_id, checkout_id = map(
+            str,
+            connection.execute(
+                "SELECT installation_id, checkout_id "
+                "FROM omnivia_engineering_snapshot_captures "
+                "WHERE snapshot_id = 'captured-gap-1'"
+            ).fetchone(),
+        )
+    finally:
+        connection.close()
+    stream_id = engineering_source_capture_execution._derived(
+        "src-stream", workspace_id, "repo-1", installation_id, checkout_id
+    )
+
+    def payload(
+        sequence: int,
+        snapshot_id: str,
+        manifest_digest: str,
+        predecessor: str | None = None,
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "repository_id": "repo-1",
+            "stream_id": stream_id,
+            "sequence": sequence,
+            "snapshot_id": snapshot_id,
+            "expected_manifest_digest": manifest_digest,
+        }
+        if predecessor is not None:
+            result["predecessor"] = {
+                "sequence": sequence - 1,
+                "snapshot_id": predecessor,
+            }
+        return result
+
+    assert isinstance(
+        env.commit(
+            payload(1, "captured-gap-1", first.manifest_digest),
+            key="restart-first",
+            request_id="restart-first",
+        ),
+        SuccessResponseEnvelope,
+    )
+    announced = env.commit(
+        payload(
+            3, "captured-gap-3", third.manifest_digest, predecessor="captured-gap-2"
+        ),
+        key="restart-third",
+        request_id="restart-third",
+    )
+    assert isinstance(announced, SuccessResponseEnvelope)
+    assert announced.result["coverage"]["state"] == "pending"
+
+    def stream_row() -> tuple[int, int]:
+        assert runner.connection is not None
+        row = runner.connection.execute(
+            "SELECT covered_sequence, announced_sequence "
+            "FROM omnivia_engineering_source_streams "
+            "WHERE workspace_id = ? AND stream_id = ?",
+            (runner.workspace_id, stream_id),
+        ).fetchone()
+        assert row is not None
+        return (int(row[0]), int(row[1]))
+
+    runner = env._runner()
+    try:
+        assert runner.workspace_id is not None and runner.identity is not None
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        application = build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+
+        # Pass 1: the poison seal is the oldest pending capture and is skipped
+        # because it is not the exact named predecessor of the gap.
+        pass_one = EngineeringSourceCaptureExecutor(
+            runner=runner, application=application, principal_id=principal
+        )
+        skipped = pass_one.run_pending(budget=1, force=True)
+        assert skipped == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+
+        # Pass 2 alternates to the live lane, which refuses to capture a new
+        # head while the stream has a gap.
+        live_turn = pass_one.run_pending(budget=1, force=True)
+        assert live_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+
+        # Pass 3 returns to recovery. The cursor has advanced past the poison,
+        # so the exact sealed predecessor for sequence 2 closes the gap.
+        filled = pass_one.run_pending(budget=1, force=True)
+        assert filled == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=1
+        )
+        assert stream_row() == (3, 3)
+
+        # Restart the executor: in-memory cursors reset, so the poison seal
+        # (still unmatched to any event) is the oldest pending capture again.
+        restarted = EngineeringSourceCaptureExecutor(
+            runner=runner, application=application, principal_id=principal
+        )
+        post_restart = restarted.run_pending(budget=1, force=True)
+        assert post_restart == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert (
+            runner.connection is not None
+            and runner.connection.execute(
+                "SELECT 1 FROM omnivia_engineering_source_events "
+                "WHERE snapshot_id = ?",
+                (poison.snapshot_id,),
+            ).fetchone()
+            is None
+        )
+        assert stream_row() == (3, 3)
+
+        # Change the actual registered checkout: a fresh producer capture,
+        # tied to the frontier observed just before it, may append sequence 4.
+        (root / "a.py").write_bytes(b"fourth\n")
+        fresh = EngineeringSourceCaptureExecutor(
+            runner=runner, application=application, principal_id=principal
+        )
+        appended = fresh.run_pending(budget=2, force=True)
+        assert appended == engineering_source_capture_execution.SourceProducerPass(
+            inspected=2, captured=1, committed=1
+        )
+        assert runner.connection is not None
+        events = runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in events] == [1, 2, 3, 4]
+        assert events[3][2] == "captured-gap-3"
+        assert events[3][1] != poison.snapshot_id
+        assert stream_row() == (4, 4)
+    finally:
+        runner.stop()
+
+
+def test_producer_fairly_splits_recovery_and_live_capture_across_restart(
+    tmp_path: Path,
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+
+    first = env.snapshot("repo-1", root, "captured-base-1")
+    (root / "a.py").write_bytes(b"poison-a\n")
+    poison_a = env.snapshot("repo-1", root, "captured-a-poison")
+    (root / "a.py").write_bytes(b"poison-b\n")
+    poison_b = env.snapshot("repo-1", root, "captured-b-poison")
+
+    connection = sqlite3.connect(env.workspace / "workspace.sqlite")
+    try:
+        workspace_id = str(
+            connection.execute(
+                "SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1"
+            ).fetchone()[0]
+        )
+        installation_id, checkout_id = map(
+            str,
+            connection.execute(
+                "SELECT installation_id, checkout_id "
+                "FROM omnivia_engineering_snapshot_captures "
+                "WHERE snapshot_id = ?",
+                (first.snapshot_id,),
+            ).fetchone(),
+        )
+    finally:
+        connection.close()
+    stream_id = engineering_source_capture_execution._derived(
+        "src-stream", workspace_id, "repo-1", installation_id, checkout_id
+    )
+
+    def payload(
+        sequence: int,
+        snapshot_id: str,
+        manifest_digest: str,
+        predecessor: str | None = None,
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "repository_id": "repo-1",
+            "stream_id": stream_id,
+            "sequence": sequence,
+            "snapshot_id": snapshot_id,
+            "expected_manifest_digest": manifest_digest,
+        }
+        if predecessor is not None:
+            result["predecessor"] = {
+                "sequence": sequence - 1,
+                "snapshot_id": predecessor,
+            }
+        return result
+
+    assert isinstance(
+        env.commit(
+            payload(1, first.snapshot_id, first.manifest_digest),
+            key="fair-base",
+            request_id="fair-base",
+        ),
+        SuccessResponseEnvelope,
+    )
+
+    def application_for(runner: ServiceRunner) -> object:
+        assert runner.workspace_id is not None and runner.identity is not None
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        return build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+
+    # With one unit, the first pass inspects recovery and the next pass must
+    # alternate to the changed checkout. The fresh capture, rather than either
+    # poison seal, becomes sequence 2.
+    (root / "a.py").write_bytes(b"fresh-two\n")
+    runner = env._runner()
+    try:
+        executor = EngineeringSourceCaptureExecutor(
+            runner=runner,
+            application=application_for(runner),
+            principal_id="local-user",
+        )
+        recovery_turn = executor.run_pending(budget=1, force=True)
+        live_turn = executor.run_pending(budget=1, force=True)
+        assert recovery_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert live_turn == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=1, committed=1
+        )
+        assert recovery_turn.inspected <= 1 and live_turn.inspected <= 1
+        assert runner.connection is not None
+        first_events = runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in first_events] == [1, 2]
+        assert first_events[1][1] not in {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }
+        fresh_two_id = str(first_events[1][1])
+        assert first_events[1][2] == first.snapshot_id
+
+        # With two unmatched seals still pending, a two-unit pass may spend
+        # only one unit on recovery. Its reserved live unit observes another
+        # checkout change and appends sequence 3.
+        (root / "a.py").write_bytes(b"fresh-three\n")
+        split = executor.run_pending(budget=2, force=True)
+        assert split == engineering_source_capture_execution.SourceProducerPass(
+            inspected=2, captured=1, committed=1
+        )
+        assert split.inspected <= 2
+        first_events = runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in first_events] == [1, 2, 3]
+        fresh_three_id = str(first_events[2][1])
+        assert fresh_three_id not in {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }
+        assert first_events[2][2] == fresh_two_id
+    finally:
+        runner.stop()
+
+    # A service restart resets the in-memory turn to recovery. Even so, the
+    # subsequent one-unit pass must reach the changed checkout and append
+    # sequence 4 rather than retrying pending seals forever.
+    (root / "a.py").write_bytes(b"fresh-four\n")
+    restarted_runner = env._runner()
+    try:
+        restarted = EngineeringSourceCaptureExecutor(
+            runner=restarted_runner,
+            application=application_for(restarted_runner),
+            principal_id="local-user",
+        )
+        after_restart_recovery = restarted.run_pending(budget=1, force=True)
+        after_restart_live = restarted.run_pending(budget=1, force=True)
+        assert after_restart_recovery == (
+            engineering_source_capture_execution.SourceProducerPass(
+                inspected=1, captured=0, committed=0
+            )
+        )
+        assert after_restart_live == (
+            engineering_source_capture_execution.SourceProducerPass(
+                inspected=1, captured=1, committed=1
+            )
+        )
+        assert restarted_runner.connection is not None
+        before_gap = restarted_runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (restarted_runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in before_gap] == [1, 2, 3, 4]
+        fresh_four_id = str(before_gap[3][1])
+        assert fresh_four_id not in {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }
+        assert before_gap[3][2] == fresh_three_id
+    finally:
+        restarted_runner.stop()
+
+    # Build a durable gap after the service stops. Its exact predecessor is
+    # later in the same pending order as both poison seals.
+    (root / "a.py").write_bytes(b"gap-five\n")
+    gap_five = env.snapshot("repo-1", root, "captured-z-gap-5")
+    (root / "a.py").write_bytes(b"gap-six\n")
+    gap_six = env.snapshot("repo-1", root, "captured-z-gap-6")
+    announced = env.commit(
+        payload(
+            6,
+            gap_six.snapshot_id,
+            gap_six.manifest_digest,
+            predecessor=gap_five.snapshot_id,
+        ),
+        key="fair-gap-six",
+        request_id="fair-gap-six",
+    )
+    assert isinstance(announced, SuccessResponseEnvelope)
+    assert announced.result["coverage"] == {
+        "state": "pending",
+        "covered_sequence": 4,
+        "announced_sequence": 6,
+    }
+    (root / "a.py").write_bytes(b"fresh-four\n")
+
+    # A second restart again resets the turn. Alternation lets the recovery
+    # cursor cross both poisons and reach the exact gap predecessor while live
+    # turns remain bounded. One more recovery turn wraps the cursor and proves
+    # an old poison still cannot become the next head.
+    gap_runner = env._runner()
+    try:
+        gap_executor = EngineeringSourceCaptureExecutor(
+            runner=gap_runner,
+            application=application_for(gap_runner),
+            principal_id="local-user",
+        )
+        passes = [gap_executor.run_pending(budget=1, force=True) for _ in range(7)]
+        assert all(result.inspected <= 1 for result in passes)
+        assert passes[0] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert passes[1] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+        assert passes[4] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=1
+        )
+        assert passes[6] == engineering_source_capture_execution.SourceProducerPass(
+            inspected=1, captured=0, committed=0
+        )
+
+        assert gap_runner.connection is not None
+        events = gap_runner.connection.execute(
+            "SELECT sequence, snapshot_id, predecessor_snapshot_id "
+            "FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? ORDER BY sequence",
+            (gap_runner.workspace_id, stream_id),
+        ).fetchall()
+        assert [row[0] for row in events] == [1, 2, 3, 4, 5, 6]
+        assert events[1][1] == fresh_two_id
+        assert events[2][1] == fresh_three_id
+        assert events[3][1] == fresh_four_id
+        assert events[4] == (5, gap_five.snapshot_id, fresh_four_id)
+        assert events[5] == (6, gap_six.snapshot_id, gap_five.snapshot_id)
+        assert not {
+            poison_a.snapshot_id,
+            poison_b.snapshot_id,
+        }.intersection(str(row[1]) for row in events)
+        assert gap_runner.connection.execute(
+            "SELECT covered_sequence, announced_sequence "
+            "FROM omnivia_engineering_source_streams "
+            "WHERE workspace_id = ? AND stream_id = ?",
+            (gap_runner.workspace_id, stream_id),
+        ).fetchone() == (6, 6)
+    finally:
+        gap_runner.stop()
+
+
+def test_producer_lost_reply_recovers_without_a_duplicate_event(tmp_path: Path) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    runner = env._runner()
+    try:
+        assert runner.workspace_id is not None and runner.identity is not None
+        frozen = capture_working_tree_manifest(checkout_root=root)
+        snapshot_id = engineering_source_capture_execution._derived(
+            "src-snapshot",
+            runner.workspace_id,
+            "repo-1",
+            runner.identity.installation_id,
+            "co-repo-1",
+            frozen.manifest_digest,
+        )
+        capture_working_tree_snapshot_owned(
+            runner,
+            repository_id="repo-1",
+            checkout_root=root,
+            snapshot_id=snapshot_id,
+            manifest=frozen,
+            renew_lease=runner.renew_lease_if_due,
+        )
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        application = build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+
+        class LostReply:
+            def dispatch(self, request: RequestEnvelope) -> object:
+                application.dispatch(request)
+                raise RuntimeError("reply was lost after settlement")
+
+        crashing = EngineeringSourceCaptureExecutor(
+            runner=runner, application=LostReply(), principal_id=principal
+        )
+        with pytest.raises(RuntimeError, match="reply was lost"):
+            crashing.run_pending(budget=1, force=True)
+
+        restarted = EngineeringSourceCaptureExecutor(
+            runner=runner, application=application, principal_id=principal
+        )
+        recovered = restarted.run_pending(budget=1, force=True)
+        assert recovered.inspected == 1
+        assert recovered.committed == 0
+        assert runner.connection is not None
+        assert runner.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_engineering_source_events "
+            "WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone() == (1,)
+    finally:
+        runner.stop()
+
+
+def test_producer_releases_the_sqlite_gate_during_filesystem_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _Env(tmp_path)
+    root = _repo(tmp_path)
+    env.register("repo-1", root)
+    runner = env._runner()
+    started = threading.Event()
+    release = threading.Event()
+    frozen = capture_working_tree_manifest(checkout_root=root)
+    failures: list[BaseException] = []
+    try:
+        assert runner.workspace_id is not None and runner.identity is not None
+        principal = "local-user"
+        fallback = Dispatcher.for_service_operations(
+            Grant(
+                principal=principal,
+                workspaces=frozenset({runner.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
+            ),
+            None,
+        )
+        application = build_engineering_application_dispatcher(
+            service=runner,
+            principal_id=principal,
+            installation_id=runner.identity.installation_id,
+            workspace_id=runner.workspace_id,
+            fallback=fallback,
+        )
+
+        def slow_manifest(
+            *, checkout_root: Path, heartbeat: object | None = None
+        ) -> source_capture.WorkingTreeManifest:
+            assert checkout_root == root
+            started.set()
+            assert release.wait(timeout=5)
+            return frozen
+
+        monkeypatch.setattr(
+            engineering_source_capture_execution,
+            "capture_working_tree_manifest",
+            slow_manifest,
+        )
+        executor = EngineeringSourceCaptureExecutor(
+            runner=runner, application=application, principal_id=principal
+        )
+
+        def produce() -> None:
+            try:
+                executor.run_pending(budget=1, force=True)
+            except BaseException as error:  # noqa: BLE001 - returned to test thread
+                failures.append(error)
+
+        worker = threading.Thread(target=produce)
+        worker.start()
+        assert started.wait(timeout=5)
+        assert runner.sqlite_gate.acquire(timeout=1), (
+            "filesystem capture held the shared SQLite gate"
+        )
+        try:
+            assert runner.connection is not None
+            assert runner.connection.execute("SELECT 1").fetchone() == (1,)
+        finally:
+            runner.sqlite_gate.release()
+        release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert not failures
+    finally:
+        release.set()
+        runner.stop()

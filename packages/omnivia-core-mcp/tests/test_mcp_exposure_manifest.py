@@ -258,6 +258,16 @@ def test_the_manifest_version_names_this_surface() -> None:
     assert manifest.MANIFEST_VERSION == "2.2"
 
 
+def test_captured_source_commit_is_explicitly_omitted_from_model_facing_mcp() -> None:
+    operation = "engineering.source.capture.commit"
+    mapping = json.loads(OPERATION_TRACEABILITY.read_text(encoding="utf-8"))[
+        "client_surfaces"
+    ]["mcp"]
+    assert {"operation": operation, "reason": "mutation"} in mapping["omitted"]
+    assert operation not in {entry.operation for entry in manifest.AUTHORING_MANIFEST}
+    assert manifest.exposed_by_tool_name("engineering_source_capture_commit") is None
+
+
 def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
     """The purpose is a claim the request states and the service checks against
     its own grant, so the claim has to be the one the grant allows -- a purpose

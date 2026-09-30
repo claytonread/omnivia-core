@@ -230,6 +230,11 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         "engineering_review",
     ),
     ApplicationCommand(
+        ("engineering", "capture"),
+        "engineering.source.capture.commit",
+        "engineering_source",
+    ),
+    ApplicationCommand(
         ("engineering", "source"),
         "engineering.source.record",
         "engineering_source",

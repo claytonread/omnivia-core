@@ -86,6 +86,11 @@ EXPECTED_COMMANDS = (
     (("engineering", "context"), "engineering.context.build", "engineering_context"),
     (("context", "priority"), "context.priority.set", "context_priority"),
     (("engineering", "review"), "engineering.review.record", "engineering_review"),
+    (
+        ("engineering", "capture"),
+        "engineering.source.capture.commit",
+        "engineering_source",
+    ),
     (("engineering", "source"), "engineering.source.record", "engineering_source"),
     (
         ("repository", "register"),
@@ -155,7 +160,7 @@ def test_the_fifty_six_application_commands_are_declared_in_order() -> None:
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 56
+    assert len(APPLICATION_COMMANDS) == 57
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

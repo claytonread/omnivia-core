@@ -10076,6 +10076,170 @@
       }
     },
     {
+      "id": "engineering.source.capture.commit/primary-success",
+      "operation": "engineering.source.capture.commit",
+      "description": "engineering.source.capture.commit binds one sealed captured snapshot as the first event of its stream and returns its redacted coverage receipt.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.commit-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.source.capture.commit"
+        },
+        "operation": "engineering.source.capture.commit",
+        "input": {
+          "repository_id": "erepo-captured-1",
+          "stream_id": "estream-captured-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-captured-1",
+          "expected_manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.commit-success",
+          "audit_reference": "audit-engineering.source.capture.commit"
+        },
+        "result": {
+          "repository_id": "erepo-captured-1",
+          "stream_id": "estream-captured-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-captured-1",
+          "rich_manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "coverage_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "capture_status": "complete",
+          "file_count": 2,
+          "disposition": "recorded",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "recorded_at": "2026-09-26T00:00:00.000000Z",
+          "audit_reference": "audit-engineering.source.capture.commit"
+        }
+      }
+    },
+    {
+      "id": "engineering.source.capture.commit/honest-replay",
+      "operation": "engineering.source.capture.commit",
+      "description": "engineering.source.capture.commit repeated with the same idempotency key and input returns the stored capture receipt without recording again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "engineering.source.capture.commit/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.commit-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.source.capture.commit"
+        },
+        "operation": "engineering.source.capture.commit",
+        "input": {
+          "repository_id": "erepo-captured-1",
+          "stream_id": "estream-captured-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-captured-1",
+          "expected_manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.commit-replay",
+          "audit_reference": "audit-engineering.source.capture.commit"
+        },
+        "result": {
+          "repository_id": "erepo-captured-1",
+          "stream_id": "estream-captured-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-captured-1",
+          "rich_manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "coverage_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "capture_status": "complete",
+          "file_count": 2,
+          "disposition": "recorded",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "recorded_at": "2026-09-26T00:00:00.000000Z",
+          "audit_reference": "audit-engineering.source.capture.commit"
+        }
+      }
+    },
+    {
+      "id": "engineering.source.capture.commit/idempotency-conflict",
+      "operation": "engineering.source.capture.commit",
+      "description": "engineering.source.capture.commit reusing one idempotency key for a different sealed snapshot request is refused.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "engineering.source.capture.commit/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.commit-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.source.capture.commit"
+        },
+        "operation": "engineering.source.capture.commit",
+        "input": {
+          "repository_id": "erepo-captured-1",
+          "stream_id": "estream-captured-1",
+          "sequence": 1,
+          "snapshot_id": "esnap-captured-2",
+          "expected_manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.commit-conflict",
+          "audit_reference": "audit-engineering.source.capture.commit"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
       "id": "engineering.source.record/primary-success",
       "operation": "engineering.source.record",
       "description": "engineering.source.record records one trusted source snapshot as the first event of its stream on the success branch, with the stream's coverage barrier.",

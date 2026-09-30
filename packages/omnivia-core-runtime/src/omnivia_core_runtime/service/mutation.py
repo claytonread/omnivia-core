@@ -156,6 +156,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "continuity.session.close": CONTINUITY_SESSION_PURPOSE,
         "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
         "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
+        "engineering.source.capture.commit": ENGINEERING_SOURCE_PURPOSE,
         "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
         "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
     }
@@ -214,6 +215,7 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.review.record": KNOWLEDGE_REVIEWER_ROLE,
         # The contributor role, plus the operation's own `engineering:source` scope and
         # `engineering.source` capability, which only a source producer's grant holds.
+        "engineering.source.capture.commit": WORKSPACE_CONTRIBUTOR_ROLE,
         "engineering.source.record": WORKSPACE_CONTRIBUTOR_ROLE,
         # Binding a local checkout to a repository identity is contributor work in the
         # same sense authoring content is: it reviews nothing and administers nothing.

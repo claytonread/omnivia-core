@@ -6,7 +6,7 @@ Originated on `codex/engineering-applicability-evidence` and continued on
 `codex/engineering-memory-completion`. This is a bounded
 implementation candidate for review, not a release. It does not claim all
 AC-001 through AC-064 scenarios as complete. Migrations 0050, 0051 and 0052
-are pinned to their reviewed content and introducing commits below.
+and the additive captured-source migration 0056 are pinned to reviewed content.
 
 This slice delivers one bounded vertical:
 
@@ -19,6 +19,56 @@ This slice delivers one bounded vertical:
 
 Only whole-file SHA-256 digests are compared. No symbol, span, config key or
 rename is ever resolved.
+
+## Captured working-tree source
+
+`engineering.source.capture.commit` accepts only repository, stream, sequence,
+predecessor and sealed snapshot identities, plus an optional expected rich-manifest
+digest. The authenticated installation, checkout binding, file index, capture status,
+counts and digests come from the sealed 0056 header. A request cannot carry a local
+path, file list, manifest body, content, authority or audit identity.
+
+The trusted `engineering.snapshot.capture` maintenance path freezes the working tree,
+publishes its blobs and rich manifest evidence, records the snapshot, writes the
+path-to-digest index, and inserts the capture header last. That header seals the index.
+The accepted commit then binds one stream to the authenticated installation and exact
+registered checkout, appends a `captured_v1` event, and advances the same contiguous
+coverage barrier used by `engineering.source.record`. The captured event's inline `{}`
+body is a representation sentinel; readers branch on `manifest_format` and never treat
+it as evidence of an empty repository. `capture_status: incomplete` and the rich
+manifest omissions remain authoritative, so incomplete baselines and targets evaluate
+as `unknown`.
+
+The installed local service runs a small bounded polling executor from its managed
+service tick, independently of local-socket or HTTP requests. It uses only
+installation-local registered checkout roots, renews the existing workspace lease
+during Git, file-read and blob-publication loops, and holds the shared SQLite gate only
+for short reads and fenced settlement. An eventless seal is reused without rereading
+only when it initializes an absent stream or fills the exact named gap; otherwise the
+producer fails closed and rereads/revalidates the checkout before appending a new
+head. When coverage has a gap, the executor commits only the missing snapshot named by
+the earliest successor's predecessor link; it does not append another head. Stable
+derived stream, snapshot and idempotency identities make retries and lost replies
+converge. Its pass result contains counts only and
+application/capture results contain no local path, checkout hint, file list or raw
+manifest.
+
+Pending seals are inspected in deterministic bounded batches with an in-memory cursor,
+so refused oldest seals do not consume every later pass. The current schema has no
+durable work-queue cursor or pending-capture index, however. Persisted round-robin
+fairness across service restarts and history-independent pending lookup remain a `NEXT`
+schema dependency: a
+service-owned source-capture work queue keyed by workspace, installation and snapshot,
+with checkout/stream identity, pending/retry/settled state, bounded retry timing and a
+durable per-installation cursor, plus indexes for the next eligible item and capture
+identity. No release claim should treat the in-memory checkout cursor as that durable
+guarantee.
+
+The trusted CLI route is `engineering capture`; the operation is deliberately omitted
+from model-facing MCP with reason `mutation`. Platform filesystem notifications remain
+external integration work, so Core polling is the recovery source of truth. Dev still
+owns semantic parser/indexer and symbol/span adapters; this Core slice supplies only
+captured whole-file coverage.
 
 A proposal's sealed set is carried to the exact versions that the
 claim-preserving `knowledge.propose` and `candidate.approve` mint (migration

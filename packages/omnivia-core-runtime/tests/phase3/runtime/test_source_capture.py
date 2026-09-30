@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -582,7 +583,12 @@ def test_capture_symlink_is_omitted_and_incomplete(tmp_path: Path) -> None:
     manifest = _manifest(root)
     assert not manifest.complete
     assert [f.path for f in manifest.files] == ["pkg/a.py"]
-    assert [(o.path, o.reason) for o in manifest.omissions] == [("link", "symlink")]
+    # Git reports an untracked symlink as an ordinary other path. Once the
+    # descriptor reader refuses it, capture deliberately does no pathname lookup
+    # to classify it because an intermediate parent may have changed meanwhile.
+    assert [(o.path, o.reason) for o in manifest.omissions] == [
+        ("link", "missing_or_unsupported")
+    ]
 
 
 @needs_walk
@@ -592,6 +598,77 @@ def test_capture_missing_tracked_file_is_incomplete(tmp_path: Path) -> None:
     manifest = _manifest(root)
     assert not manifest.complete and not manifest.files
     assert manifest.omissions[0].reason == "missing_or_unsupported"
+
+
+@needs_walk
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_capture_does_not_pathname_probe_through_a_rebound_parent_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _git_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_secret = b"outside-secret-that-must-not-be-read\n"
+    (outside / "a.py").write_bytes(outside_secret)
+    original_parent = root / "pkg-original"
+    probed: list[Path] = []
+
+    real_capture_pass = source_capture._capture_pass
+    real_lstat = Path.lstat
+    swapped = False
+
+    def swap_before_read(
+        checkout_root: Path,
+        entries: dict[bytes, tuple[str, bool]],
+        expected_identity: tuple[int, int],
+        heartbeat: Callable[[], object] | None = None,
+    ) -> tuple[
+        list[source_capture.ManifestFile],
+        list[source_capture.ManifestOmission],
+        bool,
+    ]:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            (root / "pkg").rename(original_parent)
+            (root / "pkg").symlink_to(outside, target_is_directory=True)
+        return real_capture_pass(
+            checkout_root, entries, expected_identity, heartbeat=heartbeat
+        )
+
+    def observe_lstat(path: Path) -> os.stat_result:
+        if path == root / "pkg" / "a.py":
+            probed.append(path)
+        return real_lstat(path)
+
+    monkeypatch.setattr(source_capture, "_capture_pass", swap_before_read)
+    monkeypatch.setattr(Path, "lstat", observe_lstat)
+    manifest = _manifest(root)
+
+    assert not probed, "capture used a pathname after the no-follow reader refused"
+    assert outside_secret not in {file.content for file in manifest.files}
+    assert str(outside) not in json.dumps(manifest.to_dict())
+    assert {item.reason for item in manifest.omissions} >= {"missing_or_unsupported"}
+
+
+@needs_walk
+def test_capture_heartbeats_during_git_and_file_loops(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path)
+    calls = 0
+
+    def heartbeat() -> None:
+        nonlocal calls
+        calls += 1
+
+    manifest = source_capture.capture_working_tree_manifest(
+        checkout_root=root, heartbeat=heartbeat
+    )
+
+    assert manifest.complete
+    # Four Git queries in each enumeration plus both file reads. This is high
+    # enough to prove renewal is threaded through the loops, not only around the
+    # whole capture.
+    assert calls >= 10
 
 
 @needs_walk
@@ -607,11 +684,18 @@ def test_capture_moving_file_is_bounded_and_incomplete(
         path: str,
         expected: str | None,
         expected_identity: tuple[int, int] | None = None,
+        heartbeat: Callable[[], object] | None = None,
     ) -> source_capture.CheckoutFile:
         nonlocal reads
         reads += 1
         (root / path).write_bytes(b"moving %d\n" % reads)
-        return real(checkout_root, path, expected, expected_identity)
+        return real(
+            checkout_root,
+            path,
+            expected,
+            expected_identity,
+            heartbeat=heartbeat,
+        )
 
     monkeypatch.setattr(source_capture, "_read_checkout", moving)
     manifest = _manifest(root)
@@ -694,19 +778,21 @@ def test_capture_root_rebind_during_enumeration_is_refused_before_publishing(
     real_git = source_capture._git
     calls = 0
 
-    def rebinding(root_fd: int, *args: str) -> bytes:
+    def rebinding(
+        root_fd: int,
+        *args: str,
+        heartbeat: Callable[[], object] | None = None,
+    ) -> bytes:
         nonlocal calls
         calls += 1
-        result = real_git(root_fd, *args)
+        result = real_git(root_fd, *args, heartbeat=heartbeat)
         if calls == 1:
             root.rename(moved_original)
             replacement.rename(root)
         return result
 
     monkeypatch.setattr(source_capture, "_git", rebinding)
-    with pytest.raises(
-        SourceCaptureRefused, match="changed identity during capture"
-    ):
+    with pytest.raises(SourceCaptureRefused, match="changed identity during capture"):
         _manifest(root)
 
 

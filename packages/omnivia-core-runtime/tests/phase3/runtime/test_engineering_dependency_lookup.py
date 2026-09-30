@@ -24,7 +24,11 @@ import test_blobs_staged_sources_and_evidence_migration as m2
 import test_engineering_dependency_carry as carry
 import test_engineering_source_coverage as esc
 from omnivia_core_runtime.ownership.fencing import assert_guards_intact
-from omnivia_core_runtime.storage import engineering_preview, engineering_source
+from omnivia_core_runtime.storage import (
+    engineering_conflicts,
+    engineering_preview,
+    engineering_source,
+)
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     fingerprint_schema,
@@ -296,6 +300,9 @@ def test_0052_fresh_and_upgraded_workspaces_reach_one_canonical_schema(
         # The release that wrote this workspace predates the preview projection
         # (0053), so its writers projected nothing.
         older_release.setattr(engineering_preview, "record_preview", lambda *_a, **_k: None)
+        older_release.setattr(
+            engineering_conflicts, "enqueue_discovery", lambda *_a, **_k: None
+        )
         upgraded = Workspace(tmp_path / "upgraded")
         upgraded.record(esc._source(1, "esnap-a", FILES_A))
         created = upgraded.observe(esc._observation(esc._manifest()))

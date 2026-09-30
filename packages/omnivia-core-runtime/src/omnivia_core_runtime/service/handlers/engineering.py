@@ -1,6 +1,6 @@
 """The `engineering.*` handlers (SPEC-CORE-ENGMEM-001, plans PR-D/PR-F).
 
-All eleven engineering-memory operations are durable here and in
+All twelve engineering-memory operations are durable here and in
 `handlers.continuity`: the continuity vertical (register/append/close/handoff),
 the retrieval reads (search/expand) served from the governed record store, the
 supersession edge table and the continuity checkpoint index, the non-persisted
@@ -115,6 +115,8 @@ from omnivia_core.contracts.v1 import (
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
+    EngineeringSourceCaptureCommitInput,
+    EngineeringSourceCaptureCommitResult,
     EngineeringSourceRecordInput,
     EngineeringSourceRecordResult,
     decode_engineering_context_build_input,
@@ -157,10 +159,13 @@ from omnivia_core_runtime.service.pagination import (
 from omnivia_core_runtime.storage import continuity as continuity_storage
 from omnivia_core_runtime.storage import engineering_applicability as app_storage
 from omnivia_core_runtime.storage import (
+    engineering_conflicts,
+    repository_identity,
+)
+from omnivia_core_runtime.storage import (
     engineering_invalidation as invalidation_storage,
 )
 from omnivia_core_runtime.storage import engineering_source as source_storage
-from omnivia_core_runtime.storage import repository_identity
 from omnivia_core_runtime.storage.engineering_preview import (
     PREVIEW_MAX_CODEPOINTS,
     PROJECTION_VERSION,
@@ -346,6 +351,23 @@ _MESSAGE_SOURCE_CONFLICT: Final = (
     "the source record conflicts with an immutable source identity or binding"
 )
 _MESSAGE_SOURCE_FOREIGN: Final = "the source stream is owned by another principal"
+_MESSAGE_CAPTURE_NOT_FOUND: Final = "the requested sealed source capture was not found"
+_MESSAGE_CAPTURE_FOREIGN: Final = (
+    "the sealed source capture is not owned by this authenticated installation"
+)
+_MESSAGE_CAPTURE_PRECONDITION: Final = (
+    "the sealed source capture does not match the expected manifest digest"
+)
+_CAPTURE_COMMIT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "repository_id",
+        "stream_id",
+        "sequence",
+        "predecessor",
+        "snapshot_id",
+        "expected_manifest_digest",
+    }
+)
 _MESSAGE_REPOSITORY_INVALID: Final = (
     "the repository registration request is outside its bounded, validated shape"
 )
@@ -806,6 +828,19 @@ class EngineeringHandlers:
             raise application_refusal(
                 ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_SOURCE_FOREIGN
             ) from error
+        except source_storage.CapturedSourceUnauthorized as error:
+            raise application_refusal(
+                ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_CAPTURE_FOREIGN
+            ) from error
+        except source_storage.CapturedSourceNotFound as error:
+            raise application_refusal(
+                ERROR_CODE_NOT_FOUND, _MESSAGE_CAPTURE_NOT_FOUND
+            ) from error
+        except source_storage.CapturedSourcePreconditionFailed as error:
+            raise application_refusal(
+                ERROR_CODE_MUTATION_PRECONDITION_FAILED,
+                _MESSAGE_CAPTURE_PRECONDITION,
+            ) from error
         except source_storage.SourceConflict as error:
             raise application_refusal(
                 ERROR_CODE_CONFLICT, _MESSAGE_SOURCE_CONFLICT
@@ -1143,22 +1178,25 @@ class EngineeringHandlers:
             {"record_id": request.anchor.record_id, "version": request.anchor.version}
         ]
         edges: list[dict[str, Any]] = []
+        visible_edges: list[
+            tuple[dict[str, Any], tuple[str, str]]
+        ] = []
         supersessions = read_governed_supersessions(
             connection,
             workspace_id=context.workspace_id,
             resolution_instant_us=now_us,
         )
         for edge in supersessions:
-            if len(edges) >= edge_limit:
-                break
             source = (edge.governed_record_id, edge.source_version_id)
             target = (edge.governed_record_id, edge.target_version_id)
             if anchor not in (source, target) or not (
                 source in visible and target in visible
             ):
                 continue
-            edges.append(
-                {
+            other = target if source == anchor else source
+            visible_edges.append(
+                (
+                    {
                     "from_record": {
                         "record_id": edge.governed_record_id,
                         "version": edge.source_version_id,
@@ -1169,16 +1207,67 @@ class EngineeringHandlers:
                     },
                     "relation": "supersedes",
                     "status": "accepted",
-                }
+                    },
+                    other,
+                )
             )
-            other = target if source == anchor else source
+
+        relation_candidates = (
+            engineering_conflicts.read_authorized_relation_candidates_for_anchor(
+                connection,
+                workspace_id=context.workspace_id,
+                anchor_record_id=request.anchor.record_id,
+                anchor_version=request.anchor.version,
+                resolution_instant_us=now_us,
+                label_grant=self._label_grant(context),
+            )
+        )
+        for candidate in relation_candidates:
+            source = (
+                candidate.endpoint_a.record_id,
+                candidate.endpoint_a.version,
+            )
+            target = (
+                candidate.endpoint_b.record_id,
+                candidate.endpoint_b.version,
+            )
+            if anchor not in (source, target) or not (
+                source in visible and target in visible
+            ):
+                continue
+            visible_edges.append(
+                (
+                    {
+                        "from_record": {
+                            "record_id": source[0],
+                            "version": source[1],
+                        },
+                        "to_record": {
+                            "record_id": target[0],
+                            "version": target[1],
+                        },
+                        "relation": candidate.proposed_relation,
+                        "status": candidate.status,
+                    },
+                    target if source == anchor else source,
+                )
+            )
+
+        truncated = depth > 1
+        for edge_payload, other in visible_edges:
+            if len(edges) >= edge_limit:
+                truncated = True
+                break
             node = {"record_id": other[0], "version": other[1]}
-            if node not in nodes and len(nodes) < node_limit:
+            if node not in nodes and len(nodes) >= node_limit:
+                truncated = True
+                continue
+            edges.append(edge_payload)
+            if node not in nodes:
                 nodes.append(node)
         # `depth` is declared by the contract and bounded by it (1..3); this
         # build expands one hop, so depth 2+ would add nothing today and is
         # reported as truncation rather than silently pretended.
-        truncated = depth > 1
         return {
             "nodes": nodes,
             "edges": edges,
@@ -1266,6 +1355,80 @@ class EngineeringHandlers:
         )
 
     # --- engineering.source.record -------------------------------------------------
+
+    def engineering_source_capture_commit(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Commit an already sealed capture without accepting any capture facts."""
+
+        if (
+            not isinstance(context.request.input, Mapping)
+            or not set(context.request.input) <= _CAPTURE_COMMIT_KEYS
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_SOURCE_INVALID)
+        try:
+            decoded = EngineeringSourceCaptureCommitInput.from_wire(
+                context.request.input
+            )
+            request = source_storage.parse_captured_source_commit(
+                context.request.input
+            )
+        except (
+            ContractDecodeError,
+            ContractSemanticError,
+            source_storage.SourceRecordInvalid,
+        ) as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_SOURCE_INVALID
+            ) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import read_guard as _read_guard
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        if identity is None or guard is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            decoded.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            return source_storage.record_captured_source_event(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                installation_id=identity.installation_id,
+                request=request,
+            )
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringSourceCaptureCommitResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, guard, equivalence, mutate, valid_result
+        )
+        # Both lanes' semantics preserved: a captured commit advances coverage
+        # exactly like a plain source record, so it also gets the same
+        # best-effort durable invalidation catch-up (migration 0054).
+        self._drain_invalidation(
+            connection,
+            identity,
+            guard,
+            workspace_id=context.workspace_id,
+            stream_id=request.stream_id,
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
     def engineering_source_record(
         self, context: OperationContext

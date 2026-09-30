@@ -135,6 +135,7 @@ def read_authorized_previews(
     resolution_instant_us: int,
     view: str | None,
     label_grant: EvidenceLabelGrant,
+    record_ids: Sequence[str] | None = None,
 ) -> tuple[tuple[PreviewCandidate, ...], str]:
     """Return bounded previews and their authorization-frontier digest.
 
@@ -143,6 +144,8 @@ def read_authorized_previews(
     projection is then read for exactly the admitted assemblies. Its digest includes
     the effective label grant and label-event stream, which lets a continuation bind
     the ACL epoch even when an attach/withdraw cycle leaves the same rows visible.
+    ``record_ids`` is the durable-processor seam: when supplied, authorization and
+    projection reads are confined to that indexed stable-record page.
     """
     with read_snapshot(connection):
         frontier = read_authorized_memory_frontier(
@@ -152,6 +155,7 @@ def read_authorized_previews(
             view=view,
             label_grant=label_grant,
             domain_scope=OBSERVATION_DOMAIN,
+            record_ids=record_ids,
         )
         return (
             read_previews_for_frontier(

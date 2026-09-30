@@ -1289,6 +1289,20 @@ _ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 _ENG_SOURCE_MUT: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
 )
+#: The captured-source commit resolves an already sealed header (`not_found`),
+#: checks an optional rich-manifest precondition, and preserves the same immutable
+#: stream/pending-window conflicts as the inline source mutation.
+_ENG_CAPTURE_MUT: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CREATE_MUT,
+            "conflict",
+            "mutation_precondition_failed",
+            "not_found",
+            "size_limit_exceeded",
+        )
+    )
+)
 #: `engineering.repository.register` binds an exact local checkout to a repository
 #: identity: re-registering the same identity with different metadata is a
 #: `conflict`, but there is no bounded manifest here, so `size_limit_exceeded` does
@@ -1333,6 +1347,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
     "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
     "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
+    "ENG_CAPTURE_MUT": _ENG_CAPTURE_MUT,
     "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
 }
 
@@ -1592,6 +1607,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     ),
     # A trusted source producer's own grant: distinct from `engineering:write`, so
     # contributed observations never carry the authority to attest source state.
+    "engineering.source.capture.commit": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "engineering", "EngineeringSourceCaptureCommit", "ENG_CAPTURE_MUT", False,
+    ),
     "engineering.source.record": FrozenOperation(
         "workspace", ("engineering:source",), "create", "engineering.source",
         "engineering", "EngineeringSourceRecord", "ENG_SOURCE_MUT", False,
