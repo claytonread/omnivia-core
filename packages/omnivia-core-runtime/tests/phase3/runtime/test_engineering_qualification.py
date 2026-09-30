@@ -18,6 +18,7 @@ asserted on every sample.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import platform
@@ -128,12 +129,34 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
         ws.record(sc._source(1, SNAPSHOT, sc.FILES_A))
 
         seed_started = time.perf_counter()
+        # The corpus digest is computed over the canonical seed stream (index,
+        # idempotency key, title) so two lanes at the same corpus size on the
+        # same code produce the same identity -- the reproducibility anchor
+        # EMR-6 asks the report to carry.
+        corpus_digest = hashlib.sha256()
         for index in range(corpus):
-            ws.observe(_observation(index), key=f"qual-seed-{index}")
+            payload = _observation(index)
+            key = f"qual-seed-{index}"
+            ws.observe(payload, key=key)
+            corpus_digest.update(
+                f"{index}\x00{key}\x00{payload['content']['title']}\x00".encode()
+            )
             if (index + 1) % 1000 == 0:
                 print(f"seeded {index + 1}/{corpus}", flush=True)
         seed_seconds = time.perf_counter() - seed_started
+        corpus_digest_hex = corpus_digest.hexdigest()
         print(f"seed {corpus} in {seed_seconds:.1f}s", flush=True)
+
+        # --- conflict discovery backlog ---------------------------------------
+        # Every sealed engineering observation enqueued one durable discovery run
+        # (migration 0055) inside its own settlement; the depth after seeding is
+        # the queue the bounded tick drains.
+        discovery_backlog = int(
+            ws.holder.connection.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_discovery_runs"
+            ).fetchone()[0]
+        )
+        print(f"discovery backlog: {discovery_backlog}", flush=True)
 
         # --- preview search --------------------------------------------------
         for _ in range(5):
@@ -262,6 +285,11 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
             },
             "corpus_observations": corpus,
             "seed_seconds": round(seed_seconds, 1),
+            "corpus": {
+                "seed_scheme": f"engineering-memory-qualification:{corpus}",
+                "digest": corpus_digest_hex,
+            },
+            "discovery_backlog": discovery_backlog,
             "operations": {
                 "engineering.search": _percentiles(search_samples),
                 "engineering.search.current_safe": _percentiles(safe_search_samples),
