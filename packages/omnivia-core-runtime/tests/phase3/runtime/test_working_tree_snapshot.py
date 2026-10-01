@@ -2360,16 +2360,16 @@ def test_large_capture_history_uses_bounded_durable_keysets(tmp_path: Path) -> N
         restarted.stop()
 
 
-def test_0058_upgrade_seeds_a_preexisting_0057_capture(
+def test_0059_upgrade_seeds_a_preexisting_0058_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     full_catalogue = migrations_module.load_migrations()
-    through_0057 = tuple(item for item in full_catalogue if item.version <= 57)
+    through_0058 = tuple(item for item in full_catalogue if item.version <= 58)
     old: captured_schema.Workspace | None = None
     try:
         with monkeypatch.context() as old_schema:
             old_schema.setattr(
-                migrations_module, "load_migrations", lambda: through_0057
+                migrations_module, "load_migrations", lambda: through_0058
             )
             canonical_schema_tables.cache_clear()
             canonical_schema_fingerprint.cache_clear()
@@ -2387,11 +2387,11 @@ def test_0058_upgrade_seeds_a_preexisting_0057_capture(
                 ),
                 principal_id=captured_schema.esc.PRINCIPAL,
                 checkout_id="checkout-upgrade",
-                snapshot_id="captured-before-0058",
+                snapshot_id="captured-before-0059",
                 files={},
                 base_us=8_000_000,
             )
-            assert max(applied_migrations(old.holder.connection)) == 57
+            assert max(applied_migrations(old.holder.connection)) == 58
             assert old.holder.connection.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' "
                 "AND name = 'omnivia_engineering_source_producer_queue'"
@@ -2407,7 +2407,7 @@ def test_0058_upgrade_seeds_a_preexisting_0057_capture(
             fencing_generation=old.holder.generation,
             workspace_id=captured_schema.WORKSPACE_ID,
         )
-        assert [item.version for item in applied] == [58, 59, 60]
+        assert [item.version for item in applied] == [59, 60]
         assert old.holder.connection.execute(
             "SELECT COUNT(*) FROM omnivia_engineering_source_producer_queue"
         ).fetchone() == (0,)

@@ -218,9 +218,17 @@ CANDIDATE_INTRODUCED_COMMITS = {
     51: "3fcc8d5a9c618b201c9223c19f4b381d555911d9",
     52: "4e4a6ed3ef4b1d8ce0145e8ffe52325fde0f80be",
     53: "97ada9ba23e3a8ef890cfdd1ee0bd03a468bf34d",
+    # 0054 was introduced by the durable invalidation worker (PR #150); the
+    # #155 renumber landed 0055-0057 at b4f89ef4; the durable-queue lane's
+    # renumber commit d68f6a7a and main's post-merge repair fc2ab5e6 both
+    # carry the renumbered 0058-0059 content, so the allocation follows
+    # main's pushed history (fc2ab5e6).
+    54: "f481702094db91779f9052de53ef48d7635560b2",
     55: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
     56: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
     57: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
+    58: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
+    59: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
