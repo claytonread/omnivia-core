@@ -31,9 +31,9 @@ from typing import Any
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
 import test_engineering_source_coverage as sc
+from omnivia_core_runtime.service.application import engineering_family_session
 
 from omnivia_core.contracts.v1 import MutationPrecondition
-from omnivia_core_runtime.service.application import engineering_family_session
 
 WORKSPACE_ID = sc.WORKSPACE_ID
 REPOSITORY = sc.REPOSITORY
