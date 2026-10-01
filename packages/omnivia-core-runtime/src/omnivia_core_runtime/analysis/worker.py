@@ -356,9 +356,7 @@ class AnalysisWorker:
         for cte in parsed.find_all(exp.CTE):
             body = cte.this
             if body is None:
-                raise WorkerRefusal(
-                    BOUNDARY_REFUSAL_CODE, "CTE body is absent"
-                )
+                raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, "CTE body is absent")
             body_key = body.key
             if body_key != "select":
                 raise WorkerRefusal(
@@ -367,7 +365,9 @@ class AnalysisWorker:
         for node in parsed.find_all(exp.Table):
             inner = node.this
             if inner is None:
-                raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, "table without an inner expression")
+                raise WorkerRefusal(
+                    BOUNDARY_REFUSAL_CODE, "table without an inner expression"
+                )
             if not isinstance(inner, (exp.Identifier, str)):
                 # A table function in FROM: admitted only when the function is
                 # in the bounded admitted set (name normalised: read_csv ->
