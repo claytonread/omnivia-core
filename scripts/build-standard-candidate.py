@@ -334,11 +334,22 @@ def _build_wheels(wheelhouse: Path, source: SourceState) -> None:
         if len(built) != 1:
             raise CandidateError(f"{name}: expected exactly one new wheel")
 
-    mcp = next(
-        path
-        for path in wheelhouse.glob("*.whl")
-        if path.name.startswith("omnivia_core_mcp-")
-    )
+    # Stage the closure from BOTH wheels that declare third-party
+    # requirements: the MCP wheel (`mcp` family) and the runtime wheel
+    # (`cryptography`, plus the D04-admitted analytical dependencies
+    # duckdb/sqlglot). Staging from the MCP wheel alone stopped covering the
+    # runtime's declared requirements the day the runtime admitted a
+    # dependency `mcp` does not pull in transitively -- the same drift
+    # check-package-builds.sh's dual staging already guards against.
+    staged = []
+    for prefix in ("omnivia_core_mcp-", "omnivia_core_runtime-"):
+        staged.append(
+            next(
+                path
+                for path in wheelhouse.glob("*.whl")
+                if path.name.startswith(prefix)
+            )
+        )
     _run(
         [
             sys.executable,
@@ -352,7 +363,7 @@ def _build_wheels(wheelhouse: Path, source: SourceState) -> None:
             str(wheelhouse),
             "--find-links",
             str(wheelhouse),
-            str(mcp),
+            *[str(path) for path in staged],
         ],
         cwd=REPO_ROOT,
         environment=environment,

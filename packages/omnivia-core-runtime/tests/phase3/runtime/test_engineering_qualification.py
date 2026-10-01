@@ -18,6 +18,7 @@ asserted on every sample.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import platform
@@ -28,7 +29,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import test_blobs_staged_sources_and_evidence_migration as m2
 import test_engineering_source_coverage as sc
+from omnivia_core_runtime.service.application import engineering_family_session
 
 from omnivia_core.contracts.v1 import MutationPrecondition
 
@@ -83,11 +86,15 @@ def _query(run: int) -> str:
     return f"{stem} {component}"
 
 
-def _observation(index: int) -> dict[str, Any]:
+def _observation(index: int, source: dict[str, Any] | None = None) -> dict[str, Any]:
     stem, component = _pair(index)
     return sc._observation(
         sc._manifest(SNAPSHOT),
         title=f"{stem} {component} finding {index}",
+        # An explicit None must not override the module's default evidence
+        # source: labeled records carry the default source, open records the
+        # ACL-partition's own artifact.
+        source=source if source is not None else sc.EVIDENCE_SOURCE,
     )
 
 
@@ -128,12 +135,62 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
         ws.record(sc._source(1, SNAPSHOT, sc.FILES_A))
 
         seed_started = time.perf_counter()
+        # The corpus digest is computed over the canonical seed stream (index,
+        # idempotency key, title) so two lanes at the same corpus size on the
+        # same code produce the same identity -- the reproducibility anchor
+        # EMR-6 asks the report to carry.
+        corpus_digest = hashlib.sha256()
+        open_records = 0
         for index in range(corpus):
-            ws.observe(_observation(index), key=f"qual-seed-{index}")
+            payload = _observation(index)
+            key = f"qual-seed-{index}"
+            if index % 10 == 0:
+                # The open ACL partition: its evidence artifact carries no
+                # reader-held label, so any engineering-family reader admits
+                # it. The rest carry the owner-held `group.engineering` label,
+                # which the owner session holds and a restricted reader does
+                # not -- the partition the reader-side samples measure.
+                source_id = f"doc-open-{index}"
+                m2.write(
+                    ws.holder,
+                    m2.EVIDENCE,
+                    evidence_id=f"evd-open-{index}",
+                    source_native_id=source_id,
+                )
+                payload = _observation(
+                    index, source={**sc.EVIDENCE_SOURCE, "source_id": source_id}
+                )
+                open_records += 1
+            ws.observe(payload, key=key)
+            corpus_digest.update(
+                f"{index}\x00{key}\x00{payload['content']['title']}\x00{source_id if index % 10 == 0 else 'labeled'}\x00".encode()
+            )
             if (index + 1) % 1000 == 0:
                 print(f"seeded {index + 1}/{corpus}", flush=True)
         seed_seconds = time.perf_counter() - seed_started
+        corpus_digest_hex = corpus_digest.hexdigest()
         print(f"seed {corpus} in {seed_seconds:.1f}s", flush=True)
+
+        # --- conflict discovery backlog ---------------------------------------
+        # Every sealed engineering observation enqueued one durable discovery run
+        # (migration 0055) inside its own settlement; the depth after seeding is
+        # the queue the bounded tick drains.
+        discovery_backlog = int(
+            ws.holder.connection.execute(
+                "SELECT COUNT(*) FROM omnivia_engineering_discovery_runs"
+            ).fetchone()[0]
+        )
+        print(f"discovery backlog: {discovery_backlog}", flush=True)
+
+        # --- ACL-partitioned reader --------------------------------------------
+        # An engineering-family reader with every grant except the owner-held
+        # label: its admitted frontier is the open partition only, so its
+        # samples measure authorization-before-ranking at corpus scale.
+        reader = engineering_family_session(
+            principal_id=f"reader-{WORKSPACE_ID}",
+            installation_id=sc.s0.INSTALLATION_ID,
+            workspace_id=WORKSPACE_ID,
+        )
 
         # --- preview search --------------------------------------------------
         for _ in range(5):
@@ -175,7 +232,30 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
             assert {p["applicability"] for p in result["previews"]} == {"matched"}
         print("current_safe search percentiles:", _percentiles(safe_search_samples), flush=True)
 
+        # --- preview search, ACL-partitioned reader ---------------------------
+        # The same queries as the owner's samples, through the restricted
+        # reader: only the open partition is admitted, and label-denied
+        # records never reach the evaluator or the ranker.
+        reader_search_samples: list[float] = []
+        for run in range(samples_search):
+            started = time.perf_counter()
+            result = ws.ok(
+                "engineering.search",
+                {"query": _query(run), "view": "candidates"},
+                session=reader,
+            )
+            reader_search_samples.append((time.perf_counter() - started) * 1000.0)
+            assert result["previews"], "the open partition must match its corpus"
+        print(
+            "ACL-partitioned reader search percentiles:",
+            _percentiles(reader_search_samples),
+            flush=True,
+        )
+
         # --- context pack ----------------------------------------------------
+        # The pack's authorized-candidate budget is caller-requestable up to the
+        # server ceiling (10 000): the qualification corpus must be admitted in
+        # full or the bounded frontier read refuses the build.
         pack_input = {
             "query": _query(0),
             "targets": [
@@ -186,6 +266,7 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
                 }
             ],
             "profile": "investigate",
+            "budget": {"authorized_candidates": min(corpus, 10_000)},
         }
         built = ws.ok("engineering.context.build", pack_input)
         assert built["pack"]["format_version"] == "engineering_context.v1"
@@ -262,8 +343,17 @@ def test_engineering_performance_qualification_lane(tmp_path: Path) -> None:
             },
             "corpus_observations": corpus,
             "seed_seconds": round(seed_seconds, 1),
+            "corpus": {
+                "seed_scheme": f"engineering-memory-qualification:{corpus}",
+                "digest": corpus_digest_hex,
+                "open_partition_records": open_records,
+            },
+            "discovery_backlog": discovery_backlog,
             "operations": {
                 "engineering.search": _percentiles(search_samples),
+                "engineering.search.acl_partitioned_reader": _percentiles(
+                    reader_search_samples
+                ),
                 "engineering.search.current_safe": _percentiles(safe_search_samples),
                 "engineering.context.build": _percentiles(pack_samples),
                 "engineering.context.build.current_safe": {

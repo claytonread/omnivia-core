@@ -46,6 +46,11 @@ cffi==2.1.1
 click==8.4.2
 colorama==0.4.6; platform_system == "Windows"
 cryptography==50.0.0
+# D04 conditional admission (owner acceptance 2026-10-01; D-0029): the two
+# qualified analytical-dependency candidates, exact pins. duckdb resolves a
+# platform-specific binary wheel per target; sqlglot is pure Python.
+duckdb==1.5.5
+sqlglot==30.20.0
 h11==0.16.0
 httpcore2==2.9.1
 httpx2==2.9.1
