@@ -246,7 +246,7 @@
   "cache": {
     "os_page_cache": {
       "controlled": false,
-      "note": "not dropped or measured; a system-cold lane is pending"
+      "note": "not dropped or measured; no lane is system-cold, and cold means SQLite connection/page-cache cold"
     },
     "cold": {
       "label": "connection-cold",
@@ -908,8 +908,7 @@
     "warm_targets_note": "within_target is advisory unless release_blockers is empty: the targets are defined only on the reference profile",
     "release_eligible": false,
     "release_blockers": [
-      "corpus 10000 is below the 100000 reference",
-      "system-cold lane not executed: the OS page cache is not controlled"
+      "corpus 10000 is below the 100000 reference"
     ]
   }
 }

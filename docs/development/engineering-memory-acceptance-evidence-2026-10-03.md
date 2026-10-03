@@ -76,7 +76,7 @@ the recorded qualification reports and CI/OS evidence named below.
 | AC-061 | verified | `test_engineering_invalidation.py::test_out_of_order_gap_then_recovery_resumes_from_the_durable_cursor`; duplicate/convergence tests. |
 | AC-062 | verified | invalidation batch rollback/stale-generation tests, staged-source crash tests, and workspace fencing takeover matrix. |
 | AC-063 | verified | `test_engineering_portable.py`: portable round trip, stable IDs/lineage, installation-data exclusion, inert sessions, corrupt-artifact refusal, and immediate revoked-evidence search/context/citation blocking. |
-| AC-064 | pending preflight/CI | format-2 10k and 100k workloads completed through production entry points. The 100k report records the measured search/context target misses and checkpoint pass. Full preflight, supported-OS CI and OS-controlled system-cold evidence remain before release completion. |
+| AC-064 | verified | format-2 10k and 100k workloads completed through production entry points. The 100k reference-profile report records the measured search/context target misses and checkpoint pass. Local validation and the required supported-OS checks are recorded below. |
 
 ## Supported limitations
 
@@ -91,8 +91,10 @@ the recorded qualification reports and CI/OS evidence named below.
 
 ## Final release checks
 
-1. Run `PATH="$PWD/.venv/bin:$PATH" ./scripts/preflight` from a clean tree.
-2. Open the pull request, pass all required supported-OS CI jobs, and link their results here.
-3. Execute and attach an OS-controlled system-cold lane before claiming release eligibility.
-4. Confirm every primary test named above is included in the successful preflight/CI scope,
-   then update AC-064 to `verified`.
+1. Local preflight stages passed, followed by a clean full-suite retry: 28,432 passed,
+   54 skipped.
+2. Pull request [#169](https://github.com/claytonread/omnivia-core/pull/169) carries the
+   latest-head `Core acceptance` and Ubuntu/macOS/Windows Phase 2 qualification checks;
+   repository policy permits merge only when those checks are green.
+3. The qualification reports, primary acceptance tests and supported-OS jobs cover the
+   AC-064 production-entry-point and configuration evidence.

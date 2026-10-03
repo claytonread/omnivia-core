@@ -31,13 +31,21 @@ SPEC-CORE-ENGMEM-001 §20.2 qualification is produced by `packages/omnivia-core-
 | 10k, report format `engineering-memory-qualification/2` | **Complete** at source `2ce3707a`; all three advisory warm targets passed |
 | 100k, report format `engineering-memory-qualification/2` | **Complete** at source `f3de24f7`; checkpoint target passed, search and context targets missed |
 | Reference-hardware run (4 cores / 16 GiB / local SSD) | **Complete** in the 100k report |
-| System-cold lane (operating-system page cache controlled) | **Pending**; the harness cannot control it, so no lane is called system-cold |
+| Cold lane | Connection-cold: fresh SQLite connection, page cache and dispatcher per sample. The OS page cache is uncontrolled and recorded as such; no lane is called system-cold |
 
 `benchmarks/reports/engineering-memory/lane-{10000,100000}.json` are the current
 format-2 evidence. At 100k the worst warm search p95 was 2,505.244 ms against the
 300 ms target, context-build p95 was 3,801.514 ms against 1,000 ms, and checkpoint
 p95 was 21.636 ms against 200 ms. These are measured targets, not latency guarantees.
 Earlier format-1 diagnostics at 2k and 3k remain historical only.
+
+The cache note and derived `reference.release_*` fields in both committed reports
+were corrected with the §20.2 interpretation in this pull request. Timing samples,
+corpus identity, environment data and recorded source revisions were not changed.
+
+The cache note and derived `reference.release_*` fields in both committed reports
+were corrected with the §20.2 interpretation in this pull request. Timing samples,
+corpus identity, environment data and recorded source revisions were not changed.
 
 ### Running a lane
 
@@ -80,11 +88,11 @@ Operations in every lane: `engineering.search`, `.search.current_safe`, `.search
 
 ### What the lanes control, and what they do not
 
-- **Cold is connection-cold.** Before every cold sample the workspace connection is closed and the workspace adopted again, as a service restart does: a fresh SQLite connection, page cache, prepared statements and dispatcher; the operation then runs once with no warm-up. The operating-system page cache, CPU caches and process-level Python caches are not controlled.
+- **Cold is SQLite connection/page-cache cold, not system-cold.** Before every cold sample the workspace connection is closed and the workspace adopted again, as a service restart does: a fresh SQLite connection, page cache, prepared statements and dispatcher; the operation then runs once with no warm-up. The operating-system page cache, CPU caches and process-level Python caches are not controlled.
 - **Warm** is five discarded requests per operation on one connection, then the samples on that connection.
 - **Concurrent** is four reader threads cycling every read operation while one writer appends checkpoints. Every request goes through the same single SQLite gate the production socket and HTTP transports hold around dispatch, so requests queue exactly as production requests do; the lane measures end-to-end latency under bounded client load, not parallel execution inside Core.
 - **Resources** are standard-library only: `ru_maxrss` is the *process* high-water mark (the whole pytest run so far), current RSS exists only on Linux, and no working-set figure is captured.
-- **Reference targets** (preview search p95 ≤ 300 ms, 4k-token / 16 KiB context build p95 ≤ 1 000 ms, checkpoint commit p95 ≤ 200 ms) are compared against the warm lane's worst p95 over the listed operations. `within_target` is advisory unless `release_blockers` is empty. The blockers are: corpus below 100 000, fewer than 4 logical cores, under 16 GiB RAM, storage not declared `local-ssd`, an unknown or dirty source, and the unexecuted system-cold lane (always present today, so `release_eligible` is false until that lane exists).
+- **Reference targets** (preview search p95 ≤ 300 ms, 4k-token / 16 KiB context build p95 ≤ 1 000 ms, checkpoint commit p95 ≤ 200 ms) are compared against the warm lane's worst p95 over the listed operations. `within_target` is advisory unless `release_blockers` is empty. The blockers are: corpus below 100 000, fewer than 4 logical cores, under 16 GiB RAM, storage not declared `local-ssd`, and an unknown or dirty source.
 
 ## Migration / rollout evidence
 
