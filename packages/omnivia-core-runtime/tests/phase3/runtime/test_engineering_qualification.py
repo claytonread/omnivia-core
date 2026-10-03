@@ -70,6 +70,7 @@ from omnivia_core_runtime.service.engineering_pack import (
     RENDERER_VERSION,
 )
 from omnivia_core_runtime.service.handlers import engineering as engineering_handlers
+from omnivia_core_runtime.service.mutation import DEFAULT_GRANT_LIFETIME_US
 from omnivia_core_runtime.service.source_capture import (
     capture_working_tree_snapshot_owned,
 )
@@ -82,7 +83,11 @@ from omnivia_core_runtime.storage.continuity import (
 from omnivia_core_runtime.storage.migrations import applied_migrations, load_migrations
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
-from omnivia_core.contracts.v1 import CONTRACT_VERSION, MutationPrecondition
+from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    MutationPrecondition,
+    SuccessResponseEnvelope,
+)
 
 WORKSPACE_ID = sc.WORKSPACE_ID
 REPOSITORY = sc.REPOSITORY
@@ -1263,13 +1268,59 @@ def _seed(ws: sc.Workspace, config: LaneConfig, *, progress: bool) -> dict[str, 
     }
 
 
+# --- the qualification session ---------------------------------------------------------
+
+
+class QualificationClock:
+    """The deterministic request clock of the qualification session.
+
+    Every mutation grant is issued per request, with the production 60 s window, and
+    judged on the service's monotonic clock. On the real clock a request that straddles
+    a stall longer than the window (an I/O-contention pause, a suspended process) is
+    refused as outside its validity window, however short the request itself is. Here
+    the monotonic reading advances a fixed step per reading and never with wall time,
+    so a grant stays valid for `GRANT_WINDOW_READINGS` readings: far more than one
+    request makes, and independent of how long the lane has run or been paused.
+    Wall time stays real, since it is only recorded. Nothing is refreshed inside a
+    measured request, and production keeps `SystemClock` and its default lifetime.
+    """
+
+    STEP_US = 1_000
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._readings = 0
+
+    def monotonic(self) -> float:
+        with self._lock:
+            self._readings += 1
+            return self._readings * self.STEP_US / 1_000_000
+
+    def wall_time(self) -> datetime:
+        return datetime.now(UTC)
+
+
+#: What the format-2 report states about the session's grant validity. The validator
+#: demands exactly this, so a run cannot silently change the policy it measured under.
+SESSION_POLICY: dict[str, Any] = {
+    "clock": "deterministic-reading-step",
+    "monotonic_step_us": QualificationClock.STEP_US,
+    "grant_lifetime_us": DEFAULT_GRANT_LIFETIME_US,
+    "grant_window_readings": DEFAULT_GRANT_LIFETIME_US // QualificationClock.STEP_US,
+    "grant_scope": "one request: a grant is issued and settled inside a single dispatch",
+    "wall_clock_independent": True,
+    "grants_refreshed_in_measured_requests": False,
+    "production_default_lifetime_us": DEFAULT_GRANT_LIFETIME_US,
+}
+
+
 # --- the lane ---------------------------------------------------------------------
 
 
 def run_lane(tmp_path: Path, config: LaneConfig, *, progress: bool = False) -> dict[str, Any]:
     """Seed one corpus, run the cold, warm and concurrent lanes, return the report."""
     run_started = datetime.now(UTC)
-    ws = sc.Workspace(tmp_path)
+    ws = sc.Workspace(tmp_path, clock=QualificationClock())
     gate = threading.RLock()
     try:
         resources = _Resources(ws.holder.path)
@@ -1413,6 +1464,7 @@ def _assemble_report(
             "seed_seconds": seeded["seed_seconds"],
         },
         "environment": environment,
+        "session_policy": deepcopy(SESSION_POLICY),
         "source": source,
         "migration": migration,
         "database": database,
@@ -1552,6 +1604,8 @@ def validate_report(report: dict[str, Any]) -> None:
     need(report.get("report_format") == REPORT_FORMAT, "report_format")
     run = section(report, "run")
     need(_is_iso(run.get("started_at")) and _is_iso(run.get("finished_at")), "run timestamps")
+
+    need(section(report, "session_policy") == SESSION_POLICY, "session_policy")
 
     env = section(report, "environment")
     cpu, memory, storage = section(env, "cpu"), section(env, "memory"), section(env, "storage")
@@ -1721,6 +1775,10 @@ def test_smoke_lane_report_satisfies_the_contract(smoke_report: dict[str, Any]) 
         lambda r: r["resources"].update(peak_rss_bytes=None, peak_rss_unavailable=None),
         lambda r: r["policy"].pop("digest"),
         lambda r: r.pop("migration"),
+        lambda r: r.pop("session_policy"),
+        lambda r: r["session_policy"].update(grant_lifetime_us=10**15),
+        lambda r: r["session_policy"].update(grants_refreshed_in_measured_requests=True),
+        lambda r: r["session_policy"].update(unrecorded_privilege=True),
     ],
 )
 @requires_checkout_walk
@@ -1731,6 +1789,69 @@ def test_report_contract_rejects_a_missing_dimension(
     mutate(broken)
     with pytest.raises(AssertionError, match="contract violations"):
         validate_report(broken)
+
+
+#: The failing 100k run died at this request count and elapsed time (47 102 requests,
+#: 1 764 s) with the grant "outside its validity window".
+_FORMER_BOUNDARY_REQUESTS = 47_102
+_FORMER_BOUNDARY_SECONDS = 1_764
+_EXPIRED = "the grant presented is outside its validity window"
+
+
+def _stalled_monotonic(monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
+    """Every real monotonic reading lands `seconds` after the last: a stalled process."""
+    real, readings = time.monotonic, [0]
+
+    def stalled() -> float:
+        readings[0] += 1
+        return real() + readings[0] * seconds
+
+    monkeypatch.setattr(time, "monotonic", stalled)
+
+
+def _create(ws: sc.Workspace, key: str) -> Any:
+    return ws.call("memory.create", _plan(0, SMOKE).payload, key=key)
+
+
+def test_qualification_session_outlives_the_former_failing_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old harness refuses a request that straddles a stall; the lane's session does not.
+
+    Same stall for both (each real monotonic reading `_FORMER_BOUNDARY_SECONDS` after the
+    last, the request counter at the former failing count), no corpus seeded.
+    """
+    _stalled_monotonic(monkeypatch, _FORMER_BOUNDARY_SECONDS)
+    (tmp_path / "ordinary").mkdir()
+    (tmp_path / "qualification").mkdir()
+    ordinary = sc.Workspace(tmp_path / "ordinary")
+    ordinary._requests = _FORMER_BOUNDARY_REQUESTS
+    assert _create(ordinary, "old-harness").error.message == _EXPIRED
+    ordinary.holder.connection.close()
+
+    qualification = sc.Workspace(tmp_path / "qualification", clock=QualificationClock())
+    qualification._requests = _FORMER_BOUNDARY_REQUESTS
+    for index in range(3):
+        assert isinstance(_create(qualification, f"lane-{index}"), SuccessResponseEnvelope)
+
+
+def test_qualification_session_still_enforces_its_grant_window(tmp_path: Path) -> None:
+    clock = QualificationClock()
+    ws = sc.Workspace(tmp_path, clock=clock)
+    assert isinstance(_create(ws, "within-window"), SuccessResponseEnvelope)
+    # A reading that moves further than the window per step expires the grant mid-request.
+    clock.STEP_US = DEFAULT_GRANT_LIFETIME_US + 1
+    assert _create(ws, "beyond-window").error.message == _EXPIRED
+
+
+def test_session_policy_matches_the_clock_and_the_production_default() -> None:
+    clock = QualificationClock()
+    first, second = clock.monotonic(), clock.monotonic()
+    assert second - first == QualificationClock.STEP_US / 1_000_000
+    assert SESSION_POLICY["grant_lifetime_us"] == DEFAULT_GRANT_LIFETIME_US == 60_000_000
+    assert SESSION_POLICY["grant_window_readings"] * QualificationClock.STEP_US == (
+        DEFAULT_GRANT_LIFETIME_US
+    )
 
 
 def test_corpus_identity_is_reproducible_and_sensitive_to_its_configuration() -> None:
