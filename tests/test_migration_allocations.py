@@ -169,6 +169,7 @@ EXPECTED_ALLOCATION = (
         "Engineering Memory",
         "candidate",
     ),
+    (62, "0062_analysis_dataset_state.sql", "Structured Data", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -235,6 +236,11 @@ CANDIDATE_INTRODUCED_COMMITS = {
     57: "b4f89ef4a11755c0e5d8436f54a659ea36c272e7",
     58: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
     59: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
+    # 0062 was introduced by 4c0e9798 and repinned to its evidence-escape repair
+    # 80d67b6a, then to its closed-evidence repair ee187e1a, then to its portability
+    # repair 97d1e8db, then to its evaluation-order repair d54b3f44, which is where
+    # its current content lives.
+    62: "d54b3f447456534b4e436225233b0ab858eae49e",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
