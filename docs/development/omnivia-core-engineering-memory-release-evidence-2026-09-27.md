@@ -28,12 +28,16 @@ SPEC-CORE-ENGMEM-001 §20.2 qualification is produced by `packages/omnivia-core-
 | Lane | Status |
 |---|---|
 | Harness, report contract and tiny-corpus smoke (ordinary suite, no wall-clock assertions) | Implemented; runs in the suite |
-| 10k, report format `engineering-memory-qualification/2` | **Pending** |
-| 100k, report format `engineering-memory-qualification/2` | **Pending** |
-| Reference-hardware run (4 cores / 16 GiB / local SSD) | **Pending** |
+| 10k, report format `engineering-memory-qualification/2` | **Complete** at source `2ce3707a`; all three advisory warm targets passed |
+| 100k, report format `engineering-memory-qualification/2` | **Complete** at source `f3de24f7`; checkpoint target passed, search and context targets missed |
+| Reference-hardware run (4 cores / 16 GiB / local SSD) | **Complete** in the 100k report |
 | System-cold lane (operating-system page cache controlled) | **Pending**; the harness cannot control it, so no lane is called system-cold |
 
-`benchmarks/reports/engineering-memory/lane-{2000,3000,10000,100000}.json` are the earlier format-1 diagnostics (platform, machine, Python and CPU count only; no worktree, conflict, cold/warm, concurrency or resource dimensions). They are retained as history, are not §20.2 evidence, and are replaced when the format-2 lanes run. They exceeded the proposed search and pack targets; no latency guarantee is claimed.
+`benchmarks/reports/engineering-memory/lane-{10000,100000}.json` are the current
+format-2 evidence. At 100k the worst warm search p95 was 2,505.244 ms against the
+300 ms target, context-build p95 was 3,801.514 ms against 1,000 ms, and checkpoint
+p95 was 21.636 ms against 200 ms. These are measured targets, not latency guarantees.
+Earlier format-1 diagnostics at 2k and 3k remain historical only.
 
 ### Running a lane
 

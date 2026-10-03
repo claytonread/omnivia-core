@@ -1,7 +1,7 @@
 # Engineering memory: remaining work register
 
 Date: 2026-09-28  
-Reconciled: 2026-10-03
+Reconciled: 2026-10-04
 
 Current governing closeout sources are
 `engineering-memory-acceptance-evidence-2026-10-03.md`,
@@ -13,12 +13,14 @@ filenames previously named here do not exist in this checkout and are not eviden
 
 - AC-001–AC-063 have direct production-path evidence in the acceptance register.
 - The preview path narrows candidates by query before authorization/ranking; the
-  format-2 10k qualification report is complete.
+  format-2 10k and 100k qualification reports are complete.
 - AC-050 trusted-checkout scope classification is implemented by migration 0062.
 - AC-063 portable export/restore excludes installation-local authority and mappings,
   preserves permitted stable history, and proves immediate revoked-evidence blocking.
-- AC-064 remains open until the running format-2 100k lane, full preflight and
-  supported-OS CI complete. The report records any target miss instead of hiding it.
+- AC-064 remains open until full preflight and supported-OS CI complete. The 100k
+  report records search p95 2,505.244 ms and context-build p95 3,801.514 ms as
+  target misses; checkpoint p95 21.636 ms is inside target. An OS-controlled
+  system-cold lane remains explicit release evidence debt.
 
 Sections 1–4 below are retained as the historical 28 September register. Their
 individual state labels are not current status; use the acceptance register above.
