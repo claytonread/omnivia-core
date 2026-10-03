@@ -1,6 +1,6 @@
 -- Managed Skills registry and per-Run skill bindings (C17, Agent Runtime).
 --
--- Additive only. Eight append-only tables and twenty-four statement triggers. One registry
+-- Additive only. Nine append-only tables and twenty-seven statement triggers. One registry
 -- per workspace holds every skill the workspace authors, publishes, installs and binds to a
 -- Run. Nothing here executes a skill, selects one for a Run on its own, or grants anything:
 -- a manifest and its instructions are inert data, and no column here names a permission, a
@@ -13,8 +13,9 @@
 --   omnivia_skill_versions            one published, immutable, content-addressed manifest
 --   omnivia_skill_deprecations        one version marked deprecated; the version itself stays
 --   omnivia_skill_install_events      one install or removal of a published version in the workspace
---   omnivia_skill_run_bindings        one exact manifest a Run was admitted with, for one role
---   omnivia_skill_run_binding_seals   the point after which a Run's bindings can no longer grow
+--   omnivia_skill_run_bindings        one exact manifest a Run is bound to, for one role, in one generation
+--   omnivia_skill_run_binding_seals   the point after which one generation of a Run's bindings cannot grow
+--   omnivia_skill_binding_amendments  one accepted amendment that opened the next generation of a Run
 --
 -- Identity, versions and content
 -- ------------------------------
@@ -45,11 +46,18 @@
 -- Run bindings are written once
 -- -----------------------------
 --
--- A binding names the exact manifest a Run was admitted with, for one role. It is written
--- only under the audit event of the Run's own admission and at the instant of that
--- admission, and a seal then closes the set. After the seal no binding is added, so a newer
--- version that is published or installed later never reaches a Run that already exists.
--- Core has no operation that amends a Run, so this migration provides none either.
+-- A binding names the exact manifest a Run is bound to, for one role, in one generation.
+-- Generation 1 is written only under the audit event of the Run's own admission and at the
+-- instant of that admission. A seal then closes that generation, and after the seal no
+-- binding of it is added, so a newer version that is published or installed later never
+-- reaches a Run that already exists.
+--
+-- A later generation exists only through an accepted amendment. The amendment row names the
+-- amendment identity, the generation it opens and the audit event and instant it was accepted
+-- under, and the generation's bindings and seal must carry that same audit event and instant.
+-- The amendment opens exactly the next generation of a sealed Run, so an earlier generation
+-- is never rewritten or removed. No public Core operation writes an amendment yet, so no Run
+-- changes in practice until the accepted-amendment owner invokes the registry seam.
 --
 -- UPDATE and DELETE abort unconditionally, for the current fenced owner too. Retention is
 -- deliberately not provided; deletion or compaction needs its own migration.
@@ -639,10 +647,11 @@ BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS omnivia_skill_run_bindings (
-    workspace_id     TEXT NOT NULL,
-    run_binding_id   TEXT NOT NULL,
-    run_id           TEXT NOT NULL,
-    binding_position INTEGER NOT NULL,
+    workspace_id       TEXT NOT NULL,
+    run_binding_id     TEXT NOT NULL,
+    run_id             TEXT NOT NULL,
+    binding_generation INTEGER NOT NULL,
+    binding_position   INTEGER NOT NULL,
     role_id          TEXT NOT NULL,
     manifest_id      TEXT NOT NULL,
     skill_name       TEXT NOT NULL,
@@ -663,6 +672,7 @@ CREATE TABLE IF NOT EXISTS omnivia_skill_run_bindings (
            AND run_id GLOB '[A-Za-z0-9]*'
            AND run_id NOT GLOB '*[^A-Za-z0-9._:-]*'
            AND instr(run_id, char(0)) = 0),
+    CHECK (typeof(binding_generation) = 'integer' AND binding_generation BETWEEN 1 AND 32),
     CHECK (typeof(binding_position) = 'integer' AND binding_position > 0),
     CHECK (typeof(role_id) = 'text' AND length(role_id) BETWEEN 1 AND 128
            AND role_id GLOB '[A-Za-z0-9]*'
@@ -686,8 +696,8 @@ CREATE TABLE IF NOT EXISTS omnivia_skill_run_bindings (
            AND instr(audit_ref, char(0)) = 0),
 
     PRIMARY KEY (workspace_id, run_binding_id),
-    UNIQUE (workspace_id, run_id, binding_position),
-    UNIQUE (workspace_id, run_id, role_id, manifest_id),
+    UNIQUE (workspace_id, run_id, binding_generation, binding_position),
+    UNIQUE (workspace_id, run_id, binding_generation, role_id, manifest_id),
     FOREIGN KEY (workspace_id, run_id)
         REFERENCES omnivia_workflow_runs (workspace_id, run_id),
     FOREIGN KEY (workspace_id, manifest_id, skill_name)
@@ -713,24 +723,39 @@ BEGIN
               AND l.lifecycle IN ('acquiring', 'held', 'draining'))
        OR NEW.workspace_id IS NOT (
             SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
-    SELECT RAISE(ABORT, 'omnivia: a skill run binding is written only under its run admission')
-    WHERE NOT EXISTS (
-        SELECT 1 FROM omnivia_workflow_runs w
-        JOIN omnivia_runtime_runs r
-          ON r.workspace_id = w.workspace_id AND r.run_id = w.run_id
-        WHERE w.workspace_id = NEW.workspace_id
-          AND w.run_id = NEW.run_id
-          AND w.bound_at_us = NEW.bound_at_us
-          AND r.audit_ref = NEW.audit_ref);
+    SELECT RAISE(ABORT, 'omnivia: a skill run binding is written only under its run admission or an accepted amendment')
+    WHERE NOT (
+        (NEW.binding_generation = 1 AND EXISTS (
+            SELECT 1 FROM omnivia_workflow_runs w
+            JOIN omnivia_runtime_runs r
+              ON r.workspace_id = w.workspace_id AND r.run_id = w.run_id
+            WHERE w.workspace_id = NEW.workspace_id
+              AND w.run_id = NEW.run_id
+              AND w.bound_at_us = NEW.bound_at_us
+              AND r.audit_ref = NEW.audit_ref))
+        OR (NEW.binding_generation > 1 AND EXISTS (
+            SELECT 1 FROM omnivia_skill_binding_amendments a
+            WHERE a.workspace_id = NEW.workspace_id
+              AND a.run_id = NEW.run_id
+              AND a.binding_generation = NEW.binding_generation
+              AND a.accepted_at_us = NEW.bound_at_us
+              AND a.audit_ref = NEW.audit_ref)));
+    SELECT RAISE(ABORT, 'omnivia: a sealed skill run binding generation cannot grow')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_skill_run_binding_seals
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+          AND binding_generation = NEW.binding_generation);
+    SELECT RAISE(ABORT, 'omnivia: skill run binding generation must be the open generation of its run')
+    WHERE NEW.binding_generation IS NOT (
+        SELECT COALESCE(MAX(binding_generation), 0) + 1
+        FROM omnivia_skill_run_binding_seals
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
     SELECT RAISE(ABORT, 'omnivia: skill run binding position must be contiguous')
     WHERE NEW.binding_position IS NOT (
         SELECT COALESCE(MAX(binding_position), 0) + 1
         FROM omnivia_skill_run_bindings
-        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
-    SELECT RAISE(ABORT, 'omnivia: a sealed skill run binding set cannot grow')
-    WHERE EXISTS (
-        SELECT 1 FROM omnivia_skill_run_binding_seals
-        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+          AND binding_generation = NEW.binding_generation);
     SELECT RAISE(ABORT, 'omnivia: a selected skill must be installed and not deprecated when a run binds it')
     WHERE NEW.selection IN ('explicit', 'highest_compatible') AND (
         EXISTS (
@@ -763,12 +788,13 @@ BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS omnivia_skill_run_binding_seals (
-    workspace_id  TEXT NOT NULL,
-    run_id        TEXT NOT NULL,
-    binding_count INTEGER NOT NULL,
-    set_digest    TEXT NOT NULL,
-    sealed_at_us  INTEGER NOT NULL,
-    audit_ref     TEXT NOT NULL,
+    workspace_id       TEXT NOT NULL,
+    run_id             TEXT NOT NULL,
+    binding_generation INTEGER NOT NULL,
+    binding_count      INTEGER NOT NULL,
+    set_digest         TEXT NOT NULL,
+    sealed_at_us       INTEGER NOT NULL,
+    audit_ref          TEXT NOT NULL,
 
     CHECK (typeof(workspace_id) = 'text' AND length(workspace_id) BETWEEN 1 AND 128
            AND workspace_id GLOB '[A-Za-z0-9]*'
@@ -778,6 +804,7 @@ CREATE TABLE IF NOT EXISTS omnivia_skill_run_binding_seals (
            AND run_id GLOB '[A-Za-z0-9]*'
            AND run_id NOT GLOB '*[^A-Za-z0-9._:-]*'
            AND instr(run_id, char(0)) = 0),
+    CHECK (typeof(binding_generation) = 'integer' AND binding_generation BETWEEN 1 AND 32),
     CHECK (typeof(binding_count) = 'integer' AND binding_count BETWEEN 1 AND 1024),
     CHECK (typeof(set_digest) = 'text' AND length(set_digest) = 71
            AND substr(set_digest, 1, 7) = 'sha256:'
@@ -788,7 +815,7 @@ CREATE TABLE IF NOT EXISTS omnivia_skill_run_binding_seals (
            AND audit_ref NOT GLOB '*[^A-Za-z0-9._:-]*'
            AND instr(audit_ref, char(0)) = 0),
 
-    PRIMARY KEY (workspace_id, run_id),
+    PRIMARY KEY (workspace_id, run_id, binding_generation),
     FOREIGN KEY (workspace_id, run_id)
         REFERENCES omnivia_workflow_runs (workspace_id, run_id),
     FOREIGN KEY (audit_ref, workspace_id)
@@ -812,19 +839,33 @@ BEGIN
               AND l.lifecycle IN ('acquiring', 'held', 'draining'))
        OR NEW.workspace_id IS NOT (
             SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
-    SELECT RAISE(ABORT, 'omnivia: a skill run binding seal is written only under its run admission')
-    WHERE NOT EXISTS (
-        SELECT 1 FROM omnivia_workflow_runs w
-        JOIN omnivia_runtime_runs r
-          ON r.workspace_id = w.workspace_id AND r.run_id = w.run_id
-        WHERE w.workspace_id = NEW.workspace_id
-          AND w.run_id = NEW.run_id
-          AND w.bound_at_us = NEW.sealed_at_us
-          AND r.audit_ref = NEW.audit_ref);
+    SELECT RAISE(ABORT, 'omnivia: a skill run binding seal is written only under its run admission or an accepted amendment')
+    WHERE NOT (
+        (NEW.binding_generation = 1 AND EXISTS (
+            SELECT 1 FROM omnivia_workflow_runs w
+            JOIN omnivia_runtime_runs r
+              ON r.workspace_id = w.workspace_id AND r.run_id = w.run_id
+            WHERE w.workspace_id = NEW.workspace_id
+              AND w.run_id = NEW.run_id
+              AND w.bound_at_us = NEW.sealed_at_us
+              AND r.audit_ref = NEW.audit_ref))
+        OR (NEW.binding_generation > 1 AND EXISTS (
+            SELECT 1 FROM omnivia_skill_binding_amendments a
+            WHERE a.workspace_id = NEW.workspace_id
+              AND a.run_id = NEW.run_id
+              AND a.binding_generation = NEW.binding_generation
+              AND a.accepted_at_us = NEW.sealed_at_us
+              AND a.audit_ref = NEW.audit_ref)));
+    SELECT RAISE(ABORT, 'omnivia: a skill run binding seal must seal the open generation of its run')
+    WHERE NEW.binding_generation IS NOT (
+        SELECT COALESCE(MAX(binding_generation), 0) + 1
+        FROM omnivia_skill_run_binding_seals
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
     SELECT RAISE(ABORT, 'omnivia: a skill run binding seal must count exactly the bindings it seals')
     WHERE NEW.binding_count IS NOT (
         SELECT COUNT(*) FROM omnivia_skill_run_bindings
-        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+          AND binding_generation = NEW.binding_generation);
     SELECT RAISE(ABORT, 'omnivia: skill run binding seal audit reference must belong to its workspace')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_application_audit_events
@@ -841,4 +882,79 @@ CREATE TRIGGER IF NOT EXISTS omnivia_guard_skill_run_binding_seals_delete
 BEFORE DELETE ON omnivia_skill_run_binding_seals
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_skill_run_binding_seals is append-only; DELETE is never permitted');
+END;
+
+CREATE TABLE IF NOT EXISTS omnivia_skill_binding_amendments (
+    workspace_id       TEXT NOT NULL,
+    amendment_id       TEXT NOT NULL,
+    run_id             TEXT NOT NULL,
+    binding_generation INTEGER NOT NULL,
+    audit_ref          TEXT NOT NULL,
+    accepted_at_us     INTEGER NOT NULL,
+
+    CHECK (typeof(workspace_id) = 'text' AND length(workspace_id) BETWEEN 1 AND 128
+           AND workspace_id GLOB '[A-Za-z0-9]*'
+           AND workspace_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(workspace_id, char(0)) = 0),
+    CHECK (typeof(amendment_id) = 'text' AND length(amendment_id) BETWEEN 1 AND 128
+           AND amendment_id GLOB '[A-Za-z0-9]*'
+           AND amendment_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(amendment_id, char(0)) = 0),
+    CHECK (typeof(run_id) = 'text' AND length(run_id) BETWEEN 1 AND 128
+           AND run_id GLOB '[A-Za-z0-9]*'
+           AND run_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(run_id, char(0)) = 0),
+    CHECK (typeof(binding_generation) = 'integer' AND binding_generation BETWEEN 2 AND 32),
+    CHECK (typeof(audit_ref) = 'text' AND length(audit_ref) BETWEEN 1 AND 128
+           AND audit_ref GLOB '[A-Za-z0-9]*'
+           AND audit_ref NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(audit_ref, char(0)) = 0),
+    CHECK (typeof(accepted_at_us) = 'integer' AND accepted_at_us > 0),
+
+    PRIMARY KEY (workspace_id, amendment_id),
+    UNIQUE (workspace_id, run_id, binding_generation),
+    FOREIGN KEY (workspace_id, run_id)
+        REFERENCES omnivia_workflow_runs (workspace_id, run_id),
+    FOREIGN KEY (audit_ref, workspace_id)
+        REFERENCES omnivia_application_audit_events (audit_ref, workspace_id)
+) WITHOUT ROWID;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_skill_binding_amendments_insert
+BEFORE INSERT ON omnivia_skill_binding_amendments
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_skill_binding_amendments')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1 FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1 AND g.fencing_generation = s.fencing_generation
+              AND g.workspace_id = s.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining'))
+       OR NEW.workspace_id IS NOT (
+            SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
+    SELECT RAISE(ABORT, 'omnivia: a skill binding amendment opens only the next generation of a sealed run')
+    WHERE NEW.binding_generation IS NOT (
+        SELECT COALESCE(MAX(binding_generation), 0) + 1
+        FROM omnivia_skill_run_binding_seals
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+    SELECT RAISE(ABORT, 'omnivia: skill binding amendment audit reference must belong to its workspace')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM omnivia_application_audit_events
+        WHERE audit_ref = NEW.audit_ref AND workspace_id = NEW.workspace_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_skill_binding_amendments_update
+BEFORE UPDATE ON omnivia_skill_binding_amendments
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_skill_binding_amendments is append-only; UPDATE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_skill_binding_amendments_delete
+BEFORE DELETE ON omnivia_skill_binding_amendments
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_skill_binding_amendments is append-only; DELETE is never permitted');
 END;

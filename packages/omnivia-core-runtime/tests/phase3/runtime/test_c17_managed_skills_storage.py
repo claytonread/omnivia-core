@@ -754,12 +754,12 @@ def test_a_sealed_set_cannot_grow_and_a_tampered_binding_is_detected(registry: R
     closure = registry.resolve(("triage", None))
     bound = bind(registry, [closure])
     connection = registry.holder.connection
-    with pytest.raises(sqlite3.IntegrityError, match="sealed skill run binding set cannot grow"), registry.writer():
+    with pytest.raises(sqlite3.IntegrityError, match="sealed skill run binding generation cannot grow"), registry.writer():
         connection.execute(
             "INSERT INTO omnivia_skill_run_bindings (workspace_id, run_binding_id, run_id, "
-            "binding_position, role_id, manifest_id, skill_name, selection, binding_digest, "
-            "bound_at_us, audit_ref) VALUES (?, 'binding-late', ?, 2, ?, ?, 'triage', "
-            "'explicit', ?, ?, 'aud-job-run-0001')",
+            "binding_generation, binding_position, role_id, manifest_id, skill_name, selection, "
+            "binding_digest, bound_at_us, audit_ref) VALUES (?, 'binding-late', ?, 1, 2, ?, ?, "
+            "'triage', 'explicit', ?, ?, 'aud-job-run-0001')",
             (
                 WORKSPACE_ID,
                 bound.run_id,
@@ -776,3 +776,124 @@ def test_a_sealed_set_cannot_grow_and_a_tampered_binding_is_detected(registry: R
     )
     with pytest.raises(StorageError, match="tampered"):
         store.read_run_skill_bindings(connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID)
+
+
+def amend(
+    registry: Registry,
+    closures: list[store.RoleClosure],
+    *,
+    amendment_id: str = "amendment-1",
+) -> store.RunSkillBindings:
+    """Open the next generation of the seeded Run through the internal seam, under its own audit."""
+    audit_ref = f"aud-{amendment_id}"
+    counter = iter(range(1, 100))
+    with registry.writer() as w:
+        m27.audit(registry.holder, audit_ref)
+        return store.append_run_binding_generation(
+            w,
+            run_id=m27.RUN_ID,
+            accepted_amendment_id=amendment_id,
+            roles=closures,
+            rebound_at_us=m27.BASE_US + 30,
+            audit_ref=audit_ref,
+            allocate_binding_id=lambda: f"{amendment_id}-binding-{next(counter)}",
+        )
+
+
+def test_an_accepted_amendment_opens_a_generation_and_keeps_the_one_before(
+    registry: Registry,
+) -> None:
+    first = registry.publish(manifest("triage", "1.0.0"))
+    registry.install(first.manifest_id)
+    admitted = bind(registry, [registry.resolve(("triage", None))])
+    newer = registry.publish(manifest("triage", "2.0.0"))
+    registry.install(newer.manifest_id)
+    amended = amend(registry, [registry.resolve(("triage", None))])
+    connection = registry.holder.connection
+    assert (amended.binding_generation, amended.amendment_id) == (2, "amendment-1")
+    assert [b.version for b in amended.bindings] == ["2.0.0"]
+    assert store.read_run_skill_binding_generations(
+        connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID
+    ) == (1, 2)
+    latest = store.read_run_skill_bindings(
+        connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID
+    )
+    assert latest is not None and latest.set_digest == amended.set_digest
+    earlier = store.read_run_skill_bindings(
+        connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID, binding_generation=1
+    )
+    assert earlier is not None
+    assert (earlier.set_digest, earlier.amendment_id) == (admitted.set_digest, None)
+    assert [b.version for b in earlier.bindings] == ["1.0.0"]
+    # The amendment itself is append-only, as every row of the registry is.
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"), registry.writer():
+        connection.execute("UPDATE omnivia_skill_binding_amendments SET accepted_at_us = 1")
+
+
+def test_the_seam_refuses_to_amend_a_run_with_nothing_sealed(registry: Registry) -> None:
+    published = registry.publish(manifest())
+    registry.install(published.manifest_id)
+    closure = registry.resolve(("triage", None))
+    seed_run(registry)
+    with pytest.raises(StorageError, match="has no sealed skill bindings to amend"):
+        amend(registry, [closure])
+
+
+def test_an_amendment_cannot_rebind_a_removed_or_deprecated_skill(registry: Registry) -> None:
+    published = registry.publish(manifest())
+    registry.install(published.manifest_id)
+    closure = registry.resolve(("triage", None))
+    bind(registry, [closure])
+    registry.deprecate(published.manifest_id)
+    with pytest.raises(sqlite3.IntegrityError, match="installed and not deprecated"):
+        amend(registry, [closure])
+    assert store.read_run_skill_binding_generations(
+        registry.holder.connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID
+    ) == (1,)
+
+
+def test_a_later_generation_is_written_only_by_the_seam(registry: Registry) -> None:
+    published = registry.publish(manifest())
+    registry.install(published.manifest_id)
+    bind(registry, [registry.resolve(("triage", None))])
+    connection = registry.holder.connection
+    # Writing the rows of a generation directly is refused: no accepted amendment opens it.
+    with pytest.raises(sqlite3.IntegrityError, match="accepted amendment"), registry.writer():
+        connection.execute(
+            "INSERT INTO omnivia_skill_run_bindings (workspace_id, run_binding_id, run_id, "
+            "binding_generation, binding_position, role_id, manifest_id, skill_name, selection, "
+            "binding_digest, bound_at_us, audit_ref) VALUES (?, 'binding-direct', ?, 2, 1, ?, ?, "
+            "'triage', 'highest_compatible', ?, ?, 'aud-job-run-0001')",
+            (
+                WORKSPACE_ID,
+                m27.RUN_ID,
+                ROLE,
+                published.manifest_id,
+                "sha256:" + "0" * 64,
+                m27.BASE_US + 20,
+            ),
+        )
+    # The seam is not a public surface: not exported, and not a method of the writer.
+    assert "append_run_binding_generation" not in store.__all__
+    assert not hasattr(store.ManagedSkillsWriter, "append_run_binding_generation")
+    assert store.read_run_skill_binding_generations(
+        connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID
+    ) == (1,)
+
+
+def test_the_seam_refuses_an_amendment_audit_the_workspace_never_recorded(
+    registry: Registry,
+) -> None:
+    published = registry.publish(manifest())
+    registry.install(published.manifest_id)
+    bind(registry, [registry.resolve(("triage", None))])
+    with pytest.raises(StorageError, match="not recorded in this workspace"), registry.writer() as w:
+        store.append_run_binding_generation(
+            w,
+            run_id=m27.RUN_ID,
+            accepted_amendment_id="amendment-1",
+            roles=[registry.resolve(("triage", None))],
+            rebound_at_us=m27.BASE_US + 30,
+            audit_ref="aud-never-recorded",
+            allocate_binding_id=lambda: "binding-x",
+        )

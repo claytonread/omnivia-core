@@ -1,8 +1,9 @@
 """C17 acceptance for migration 0064's managed Skills registry records.
 
-What 0064 is: eight append-only tables and twenty-four statement triggers recording skill
+What 0064 is: nine append-only tables and twenty-seven statement triggers recording skill
 drafts, their numbered revisions, proposals to the publisher queue, immutable published
-versions, deprecations, install history, and the exact manifests a Run was admitted with.
+versions, deprecations, install history, the exact manifests a Run is bound to one sealed
+generation at a time, and the accepted amendments that open each later generation.
 It executes nothing, and no table has a column through which a skill could name authority.
 
 What this file holds to.
@@ -46,7 +47,10 @@ from omnivia_core_runtime.storage.inventory import (
     capture_inventory,
     compare_inventories,
 )
-from omnivia_core_runtime.storage.managed_skills import RoleClosure
+from omnivia_core_runtime.storage.managed_skills import (
+    RoleClosure,
+    append_run_binding_generation,
+)
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
     apply_pending_migrations,
@@ -67,7 +71,7 @@ MIGRATION_NAME = "0064_managed_skills_registry.sql"
 
 #: The exact text of 0064, as the runtime and `scripts/check-migration-allocations.py` both
 #: hash it. Editing the migration moves this and `allocations.json` together or fails here.
-PINNED_SHA256 = "fd3169622556f27ddfee9be00be25ea7125afa1301a24fbb3d80e25065797f8b"
+PINNED_SHA256 = "16780d25bd4716e75281e0fcad53f1b6114388c5fcc4688fae12bbb2fdec97e0"
 
 WORKSPACE_ID = m27.WORKSPACE_ID
 
@@ -79,7 +83,18 @@ DEPRECATIONS = "omnivia_skill_deprecations"
 INSTALLS = "omnivia_skill_install_events"
 BINDINGS = "omnivia_skill_run_bindings"
 SEALS = "omnivia_skill_run_binding_seals"
-TABLES = (DRAFTS, REVISIONS, PROPOSALS, VERSIONS, DEPRECATIONS, INSTALLS, BINDINGS, SEALS)
+AMENDMENTS = "omnivia_skill_binding_amendments"
+TABLES = (
+    DRAFTS,
+    REVISIONS,
+    PROPOSALS,
+    VERSIONS,
+    DEPRECATIONS,
+    INSTALLS,
+    BINDINGS,
+    SEALS,
+    AMENDMENTS,
+)
 INDEXES = {"omnivia_idx_skill_install_events_name"}
 TRIGGERS = {
     f"omnivia_guard_{table.removeprefix('omnivia_')}_{statement}"
@@ -201,7 +216,7 @@ def test_schema_inventory_contains_only_the_expected_new_objects(migrated: Path)
         assert set(TABLES) <= names["table"]
         assert INDEXES <= names["index"]
         assert TRIGGERS <= names["trigger"]
-        assert len(TRIGGERS) == 24
+        assert len(TRIGGERS) == 27
         assert integrity_check(connection) == []
         assert foreign_key_check(connection) == []
     finally:
@@ -304,7 +319,11 @@ def test_an_edited_migration_is_refused_rather_than_accepted(migrated: Path) -> 
 
 
 def populated(owned: m1.Owned) -> c17.Registry:
-    """One row in every table: a version, its history, an install and a bound Run."""
+    """One row in every table: a version, its history, an install, a bound Run and an amendment.
+
+    The amendment opens generation 2 of the Run before the version is deprecated, because a
+    binding can only select a version that is installed and not deprecated when it is written.
+    """
     registry = c17.Registry(owned)
     published = registry.publish(c17.manifest())
     registry.install(published.manifest_id)
@@ -316,6 +335,17 @@ def populated(owned: m1.Owned) -> c17.Registry:
             bound_at_us=m27.BASE_US + 20,
             audit_ref="aud-job-run-0001",
             allocate_binding_id=lambda: "binding-1",
+        )
+    with registry.writer() as w:
+        m27.audit(owned, "aud-amend-0001")
+        append_run_binding_generation(
+            w,
+            run_id=m27.RUN_ID,
+            accepted_amendment_id="amendment-1",
+            roles=[store_closure(published.manifest_id)],
+            rebound_at_us=m27.BASE_US + 30,
+            audit_ref="aud-amend-0001",
+            allocate_binding_id=lambda: "binding-2",
         )
     registry.deprecate(published.manifest_id)
     return registry
@@ -523,6 +553,7 @@ def test_a_run_binding_selection_must_be_installed_and_not_deprecated(owned: m1.
             "workspace_id": WORKSPACE_ID,
             "run_binding_id": f"binding-{selection}",
             "run_id": m27.RUN_ID,
+            "binding_generation": 1,
             "binding_position": 1,
             "role_id": c17.ROLE,
             "manifest_id": published.manifest_id,
@@ -554,6 +585,7 @@ def test_a_seal_must_count_exactly_the_bindings_it_seals(owned: m1.Owned) -> Non
             {
                 "workspace_id": WORKSPACE_ID,
                 "run_id": m27.RUN_ID,
+                "binding_generation": 1,
                 "binding_count": 1,
                 "set_digest": "sha256:" + "1" * 64,
                 "sealed_at_us": m27.BASE_US + 20,

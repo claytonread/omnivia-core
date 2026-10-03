@@ -1,10 +1,11 @@
 """The managed Skills registry over migration 0064, and nothing above it.
 
-0064 adds eight append-only tables: drafts, draft revisions, proposals, published versions,
-deprecations, install events, per-Run bindings and the seals that close them. This module is
-their writer and their bounded reads. It executes no skill, selects nothing for a Run on its
-own account and grants nothing: a manifest is inert data (:mod:`semantics_skills`), and the
-only authority a skill version has is what the bound role's envelope already grants.
+0064 adds nine append-only tables: drafts, draft revisions, proposals, published versions,
+deprecations, install events, per-Run bindings, the seals that close them and the accepted
+amendments that open later generations. This module is their writer and their bounded reads.
+It executes no skill, selects nothing for a Run on its own account and grants nothing: a
+manifest is inert data (:mod:`semantics_skills`), and the only authority a skill version has
+is what the bound role's envelope already grants.
 
 Writes
 ------
@@ -76,6 +77,7 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
+    "MAX_BINDING_GENERATIONS",
     "MAX_INSTALLED_PER_SKILL",
     "ManagedSkillsWriter",
     "RoleClosure",
@@ -94,6 +96,7 @@ __all__ = [
     "managed_skills_writer",
     "read_draft_head",
     "read_proposal",
+    "read_run_skill_binding_generations",
     "read_run_skill_bindings",
     "read_skill_version",
     "read_skill_version_by_name",
@@ -109,11 +112,15 @@ _DEPRECATIONS: Final = "omnivia_skill_deprecations"
 _INSTALLS: Final = "omnivia_skill_install_events"
 _BINDINGS: Final = "omnivia_skill_run_bindings"
 _SEALS: Final = "omnivia_skill_run_binding_seals"
+_AMENDMENTS: Final = "omnivia_skill_binding_amendments"
 
 #: Distinct versions of one skill that may be installed at once. An update is an explicit
 #: install of a newer version beside the old one, so this bounds how many accumulate before an
 #: operator removes one.
 MAX_INSTALLED_PER_SKILL: Final = 32
+#: Binding generations one Run may hold: its admission, then at most this many minus one
+#: accepted amendments. Bounds every read of a Run's history; migration 0064 enforces it too.
+MAX_BINDING_GENERATIONS: Final = 32
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _PRINCIPAL = re.compile(r"[^\x00]{1,128}")
@@ -226,6 +233,7 @@ class SkillInstallEvent:
 class SkillRunBinding:
     run_binding_id: str
     run_id: str
+    binding_generation: int
     binding_position: int
     role_id: str
     manifest_id: str
@@ -257,12 +265,18 @@ class RoleClosure:
 
 @dataclass(frozen=True, slots=True)
 class RunSkillBindings:
-    """What a Run was admitted with, verified, in the order it was bound."""
+    """One sealed generation of a Run's bindings, verified, in the order it was bound.
+
+    Generation 1 is what the Run was admitted with. A later generation was opened by one
+    accepted amendment, named in `amendment_id`; every earlier generation stays readable.
+    """
 
     run_id: str
     bindings: tuple[SkillRunBinding, ...]
     set_digest: str
     sealed_at_us: int
+    binding_generation: int = 1
+    amendment_id: str | None = None
 
     @property
     def roles(self) -> tuple[RoleClosure, ...]:
@@ -369,6 +383,7 @@ def _insert(
 def _binding_digest(
     *,
     run_id: str,
+    binding_generation: int,
     binding_position: int,
     role_id: str,
     manifest_id: str,
@@ -382,6 +397,7 @@ def _binding_digest(
             canonical_bytes(
                 {
                     "run_id": run_id,
+                    "binding_generation": binding_generation,
                     "binding_position": binding_position,
                     "role_id": role_id,
                     "manifest_id": manifest_id,
@@ -774,63 +790,162 @@ class ManagedSkillsWriter:
         which 0064's triggers enforce, so this is not a way to change a Run that already
         exists. `allocate_binding_id` is called once per row and names the row.
         """
-        run_id = _text(run_id, _ID, "run_id")
-        audit_ref = _text(audit_ref, _ID, "audit_ref")
-        bound_at_us = _time(bound_at_us, "bound_at_us")
-        if not 1 <= len(roles) <= MAX_RUN_ROLES:
-            raise StorageError(f"a Run binds between 1 and {MAX_RUN_ROLES} roles")
-        if len({role.role_id for role in roles}) != len(roles):
-            raise StorageError("a role is bound once per Run")
-        bindings: list[SkillRunBinding] = []
-        for role in roles:
-            if not is_identifier(role.role_id) or not role.entries:
-                raise StorageError("a bound role needs an identifier and a closure")
-            for entry in role.entries:
-                position = len(bindings) + 1
-                bindings.append(
-                    SkillRunBinding(
-                        run_binding_id=_text(
-                            allocate_binding_id(), _ID, "run_binding_id"
-                        ),
+        return _bind_generation(
+            self.connection,
+            workspace_id=self.workspace_id,
+            run_id=_text(run_id, _ID, "run_id"),
+            generation=1,
+            roles=roles,
+            bound_at_us=_time(bound_at_us, "bound_at_us"),
+            audit_ref=_text(audit_ref, _ID, "audit_ref"),
+            amendment_id=None,
+            allocate_binding_id=allocate_binding_id,
+        )
+
+
+def _bind_generation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    run_id: str,
+    generation: int,
+    roles: Sequence[RoleClosure],
+    bound_at_us: int,
+    audit_ref: str,
+    amendment_id: str | None,
+    allocate_binding_id: Any,
+) -> RunSkillBindings:
+    """Write one generation's rows under one audit event and instant, then seal the set.
+
+    Every row carries the audit event and instant that 0064's triggers require of the
+    generation's admission or amendment. The caller has validated `run_id`, `audit_ref` and
+    `bound_at_us`.
+    """
+    if not 1 <= len(roles) <= MAX_RUN_ROLES:
+        raise StorageError(f"a Run binds between 1 and {MAX_RUN_ROLES} roles")
+    if len({role.role_id for role in roles}) != len(roles):
+        raise StorageError("a role is bound once per Run")
+    bindings: list[SkillRunBinding] = []
+    for role in roles:
+        if not is_identifier(role.role_id) or not role.entries:
+            raise StorageError("a bound role needs an identifier and a closure")
+        for entry in role.entries:
+            position = len(bindings) + 1
+            bindings.append(
+                SkillRunBinding(
+                    run_binding_id=_text(allocate_binding_id(), _ID, "run_binding_id"),
+                    run_id=run_id,
+                    binding_generation=generation,
+                    binding_position=position,
+                    role_id=role.role_id,
+                    manifest_id=entry.manifest_id,
+                    skill_name=entry.skill_name,
+                    selection=entry.selection,
+                    binding_digest=_binding_digest(
                         run_id=run_id,
+                        binding_generation=generation,
                         binding_position=position,
                         role_id=role.role_id,
                         manifest_id=entry.manifest_id,
                         skill_name=entry.skill_name,
                         selection=entry.selection,
-                        binding_digest=_binding_digest(
-                            run_id=run_id,
-                            binding_position=position,
-                            role_id=role.role_id,
-                            manifest_id=entry.manifest_id,
-                            skill_name=entry.skill_name,
-                            selection=entry.selection,
-                            bound_at_us=bound_at_us,
-                        ),
                         bound_at_us=bound_at_us,
-                        audit_ref=audit_ref,
-                        version=entry.version,
-                    )
+                    ),
+                    bound_at_us=bound_at_us,
+                    audit_ref=audit_ref,
+                    version=entry.version,
                 )
-        _require_audit(self.connection, self.workspace_id, audit_ref)
-        for binding in bindings:
-            row = _fields(binding)
-            del row["version"]
-            _insert(self.connection, _BINDINGS, self.workspace_id, row)
-        set_digest = _set_digest([binding.binding_digest for binding in bindings])
-        _insert(
-            self.connection,
-            _SEALS,
-            self.workspace_id,
-            {
-                "run_id": run_id,
-                "binding_count": len(bindings),
-                "set_digest": set_digest,
-                "sealed_at_us": bound_at_us,
-                "audit_ref": audit_ref,
-            },
+            )
+    _require_audit(connection, workspace_id, audit_ref)
+    for binding in bindings:
+        row = _fields(binding)
+        del row["version"]
+        _insert(connection, _BINDINGS, workspace_id, row)
+    set_digest = _set_digest([binding.binding_digest for binding in bindings])
+    _insert(
+        connection,
+        _SEALS,
+        workspace_id,
+        {
+            "run_id": run_id,
+            "binding_generation": generation,
+            "binding_count": len(bindings),
+            "set_digest": set_digest,
+            "sealed_at_us": bound_at_us,
+            "audit_ref": audit_ref,
+        },
+    )
+    return RunSkillBindings(
+        run_id, tuple(bindings), set_digest, bound_at_us, generation, amendment_id
+    )
+
+
+def append_run_binding_generation(
+    writer: ManagedSkillsWriter,
+    *,
+    run_id: str,
+    accepted_amendment_id: str,
+    roles: Sequence[RoleClosure],
+    rebound_at_us: int,
+    audit_ref: str,
+    allocate_binding_id: Any,
+) -> RunSkillBindings:
+    """Open and seal the next binding generation of a sealed Run, under one accepted amendment.
+
+    This is the registry's only way to append a generation, and it is closed on purpose. It is
+    not in `__all__` and is not a method of :class:`ManagedSkillsWriter`, so no public surface
+    reaches it. The one intended caller is the accepted-amendment owner (C18a), which holds the
+    fenced transaction and supplies the identity of the amendment it accepted. Core has no
+    public operation that amends a Run, so no current public caller exists, and Runs stay
+    immutable until that owner invokes this seam.
+
+    A Run with no sealed generation has nothing to amend and is refused, as is a Run already at
+    :data:`MAX_BINDING_GENERATIONS`. The amendment row, the generation's bindings and its seal
+    share one audit event and one instant, which 0064's triggers check. Resolution stays with
+    the caller: `roles` are closures already resolved against what is installed now, so a
+    removed or deprecated skill cannot be bound by this seam.
+    """
+    connection, workspace_id = writer.connection, writer.workspace_id
+    run_id = _text(run_id, _ID, "run_id")
+    amendment_id = _text(accepted_amendment_id, _ID, "accepted_amendment_id")
+    audit_ref = _text(audit_ref, _ID, "audit_ref")
+    rebound_at_us = _time(rebound_at_us, "rebound_at_us")
+    sealed = connection.execute(
+        f"SELECT COALESCE(MAX(binding_generation), 0) FROM {_SEALS} "
+        "WHERE workspace_id = ? AND run_id = ?",
+        (workspace_id, run_id),
+    ).fetchone()
+    generation = int(sealed[0]) + 1
+    if generation < 2:
+        raise StorageError(f"run {run_id!r} has no sealed skill bindings to amend")
+    if generation > MAX_BINDING_GENERATIONS:
+        raise StorageError(
+            f"run {run_id!r} already holds {MAX_BINDING_GENERATIONS} binding generations"
         )
-        return RunSkillBindings(run_id, tuple(bindings), set_digest, bound_at_us)
+    _require_audit(connection, workspace_id, audit_ref)
+    _insert(
+        connection,
+        _AMENDMENTS,
+        workspace_id,
+        {
+            "amendment_id": amendment_id,
+            "run_id": run_id,
+            "binding_generation": generation,
+            "audit_ref": audit_ref,
+            "accepted_at_us": rebound_at_us,
+        },
+    )
+    return _bind_generation(
+        connection,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        generation=generation,
+        roles=roles,
+        bound_at_us=rebound_at_us,
+        audit_ref=audit_ref,
+        amendment_id=amendment_id,
+        allocate_binding_id=allocate_binding_id,
+    )
 
 
 def transaction_local_skills_writer(
@@ -1186,29 +1301,71 @@ def _highest_compatible(
     return best[1]
 
 
-def read_run_skill_bindings(
+def read_run_skill_binding_generations(
     connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-) -> RunSkillBindings | None:
-    """What a Run was admitted with, verified, or `None` when it bound no skills.
+) -> tuple[int, ...]:
+    """The sealed binding generations of a Run, oldest first. Empty when it bound no skills."""
+    rows = connection.execute(
+        f"SELECT binding_generation FROM {_SEALS} WHERE workspace_id = ? AND run_id = ? "
+        "ORDER BY binding_generation LIMIT ?",
+        (
+            _text(workspace_id, _ID, "workspace_id"),
+            _text(run_id, _ID, "run_id"),
+            MAX_BINDING_GENERATIONS,
+        ),
+    ).fetchall()
+    return tuple(row[0] for row in rows)
 
-    Never consults installation or deprecation: a Run keeps what it was admitted with after
-    the skill is removed or deprecated. Every row's digest and the seal over the set are
-    recomputed, and a bound set with no seal, or a seal over a different set, is refused.
+
+def read_run_skill_bindings(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    run_id: str,
+    binding_generation: int | None = None,
+) -> RunSkillBindings | None:
+    """One sealed generation of what a Run is bound to, verified, or `None` when it bound none.
+
+    The latest sealed generation unless `binding_generation` names another, so an earlier
+    generation stays readable after an amendment. Never consults installation or deprecation: a
+    Run keeps what it was bound with after the skill is removed or deprecated. Every row's
+    digest and the seal over the set are recomputed. Bindings with no seal, a seal over a
+    different set, or a later generation that no amendment opened are each refused.
     """
     workspace_id = _text(workspace_id, _ID, "workspace_id")
     run_id = _text(run_id, _ID, "run_id")
+    if binding_generation is None:
+        latest = connection.execute(
+            f"SELECT MAX(binding_generation) FROM {_SEALS} WHERE workspace_id = ? AND run_id = ?",
+            (workspace_id, run_id),
+        ).fetchone()
+        generation = latest[0]
+    else:
+        if not 1 <= binding_generation <= MAX_BINDING_GENERATIONS:
+            raise StorageError("binding_generation is out of range")
+        generation = binding_generation
+    if generation is None:
+        unsealed = connection.execute(
+            f"SELECT 1 FROM {_BINDINGS} WHERE workspace_id = ? AND run_id = ? LIMIT 1",
+            (workspace_id, run_id),
+        ).fetchone()
+        if unsealed is not None:
+            raise StorageError(f"run {run_id!r} has skill bindings that were never sealed")
+        return None
     seal = connection.execute(
-        f"SELECT binding_count, set_digest, sealed_at_us FROM {_SEALS} "
-        "WHERE workspace_id = ? AND run_id = ?",
-        (workspace_id, run_id),
+        f"SELECT binding_count, set_digest, sealed_at_us, audit_ref FROM {_SEALS} "
+        "WHERE workspace_id = ? AND run_id = ? AND binding_generation = ?",
+        (workspace_id, run_id, generation),
     ).fetchone()
     rows = connection.execute(
-        "SELECT b.run_binding_id, b.run_id, b.binding_position, b.role_id, b.manifest_id, "
-        "b.skill_name, b.selection, b.binding_digest, b.bound_at_us, b.audit_ref, v.version "
+        "SELECT b.run_binding_id, b.run_id, b.binding_generation, b.binding_position, "
+        "b.role_id, b.manifest_id, b.skill_name, b.selection, b.binding_digest, "
+        "b.bound_at_us, b.audit_ref, v.version "
         f"FROM {_BINDINGS} b JOIN {_VERSIONS} v "
         "ON v.workspace_id = b.workspace_id AND v.manifest_id = b.manifest_id "
-        "WHERE b.workspace_id = ? AND b.run_id = ? ORDER BY b.binding_position LIMIT 1025",
-        (workspace_id, run_id),
+        "WHERE b.workspace_id = ? AND b.run_id = ? AND b.binding_generation = ? "
+        "ORDER BY b.binding_position LIMIT 1025",
+        (workspace_id, run_id, generation),
     ).fetchall()
     if seal is None and not rows:
         return None
@@ -1222,6 +1379,7 @@ def read_run_skill_bindings(
     for binding in bindings:
         expected = _binding_digest(
             run_id=binding.run_id,
+            binding_generation=binding.binding_generation,
             binding_position=binding.binding_position,
             role_id=binding.role_id,
             manifest_id=binding.manifest_id,
@@ -1235,4 +1393,18 @@ def read_run_skill_bindings(
             )
     if _set_digest([binding.binding_digest for binding in bindings]) != seal[1]:
         raise StorageError(f"run {run_id!r} skill binding set is tampered")
-    return RunSkillBindings(run_id, bindings, seal[1], seal[2])
+    amendment_id: str | None = None
+    if generation > 1:
+        amended = connection.execute(
+            f"SELECT amendment_id, accepted_at_us, audit_ref FROM {_AMENDMENTS} "
+            "WHERE workspace_id = ? AND run_id = ? AND binding_generation = ?",
+            (workspace_id, run_id, generation),
+        ).fetchone()
+        if amended is None or amended[1] != seal[2] or amended[2] != seal[3]:
+            raise StorageError(
+                f"run {run_id!r} binding generation {generation} was not opened by an amendment"
+            )
+        amendment_id = amended[0]
+    return RunSkillBindings(
+        run_id, bindings, seal[1], seal[2], generation, amendment_id
+    )
