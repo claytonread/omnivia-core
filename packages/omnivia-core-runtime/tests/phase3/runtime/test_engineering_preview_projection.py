@@ -108,13 +108,26 @@ class Trace:
             if any(marker in statement for marker in BODY_MARKERS)
         ]
 
-    def projection_reads(self) -> list[int]:
-        """The positions of the statements that read the projection table."""
+    def _reads_projection(self, narrowing: bool) -> list[int]:
         return [
             index
             for index, statement in enumerate(self.statements)
-            if PROJECTION in statement and statement.lstrip().upper().startswith("SELECT")
+            if PROJECTION in statement
+            and statement.lstrip().upper().startswith("SELECT")
+            and (f"FROM {METADATA_VIEW} m " in statement) is narrowing
         ]
+
+    def projection_reads(self) -> list[int]:
+        """The positions of the statements that read projection rows by assembly id.
+
+        The narrowing statements (`narrowing_reads`) are not among them: they return
+        record ids only and name no assembly."""
+        return self._reads_projection(narrowing=False)
+
+    def narrowing_reads(self) -> list[int]:
+        """The positions of the statements that narrow the frontier by query, before
+        any authorization: the projection-health probe and the id-only text match."""
+        return self._reads_projection(narrowing=True)
 
 
 class Reads:
@@ -1777,3 +1790,211 @@ def test_the_migration_backfill_never_fails_a_workspace_with_unreadable_content(
             ]
         finally:
             workspace.holder.connection.close()
+
+
+# --- query narrowing: bounded work, same answers -----------------------------------------
+
+
+def _off_query(title: str) -> dict[str, Any]:
+    """An observation whose whole projection text avoids the word `provider`."""
+    claim = esc._observation(None, title=title, evidence=False)
+    claim["content"]["summary"] = "Nothing about the search word here."
+    claim["content"]["what"] = "Still nothing to see here."
+    return claim
+
+
+def _seed(workspace: Workspace, unrelated: int) -> dict[str, str]:
+    """One observation the query matches, and `unrelated` that it does not."""
+    for index in range(unrelated):
+        workspace.observe(_off_query(f"Filler {index}"))
+    return workspace.observe(esc._observation(None, title="Provider needle", evidence=False))
+
+
+def _other_ids(workspace: Workspace, keep: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Every record id and assembly id in the workspace except the kept record's."""
+    rows = workspace.holder.connection.execute(
+        "SELECT governed_record_id, assembly_id FROM omnivia_governed_version_assemblies "
+        "WHERE governed_record_id != ?",
+        (keep["record_id"],),
+    ).fetchall()
+    return [r[0] for r in rows], [r[1] for r in rows]
+
+
+@pytest.mark.parametrize("unrelated", [2, 12])
+def test_search_work_is_bounded_by_the_matches_not_the_corpus(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch, unrelated: int
+) -> None:
+    """Only the query's candidate records are authorised, read as projection rows and
+    ranked: no statement names an unrelated record or assembly, and the ranker is
+    handed exactly the matching versions however large the rest of the corpus is."""
+    needle = _seed(workspace, unrelated)
+    record_ids, assembly_ids = _other_ids(workspace, needle)
+    assert len(record_ids) == unrelated
+    ranked: list[int] = []
+    rank = handlers.rank_previews
+
+    def spy(candidates: Any, *args: Any, **kwargs: Any) -> Any:
+        ranked.append(len(candidates))
+        return rank(candidates, *args, **kwargs)
+
+    monkeypatch.setattr(handlers, "rank_previews", spy)
+    with Trace(workspace.holder.connection) as trace:
+        result = workspace.ok("engineering.search", {"query": "needle", "view": "candidates"})
+    assert _ids(result) == [needle["record_id"]]
+    assert ranked == [1]
+    for statement in trace.statements:
+        assert not any(identifier in statement for identifier in (*record_ids, *assembly_ids))
+    assert len(trace.projection_reads()) == 1 and trace.narrowing_reads()
+
+
+def test_narrowing_returns_identity_only_and_is_a_superset_of_the_match(
+    workspace: Workspace,
+) -> None:
+    """The narrowing selects record ids and no preview text, keeps every record whose
+    projection could match (compatibility-folded text included, which SQLite cannot
+    normalise and so always passes on to the Python rule), and drops the rest."""
+    plain = workspace.observe(esc._observation(None, title="Plain FINDER note", evidence=False))
+    ligature = workspace.observe(
+        esc._observation(None, title="Ligature ﬁnder note", evidence=False)
+    )
+    other = workspace.observe(_off_query("Unrelated note"))
+    connection = workspace.holder.connection
+    with Trace(connection) as trace, memory.read_snapshot(connection):
+        narrowed = engineering_preview.narrow_record_ids(
+            connection,
+            workspace_id=WORKSPACE_ID,
+            resolution_instant_us=2**62,
+            query="Finder",
+        )
+    assert narrowed is not None
+    assert set(narrowed) == {plain["record_id"], ligature["record_id"]}
+    assert other["record_id"] not in narrowed
+    for position in trace.narrowing_reads():
+        assert "SELECT 1" in trace.statements[position] or (
+            "SELECT DISTINCT m.governed_record_id" in trace.statements[position]
+        )
+    # The exact rule still decides: both the ASCII and the ligature title match.
+    assert set(_ids(_search(workspace, query="finder", view="candidates"))) == {
+        plain["record_id"],
+        ligature["record_id"],
+    }
+
+
+def test_narrowing_steps_aside_for_an_empty_query_and_a_damaged_projection(
+    workspace: Workspace,
+) -> None:
+    """No narrowing means the whole authorised frontier is read: an empty query has no
+    needle, and a missing or stale row anywhere in the domain is judged by the
+    authorised read, not by the narrowing."""
+    record = workspace.observe(esc._observation(None, title="Provider one", evidence=False))
+    workspace.observe(_off_query("Other thing"))
+    connection = workspace.holder.connection
+
+    def narrow(query: str) -> tuple[str, ...] | None:
+        with memory.read_snapshot(connection):
+            return engineering_preview.narrow_record_ids(
+                connection,
+                workspace_id=WORKSPACE_ID,
+                resolution_instant_us=2**62,
+                query=query,
+            )
+
+    assert narrow("provider") == (record["record_id"],)
+    assert narrow("") is None
+    (assembly,) = _assemblies(workspace, record["record_id"])
+    with _guards_lifted(connection, UPDATE_GUARD):
+        _damage(
+            connection,
+            f"UPDATE {PROJECTION} SET content_digest = 'sha256:' || printf('%064d', 7) "
+            f"WHERE assembly_id = '{assembly}'",
+        )
+    assert narrow("provider") is None
+
+
+def test_an_off_query_stale_row_still_refuses_a_narrowed_search(workspace: Workspace) -> None:
+    """The query never matches the damaged row, so the narrowing alone would answer
+    from a projection it cannot vouch for. It refuses instead, as an unnarrowed read
+    does: stale for a row of another version or content, unavailable for a lost one."""
+    workspace.observe(esc._observation(None, title="Provider one", evidence=False))
+    off = workspace.observe(_off_query("Unrelated note"))
+    (assembly,) = _assemblies(workspace, off["record_id"])
+    connection = workspace.holder.connection
+    with _guards_lifted(connection, UPDATE_GUARD):
+        _damage(
+            connection,
+            f"UPDATE {PROJECTION} SET projection_version = 2 WHERE assembly_id = '{assembly}'",
+        )
+    request = {"query": "provider", "view": "candidates"}
+    assert workspace.refused("engineering.search", request)[0] == "stale_projection"
+    with _guards_lifted(connection, UPDATE_GUARD):
+        _damage(
+            connection,
+            f"UPDATE {PROJECTION} SET projection_version = 1, content_digest = "
+            "'sha256:' || printf('%064d', 7) "
+            f"WHERE assembly_id = '{assembly}'",
+        )
+    assert workspace.refused("engineering.search", request)[0] == "stale_projection"
+    with _guards_lifted(connection, DELETE_GUARD):
+        _damage(connection, f"DELETE FROM {PROJECTION} WHERE assembly_id = '{assembly}'")
+    assert workspace.refused("engineering.search", request)[0] == "projection_unavailable"
+
+
+def test_a_denied_match_changes_no_total_rank_or_continuation(workspace: Workspace) -> None:
+    """Hidden records that match the query are narrowed in by identity and leave at
+    the label fold: the reader's pages, order and continuation are those of the
+    visible matches alone."""
+    m2.write(workspace.holder, m2.EVIDENCE, evidence_id="evd-open", source_native_id="doc-open")
+    open_source = {**esc.EVIDENCE_SOURCE, "source_id": "doc-open"}
+    visible = [
+        workspace.observe(_long(f"Open provider {n}", evidence=True, source=open_source))
+        for n in range(2)
+    ]
+    for n in range(3):
+        workspace.observe(_long(f"Hidden provider provider {n}", evidence=True))
+    reader = esc._reader()
+    page = workspace.ok(
+        "engineering.search",
+        {"query": "provider", "view": "candidates", "limit": 2},
+        session=reader,
+    )
+    assert set(_ids(page)) == {record["record_id"] for record in visible}
+    assert page["page"] == {}
+    owner = workspace.ok(
+        "engineering.search", {"query": "provider", "view": "candidates", "limit": 2}
+    )
+    assert owner["page"] != {}
+
+
+def test_context_build_authorizes_only_the_query_candidates(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pack pages the narrowed record-id space, not the domain: the frontier is
+    read for the matching record alone, and the pack still selects it."""
+    workspace.record(esc._source(1, "esnap-a", esc.FILES_A))
+    needle = _seed(workspace, 5)
+    record_ids, _ = _other_ids(workspace, needle)
+    seen: list[tuple[str, ...]] = []
+    frontier = handlers.read_authorized_memory_frontier
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(tuple(kwargs["record_ids"]))
+        return frontier(*args, **kwargs)
+
+    monkeypatch.setattr(handlers, "read_authorized_memory_frontier", spy)
+    built = workspace.ok(
+        "engineering.context.build",
+        {
+            "query": "needle",
+            "targets": [
+                {
+                    "repository_id": esc.REPOSITORY,
+                    "snapshot_id": "esnap-a",
+                    "snapshot_kind": "git_commit",
+                }
+            ],
+            "profile": "investigate",
+        },
+    )
+    assert seen and all(ids == (needle["record_id"],) for ids in seen)
+    assert not set(record_ids) & {identifier for ids in seen for identifier in ids}
+    assert needle["record_id"] in to_canonical_json(built["pack"])
