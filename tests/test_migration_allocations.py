@@ -67,9 +67,11 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # allocation, not a file -- its SQL stays absent until a later change deliberately advances
 # this entry from reserved to candidate, with its content hash and introducing commit
 # recorded here.
-# 0043 is reserved to Workflow Runtime for trigger telemetry (C21-A, founder Decision 4A):
-# an allocation, not a file -- its SQL stays absent until founder design review of
-# docs/development/omnivia-core-trigger-telemetry-design-2026-09-23.md and a later change advances it to candidate.
+# 0043 is the Workflow Runtime trigger-telemetry candidate (C21-A, founder Decision 4A),
+# advanced from reserved to candidate with its content hash. Its introducing commit
+# cannot be known before the commit exists: until a follow-up change records it in the
+# authority and adds 43 to CANDIDATE_INTRODUCED_COMMITS, the allocation guard reports the
+# missing 40-character pin for 0043 and nothing else.
 # 0044-0046 are the Decision Runtime candidates (ADR-042, plan PR-3): settings,
 # immutable definition versions/qualifications, and the evaluation/attempt/
 # result/outcome/subscription/outbox record families, advanced from reservation
@@ -120,7 +122,7 @@ EXPECTED_ALLOCATION = (
     ),
     (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
     (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "candidate"),
-    (43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "reserved"),
+    (43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "candidate"),
     (44, "0044_decision_settings.sql", "Decision Runtime", "candidate"),
     (45, "0045_decision_definitions.sql", "Decision Runtime", "candidate"),
     (46, "0046_decision_records.sql", "Decision Runtime", "candidate"),

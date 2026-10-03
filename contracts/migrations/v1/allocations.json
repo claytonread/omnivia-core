@@ -288,9 +288,9 @@
       "filename": "0043_runtime_trigger_telemetry.sql",
       "owner": "Workflow Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 42,
-      "sha256": null,
+      "sha256": "b461b50fa2e3e31437e2f483420550096c35c6c71fcd71d2aeca1ad56a485193",
       "introduced_commit": null,
       "accepted_commit": null
     },
