@@ -703,16 +703,15 @@ def test_storage_refuses_duplicate_legacy_identity(
         with pytest.raises(
             sqlite3.IntegrityError,
             match="omnivia_governed_legacy_lineage.workspace_id",
-        ):
-            with fenced_transaction(
-                runner.connection,
-                runner.identity,
-                workspace_id=env.workspace_id,
-                fencing_generation=runner.generation,
-            ) as fenced:
-                legacy_import._write(
-                    fenced, env.workspace_id, "mig-duplicate-lineage", note
-                )
+        ), fenced_transaction(
+            runner.connection,
+            runner.identity,
+            workspace_id=env.workspace_id,
+            fencing_generation=runner.generation,
+        ) as fenced:
+            legacy_import._write(
+                fenced, env.workspace_id, "mig-duplicate-lineage", note
+            )
     finally:
         runner.stop()
 
