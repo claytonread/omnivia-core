@@ -130,9 +130,9 @@ Remaining before completion:
    independent review, and freeze the resulting clean source tip;
 2. build and verify release-form artifacts from that exact tip;
 3. run both real hosts against the frozen artifacts;
-4. obtain a token-only Claude credential outside the repository from
-   `claude setup-token`; the token must never be pasted into the repository or
-   retained evidence;
+4. provide exactly one Claude auth source: a token-only credential outside the
+   repository from `claude setup-token`, or an explicit existing CLI login; the
+   token must never be pasted into the repository or retained evidence;
 5. update traceability and completion status only from the new exact-tip host
    records;
 6. complete exact-tip full preflight and all hosted
@@ -359,6 +359,12 @@ Use a clean supported macOS arm64 account or isolated equivalent. Record the
 exact OS build and host versions. Prefer currently supported installed versions;
 if they differ from the versions frozen in v1.3, record the replacements and
 the approval basis in the completion addendum.
+
+Replacement recorded 2026-10-04: the Claude Code pin moves from the frozen
+`2.1.288` to `2.1.289`, the installed supported CLI verified by `claude
+--version` on 2026-10-04. Basis: this section's preference for currently
+supported installed versions. Codex CLI stays at `0.146.0`. The replacement
+qualifies nothing; Gate D has not passed.
 
 ### Required journey for each host
 
@@ -623,10 +629,20 @@ records below remain pending; neither provider has passed.
    implement the harness, a local login, or a supplied credential file does not
    authorize that transfer.
 2. Run Codex CLI first against the frozen candidate in an isolated profile.
-3. Run Claude Code against the same candidate and schema. This remains blocked
-   until the operator creates the token-only, owner-protected file outside the
-   repository using `claude setup-token`. The token must not be pasted into chat,
-   committed or retained in evidence.
+3. Run Claude Code against the same candidate and schema with exactly one auth
+   source: either a token-only, owner-protected file created outside the
+   repository from `claude setup-token` (`--auth-file`), or the already logged-in
+   Claude CLI profile (`--use-existing-host-auth`). Codex accepts only the file
+   source. The token must not be pasted into chat, committed or retained in
+   evidence. Existing-login tradeoff: the Claude host process keeps the invoking
+   `HOME` and `USER` so it selects the same login; it sets no `CLAUDE_CONFIG_DIR`
+   and injects no token. The Claude MCP child is redirected to the harness-owned
+   home and config directories with an empty token, so Core never sees the real
+   profile, but the login itself is not isolated per run. Guardrails: `--safe-mode`, `--restricted`, a private
+   per-run `TMPDIR` and empty workspace, strict MCP config, a bounded tool
+   allowlist, `dontAsk` with no prompts, no session persistence, an
+   `auth status --json` preflight, and no read, copy, print or deletion of the
+   real profile. Gate D has not passed; this change only permits the source.
 4. Validate both records against the closed schema and confirm every I-1 through
    I-8 case and the restricted decision cases pass.
 5. Confirm temporary profiles, credentials, processes, roots and workspaces were
@@ -681,8 +697,8 @@ recorded; no implicit release or worktree deletion has occurred.
 
 | Item | Current state | Required action |
 |---|---|---|
-| Claude Code qualification credential | blocked; token file absent | Operator runs `claude setup-token` and supplies a token-only owner-protected file outside the repository |
-| Real-host external data flow | blocked; no specific approval recorded | Obtain explicit user approval to send fixed qualification prompts and bounded service-derived results through the Codex and Claude providers |
+| Claude Code qualification credential | selected 2026-10-04: the operator explicitly selected the existing logged-in Claude CLI profile (`--use-existing-host-auth`); no token file is used | Run Gate D with `--use-existing-host-auth`; the run must still pass its own `auth status --json` preflight and produce a schema-valid pass record |
+| Real-host external data flow | authorized 2026-10-04 for fixed qualification prompts and bounded Core-derived results through the logged-in Claude and Codex accounts | Run Gate D within that authorization only; authorization does not by itself mean qualification passed |
 | Final teardown behavior | accepted and pushed as `84b1510b`; behavior-neutral review closeout pending push | Commit and push the final comment, regression and plan correction, then run Gate B hosted checks on that pushed tip |
 | Final Standard candidate | previous `ffa1b36c` candidate is superseded for closeout | Gate C: rebuild from the clean pushed review-closeout tip without `--allow-dirty` and rerun installed journeys |
 | PR #167 hosted checks | checkpoint checks are in progress, but are not the final evidence-head checks | Obtain fresh exact-head checks after the teardown commit and again after the evidence-only closeout commit |
