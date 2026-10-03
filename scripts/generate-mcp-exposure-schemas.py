@@ -95,9 +95,13 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "decision.record.get",
     "decision.record.list",
     "decision.status",
+    "trigger.health",
     "memory.create",
     "evidence.capture",
     "import.start",
+    "trigger.declare",
+    "trigger.lifecycle",
+    "trigger.ingest",
     "job.get",
     "job.events",
 )

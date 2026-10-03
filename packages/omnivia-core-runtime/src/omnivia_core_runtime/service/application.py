@@ -130,6 +130,14 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.trigger import (
+    TRIGGER_DECLARE_OPERATION,
+    TRIGGER_FAMILY_OPERATIONS,
+    TRIGGER_HEALTH_OPERATION,
+    TRIGGER_INGEST_OPERATION,
+    TRIGGER_LIFECYCLE_OPERATION,
+    TriggerHandlers,
+)
 from omnivia_core_runtime.service.handlers.workflow import (
     WORKFLOW_CONTROL_OPERATION,
     WORKFLOW_FAMILY_OPERATIONS,
@@ -154,6 +162,8 @@ from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
     KNOWLEDGE_REVIEWER_ROLE,
     MUTATION_PURPOSES,
+    TRIGGER_CONFIGURATION_PURPOSE,
+    TRIGGER_INGESTION_PURPOSE,
     WORKSPACE_CONTRIBUTOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import (
@@ -223,6 +233,9 @@ ENGINEERING_CONTEXT_PURPOSE: Final = "engineering_context"
 #: the analysis grant is negotiated separately from the knowledge surface.
 ANALYSIS_REQUEST_PURPOSE: Final = "insights_analysis_request"
 DECISION_RESULT_USE_PURPOSE: Final = "decision_result_use"
+#: Reading trigger telemetry is an observation, which no trigger configuration or delivery
+#: grant carries.
+TRIGGER_OBSERVATION_PURPOSE: Final = "trigger_observation"
 
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -245,6 +258,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.context.build": ENGINEERING_CONTEXT_PURPOSE,
         ANALYSIS_START_OPERATION: ANALYSIS_REQUEST_PURPOSE,
         "decision.result_use.evaluate": DECISION_RESULT_USE_PURPOSE,
+        TRIGGER_HEALTH_OPERATION: TRIGGER_OBSERVATION_PURPOSE,
     }
 )
 
@@ -319,6 +333,14 @@ CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: authority -- and inspecting or reviewing a Run is an observation, which is not what
 #: a caller starts one under.
 WORKFLOW_OBSERVATION_PURPOSE: Final = "workflow_observation"
+TRIGGER_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        TRIGGER_DECLARE_OPERATION: TRIGGER_CONFIGURATION_PURPOSE,
+        TRIGGER_LIFECYCLE_OPERATION: TRIGGER_CONFIGURATION_PURPOSE,
+        TRIGGER_INGEST_OPERATION: TRIGGER_INGESTION_PURPOSE,
+        TRIGGER_HEALTH_OPERATION: TRIGGER_OBSERVATION_PURPOSE,
+    }
+)
 WORKFLOW_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         WORKFLOW_START_OPERATION: MUTATION_PURPOSES[WORKFLOW_START_OPERATION],
@@ -888,6 +910,52 @@ def build_decision_registry(
     return registry
 
 
+def build_trigger_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    resolve_release: WorkflowReleaseResolver | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the trigger family: declaration, lifecycle, admission and health.
+
+    `resolve_release` is the Workflow release authority a declaration confirms against, the
+    same seam `workflow.start` uses. Absent, a declaration refuses rather than binding a
+    trigger to a version nobody can confirm. Every other trigger operation runs without it.
+    """
+    session = trigger_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = TriggerHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        resolve_release=resolve_release,
+    )
+    registry = build_trigger_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_decision_application_dispatcher(
     *,
     service: Any,
@@ -1195,23 +1263,26 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     return registry
 
 
-def workflow_family_session(
-    *, principal_id: str, installation_id: str, workspace_id: str
+def _contributor_family_session(
+    *,
+    operations: frozenset[str],
+    purposes: Mapping[str, str],
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
 ) -> AuthenticatedSession:
-    """The T-0693 contributor grant for one workspace's Workflow surface."""
-    entries = tuple(
-        get_operation_metadata(name) for name in sorted(WORKFLOW_FAMILY_OPERATIONS)
-    )
+    """A contributor grant over one family's catalogue entries, each at its own minimum."""
+    entries = tuple(get_operation_metadata(name) for name in sorted(operations))
     return AuthenticatedSession(
         principal_id=principal_id,
         roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
         installations=frozenset({installation_id}),
         workspaces=frozenset({workspace_id}),
-        operations=WORKFLOW_FAMILY_OPERATIONS,
+        operations=operations,
         scopes=frozenset(
             scope for entry in entries for scope in entry.scope.required_scopes
         ),
-        purposes=frozenset(WORKFLOW_FAMILY_PURPOSES.values()),
+        purposes=frozenset(purposes.values()),
         capabilities=tuple(
             sorted(
                 {
@@ -1224,6 +1295,36 @@ def workflow_family_session(
                 key=lambda ref: (ref.id, ref.version),
             )
         ),
+    )
+
+
+def workflow_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The T-0693 contributor grant for one workspace's Workflow surface."""
+    return _contributor_family_session(
+        operations=WORKFLOW_FAMILY_OPERATIONS,
+        purposes=WORKFLOW_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def trigger_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor grant for one workspace's trigger surface.
+
+    Configuration, delivery and observation are three purposes in one family, so a grant to
+    configure a trigger is not thereby a grant to deliver a stimulus to one.
+    """
+    return _contributor_family_session(
+        operations=TRIGGER_FAMILY_OPERATIONS,
+        purposes=TRIGGER_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
     )
 
 
@@ -1240,6 +1341,23 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
     )
     registry.register(
         WORKFLOW_REVIEW_OPERATION, cast(OperationHandler, handlers.workflow_review)
+    )
+    return registry
+
+
+def build_trigger_registry(handlers: TriggerHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        TRIGGER_DECLARE_OPERATION, cast(OperationHandler, handlers.trigger_declare)
+    )
+    registry.register(
+        TRIGGER_LIFECYCLE_OPERATION, cast(OperationHandler, handlers.trigger_lifecycle)
+    )
+    registry.register(
+        TRIGGER_INGEST_OPERATION, cast(OperationHandler, handlers.trigger_ingest)
+    )
+    registry.register(
+        TRIGGER_HEALTH_OPERATION, cast(OperationHandler, handlers.trigger_health)
     )
     return registry
 
@@ -1404,7 +1522,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 28/28 complete.
+    is anything other than 61/61 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1423,9 +1541,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 9:
+        if len(distinct_routes) != 10:
             raise ValueError(
-                "the production surface requires exactly nine authority families"
+                "the production surface requires exactly ten authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -1489,6 +1607,7 @@ def compose_production_application_surface(
     governance: ApplicationDispatcher,
     chat: ApplicationDispatcher,
     workflow: ApplicationDispatcher,
+    trigger: ApplicationDispatcher,
     decision: ApplicationDispatcher,
     engineering: ApplicationDispatcher,
     probe: ApplicationFallback,
@@ -1503,6 +1622,7 @@ def compose_production_application_surface(
         governance,
         chat,
         workflow,
+        trigger,
         decision,
         engineering,
     )
@@ -2205,6 +2325,8 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "TRIGGER_FAMILY_PURPOSES",
+    "TRIGGER_OBSERVATION_PURPOSE",
     "WORKSPACE_INSPECTION_PURPOSE",
     "WORKSPACE_INSPECT_OPERATION",
     "ApplicationCallRecord",
@@ -2224,6 +2346,8 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_trigger_application_dispatcher",
+    "build_trigger_registry",
     "build_workflow_application_dispatcher",
     "build_workflow_registry",
     "compose_production_application_surface",
@@ -2232,5 +2356,6 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "trigger_family_session",
     "workflow_family_session",
 ]

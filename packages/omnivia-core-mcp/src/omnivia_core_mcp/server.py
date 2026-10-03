@@ -166,6 +166,10 @@ from omnivia_core.contracts.v1 import (
     RequestMetadata,
     ResponseEnvelope,
     SuccessResponseEnvelope,
+    TriggerDeclareInput,
+    TriggerHealthInput,
+    TriggerIngestInput,
+    TriggerLifecycleInput,
     codec,
     decode_evidence_capture_input,
     decode_import_start_input,
@@ -289,9 +293,10 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 #: call path in the same commit, and one that relaxes one does not leave a stale
 #: copy refusing valid input.
 #:
-#: Only the five the `authoring` profile adds, the four decision tools, the three
-#: Engineering Memory reads need local canonical
-#: decoders. The original six reads are unchanged accepted behaviour and are
+#: Each newer operation needs a local canonical decoder: the authoring additions
+#: (memory, evidence, import and the two job reads), the four decision tools, the
+#: three Engineering Memory reads and the four trigger operations.
+#: The original six reads are unchanged accepted behaviour and are
 #: validated where they always were -- at the service, which answers with its
 #: own typed refusal. The newer reads decode through the generated contract
 #: types' own `from_wire`, which is still the contract's own decode, not a local
@@ -309,6 +314,10 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "engineering.search": EngineeringSearchInput.from_wire,
     "engineering.expand": EngineeringExpandInput.from_wire,
     "engineering.context.build": EngineeringContextBuildInput.from_wire,
+    "trigger.declare": TriggerDeclareInput.from_wire,
+    "trigger.lifecycle": TriggerLifecycleInput.from_wire,
+    "trigger.ingest": TriggerIngestInput.from_wire,
+    "trigger.health": TriggerHealthInput.from_wire,
 }
 
 
@@ -982,8 +991,8 @@ def _call_tool(
     The manifest's purpose must be one the configuration allows, so a host
     granted `workspace_inspection` alone cannot retrieve knowledge with a tool
     it can see. The payload must be one the advertised schema declares, with no
-    authority-shaped key anywhere in it. And for the five operations the
-    `authoring` profile adds, the canonical contract must accept the values too
+    authority-shaped key anywhere in it. And for the operations
+    `_CANONICAL_INPUT` names, the canonical contract must accept the values too
     -- its own public decoder decides that, and a mutation's idempotency key is
     put through the envelope's own predicate beside it.
 
@@ -1134,7 +1143,7 @@ def _request(
     trip to find that out.
 
     **Values are checked too, and by the contract itself.** A key list is not a
-    schema, so the five operations the `authoring` profile added go through
+    schema, so the operations :data:`_CANONICAL_INPUT` names go through
     :func:`_refuse_uncanonical`, which runs the public
     `omnivia_core.contracts.v1` decoder for the operation and nothing of its
     own. The service still validates what it receives -- it must, because MCP is
@@ -1268,10 +1277,9 @@ def _refuse_uncanonical(
     every constraint, so a caller reading it has what it needs to correct the
     call.
 
-    Only the five operations the `authoring` profile adds are checked, because
-    they are the ones this phase added. Nothing here is a second opinion about
-    them: an operation absent from :data:`_CANONICAL_INPUT` is sent exactly as it
-    always was.
+    Only the operations :data:`_CANONICAL_INPUT` names are checked. Nothing here
+    is a second opinion about them: an operation absent from that table is sent
+    exactly as it always was.
     """
     decode = _CANONICAL_INPUT.get(exposed.operation)
     if decode is None:
@@ -1426,8 +1434,8 @@ async def serve(*, session: ConnectedSession) -> None:
 #: are the requirement's own figures, and a build whose manifest has moved fails
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
-    RESTRICTED_PROFILE: 13,
-    AUTHORING_PROFILE: 18,
+    RESTRICTED_PROFILE: 14,
+    AUTHORING_PROFILE: 22,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

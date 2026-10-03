@@ -1169,6 +1169,63 @@
     },
     "ResultUseEvaluateResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/ResultUseEvaluateResult"
+    },
+    "TriggerKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerKind"
+    },
+    "TriggerInitialSubscriptionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerInitialSubscriptionState"
+    },
+    "TriggerSubscriptionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerSubscriptionState"
+    },
+    "TriggerDeliveryStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeliveryStatus"
+    },
+    "TriggerProcessingStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerProcessingStatus"
+    },
+    "TriggerFailureSource": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerFailureSource"
+    },
+    "TriggerDeclareInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput"
+    },
+    "TriggerDeclareResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareResult"
+    },
+    "TriggerLifecycleInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleInput"
+    },
+    "TriggerLifecycleResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleResult"
+    },
+    "TriggerIngestInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestInput"
+    },
+    "TriggerIngestResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestResult"
+    },
+    "TriggerHealthInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthInput"
+    },
+    "TriggerHealthResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthResult"
+    },
+    "TriggerHealth": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealth"
+    },
+    "TriggerSubscriptionHealth": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerSubscriptionHealth"
+    },
+    "TriggerObservationHealth": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerObservationHealth"
+    },
+    "TriggerFailure": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerFailure"
+    },
+    "TriggerDeliveryCounts": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeliveryCounts"
     }
   }
 }

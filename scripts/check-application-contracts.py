@@ -24,7 +24,7 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   semantic expectation (version/capability negotiation math, retry
   fail-safety, tolerant decode of an otherwise-invalid document, and so on);
 - the canonical ``x-omnivia-operation-catalogue`` annotation holds exactly the
-  frozen 20 application operations, in the frozen order, each strictly valid
+  frozen 61 application operations, in the frozen order, each strictly valid
   against ``OperationMetadata``, binding resolvable in-contract payload
   references, and carrying exactly the frozen scope, capability, completion,
   pagination, idempotency, precondition, audit and allowed-error posture -- with
@@ -1308,6 +1308,16 @@ _ENG_CAPTURE_MUT: tuple[str, ...] = tuple(
 #: `conflict`, but there is no bounded manifest here, so `size_limit_exceeded` does
 #: not apply the way it does to `engineering.source.record`.
 _ENG_REPOSITORY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Trigger configuration (C21). A declaration names a released Workflow version, which
+#: the Workflow Runtime must hold (`not_found`); a lifecycle move names a trigger bound to
+#: the Project and Workflow given (`not_found`). A declaration whose plan is not the
+#: released plan, or a subscription move the trigger store refuses, is a `conflict`.
+_TRIGGER_CONFIGURE: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "not_found"))
+)
+#: Ingestion names the declared trigger it delivers to, so it can fail to find it. A
+#: stimulus the trigger does not admit is recorded as dead-lettered, not refused.
+_TRIGGER_INGEST: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1349,6 +1359,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
     "ENG_CAPTURE_MUT": _ENG_CAPTURE_MUT,
     "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
+    "TRIGGER_CONFIGURE": _TRIGGER_CONFIGURE,
+    "TRIGGER_INGEST": _TRIGGER_INGEST,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1378,9 +1390,12 @@ class FrozenOperation(NamedTuple):
     paginated: bool
     job_kind: str | None = None
     terminal_result: str | None = None
+    #: The largest page served. Paginated operations default to the frozen page size; only
+    #: `trigger.health` serves less (`MAX_TRIGGER_PAGE`, 50 triggers).
+    max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 28 application operations, in the frozen code-point order. Runtime
+#: The exact 61 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1631,6 +1646,25 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("decision:read",), "none", "decision.read",
         "decision", "ResultUseEvaluate", "ANALYSIS_START", False,
     ),
+    # Trigger telemetry (C21). Configuration and ingestion are separate grants, so a
+    # principal allowed to declare or move a trigger is not thereby allowed to deliver a
+    # stimulus to one, and the read carries neither.
+    "trigger.declare": FrozenOperation(
+        "workspace", ("trigger:configure",), "create", "trigger.configure",
+        "runtime", "TriggerDeclare", "TRIGGER_CONFIGURE", False,
+    ),
+    "trigger.lifecycle": FrozenOperation(
+        "workspace", ("trigger:configure",), "update", "trigger.configure",
+        "runtime", "TriggerLifecycle", "TRIGGER_CONFIGURE", False,
+    ),
+    "trigger.ingest": FrozenOperation(
+        "workspace", ("trigger:invoke",), "create", "trigger.invoke",
+        "runtime", "TriggerIngest", "TRIGGER_INGEST", False,
+    ),
+    "trigger.health": FrozenOperation(
+        "workspace", ("trigger:read",), "none", "trigger.read",
+        "runtime", "TriggerHealth", "POINT_READ", True, max_page_size=50,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
@@ -1665,7 +1699,7 @@ def _expected_entry(name: str, frozen: FrozenOperation) -> dict[str, Any]:
         }
     pagination: dict[str, Any] = {"paginated": frozen.paginated}
     if frozen.paginated:
-        pagination["max_page_size"] = FROZEN_PAGE_SIZE
+        pagination["max_page_size"] = frozen.max_page_size
     return {
         "name": name,
         "scope": {
@@ -2001,10 +2035,12 @@ def check_operation_catalogue_postures() -> list[str]:
             # float that Draft 2020-12 accepts as an integer and that compares
             # equal to 1000, so an equality test alone would let it through here.
             page_size = pagination.get("max_page_size")
-            if type(page_size) is not int or page_size != FROZEN_PAGE_SIZE:
+            frozen = FROZEN_OPERATIONS.get(name) if isinstance(name, str) else None
+            expected_page_size = FROZEN_PAGE_SIZE if frozen is None else frozen.max_page_size
+            if type(page_size) is not int or page_size != expected_page_size:
                 findings.append(
                     f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].pagination: max_page_size must be "
-                    f"the integer {FROZEN_PAGE_SIZE}, found {page_size!r}"
+                    f"the integer {expected_page_size}, found {page_size!r}"
                 )
         if idempotency.get("required") and not idempotency.get("supports_idempotency_key"):
             findings.append(

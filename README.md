@@ -188,7 +188,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **55 application operations** and binds
+`operations.schema.json` names exactly **61 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -199,7 +199,7 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Fifty-five are workspace-scoped:
+Fifty-nine are workspace-scoped:
 
 ```text
 analysis.start          candidate.approve   candidate.reject    chat.command
@@ -221,7 +221,8 @@ engineering.source.record
 evidence.capture        evidence.search     graph.traverse      import.start
 job.cancel              job.events          job.get             job.retry
 knowledge.propose       knowledge.search    memory.create       memory.get
-memory.list             memory.search       record.supersede    workflow.control
+memory.list             memory.search       record.supersede    trigger.declare
+trigger.health          trigger.ingest      trigger.lifecycle   workflow.control
 workflow.inspect        workflow.review     workflow.start      workspace.inspect
 ```
 
@@ -231,17 +232,23 @@ probe can never be dispatched as a product application operation. There is no
 `job.resume`: A2.4 folded resume into `job.retry`, which reports
 `retry_scheduled`, `resume_scheduled`, or `not_retryable`.
 
+The four trigger operations are `trigger.declare` and `trigger.lifecycle`, which
+configure a trigger's subscription; `trigger.ingest`, one synchronous,
+record-only admission that starts no job or run, so its processing status reads
+unlinked; and `trigger.health`, a bounded (paginated) read.
+
 The catalogue is a single source. `OPERATION_CATALOGUE` is generated from it for
 both Python and TypeScript, so neither language carries a hand-maintained
 operation list that could drift from the schemas.
 
 Canonical source and generated artifacts:
 
-- `contracts/application/v1/schemas/*.schema.json` — sixteen JSON Schema
+- `contracts/application/v1/schemas/*.schema.json` — twenty-one JSON Schema
   Draft 2020-12 documents (`common`, `compatibility`, `errors`, `envelopes`,
   `service`, `records`, `jobs`, `operations`, `workspace`, `memory`,
   `evidence`, `knowledge`, `graph`, `context-pack`, `compatibility-matrix`,
-  and the reference-only `application-v1` registry). These are the single
+  `analysis`, `chat`, `decision`, `engineering`, `runtime`, and the
+  reference-only `application-v1` registry). These are the single
   source of truth; everything else is derived from them.
 - `contracts/application/v1/fixtures/` — thirteen canonical example wire
   documents plus `manifest.json`, covering compatible negotiation, capability
@@ -869,14 +876,16 @@ Canonical source and generated artifacts:
   request presenting a token an earlier result issued is a continuation of it. A
   declaration is kept as an assertion and checked against what was derived.
 
-  The corpus holds 77 exchanges: one primary success for each of the 22
-  operations, an honest replay and an idempotency conflict for each of the 10
-  mutations, a second page for each of the 7 paginated operations, one case for
-  each of the 26 frozen error codes on an operation the catalogue permits to
-  raise it, and two further readings of one job — failed, then succeeded — so
-  that a job's life is observed across several exchanges rather than asserted
-  once, and so that the frozen terminal-result and attempt-history rules have
-  something to run against. It ships beside the canonical wire fixtures so every
+  The corpus holds 167 exchanges: one primary success for each of the 61
+  operations, an honest replay and an idempotency conflict for each of the 32
+  mutations, a second page for each of the 10 paginated operations, one case for
+  each of the 29 frozen error codes on an operation the catalogue permits to
+  raise it, one further refusal of an unsupported minor version (on
+  `decision.result_use.evaluate`), and two further readings of one job — failed,
+  then succeeded — so that a job's life is observed across several exchanges
+  rather than asserted once, and so that the frozen terminal-result and
+  attempt-history rules have something to run against. It ships beside the
+  canonical wire fixtures so every
   adapter can read it from an installed wheel, but it is deliberately **not**
   registered in
   `fixtures/manifest.json`: that manifest describes one wire envelope per entry —
@@ -967,7 +976,7 @@ Regenerate and verify:
 ```
 
 The conformance gate checks the canonical schema directory holds exactly the
-sixteen frozen schema documents (an extra one would be read by no check yet
+twenty-one frozen schema documents (an extra one would be read by no check yet
 packaged by the wheel, and a missing one is reported in the same place),
 validates every schema against the Draft 2020-12
 metaschema and its exact `$schema`/`$id`, resolves every `$ref` offline,

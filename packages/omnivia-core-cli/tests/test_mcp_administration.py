@@ -491,6 +491,9 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
             "job_observation",
             "knowledge_retrieval",
             "memory_authoring",
+            "trigger_configuration",
+            "trigger_ingestion",
+            "trigger_observation",
             "workspace_inspection",
         ],
         "allowed_workspace_ids": [WORKSPACE],
@@ -532,6 +535,7 @@ def test_a_restricted_configure_writes_the_restricted_ceiling_and_purposes(
         "engineering_expand",
         "engineering_context",
         "workspace_inspection",
+        "trigger_observation",
     ]
     assert harness.service.setups["claude-code"]["authoring_intent"] is False
 

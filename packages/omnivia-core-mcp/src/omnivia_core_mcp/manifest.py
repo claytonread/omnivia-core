@@ -1,8 +1,8 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds fifty-four operations. This module names thirteen of them in the
-``restricted`` profile and eighteen in the ``authoring`` profile. A newly
+holds sixty-one operations. This module names fourteen of them in the
+``restricted`` profile and twenty-two in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -15,17 +15,19 @@ selection and enumeration; grant administration; governance decisions;
 unrestricted filesystem path selection; and administrative configuration. None
 of those is a tool a model calls.
 
-**The restricted thirteen** are the workspace and governed-memory reads, the
-Engineering Memory reads, and the four decision tools.
+**The restricted fourteen** are the workspace and governed-memory reads, the
+Engineering Memory reads, the four decision tools, and the trigger health read.
 ``decision.evaluate`` is the one side-effecting operation in this profile; it is
 admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring eighteen** are those thirteen plus exactly three mutations --
-``memory.create``, ``evidence.capture`` and ``import.start`` -- and the two job
-observations, ``job.get`` and ``job.events``, that make an asynchronous import
-followable. These four mutations across both profiles are the *only*
-side-effecting operations this module can admit, and they are named as a literal
-set: another mutation cannot arrive through a contract or audit-category change.
+**The authoring twenty-two** are those fourteen plus exactly six mutations --
+``memory.create``, ``evidence.capture``, ``import.start``, and the three trigger
+mutations ``trigger.declare``, ``trigger.lifecycle`` and ``trigger.ingest`` --
+and the two job observations, ``job.get`` and ``job.events``, that make an
+asynchronous import followable. Those six, with ``decision.evaluate``, are the
+*only* side-effecting operations this module can admit, and they are named as a
+literal set: another mutation cannot arrive through a contract or audit-category
+change.
 
 **Which profile a server advertises is decided once, at startup, by
 :mod:`omnivia_core_mcp.configuration`** -- never by a prompt or by a tool call's
@@ -35,7 +37,7 @@ read-only surface rather than the wider one.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
 any entry that is neither a catalogue read (``side_effect="none"`` *and*
-``audit_category="read"``) nor one of the three named mutations. A future editor
+``audit_category="read"``) nor one of the named mutations. A future editor
 who adds ``record.supersede`` here does not ship a destructive tool with a wrong
 comment; the package fails to import.
 
@@ -95,8 +97,10 @@ __all__ = [
 #: ``2.0`` is the major bump that adds a second, wider profile and the mutation
 #: wrapper; ``2.2`` withdraws checkpoint append; ``2.3`` also withdraws handoff
 #: until an ordinary MCP connection can select a previously shared session
-#: without accepting caller-owned binding identity.
-MANIFEST_VERSION: Final = "2.3"
+#: without accepting caller-owned binding identity; ``2.4`` adds the trigger
+#: operations -- ``trigger_health`` to the restricted profile, and the three
+#: trigger mutations to the authoring profile.
+MANIFEST_VERSION: Final = "2.4"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -122,6 +126,9 @@ ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
         "evidence.capture",
         "import.start",
         "decision.evaluate",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
     }
 )
 
@@ -332,15 +339,29 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
             "starts Core or processes records. Read-only."
         ),
     ),
+    ExposedOperation(
+        tool_name="trigger_health",
+        operation="trigger.health",
+        purpose="trigger_observation",
+        title="Report trigger health",
+        description=(
+            "Read a bounded health view for one Project and one Workflow: one page "
+            "of its triggers in identifier order, or one named trigger. Each reports "
+            "its subscription state, delivery counts and recent observations, newest "
+            "first. Read-only and paginated."
+        ),
+    ),
 )
 
 #: What the `authoring` profile adds, and all it adds: the mutations and the
 #: observations that make the asynchronous ones followable.
 #:
 #: The purposes are the service's own -- `memory_authoring` for memory,
-#: `content_ingestion` for both ways content enters a workspace, and
-#: `job_observation` for watching what that produced. A purpose invented here
-#: would be refused at the first call rather than caught by review.
+#: `content_ingestion` for both ways content enters a workspace,
+#: `trigger_configuration` for declaring and changing triggers, `trigger_ingestion`
+#: for admitting a stimulus, and `job_observation` for watching what that produced.
+#: A purpose invented here would be refused at the first call rather than caught
+#: by review.
 _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
     ExposedOperation(
         tool_name="memory_create",
@@ -381,6 +402,44 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
         ),
     ),
     ExposedOperation(
+        tool_name="trigger_declare",
+        operation="trigger.declare",
+        purpose="trigger_configuration",
+        title="Declare a trigger",
+        description=(
+            "Declare one trigger, bound to one Project and one released Workflow "
+            "version, with the subscription state it starts in. Declaring starts "
+            "nothing, and the trigger admits a stimulus only through `trigger_ingest`. "
+            "Writes. Takes an outer object with the operation input under `input` and "
+            "a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="trigger_lifecycle",
+        operation="trigger.lifecycle",
+        purpose="trigger_configuration",
+        title="Change a trigger's subscription state",
+        description=(
+            "Move one declared trigger's subscription to a new state, through the "
+            "transitions the trigger store enforces. `disabled` moves nowhere, and an "
+            "invalid move is refused. Writes. Takes an outer object with the operation "
+            "input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="trigger_ingest",
+        operation="trigger.ingest",
+        purpose="trigger_ingestion",
+        title="Admit one trigger stimulus",
+        description=(
+            "Admit one stimulus to a declared trigger, synchronously and once. Core "
+            "records one observation of it with its delivery decision and a digest of "
+            "its envelope; the envelope and its payload are never stored. Admission "
+            "starts no job or run. Writes. Takes an outer object with the operation "
+            "input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
         tool_name="job_get",
         operation="job.get",
         purpose="job_observation",
@@ -405,8 +464,8 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
     ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then five
-#: additions (19 tools total).
+#: The `authoring` profile: the restricted surface, in its order, then eight
+#: additions (22 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
@@ -417,7 +476,7 @@ AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #:
 #: Kept under its original name because it is what `omnivia_core_mcp.server` and
 #: the operation-traceability ledger already reach for: a caller written before
-#: profiles existed advertises the restricted thirteen, which is the failure
+#: profiles existed advertises the restricted fourteen, which is the failure
 #: mode this name should have.
 EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = RESTRICTED_MANIFEST
 
@@ -433,8 +492,8 @@ def _admit(exposed: ExposedOperation) -> OperationMetadata:
     An operation is admissible on exactly two grounds: the catalogue calls it a
     read -- ``side_effect="none"`` *and* ``audit_category="read"``, both, so an
     operation that mutates under a read's audit category or audits as a mutation
-    while claiming no side effect is refused either way -- or it is one of the
-    four mutations :data:`ADMITTED_MUTATIONS` names.
+    while claiming no side effect is refused either way -- or it is
+    one of the mutations :data:`ADMITTED_MUTATIONS` names.
 
     Each refusal is a mistake this module exists to make impossible rather than
     to document: an operation that is not in the landed catalogue at all, and a
@@ -558,10 +617,11 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the eighteen deletes or overwrites: the four mutations
-            # create, and supersession and cancellation are not exposed at all.
+            # None of the twenty-two deletes anything: the mutations create or
+            # move a subscription's state, and supersession and cancellation are
+            # not exposed at all.
             destructive_hint=False,
-            # Only where the catalogue proves it. The four mutations declare
+            # Only where the catalogue proves it. The mutations declare
             # `safe_to_retry=False` -- a repeat is settled by the idempotency
             # key, which is not the same claim as an idempotent call -- so this
             # is false for them and true for the reads, without a line here

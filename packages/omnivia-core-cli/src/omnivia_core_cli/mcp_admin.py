@@ -161,6 +161,7 @@ _RESTRICTED_PURPOSES: Final[tuple[str, ...]] = (
     "engineering_expand",
     "engineering_context",
     "workspace_inspection",
+    "trigger_observation",
 )
 PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
     "restricted": _RESTRICTED_PURPOSES,
@@ -171,6 +172,8 @@ PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
                 "content_ingestion",
                 "job_observation",
                 "memory_authoring",
+                "trigger_configuration",
+                "trigger_ingestion",
             )
         )
     ),

@@ -500,6 +500,25 @@ __all__ = [
     "SupersessionReference",
     "Timestamp",
     "TraceId",
+    "TriggerDeclareInput",
+    "TriggerDeclareResult",
+    "TriggerDeliveryCounts",
+    "TriggerDeliveryStatus",
+    "TriggerFailure",
+    "TriggerFailureSource",
+    "TriggerHealth",
+    "TriggerHealthInput",
+    "TriggerHealthResult",
+    "TriggerIngestInput",
+    "TriggerIngestResult",
+    "TriggerInitialSubscriptionState",
+    "TriggerKind",
+    "TriggerLifecycleInput",
+    "TriggerLifecycleResult",
+    "TriggerObservationHealth",
+    "TriggerProcessingStatus",
+    "TriggerSubscriptionHealth",
+    "TriggerSubscriptionState",
     "UpgradeState",
     "VersionCapabilityEnvelope",
     "VersionWindow",
@@ -4068,6 +4087,92 @@ boundary removed history the Run cannot resume without. Neither is answered by s
 or reconstructing the history that could not be verified. Closed at the schema and open on the
 wire, with the same fail-safe reading as `RunStatus`.
 """
+
+TriggerKind: TypeAlias = str
+"""The kind of stimulus a trigger declares. Closed: a value outside this vocabulary is refused.
+Declaring a kind starts nothing, and `schedule` names no scheduler; the one stimulus this build
+admits is `trigger.ingest`.
+"""
+
+TriggerInitialSubscriptionState: TypeAlias = str
+"""The state a trigger's subscription starts in. A subscription begins `active` or `paused`; nothing
+returns to the start.
+"""
+
+TriggerSubscriptionState: TypeAlias = str
+"""The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription
+admits a stimulus; any other state dead-letters it as `inactive_trigger`.
+"""
+
+TriggerDeliveryStatus: TypeAlias = str
+"""What happened to one stimulus at the door. `accepted` is a stimulus the trigger admitted.
+`duplicate` repeats an accepted stimulus with identical content. `dead_lettered` was recorded and
+not admitted, and its reason says why. `uncertain` could not be confirmed. Delivery says nothing
+about whether work ran; that is `TriggerProcessingStatus`.
+"""
+
+TriggerProcessingStatus: TypeAlias = str
+"""How far the work a stimulus started has got, read from the job and run ledgers through the
+observation's link. `not_applicable` is a stimulus that was not accepted. `unlinked` is an
+accepted stimulus with no job or run linked, which every stimulus `trigger.ingest` admits in this
+build, since it starts no work. Acceptance alone never reads as `succeeded`.
+"""
+
+TriggerFailureSource: TypeAlias = str
+"""Where a trigger failure was read from: the delivery door, the job ledger or the run ledger."""
+
+@dataclass(frozen=True, slots=True)
+class TriggerDeliveryCounts:
+    """How many of a trigger's returned observations carry each delivery status."""
+
+    accepted: int
+    duplicate: int
+    dead_lettered: int
+    uncertain: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["accepted"] = self.accepted
+        wire["duplicate"] = self.duplicate
+        wire["dead_lettered"] = self.dead_lettered
+        wire["uncertain"] = self.uncertain
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TriggerDeliveryCounts"
+    ) -> TriggerDeliveryCounts:
+        """Decode a wire payload into a TriggerDeliveryCounts.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_accepted = _decode_int(_require_field(mapping, "accepted", path), f"{path}.accepted")
+        field_duplicate = _decode_int(
+            _require_field(mapping, "duplicate", path),
+            f"{path}.duplicate",
+        )
+        field_dead_lettered = _decode_int(
+            _require_field(mapping, "dead_lettered", path),
+            f"{path}.dead_lettered",
+        )
+        field_uncertain = _decode_int(
+            _require_field(mapping, "uncertain", path),
+            f"{path}.uncertain",
+        )
+        return cls(
+            accepted=field_accepted,
+            duplicate=field_duplicate,
+            dead_lettered=field_dead_lettered,
+            uncertain=field_uncertain,
+        )
+
 
 ProbeKind: TypeAlias = str
 """Open, dot-namespaced code naming which runtime probe is being requested or answered. The frozen,
@@ -10876,6 +10981,816 @@ class WorkflowReviewInput:
 
 
 @dataclass(frozen=True, slots=True)
+class TriggerDeclareInput:
+    """Input for `trigger.declare`. Declares one trigger, bound to one Project and one released
+    Workflow version, with the subscription state it starts in, as one fenced write.
+    Declaring starts nothing: no scheduler, driver or poll runs, and the trigger admits a
+    stimulus only through `trigger.ingest`. A later declaration of the same trigger is a new
+    numbered version. It may change the Workflow version, plan, event contract or
+    configuration, but never the trigger's kind, Project or Workflow. Workspace-scoped
+    through the request envelope's selected workspace.
+    """
+
+    project_id: Identifier
+    workflow_id: Identifier
+    trigger_id: Identifier
+    trigger_kind: TriggerKind
+    workflow_version: ReleaseVersion
+    plan_hash: ContentChecksum
+    event_type: Identifier
+    event_contract_digest: ContentChecksum
+    configuration_digest: ContentChecksum
+    subscription_state: TriggerInitialSubscriptionState
+    subscription_reason: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["project_id"] = self.project_id
+        wire["workflow_id"] = self.workflow_id
+        wire["trigger_id"] = self.trigger_id
+        wire["trigger_kind"] = self.trigger_kind
+        wire["workflow_version"] = self.workflow_version
+        wire["plan_hash"] = self.plan_hash
+        wire["event_type"] = self.event_type
+        wire["event_contract_digest"] = self.event_contract_digest
+        wire["configuration_digest"] = self.configuration_digest
+        wire["subscription_state"] = self.subscription_state
+        wire["subscription_reason"] = self.subscription_reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerDeclareInput") -> TriggerDeclareInput:
+        """Decode a wire payload into a TriggerDeclareInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_project_id = _decode_str(
+            _require_field(mapping, "project_id", path),
+            f"{path}.project_id",
+        )
+        field_workflow_id = _decode_str(
+            _require_field(mapping, "workflow_id", path),
+            f"{path}.workflow_id",
+        )
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_trigger_kind = _decode_str(
+            _require_field(mapping, "trigger_kind", path),
+            f"{path}.trigger_kind",
+        )
+        field_workflow_version = _decode_str(
+            _require_field(mapping, "workflow_version", path),
+            f"{path}.workflow_version",
+        )
+        field_plan_hash = _decode_str(
+            _require_field(mapping, "plan_hash", path),
+            f"{path}.plan_hash",
+        )
+        field_event_type = _decode_str(
+            _require_field(mapping, "event_type", path),
+            f"{path}.event_type",
+        )
+        field_event_contract_digest = _decode_str(
+            _require_field(mapping, "event_contract_digest", path),
+            f"{path}.event_contract_digest",
+        )
+        field_configuration_digest = _decode_str(
+            _require_field(mapping, "configuration_digest", path),
+            f"{path}.configuration_digest",
+        )
+        field_subscription_state = _decode_str(
+            _require_field(mapping, "subscription_state", path),
+            f"{path}.subscription_state",
+        )
+        field_subscription_reason = _decode_str(
+            _require_field(mapping, "subscription_reason", path),
+            f"{path}.subscription_reason",
+        )
+        return cls(
+            project_id=field_project_id,
+            workflow_id=field_workflow_id,
+            trigger_id=field_trigger_id,
+            trigger_kind=field_trigger_kind,
+            workflow_version=field_workflow_version,
+            plan_hash=field_plan_hash,
+            event_type=field_event_type,
+            event_contract_digest=field_event_contract_digest,
+            configuration_digest=field_configuration_digest,
+            subscription_state=field_subscription_state,
+            subscription_reason=field_subscription_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerDeclareResult:
+    """Result of `trigger.declare`: the declaration as recorded, and the subscription it starts
+    in. A replay under the same idempotency key returns this result without a second write.
+    """
+
+    trigger_id: Identifier
+    declaration_sequence: int
+    subscription_state: TriggerSubscriptionState
+    subscription_sequence: int
+    declared_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["trigger_id"] = self.trigger_id
+        wire["declaration_sequence"] = self.declaration_sequence
+        wire["subscription_state"] = self.subscription_state
+        wire["subscription_sequence"] = self.subscription_sequence
+        wire["declared_at"] = self.declared_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerDeclareResult") -> TriggerDeclareResult:
+        """Decode a wire payload into a TriggerDeclareResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_declaration_sequence = _decode_int(
+            _require_field(mapping, "declaration_sequence", path),
+            f"{path}.declaration_sequence",
+        )
+        field_subscription_state = _decode_str(
+            _require_field(mapping, "subscription_state", path),
+            f"{path}.subscription_state",
+        )
+        field_subscription_sequence = _decode_int(
+            _require_field(mapping, "subscription_sequence", path),
+            f"{path}.subscription_sequence",
+        )
+        field_declared_at = _decode_str(
+            _require_field(mapping, "declared_at", path),
+            f"{path}.declared_at",
+        )
+        return cls(
+            trigger_id=field_trigger_id,
+            declaration_sequence=field_declaration_sequence,
+            subscription_state=field_subscription_state,
+            subscription_sequence=field_subscription_sequence,
+            declared_at=field_declared_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerLifecycleInput:
+    """Input for `trigger.lifecycle`. Moves one declared trigger's subscription to a new state,
+    through the transitions the trigger store enforces: `active` moves to `paused`,
+    `unavailable` or `disabled`; `paused` moves to `active` or `disabled`; `unavailable`
+    moves to `active`, `paused` or `disabled`; `disabled` moves nowhere. An invalid move is
+    refused as `conflict`. The trigger must be bound to the Project and Workflow named, or it
+    reads as not found. Workspace-scoped through the request envelope's selected workspace.
+    """
+
+    project_id: Identifier
+    workflow_id: Identifier
+    trigger_id: Identifier
+    subscription_state: TriggerSubscriptionState
+    reason: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["project_id"] = self.project_id
+        wire["workflow_id"] = self.workflow_id
+        wire["trigger_id"] = self.trigger_id
+        wire["subscription_state"] = self.subscription_state
+        wire["reason"] = self.reason
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TriggerLifecycleInput"
+    ) -> TriggerLifecycleInput:
+        """Decode a wire payload into a TriggerLifecycleInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_project_id = _decode_str(
+            _require_field(mapping, "project_id", path),
+            f"{path}.project_id",
+        )
+        field_workflow_id = _decode_str(
+            _require_field(mapping, "workflow_id", path),
+            f"{path}.workflow_id",
+        )
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_subscription_state = _decode_str(
+            _require_field(mapping, "subscription_state", path),
+            f"{path}.subscription_state",
+        )
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        return cls(
+            project_id=field_project_id,
+            workflow_id=field_workflow_id,
+            trigger_id=field_trigger_id,
+            subscription_state=field_subscription_state,
+            reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerLifecycleResult:
+    """Result of `trigger.lifecycle`: the subscription state the trigger now holds. A replay
+    under the same idempotency key returns this result without a second write.
+    """
+
+    trigger_id: Identifier
+    subscription_state: TriggerSubscriptionState
+    subscription_sequence: int
+    reason: OpenCode
+    observed_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["trigger_id"] = self.trigger_id
+        wire["subscription_state"] = self.subscription_state
+        wire["subscription_sequence"] = self.subscription_sequence
+        wire["reason"] = self.reason
+        wire["observed_at"] = self.observed_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TriggerLifecycleResult"
+    ) -> TriggerLifecycleResult:
+        """Decode a wire payload into a TriggerLifecycleResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_subscription_state = _decode_str(
+            _require_field(mapping, "subscription_state", path),
+            f"{path}.subscription_state",
+        )
+        field_subscription_sequence = _decode_int(
+            _require_field(mapping, "subscription_sequence", path),
+            f"{path}.subscription_sequence",
+        )
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        field_observed_at = _decode_str(
+            _require_field(mapping, "observed_at", path),
+            f"{path}.observed_at",
+        )
+        return cls(
+            trigger_id=field_trigger_id,
+            subscription_state=field_subscription_state,
+            subscription_sequence=field_subscription_sequence,
+            reason=field_reason,
+            observed_at=field_observed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerIngestInput:
+    """Input for `trigger.ingest`: one synchronous, one-shot admission of one stimulus to a
+    declared trigger. Core records exactly one observation of it, with its delivery decision
+    and a digest of its envelope; the envelope and its payload are never stored. The decision
+    is taken from the trigger's current declaration and subscription. An `active`
+    subscription with a matching event type admits the stimulus. Any other state, or a
+    mismatched type, is recorded as dead-lettered. A repeat of an accepted stimulus under the
+    same event idempotency key is recorded as a duplicate when its digest matches, and
+    refused as `idempotency_conflict` when it does not. Every admission in this build is
+    record-only: it starts no job or run, so its processing reads `unlinked`. Workspace-
+    scoped through the request envelope's selected workspace.
+    """
+
+    project_id: Identifier
+    workflow_id: Identifier
+    trigger_id: Identifier
+    event_id: Identifier
+    event_idempotency_key: Identifier
+    event_type: Identifier
+    envelope_digest: ContentChecksum
+    occurred_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["project_id"] = self.project_id
+        wire["workflow_id"] = self.workflow_id
+        wire["trigger_id"] = self.trigger_id
+        wire["event_id"] = self.event_id
+        wire["event_idempotency_key"] = self.event_idempotency_key
+        wire["event_type"] = self.event_type
+        wire["envelope_digest"] = self.envelope_digest
+        if self.occurred_at is not None:
+            wire["occurred_at"] = self.occurred_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerIngestInput") -> TriggerIngestInput:
+        """Decode a wire payload into a TriggerIngestInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_project_id = _decode_str(
+            _require_field(mapping, "project_id", path),
+            f"{path}.project_id",
+        )
+        field_workflow_id = _decode_str(
+            _require_field(mapping, "workflow_id", path),
+            f"{path}.workflow_id",
+        )
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_event_id = _decode_str(_require_field(mapping, "event_id", path), f"{path}.event_id")
+        field_event_idempotency_key = _decode_str(
+            _require_field(mapping, "event_idempotency_key", path),
+            f"{path}.event_idempotency_key",
+        )
+        field_event_type = _decode_str(
+            _require_field(mapping, "event_type", path),
+            f"{path}.event_type",
+        )
+        field_envelope_digest = _decode_str(
+            _require_field(mapping, "envelope_digest", path),
+            f"{path}.envelope_digest",
+        )
+        field_occurred_at: Timestamp | None = None
+        if "occurred_at" in mapping:
+            raw_occurred_at = mapping["occurred_at"]
+            if raw_occurred_at is None:
+                raise ContractDecodeError(
+                    f"{path}.occurred_at: null is not a valid value"
+                )
+            field_occurred_at = _decode_str(raw_occurred_at, f"{path}.occurred_at")
+        return cls(
+            project_id=field_project_id,
+            workflow_id=field_workflow_id,
+            trigger_id=field_trigger_id,
+            event_id=field_event_id,
+            event_idempotency_key=field_event_idempotency_key,
+            event_type=field_event_type,
+            envelope_digest=field_envelope_digest,
+            occurred_at=field_occurred_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerIngestResult:
+    """Result of `trigger.ingest`: what the door decided and what that decision means for
+    processing. Delivery and processing are separate fields. A dead-lettered or duplicate
+    delivery reads `not_applicable`, and an accepted record-only delivery reads `unlinked`,
+    never `succeeded`. A replay under the same idempotency key returns this result without a
+    second write.
+    """
+
+    trigger_id: Identifier
+    trigger_observation_id: Identifier
+    observation_sequence: int
+    delivery_status: TriggerDeliveryStatus
+    processing: TriggerProcessingStatus
+    uncertainty: tuple[OpenCode, ...]
+    observed_at: Timestamp
+    delivery_reason: OpenCode | None = None
+    duplicate_of_observation_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["trigger_id"] = self.trigger_id
+        wire["trigger_observation_id"] = self.trigger_observation_id
+        wire["observation_sequence"] = self.observation_sequence
+        wire["delivery_status"] = self.delivery_status
+        if self.delivery_reason is not None:
+            wire["delivery_reason"] = self.delivery_reason
+        if self.duplicate_of_observation_id is not None:
+            wire["duplicate_of_observation_id"] = self.duplicate_of_observation_id
+        wire["processing"] = self.processing
+        wire["uncertainty"] = list(self.uncertainty)
+        wire["observed_at"] = self.observed_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerIngestResult") -> TriggerIngestResult:
+        """Decode a wire payload into a TriggerIngestResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_trigger_observation_id = _decode_str(
+            _require_field(mapping, "trigger_observation_id", path),
+            f"{path}.trigger_observation_id",
+        )
+        field_observation_sequence = _decode_int(
+            _require_field(mapping, "observation_sequence", path),
+            f"{path}.observation_sequence",
+        )
+        field_delivery_status = _decode_str(
+            _require_field(mapping, "delivery_status", path),
+            f"{path}.delivery_status",
+        )
+        field_delivery_reason: OpenCode | None = None
+        if "delivery_reason" in mapping:
+            raw_delivery_reason = mapping["delivery_reason"]
+            if raw_delivery_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.delivery_reason: null is not a valid value"
+                )
+            field_delivery_reason = _decode_str(raw_delivery_reason, f"{path}.delivery_reason")
+        field_duplicate_of_observation_id: Identifier | None = None
+        if "duplicate_of_observation_id" in mapping:
+            raw_duplicate_of_observation_id = mapping["duplicate_of_observation_id"]
+            if raw_duplicate_of_observation_id is None:
+                raise ContractDecodeError(
+                    f"{path}.duplicate_of_observation_id: null is not a valid value"
+                )
+            field_duplicate_of_observation_id = _decode_str(
+                raw_duplicate_of_observation_id,
+                f"{path}.duplicate_of_observation_id",
+            )
+        field_processing = _decode_str(
+            _require_field(mapping, "processing", path),
+            f"{path}.processing",
+        )
+        field_uncertainty_items = _decode_sequence(
+            _require_field(mapping, "uncertainty", path),
+            f"{path}.uncertainty",
+        )
+        field_uncertainty = tuple(
+            _decode_str(item, f"{path}.uncertainty[{index}]")
+            for index, item in enumerate(field_uncertainty_items)
+        )
+        field_observed_at = _decode_str(
+            _require_field(mapping, "observed_at", path),
+            f"{path}.observed_at",
+        )
+        return cls(
+            trigger_id=field_trigger_id,
+            trigger_observation_id=field_trigger_observation_id,
+            observation_sequence=field_observation_sequence,
+            delivery_status=field_delivery_status,
+            delivery_reason=field_delivery_reason,
+            duplicate_of_observation_id=field_duplicate_of_observation_id,
+            processing=field_processing,
+            uncertainty=field_uncertainty,
+            observed_at=field_observed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerSubscriptionHealth:
+    """One trigger's current subscription. `state` is absent only when no subscription was ever
+    recorded for it.
+    """
+
+    subscription_sequence: int
+    state: TriggerSubscriptionState | None = None
+    reason: OpenCode | None = None
+    observed_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.state is not None:
+            wire["state"] = self.state
+        if self.reason is not None:
+            wire["reason"] = self.reason
+        if self.observed_at is not None:
+            wire["observed_at"] = self.observed_at
+        wire["subscription_sequence"] = self.subscription_sequence
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TriggerSubscriptionHealth"
+    ) -> TriggerSubscriptionHealth:
+        """Decode a wire payload into a TriggerSubscriptionHealth.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_state: TriggerSubscriptionState | None = None
+        if "state" in mapping:
+            raw_state = mapping["state"]
+            if raw_state is None:
+                raise ContractDecodeError(
+                    f"{path}.state: null is not a valid value"
+                )
+            field_state = _decode_str(raw_state, f"{path}.state")
+        field_reason: OpenCode | None = None
+        if "reason" in mapping:
+            raw_reason = mapping["reason"]
+            if raw_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.reason: null is not a valid value"
+                )
+            field_reason = _decode_str(raw_reason, f"{path}.reason")
+        field_observed_at: Timestamp | None = None
+        if "observed_at" in mapping:
+            raw_observed_at = mapping["observed_at"]
+            if raw_observed_at is None:
+                raise ContractDecodeError(
+                    f"{path}.observed_at: null is not a valid value"
+                )
+            field_observed_at = _decode_str(raw_observed_at, f"{path}.observed_at")
+        field_subscription_sequence = _decode_int(
+            _require_field(mapping, "subscription_sequence", path),
+            f"{path}.subscription_sequence",
+        )
+        return cls(
+            state=field_state,
+            reason=field_reason,
+            observed_at=field_observed_at,
+            subscription_sequence=field_subscription_sequence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerObservationHealth:
+    """One recorded observation of a trigger: what it was, what the door decided, and how far
+    its processing has got. It carries digests and bounded metadata, never the event payload.
+    """
+
+    trigger_observation_id: Identifier
+    observation_sequence: int
+    event_id: Identifier
+    event_idempotency_key: Identifier
+    event_type: Identifier
+    envelope_digest: ContentChecksum
+    observed_at: Timestamp
+    delivery_status: TriggerDeliveryStatus
+    processing: TriggerProcessingStatus
+    uncertainty: tuple[OpenCode, ...]
+    occurred_at: Timestamp | None = None
+    delivery_reason: OpenCode | None = None
+    duplicate_of_observation_id: Identifier | None = None
+    job_id: OpaqueToken | None = None
+    run_id: Identifier | None = None
+    job_state: JobState | None = None
+    run_status: RunStatus | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["trigger_observation_id"] = self.trigger_observation_id
+        wire["observation_sequence"] = self.observation_sequence
+        wire["event_id"] = self.event_id
+        wire["event_idempotency_key"] = self.event_idempotency_key
+        wire["event_type"] = self.event_type
+        wire["envelope_digest"] = self.envelope_digest
+        if self.occurred_at is not None:
+            wire["occurred_at"] = self.occurred_at
+        wire["observed_at"] = self.observed_at
+        wire["delivery_status"] = self.delivery_status
+        if self.delivery_reason is not None:
+            wire["delivery_reason"] = self.delivery_reason
+        if self.duplicate_of_observation_id is not None:
+            wire["duplicate_of_observation_id"] = self.duplicate_of_observation_id
+        if self.job_id is not None:
+            wire["job_id"] = self.job_id
+        if self.run_id is not None:
+            wire["run_id"] = self.run_id
+        wire["processing"] = self.processing
+        if self.job_state is not None:
+            wire["job_state"] = self.job_state
+        if self.run_status is not None:
+            wire["run_status"] = self.run_status
+        wire["uncertainty"] = list(self.uncertainty)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TriggerObservationHealth"
+    ) -> TriggerObservationHealth:
+        """Decode a wire payload into a TriggerObservationHealth.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_trigger_observation_id = _decode_str(
+            _require_field(mapping, "trigger_observation_id", path),
+            f"{path}.trigger_observation_id",
+        )
+        field_observation_sequence = _decode_int(
+            _require_field(mapping, "observation_sequence", path),
+            f"{path}.observation_sequence",
+        )
+        field_event_id = _decode_str(_require_field(mapping, "event_id", path), f"{path}.event_id")
+        field_event_idempotency_key = _decode_str(
+            _require_field(mapping, "event_idempotency_key", path),
+            f"{path}.event_idempotency_key",
+        )
+        field_event_type = _decode_str(
+            _require_field(mapping, "event_type", path),
+            f"{path}.event_type",
+        )
+        field_envelope_digest = _decode_str(
+            _require_field(mapping, "envelope_digest", path),
+            f"{path}.envelope_digest",
+        )
+        field_occurred_at: Timestamp | None = None
+        if "occurred_at" in mapping:
+            raw_occurred_at = mapping["occurred_at"]
+            if raw_occurred_at is None:
+                raise ContractDecodeError(
+                    f"{path}.occurred_at: null is not a valid value"
+                )
+            field_occurred_at = _decode_str(raw_occurred_at, f"{path}.occurred_at")
+        field_observed_at = _decode_str(
+            _require_field(mapping, "observed_at", path),
+            f"{path}.observed_at",
+        )
+        field_delivery_status = _decode_str(
+            _require_field(mapping, "delivery_status", path),
+            f"{path}.delivery_status",
+        )
+        field_delivery_reason: OpenCode | None = None
+        if "delivery_reason" in mapping:
+            raw_delivery_reason = mapping["delivery_reason"]
+            if raw_delivery_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.delivery_reason: null is not a valid value"
+                )
+            field_delivery_reason = _decode_str(raw_delivery_reason, f"{path}.delivery_reason")
+        field_duplicate_of_observation_id: Identifier | None = None
+        if "duplicate_of_observation_id" in mapping:
+            raw_duplicate_of_observation_id = mapping["duplicate_of_observation_id"]
+            if raw_duplicate_of_observation_id is None:
+                raise ContractDecodeError(
+                    f"{path}.duplicate_of_observation_id: null is not a valid value"
+                )
+            field_duplicate_of_observation_id = _decode_str(
+                raw_duplicate_of_observation_id,
+                f"{path}.duplicate_of_observation_id",
+            )
+        field_job_id: OpaqueToken | None = None
+        if "job_id" in mapping:
+            raw_job_id = mapping["job_id"]
+            if raw_job_id is None:
+                raise ContractDecodeError(
+                    f"{path}.job_id: null is not a valid value"
+                )
+            field_job_id = _decode_str(raw_job_id, f"{path}.job_id")
+        field_run_id: Identifier | None = None
+        if "run_id" in mapping:
+            raw_run_id = mapping["run_id"]
+            if raw_run_id is None:
+                raise ContractDecodeError(
+                    f"{path}.run_id: null is not a valid value"
+                )
+            field_run_id = _decode_str(raw_run_id, f"{path}.run_id")
+        field_processing = _decode_str(
+            _require_field(mapping, "processing", path),
+            f"{path}.processing",
+        )
+        field_job_state: JobState | None = None
+        if "job_state" in mapping:
+            raw_job_state = mapping["job_state"]
+            if raw_job_state is None:
+                raise ContractDecodeError(
+                    f"{path}.job_state: null is not a valid value"
+                )
+            field_job_state = _decode_str(raw_job_state, f"{path}.job_state")
+        field_run_status: RunStatus | None = None
+        if "run_status" in mapping:
+            raw_run_status = mapping["run_status"]
+            if raw_run_status is None:
+                raise ContractDecodeError(
+                    f"{path}.run_status: null is not a valid value"
+                )
+            field_run_status = _decode_str(raw_run_status, f"{path}.run_status")
+        field_uncertainty_items = _decode_sequence(
+            _require_field(mapping, "uncertainty", path),
+            f"{path}.uncertainty",
+        )
+        field_uncertainty = tuple(
+            _decode_str(item, f"{path}.uncertainty[{index}]")
+            for index, item in enumerate(field_uncertainty_items)
+        )
+        return cls(
+            trigger_observation_id=field_trigger_observation_id,
+            observation_sequence=field_observation_sequence,
+            event_id=field_event_id,
+            event_idempotency_key=field_event_idempotency_key,
+            event_type=field_event_type,
+            envelope_digest=field_envelope_digest,
+            occurred_at=field_occurred_at,
+            observed_at=field_observed_at,
+            delivery_status=field_delivery_status,
+            delivery_reason=field_delivery_reason,
+            duplicate_of_observation_id=field_duplicate_of_observation_id,
+            job_id=field_job_id,
+            run_id=field_run_id,
+            processing=field_processing,
+            job_state=field_job_state,
+            run_status=field_run_status,
+            uncertainty=field_uncertainty,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerFailure:
+    """One failure a trigger's telemetry can state, with where it was read from. `reason` is a
+    code, never free text.
+    """
+
+    trigger_observation_id: Identifier
+    source: TriggerFailureSource
+    reason: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["trigger_observation_id"] = self.trigger_observation_id
+        wire["source"] = self.source
+        wire["reason"] = self.reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerFailure") -> TriggerFailure:
+        """Decode a wire payload into a TriggerFailure.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_trigger_observation_id = _decode_str(
+            _require_field(mapping, "trigger_observation_id", path),
+            f"{path}.trigger_observation_id",
+        )
+        field_source = _decode_str(_require_field(mapping, "source", path), f"{path}.source")
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        return cls(
+            trigger_observation_id=field_trigger_observation_id,
+            source=field_source,
+            reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceProbeRequest:
     """A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it
     carries no `operation`, no `input`, and no workspace or authority scoping, because a
@@ -16177,6 +17092,235 @@ class WorkflowRunProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class TriggerHealthInput:
+    """Input for `trigger.health`: a bounded read of trigger health for one Project and one
+    Workflow. Without `trigger_id` it reads one page of that Workflow's triggers, ordered by
+    trigger identifier. With `trigger_id` it reads that one trigger, and `limit` and `page`
+    must be absent. `observation_limit` bounds how many recent observations each trigger
+    returns, newest first. A trigger of another Project or Workflow reads as not found, never
+    as someone else's. Workspace-scoped through the request envelope's selected workspace.
+    """
+
+    project_id: Identifier
+    workflow_id: Identifier
+    trigger_id: Identifier | None = None
+    observation_limit: int | None = None
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["project_id"] = self.project_id
+        wire["workflow_id"] = self.workflow_id
+        if self.trigger_id is not None:
+            wire["trigger_id"] = self.trigger_id
+        if self.observation_limit is not None:
+            wire["observation_limit"] = self.observation_limit
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerHealthInput") -> TriggerHealthInput:
+        """Decode a wire payload into a TriggerHealthInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_project_id = _decode_str(
+            _require_field(mapping, "project_id", path),
+            f"{path}.project_id",
+        )
+        field_workflow_id = _decode_str(
+            _require_field(mapping, "workflow_id", path),
+            f"{path}.workflow_id",
+        )
+        field_trigger_id: Identifier | None = None
+        if "trigger_id" in mapping:
+            raw_trigger_id = mapping["trigger_id"]
+            if raw_trigger_id is None:
+                raise ContractDecodeError(
+                    f"{path}.trigger_id: null is not a valid value"
+                )
+            field_trigger_id = _decode_str(raw_trigger_id, f"{path}.trigger_id")
+        field_observation_limit: int | None = None
+        if "observation_limit" in mapping:
+            raw_observation_limit = mapping["observation_limit"]
+            if raw_observation_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.observation_limit: null is not a valid value"
+                )
+            field_observation_limit = _decode_int(
+                raw_observation_limit,
+                f"{path}.observation_limit",
+            )
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            project_id=field_project_id,
+            workflow_id=field_workflow_id,
+            trigger_id=field_trigger_id,
+            observation_limit=field_observation_limit,
+            limit=field_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerHealth:
+    """One trigger's health: its declaration, its subscription, its last observation and recent
+    observations, and the failures and uncertainty among them.
+    """
+
+    trigger_id: Identifier
+    trigger_kind: TriggerKind
+    workflow_version: ReleaseVersion
+    declaration_sequence: int
+    event_type: Identifier
+    subscription: TriggerSubscriptionHealth
+    observation_total: int
+    observations: tuple[TriggerObservationHealth, ...]
+    delivery_counts: TriggerDeliveryCounts
+    failures: tuple[TriggerFailure, ...]
+    uncertainty: tuple[OpenCode, ...]
+    last_observation: TriggerObservationHealth | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["trigger_id"] = self.trigger_id
+        wire["trigger_kind"] = self.trigger_kind
+        wire["workflow_version"] = self.workflow_version
+        wire["declaration_sequence"] = self.declaration_sequence
+        wire["event_type"] = self.event_type
+        wire["subscription"] = self.subscription.to_wire()
+        if self.last_observation is not None:
+            wire["last_observation"] = self.last_observation.to_wire()
+        wire["observation_total"] = self.observation_total
+        wire["observations"] = [item.to_wire() for item in self.observations]
+        wire["delivery_counts"] = self.delivery_counts.to_wire()
+        wire["failures"] = [item.to_wire() for item in self.failures]
+        wire["uncertainty"] = list(self.uncertainty)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerHealth") -> TriggerHealth:
+        """Decode a wire payload into a TriggerHealth.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_trigger_id = _decode_str(
+            _require_field(mapping, "trigger_id", path),
+            f"{path}.trigger_id",
+        )
+        field_trigger_kind = _decode_str(
+            _require_field(mapping, "trigger_kind", path),
+            f"{path}.trigger_kind",
+        )
+        field_workflow_version = _decode_str(
+            _require_field(mapping, "workflow_version", path),
+            f"{path}.workflow_version",
+        )
+        field_declaration_sequence = _decode_int(
+            _require_field(mapping, "declaration_sequence", path),
+            f"{path}.declaration_sequence",
+        )
+        field_event_type = _decode_str(
+            _require_field(mapping, "event_type", path),
+            f"{path}.event_type",
+        )
+        field_subscription = TriggerSubscriptionHealth.from_wire(
+            _require_field(mapping, "subscription", path),
+            f"{path}.subscription",
+        )
+        field_last_observation: TriggerObservationHealth | None = None
+        if "last_observation" in mapping:
+            raw_last_observation = mapping["last_observation"]
+            if raw_last_observation is None:
+                raise ContractDecodeError(
+                    f"{path}.last_observation: null is not a valid value"
+                )
+            field_last_observation = TriggerObservationHealth.from_wire(
+                raw_last_observation,
+                f"{path}.last_observation",
+            )
+        field_observation_total = _decode_int(
+            _require_field(mapping, "observation_total", path),
+            f"{path}.observation_total",
+        )
+        field_observations_items = _decode_sequence(
+            _require_field(mapping, "observations", path),
+            f"{path}.observations",
+        )
+        field_observations = tuple(
+            TriggerObservationHealth.from_wire(item, f"{path}.observations[{index}]")
+            for index, item in enumerate(field_observations_items)
+        )
+        field_delivery_counts = TriggerDeliveryCounts.from_wire(
+            _require_field(mapping, "delivery_counts", path),
+            f"{path}.delivery_counts",
+        )
+        field_failures_items = _decode_sequence(
+            _require_field(mapping, "failures", path),
+            f"{path}.failures",
+        )
+        field_failures = tuple(
+            TriggerFailure.from_wire(item, f"{path}.failures[{index}]")
+            for index, item in enumerate(field_failures_items)
+        )
+        field_uncertainty_items = _decode_sequence(
+            _require_field(mapping, "uncertainty", path),
+            f"{path}.uncertainty",
+        )
+        field_uncertainty = tuple(
+            _decode_str(item, f"{path}.uncertainty[{index}]")
+            for index, item in enumerate(field_uncertainty_items)
+        )
+        return cls(
+            trigger_id=field_trigger_id,
+            trigger_kind=field_trigger_kind,
+            workflow_version=field_workflow_version,
+            declaration_sequence=field_declaration_sequence,
+            event_type=field_event_type,
+            subscription=field_subscription,
+            last_observation=field_last_observation,
+            observation_total=field_observation_total,
+            observations=field_observations,
+            delivery_counts=field_delivery_counts,
+            failures=field_failures,
+            uncertainty=field_uncertainty,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceEndpointDescriptor:
     """The published coordination facts a client needs to find one running service instance and
     decide whether it can talk to it, before any request is sent. Coordination data only: a
@@ -18476,6 +19620,54 @@ class WorkflowReviewResult:
             resume_diagnostic=field_resume_diagnostic,
             completion=field_completion,
             stop=field_stop,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerHealthResult:
+    """Result of `trigger.health`. Expose trigger health through a shared aggregation keyed by
+    Project/Workflow, including per-trigger subscription state, last observation,
+    delivery/processing status, failures and uncertainty. Each trigger reports its
+    subscription, its last observation, the delivery and processing status of its recent
+    observations, the failures among them, and the uncertainty they carry. Uncertainty is
+    derived on read and never stored as a guess. `delivery_counts` and `failures` cover only
+    the observations returned, while `observation_total` counts the trigger's whole history.
+    """
+
+    items: tuple[TriggerHealth, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["items"] = [item.to_wire() for item in self.items]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "TriggerHealthResult") -> TriggerHealthResult:
+        """Decode a wire payload into a TriggerHealthResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_items_items = _decode_sequence(
+            _require_field(mapping, "items", path),
+            f"{path}.items",
+        )
+        field_items = tuple(
+            TriggerHealth.from_wire(item, f"{path}.items[{index}]")
+            for index, item in enumerate(field_items_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            items=field_items,
+            page=field_page,
         )
 
 
@@ -24309,6 +25501,221 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "invalid_request",
             "rate_limited",
             "unsupported_minor_version",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="trigger.declare",
+        scope=OperationScope(
+            required_scopes=("trigger:configure",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerDeclareInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerDeclareResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="trigger.configure",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="trigger.lifecycle",
+        scope=OperationScope(
+            required_scopes=("trigger:configure",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerLifecycleInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerLifecycleResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="trigger.configure",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="trigger.ingest",
+        scope=OperationScope(
+            required_scopes=("trigger:invoke",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerIngestInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerIngestResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="trigger.invoke",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="trigger.health",
+        scope=OperationScope(
+            required_scopes=("trigger:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerHealthInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/TriggerHealthResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="trigger.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=50),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
             "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",

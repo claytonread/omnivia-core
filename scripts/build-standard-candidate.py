@@ -54,7 +54,7 @@ HOST_CONFIG_FORMATS: Final = {
     "official_python_sdk": "official_python_sdk_stdio",
 }
 HOST_FAMILIES: Final = frozenset(HOST_CONFIG_FORMATS)
-#: The stable thirteen-tool manifest, sorted as the journey retains it.
+#: The stable fourteen-tool manifest, sorted as the journey retains it.
 HOST_TOOLS: Final = [
     "context_pack_build",
     "decision_evaluate",
@@ -68,10 +68,11 @@ HOST_TOOLS: Final = [
     "graph_traverse",
     "knowledge_search",
     "memory_search",
+    "trigger_health",
     "workspace_inspect",
 ]
 #: The six reads for which the journey requires populated results. The other
-#: seven tools have separately checked success or typed-refusal outcomes.
+#: eight tools have separately checked success or typed-refusal outcomes.
 HOST_READ_TOOLS: Final = [
     "context_pack_build",
     "evidence_search",
@@ -85,7 +86,7 @@ HOST_READ_TOOLS: Final = [
 HOST_EVIDENCE: Final = {
     "connected": True,
     "session_completed": True,
-    "tool_count": 13,
+    "tool_count": 14,
     "tool_calls": 6,
     "verdict": "pass",
 }

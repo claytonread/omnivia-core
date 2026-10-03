@@ -146,6 +146,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "decision.record.get",
         "decision.record.list",
         "decision.status",
+        "trigger.health",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.SCOPE) == {
         "workspace:read",
@@ -154,6 +155,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "engineering:read",
         "decision:read",
         "decision:invoke",
+        "trigger:read",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.PURPOSE) == {
         "workspace_inspection",
@@ -164,6 +166,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "decision_evaluation",
         "decision_record",
         "decision_status",
+        "trigger_observation",
     }
     assert {
         (grant.value, grant.version)
@@ -179,13 +182,14 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         ("engineering.read", "1.0"),
         ("decision.read", "1.0"),
         ("decision.invoke", "1.0"),
+        ("trigger.read", "1.0"),
     }
     # The one role: `decision.evaluate` is a restricted-manifest mutation the
     # coordinator serves under the workspace-contributor role, and nothing else.
     assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
-def test_authoring_policy_is_the_read_surface_plus_exactly_five() -> None:
+def test_authoring_policy_is_the_read_surface_plus_exactly_eight() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
     # R004 section 9.1's "workspace contributor authority sufficient for
@@ -201,15 +205,22 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_five() -> None:
         "import.start",
         "job.get",
         "job.events",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
     }
     assert kinds(added, McpGrantKind.SCOPE) == {
         "memory:write",
         "job:read",
+        "trigger:configure",
+        "trigger:invoke",
     }
     assert kinds(added, McpGrantKind.PURPOSE) == {
         "memory_authoring",
         "content_ingestion",
         "job_observation",
+        "trigger_configuration",
+        "trigger_ingestion",
     }
     assert {
         (grant.value, grant.version)
@@ -220,6 +231,8 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_five() -> None:
         ("evidence.write", "1.0"),
         ("ingestion.import", "1.0"),
         ("job.read", "1.0"),
+        ("trigger.configure", "1.0"),
+        ("trigger.invoke", "1.0"),
     }
 
 

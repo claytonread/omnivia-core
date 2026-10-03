@@ -114,15 +114,19 @@ _RESULT_KEYS: Final = {
 #: or a boolean is a refusal rather than a `TypeError` out of `len`.
 _MAPPING_RESULTS: Final = frozenset({"workspace_inspect"})
 
-#: The seven tools the restricted profile additionally advertises: four
-#: decision tools and three Engineering Memory tools.  The decision capability is
-#: off by default (§28.2), so the journey requires the two passive projections
-#: to answer with structured content and the other two -- an admission against
-#: a disabled capability and a lookup of an absent record -- to refuse with
-#: exactly the typed codes their handlers state.  The journey records no
-#: engineering observations, so the search and the context build answer
-#: structurally while an expansion of an absent record refuses `not_found`.
-#: None of them counts among the populated reads.
+#: The eight tools the restricted profile additionally advertises: four
+#: decision tools, three Engineering Memory tools and the trigger health read.
+#: `_mcp_journey` judges each one against its outcome here: `success` needs a
+#: non-error answer with structured content, and `refused:<code>` needs an error
+#: whose typed code is exactly `<code>`.  The decision capability is off by
+#: default (§28.2), so the two passive projections answer with structured
+#: content, an admission against that disabled capability refuses
+#: `capability_not_granted`, and a lookup of an absent record refuses
+#: `not_found`.  The journey records no engineering observations, so the search
+#: and the context build answer structurally while an expansion of an absent
+#: record refuses `not_found`.  The journey declares no triggers, so the trigger
+#: health read answers structurally with no items and an exhausted page.  None
+#: of them counts among the populated reads.
 _DECISION_EXPECTATIONS: Final = {
     "decision_status": "success",
     "decision_record_list": "success",
@@ -131,6 +135,7 @@ _DECISION_EXPECTATIONS: Final = {
     "engineering_search": "success",
     "engineering_context_build": "success",
     "engineering_expand": "refused:not_found",
+    "trigger_health": "success",
 }
 _DECISION_PAYLOADS: Final = {
     "engineering_search": {"query": "standard journey"},
@@ -162,6 +167,10 @@ _DECISION_PAYLOADS: Final = {
     "decision_record_get": {"evaluation_id": "standard-journey-eval-1"},
     "decision_record_list": {},
     "decision_status": {},
+    "trigger_health": {
+        "project_id": "standard-journey-project",
+        "workflow_id": "standard-journey-workflow",
+    },
 }
 _EXPECTED_TOOL_COUNT: Final = 6 + len(_DECISION_EXPECTATIONS)
 
@@ -549,7 +558,7 @@ def _restrict(path: Path) -> None:
 #: The installed-administration host and profile this journey provisions. Fixed
 #: to `claude-code`/`restricted`: the protected configuration `configure` writes
 #: is the one file every client family below then reads through its own launch
-#: form, and `restricted` is the thirteen-tool, read-only profile the Standard
+#: form, and `restricted` is the fourteen-tool, read-only profile the Standard
 #: distribution ships -- this journey does not exercise `authoring` and must
 #: not broaden mutation authority for this distribution.
 _ADMIN_HOST: Final = "claude-code"
@@ -776,6 +785,53 @@ async def _mcp_session(
     }
 
 
+#: How the MCP server relays a service refusal: this prefix, then the service's
+#: own error document as JSON.  Only its `error.code` is read.
+_REFUSAL_PREFIX: Final = "was refused by the service: "
+
+
+def _refusal_code(result: Mapping[str, Any]) -> object:
+    """The typed `error.code` of a relayed service refusal, else `None`.
+
+    An MCP-side refusal -- a name that does not resolve, a purpose that is not
+    allowed -- never reaches the service and carries no error document, so it has
+    no typed code.  The message is never inspected or quoted.
+    """
+    content = result.get("content")
+    first = content[0] if isinstance(content, list) and content else None
+    text = first.get("text") if isinstance(first, Mapping) else None
+    if not isinstance(text, str) or _REFUSAL_PREFIX not in text:
+        return None
+    try:
+        document = json.loads(text.split(_REFUSAL_PREFIX, 1)[1])
+    except ValueError:
+        return None
+    error = document.get("error") if isinstance(document, Mapping) else None
+    return error.get("code") if isinstance(error, Mapping) else None
+
+
+def _require_decision_outcome(
+    name: str, result: object, expectation: str, host: str
+) -> None:
+    """Judge one tool outside the populated reads against its stated outcome.
+
+    `success` needs a non-error mapping whose structured content is non-empty.
+    `refused:<code>` needs an error whose typed code is exactly `<code>`.  The
+    failure messages are fixed text, so the server's own words never reach them.
+    """
+    if expectation == "success":
+        if not isinstance(result, dict) or result.get("is_error") is not False:
+            raise JourneyError(f"MCP {name} did not answer for {host}")
+        structured = result.get("structured_content")
+        if not isinstance(structured, dict) or not structured:
+            raise JourneyError(f"MCP {name} returned nothing for {host}")
+        return
+    if not isinstance(result, dict) or result.get("is_error") is not True:
+        raise JourneyError(f"MCP {name} did not refuse for {host}")
+    if _refusal_code(result) != expectation.split(":", 1)[1]:
+        raise JourneyError(f"MCP {name} refused for the wrong reason for {host}")
+
+
 def _mcp_journey(
     command: str,
     arguments: Sequence[str],
@@ -824,36 +880,23 @@ def _mcp_journey(
     ):
         # Checked before the sort: a missing or non-string name would otherwise
         # raise a `TypeError` out of `sorted` rather than fail this journey.
-        raise JourneyError("MCP did not advertise the accepted thirteen-tool manifest")
+        raise JourneyError("MCP did not advertise the accepted fourteen-tool manifest")
     advertised = sorted(tool["name"] for tool in tools)
     expected_calls = sorted([*calls, *_DECISION_EXPECTATIONS])
     if advertised != expected_calls:
         raise JourneyError(
-            f"the {host} tool manifest was not the accepted thirteen tools"
+            f"the {host} tool manifest was not the accepted fourteen tools"
         )
     called = observed.get("called")
     if not isinstance(called, Mapping) or set(called) != set(expected_calls):
-        raise JourneyError(f"the {host} session did not call all thirteen tools")
+        raise JourneyError(f"the {host} session did not call all fourteen tools")
+    # Every advertised tool is judged, not only the six populated reads: the eight
+    # outside them are checked against `_DECISION_EXPECTATIONS` before any read.
+    for name, expectation in _DECISION_EXPECTATIONS.items():
+        _require_decision_outcome(name, called[name], expectation, host)
     populated: dict[str, int] = {}
     for name in calls:
         result = called[name]
-        decision_expectation = _DECISION_EXPECTATIONS.get(name)
-        if decision_expectation is not None:
-            if decision_expectation == "success":
-                if not isinstance(result, dict) or result.get("is_error") is True:
-                    raise JourneyError(f"MCP {name} did not answer for {host}")
-                structured = result.get("structured_content")
-                if not isinstance(structured, dict) or not structured:
-                    raise JourneyError(f"MCP {name} returned nothing for {host}")
-                continue
-            if not isinstance(result, dict) or result.get("is_error") is not True:
-                raise JourneyError(f"MCP {name} did not refuse for {host}")
-            expected_code = decision_expectation.split(":", 1)[1]
-            if f'"code":"{expected_code}"' not in json.dumps(result):
-                raise JourneyError(
-                    f"MCP {name} refused for the wrong reason for {host}"
-                )
-            continue
         if not isinstance(result, dict) or result.get("is_error") is True:
             raise JourneyError(f"MCP {name} did not return a success for {host}")
         structured = result.get("structured_content")
@@ -896,7 +939,7 @@ def _knowledge_search_visible(command: str, arguments: Sequence[str]) -> bool:
     query-token search already finds a record.
 
     Goes through `_mcp_session` directly rather than `_mcp_journey`: a single
-    tool call has no six-tool manifest to validate, and a session that fails
+    tool call has no fourteen-tool manifest to validate, and a session that fails
     to complete at all -- the server not yet answering, a transient transport
     hiccup -- is read the same as "not visible yet" and left to the caller's
     own bounded deadline rather than raised here.

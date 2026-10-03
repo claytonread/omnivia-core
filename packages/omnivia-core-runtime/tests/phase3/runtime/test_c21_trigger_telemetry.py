@@ -28,6 +28,7 @@ import test_application_audit_idempotency_migration as m1
 import test_c21_trigger_telemetry_migration as m43
 import test_rt102_agent_runtime_migration as m18
 import test_workflow_runs_migration as m27
+from omnivia_core_runtime.storage import trigger_telemetry as store
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.storage.trigger_telemetry import (
@@ -35,12 +36,15 @@ from omnivia_core_runtime.storage.trigger_telemetry import (
     MAX_OBSERVATION_WINDOW,
     MAX_TRIGGER_PAGE,
     list_workflow_trigger_telemetry,
+    read_accepted_trigger_observation,
     read_trigger_declaration,
     read_trigger_telemetry,
     read_wait_signal_telemetry,
     transaction_local_telemetry_writer,
     trigger_telemetry_writer,
 )
+
+from omnivia_core.contracts import v1 as contract
 
 WORKSPACE_ID = m43.WORKSPACE_ID
 PROJECT = m43.PROJECT_ID
@@ -420,6 +424,34 @@ def test_an_observation_needs_a_declared_trigger_and_an_active_subscription(
         pytest.raises(sqlite3.IntegrityError, match="active subscription"),
     ):
         observe(w)
+
+
+def test_only_an_accepted_observation_holds_its_idempotency_key(owned: m1.Owned) -> None:
+    active_trigger(owned)
+
+    def held(key: str) -> object:
+        return read_accepted_trigger_observation(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            trigger_id=TRIGGER,
+            idempotency_key=key,
+        )
+
+    with writer(owned) as w:
+        first = observe(w)
+        observe(
+            w,
+            2,
+            idempotency_key="key-2",
+            delivery_status="dead_lettered",
+            delivery_reason="inactive_trigger",
+        )
+    assert held("key-1") == first
+    assert held("key-2") is None
+    with writer(owned) as w:
+        accepted = observe(w, 3, idempotency_key="key-2")
+    assert held("key-2") == accepted
+    assert held("key-unknown") is None
 
 
 # --- reads ---------------------------------------------------------------------------
@@ -814,3 +846,14 @@ def test_only_external_signal_waits_are_recorded_or_read(owned: m1.Owned) -> Non
     ):
         with pytest.raises(StorageError):
             wait_read(owned, **override)
+
+
+def test_the_store_restates_the_contract_vocabularies_exactly() -> None:
+    """The store's copies of the trigger vocabularies equal the contract's, so they cannot drift.
+
+    The store restates 0043's CHECK domains for its own refusals. A value added to one copy and
+    not the other would be refused by one reader and accepted by the other.
+    """
+    assert store.TRIGGER_KINDS == contract.TRIGGER_KINDS
+    assert store.SUBSCRIPTION_STATES == contract.TRIGGER_SUBSCRIPTION_STATES
+    assert store.DELIVERY_STATUSES == contract.TRIGGER_DELIVERY_STATUSES

@@ -58,7 +58,7 @@ The Standard-profile candidate proves this rather than asserting it. For each
 host profile — `claude_desktop`, `claude_code`, `codex` and
 `official_python_sdk` — it writes that host's native configuration shape, reads
 it back, and starts the server from the launch it yields; one fresh stdio
-session per profile then initialises, lists exactly six tools and calls all six,
+session per profile then initialises, lists exactly fourteen tools and calls all fourteen,
 and the four manifests are compared. The client throughout is the official
 Python SDK: the Claude Desktop, Claude Code and Codex applications are not
 installed and do not run there. See
@@ -105,8 +105,8 @@ command line — drives it with the official SDK's `stdio_client` and
 `ClientSession`, and completes `initialize` and `tools/list` over the transport
 a host would use. The peer must identify itself as `omnivia-core` at this
 package's version; the advertised inventory must be exactly one profile's own
-tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — thirteen or
-eighteen; and the document's `allowed_purposes` must be exactly that profile's
+tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — fourteen or
+twenty-two; and the document's `allowed_purposes` must be exactly that profile's
 manifest purposes. Which profile is in force is read off the inventory the child
 advertised, never assumed from the document, so a `mutation_enabled: true`
 configuration the protected authority declines to admit is refused here.
@@ -136,7 +136,8 @@ instruction to run `omnivia init` and **creates nothing**.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-Manifest version `1.1` advertises six tools, in this order:
+Manifest version `2.4` advertises fourteen tools under the `restricted` profile,
+in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -146,9 +147,33 @@ Manifest version `1.1` advertises six tools, in this order:
 | `memory_search` | `memory.search` | `knowledge_retrieval` | `memory:read` | `memory.read` ≥ 1.0 |
 | `graph_traverse` | `graph.traverse` | `knowledge_retrieval` | `graph:read` | `graph.read` ≥ 1.0 |
 | `context_pack_build` | `context_pack.build` | `knowledge_retrieval` | `memory:read` | `context_pack.build` ≥ 1.0 |
+| `engineering_search` | `engineering.search` | `engineering_search` | `engineering:read` | `engineering.read` ≥ 1.0 |
+| `engineering_expand` | `engineering.expand` | `engineering_expand` | `engineering:read` | `engineering.read` ≥ 1.0 |
+| `engineering_context_build` | `engineering.context.build` | `engineering_context` | `engineering:read` | `engineering.read` ≥ 1.0 |
+| `decision_evaluate` | `decision.evaluate` | `decision_evaluation` | `decision:invoke` | `decision.invoke` ≥ 1.0 |
+| `decision_record_get` | `decision.record.get` | `decision_record` | `decision:read` | `decision.read` ≥ 1.0 |
+| `decision_record_list` | `decision.record.list` | `decision_record` | `decision:read` | `decision.read` ≥ 1.0 |
+| `decision_status` | `decision.status` | `decision_status` | `decision:read` | `decision.read` ≥ 1.0 |
+| `trigger_health` | `trigger.health` | `trigger_observation` | `trigger:read` | `trigger.read` ≥ 1.0 |
 
-Every one of them declares `side_effect: none` and `audit_category: read` in the
-operation catalogue, and the manifest refuses at import to admit anything else.
+The `authoring` profile advertises those fourteen, then these eight, in this order:
+
+| Tool | Operation | Purpose | Scopes | Capability |
+|---|---|---|---|---|
+| `memory_create` | `memory.create` | `memory_authoring` | `memory:write` | `memory.write` ≥ 1.0 |
+| `evidence_capture` | `evidence.capture` | `content_ingestion` | `memory:write` | `evidence.write` ≥ 1.0 |
+| `import_start` | `import.start` | `content_ingestion` | `memory:write` | `ingestion.import` ≥ 1.0 |
+| `trigger_declare` | `trigger.declare` | `trigger_configuration` | `trigger:configure` | `trigger.configure` ≥ 1.0 |
+| `trigger_lifecycle` | `trigger.lifecycle` | `trigger_configuration` | `trigger:configure` | `trigger.configure` ≥ 1.0 |
+| `trigger_ingest` | `trigger.ingest` | `trigger_ingestion` | `trigger:invoke` | `trigger.invoke` ≥ 1.0 |
+| `job_get` | `job.get` | `job_observation` | `job:read` | `job.read` ≥ 1.0 |
+| `job_events` | `job.events` | `job_observation` | `job:read` | `job.read` ≥ 1.0 |
+
+Every read declares `side_effect: none` and `audit_category: read` in the operation
+catalogue. Seven operations are side-effecting -- `decision.evaluate`,
+`memory.create`, `evidence.capture`, `import.start` and the three trigger
+mutations -- and the manifest admits exactly those by name rather than by catalogue
+metadata, refusing at import any other entry that is not a read.
 Scopes, the capability identifier and its minimum version, and the idempotency
 hint are read off the catalogue entry rather than restated here — a model can
 neither supply nor override the principal, the workspace, the scopes, the
@@ -189,12 +214,14 @@ readable message and **no** `structuredContent`.
 
 Service start, stop, health, readiness, status and discovery; bootstrap and
 workspace initialisation; unrestricted filesystem path selection; administrative
-configuration; and every destructive or persistent mutation. These are not
+configuration; and every destructive or persistent mutation the tables above do not
+name. These are not
 merely unadvertised — the allow-list is the only lookup the call path has, so an
 operation absent from it is not callable.
 
 Read-first is enforced at import: an entry whose catalogue metadata is not
-`side_effect="none"` and `audit_category="read"` makes the package fail to load.
+`side_effect="none"` and `audit_category="read"` makes the package fail to load,
+unless it is one of the seven named mutations.
 
 ## Lifecycle
 
@@ -221,7 +248,7 @@ database implementation — and `omnivia-core` must never depend back on it.
 
 The tool surface, the exposure manifest, managed start, the stdio server and the
 call path are complete and tested end to end against a real MCP client and a real
-`omnivia-core-service`. `tests/test_mcp_stdio_end_to_end.py` calls all six tools
+`omnivia-core-service`. `tests/test_mcp_stdio_end_to_end.py` calls all fourteen restricted tools
 over stdio against one governed workspace whose evidence, governed records and
 sealed relations were written through the accepted fenced Runtime writers in
 `tests/_mcp_v06_3_fixture.py` — the only place in this package's tests that

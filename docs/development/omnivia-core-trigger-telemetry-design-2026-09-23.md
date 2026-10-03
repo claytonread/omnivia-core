@@ -1,10 +1,9 @@
 # Trigger Telemetry Design (C21-A, lane 1)
 
-Status: **design for founder review** (Decision 4A). Nothing here is implemented.
-Migration `0043_runtime_trigger_telemetry.sql` is **reserved** in
-`contracts/migrations/v1/allocations.json`, owner Workflow Runtime. Its SQL stays
-absent until this design is accepted and a later lane advances the allocation to
-`candidate`.
+Status: **accepted C21 implementation state, as of 2026-10-04.** The accepted state is in
+the section headed "Accepted implementation state" below. The founder-review text of
+2026-09-23 is kept as design history. Where it conflicts with the accepted state, the
+accepted state wins, and each superseded passage is marked where it sits.
 
 Path abbreviations:
 
@@ -24,7 +23,89 @@ task packet as six needs:
 
 ---
 
+## Accepted implementation state (C21, as of 2026-10-04)
+
+This is the contract the build meets as of this date. The migration header and the handlers
+state the same rules.
+
+**Ownership.** Workflow Runtime owns the trigger telemetry: migration 0043 (`candidate` in
+`contracts/migrations/v1/allocations.json`), the store `RT/storage/trigger_telemetry.py`, and the
+four operations below, served by `RT/service/handlers/trigger.py`.
+
+**Operations.** Four operations are registered in the application catalogue, for three distinct
+purposes:
+
+| Operation | Purpose | Behaviour |
+|---|---|---|
+| `trigger.declare` | `trigger_configuration` | Writes an immutable declaration version. Versions are contiguous from 1, and declaration 1 fixes the trigger's kind, Project and Workflow. |
+| `trigger.lifecycle` | `trigger_configuration` | Appends a subscription event for a change of state. Asking for the state already held is refused as a conflict. |
+| `trigger.ingest` | `trigger_ingestion` | Records one stimulus as an observation: `accepted`, `duplicate`, `dead_lettered` or `uncertain`. Record-only, as below. |
+| `trigger.health` | `trigger_observation` | A bounded read of one trigger, or of one page of a Workflow's triggers. |
+
+**Same-state re-declaration.** `trigger.declare` keeps the subscription the trigger already holds
+when the requested state is the one held: it records no new subscription event. A different state
+is recorded as a step. The database refuses a version that changes nothing the previous one fixed:
+workflow version, plan, event type, event contract digest and configuration digest.
+`trigger.lifecycle` has no same-state branch, so asking for the state already held is refused and
+writes nothing.
+
+**Ingest is record-only.** `trigger.ingest` writes its observation in one fenced transaction. It
+starts no job or run and enqueues nothing, so an observation carries no `job_id` or `run_id`, and
+its processing status reads unlinked. Acceptance is an acknowledgement. It does not mean the work
+completed.
+
+**Not in this build.** No scheduler and no driver. Ingest does not enqueue `workflow.execute`. No
+remote delivery and no fleet. No `wait_timer`: the kind is absent from the schema, and wait
+signals are recorded only for `external_signal` waits, so `timer` and `approval` waits record
+nothing. No processing-status column, no failure table, and no retention or compaction.
+
+**Duplicates are decided by the envelope digest.** A repeat is a duplicate when an accepted
+observation already holds its idempotency key and the repeat's envelope digest equals that
+observation's digest. The duplicate is recorded as its own observation, linked to the accepted one
+by `duplicate_of_observation_id` and to no job or run. A repeat under a held key whose digest differs
+is refused as `idempotency_conflict` and writes nothing. The event id is stored but never compared,
+and the duplicate decision comes before the subscription and event-type checks. Core computes no
+digest of its own; it checks the caller's `envelope_digest` for format and equality.
+
+**Acceptance.** A new stimulus is accepted only into an `active` subscription, and only when its
+event type matches the declared type exactly. Otherwise it is recorded as `dead_lettered`, with
+`inactive_trigger` or `event_type_mismatch`.
+
+**Health read caps.** `trigger.health` returns at most 50 trigger items per page: a larger `limit`
+is clamped to 50. Its observation window is at most 20 observations per trigger: an
+`observation_limit` outside 1 to 20 is refused. Each trigger reports `observation_total` for its
+whole history, while `delivery_counts` and `failures` cover only the observations returned.
+
+**Wait signals.** An external signal that resolves a wait records an accepted observation in the
+same fenced transaction as the resolution. A refused signal is recorded in its own fenced write as
+`dead_lettered`, with its reason. A retry under the same key finds that record and writes nothing
+more. This settles the question of rejected signals.
+
+**Storage.** Migration 0043 creates four append-only tables, with twelve statement triggers:
+`omnivia_runtime_trigger_declarations`, `omnivia_runtime_trigger_subscription_events`,
+`omnivia_runtime_trigger_observations` and `omnivia_runtime_wait_signal_observations`. UPDATE and
+DELETE abort for every writer, the current fenced owner included. Each row is written in the fenced
+transaction that changes the state it describes.
+
+**Settled questions.** Q1 (no driver): record-only ingest, with no driver. Q2 (where declarations
+live): the canonical runtime, through `trigger.declare`. Q3 (rejected signals): recorded as above.
+Q4 (`wait_timer`): not added. Q5 (owner): Workflow Runtime. Q6 (retention) remains open. Q7 is
+settled by the exact DEV-REQ-112 wording carried by the `trigger.health` result schema.
+
+---
+
+## Historical design (founder review, 2026-09-23, Decision 4A)
+
+> **Historical.** The sections below are the founder-review design. Passages marked *Superseded* or
+> *Partly superseded* no longer describe the build. The accepted state above governs.
+
+---
+
 ## 0. Headline finding
+
+> **Partly superseded (2026-10-04).** The headline still holds: nothing in the canonical runtime
+> starts work on a timer, a webhook or a subscription. The bullet on trigger declarations,
+> marked below, no longer describes the build.
 
 **The canonical runtime has no live trigger today.** Nothing in `RT/` wakes on a
 timer, a webhook, a watch or a subscription:
@@ -39,11 +120,13 @@ timer, a webhook, a watch or a subscription:
   (`src/omnivia_core/connector/host.py:153-156`; `RT/service/ingestion_coordinator.py:544-548`).
   `synchronise` / `synchronise_spi` (`RT/service/ingestion_coordinator.py:415`, `:534`)
   have no production caller.
-- **Trigger declarations exist only as models.** `TriggerKind`, `Trigger`,
+- ~~**Trigger declarations exist only as models.**~~ `TriggerKind`, `Trigger`,
   `TriggerEventEnvelope` and `TriggerIngestionResult` are defined at
   `src/omnivia_core/control_plane/models.py:49-56`, `:309-321` and `:521-544`,
   but are only validated there. The one place they are actually ingested is the
-  legacy facade (§1, T4).
+  legacy facade (§1, T4). *Superseded 2026-10-04: `trigger.declare` persists
+  declarations in the canonical runtime, and `trigger.ingest` records observations
+  there.*
 
 So this design has two jobs:
 
@@ -55,6 +138,9 @@ It does not invent a scheduler. Whether Core should grow one is open question Q1
 ---
 
 ## 1. Trigger taxonomy (what Core actually has)
+
+> **Snapshot of 2026-09-23.** This table is the founder-review baseline. T3 and T4 have
+> changed since. The accepted state, and the update notes in §2 and §5, record how.
 
 | # | Trigger | Stimulus | Entry point | Durable today | Live in canonical runtime? |
 |---|---|---|---|---|---|
@@ -83,6 +169,9 @@ T4 is the kind that has a "subscription" (a declared trigger with a lifecycle).
 
 ## 2. Ingestion path
 
+> **Partly superseded (2026-10-04).** The T4 row below says `trigger.ingest` does not exist.
+> It exists now, as a record-only admission. The enqueue step the row describes is still not built.
+
 There is one writer discipline, the **fenced service writer**:
 
 - `fenced_transaction` (`RT/ownership/fencing.py:281`) runs `BEGIN IMMEDIATE` and
@@ -101,6 +190,8 @@ match the scheduler row) and the 0017 writers (`RT/storage/connectors.py:3-7`).
 | T3 | `resolve_runtime_wait`'s fenced transaction, next to `writer.close_wait(...)` (`RT/service/runtime_waits.py:387-393`) |
 | T4 | A **new** application operation (working name `trigger.ingest`) through `execute_mutation`. It would port the legacy decision sequence (`LEG/control_plane/registry.py:1680-1851`: dedupe, lifecycle, event-type, cooldown/debounce, automation, concurrency) and, on acceptance, enqueue a `workflow.execute` job via `_insert_workflow_job` (`RT/service/handlers/workflow.py:1512`) in the same transaction. **This operation does not exist yet.** It is the next implementation lane, subject to Q1 and Q2. |
 
+> **Superseded (2026-10-04):** `trigger.ingest` now exists in the application catalogue as a synchronous, record-only admission. It starts no job or run and enqueues nothing, so the processing status of its observation reads unlinked. The enqueue step in the T4 row above is not implemented.
+
 **Record shape needed for DEV-REQ-112.** One row per stimulus received, carrying:
 
 - the trigger identity;
@@ -116,6 +207,11 @@ link from the existing job and run ledgers (§6).
 ---
 
 ## 3. Durable telemetry store (proposed 0043 schema)
+
+> **Partly superseded (2026-10-04).** The accepted store has four append-only tables, not two.
+> Its declarations table carries the trigger kinds, and `wait_signal` and `wait_timer` are not
+> trigger kinds: wait signals have their own table. Delivery status also has `uncertain`. The
+> conventions and the append-only rule below still apply.
 
 The schema follows the 0042 conventions (`MIG/0042_runtime_stop_progress.sql`):
 
@@ -168,7 +264,7 @@ One row per stimulus Core received, whatever the outcome.
 Index: `omnivia_idx_runtime_trigger_observations_trigger` on
 `(workspace_id, trigger_id, observation_sequence)`.
 
-Two tables, no mutable row. **Deliberately not added:**
+Two tables, no mutable row. *Superseded: the accepted store has four tables; see the accepted state.* **Deliberately not added:**
 
 - a processing-status column (it would duplicate `omnivia_job_events` / `omnivia_runtime_events`);
 - a failure table (dead-letter reasons live on the observation, and execution
@@ -177,6 +273,9 @@ Two tables, no mutable row. **Deliberately not added:**
 ---
 
 ## 4. Migration reservation
+
+> **Superseded (2026-10-04).** 0043 is no longer reserved. It is `candidate`, and its SQL is in the
+> tree. The text below records the reservation as it was proposed.
 
 `contracts/migrations/v1/allocations.json` gains:
 
@@ -191,6 +290,8 @@ The reserved rule (`allocations.json:5`) keeps the SQL absent.
 `(43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "reserved")`.
 `test_reserved_sql_is_absent_from_the_tree` then asserts the file does not exist.
 
+> **Superseded (2026-10-04):** 0043 has materialised. The allocation is `candidate`, with its sha256 and introducing commit recorded, and the SQL is `MIG/0043_runtime_trigger_telemetry.sql`. The reserved state described above no longer holds.
+
 When 0043 materialises, the same change must:
 
 - set `state: candidate`, the sha256 and the introducing commit;
@@ -203,6 +304,13 @@ Owner "Workflow Runtime" is a proposal (Q5).
 
 ## 5. Emission points (next lane; not implemented)
 
+> **Partly superseded (2026-10-04).** Implemented: the T3 accepted and refused rows, and the T4
+> observation row in its record-only form. Not implemented: the T4 job row, which enqueues
+> `workflow.execute`. The T2 row is unchanged. The T4 subscription row is superseded:
+> `trigger.lifecycle` writes subscription events.
+
+> **Superseded (2026-10-04):** `trigger.ingest` now exists and is record-only in this build. The T4 row below is the design for its enqueue step, which is not implemented.
+
 | Record | File / function | Transaction | Placement |
 |---|---|---|---|
 | T3 observation (`accepted`) | `RT/service/runtime_waits.py:280` `resolve_runtime_wait` | its existing fenced transaction | directly after `writer.close_wait(...)` (`:387-393`), before `append_run_event` (`:401`). Only for `kind IN ('external_signal','timer')`. `run_id = command.run_id` |
@@ -214,6 +322,8 @@ Owner "Workflow Runtime" is a proposal (Q5).
 ---
 
 ## 6. Dev read-back contract (for the C21 read-back lane)
+
+> **Implemented (2026-10-04):** the Core query operation described here exists in the catalogue as `trigger.health`, a bounded (paginated) read. The table below remains the design basis for its projection.
 
 This is a read-only projection. Per `trigger_id`:
 
@@ -232,6 +342,9 @@ schema belong to the read-back lane.
 ---
 
 ## 7. Open questions for the founder
+
+> **Partly settled (2026-10-04).** Q1 to Q5 and Q7 are settled as the accepted state records above.
+> Q6 remains open. The questions keep their 2026-09-23 wording.
 
 1. **Q1: No live trigger source.** Core has no scheduler or receiver (§0). Should
    the implementation lane stop at T3 plus a callable `trigger.ingest` (the
@@ -258,3 +371,8 @@ schema belong to the read-back lane.
 7. **Q7: DEV-REQ-112 text.** The requirement is not in this repo. §6 maps the
    paraphrase from the task packet. Please confirm, or supply the canonical wording
    (especially what "uncertainty" must cover).
+
+   **Settled 2026-10-04:** the accepted wording is: "Expose trigger health through a shared
+   aggregation keyed by Project/Workflow, including per-trigger subscription state, last
+   observation, delivery/processing status, failures and uncertainty." The `trigger.health`
+   result schema carries this wording verbatim.

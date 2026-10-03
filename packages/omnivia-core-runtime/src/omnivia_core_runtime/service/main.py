@@ -47,6 +47,7 @@ from omnivia_core_runtime.service.application import (
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
+    build_trigger_application_dispatcher,
     build_workflow_application_dispatcher,
     compose_production_application_surface,
     local_owner_session,
@@ -370,6 +371,13 @@ def _build_production_application_surface(
     # `dependency_unavailable`, which is the honest answer for a build that cannot say
     # whether a resolution was approved. Fabricating one would resolve a wait nobody
     # approved.
+    release_authority = (
+        resolve_workflow_release
+        if resolve_workflow_release is not None
+        else WorkspaceWorkflowReleaseAuthority(
+            service=started, workspace_id=started.workspace_id
+        )
+    )
     workflow = build_workflow_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
@@ -377,21 +385,26 @@ def _build_production_application_surface(
         workspace_id=started.workspace_id,
         fallback=chat,
         clock=started.clock,
-        resolve_release=(
-            resolve_workflow_release
-            if resolve_workflow_release is not None
-            else WorkspaceWorkflowReleaseAuthority(
-                service=started, workspace_id=started.workspace_id
-            )
-        ),
+        resolve_release=release_authority,
         wait_policy=workflow_wait_policy,
+    )
+    # The trigger family sits beside the workflow family it belongs to, and confirms a
+    # declared Workflow version against the same release authority `workflow.start` uses.
+    trigger = build_trigger_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=workflow,
+        clock=started.clock,
+        resolve_release=release_authority,
     )
     decision = build_decision_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
         installation_id=installation_id,
         workspace_id=started.workspace_id,
-        fallback=workflow,
+        fallback=trigger,
         clock=started.clock,
     )
     engineering = build_engineering_application_dispatcher(
@@ -415,6 +428,7 @@ def _build_production_application_surface(
         governance=governance,
         chat=chat,
         workflow=workflow,
+        trigger=trigger,
         decision=decision,
         engineering=engineering,
         probe=probe,

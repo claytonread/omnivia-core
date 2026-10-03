@@ -72,6 +72,7 @@ __all__ = [
     "WaitSignalObservation",
     "WaitSignalTelemetry",
     "list_workflow_trigger_telemetry",
+    "read_accepted_trigger_observation",
     "read_trigger_declaration",
     "read_trigger_telemetry",
     "read_wait_signal_observation",
@@ -459,8 +460,9 @@ class TriggerTelemetryWriter:
 
         The first declaration fixes the trigger's kind, Project and Workflow; later
         ones may change only the Workflow version and plan, event contract and
-        configuration, and must change one of them. A replay of the same declaration
-        id with the same input returns the stored declaration.
+        configuration. Every declaration is a new numbered version, changed or not. A
+        replay of the same declaration id with the same input returns the stored
+        declaration.
         """
         requested = TriggerDeclaration(
             trigger_declaration_id=_text(
@@ -850,6 +852,31 @@ def read_trigger_declaration(
     ):
         return None
     return found
+
+
+def read_accepted_trigger_observation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    trigger_id: str,
+    idempotency_key: str,
+) -> TriggerObservation | None:
+    """The accepted observation holding this idempotency key for a trigger, or `None`.
+
+    Only an accepted observation holds its key. A dead-lettered delivery does not, so a
+    redelivery after the trigger is reactivated is decided afresh.
+    """
+    row = connection.execute(
+        f"SELECT {_OBSERVATION_COLUMNS} FROM {_OBSERVATIONS} "
+        "WHERE workspace_id = ? AND trigger_id = ? AND idempotency_key = ? "
+        "AND delivery_status = 'accepted'",
+        (
+            _text(workspace_id, _ID, "workspace_id"),
+            _text(trigger_id, _ID, "trigger_id"),
+            _text(idempotency_key, _ID, "idempotency_key"),
+        ),
+    ).fetchone()
+    return None if row is None else _observation_from_row(row)
 
 
 def read_trigger_telemetry(

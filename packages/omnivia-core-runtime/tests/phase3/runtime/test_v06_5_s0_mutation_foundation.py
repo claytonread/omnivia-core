@@ -749,7 +749,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the twenty-nine, explicitly, with a mismatch failing closed for each."""
+    """Exactly the thirty-two, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -780,10 +780,13 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "engineering.source.capture.commit",
         "engineering.source.record",
         "engineering.repository.register",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 29
+    assert len(MUTATION_PURPOSES) == 32
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -810,8 +813,10 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # job family's own control. Engineering memory adds six of its own: the
     # session act, the checkpoint append, the preference write, the review
     # attestation, the trusted source record and the repository registration
-    # (SPEC-CORE-ENGMEM-001).
-    assert len(set(MUTATION_PURPOSES.values())) == 16
+    # (SPEC-CORE-ENGMEM-001). Triggers add two more (C21): configuration, which
+    # declaring and moving a subscription share, and ingestion, which delivering
+    # a stimulus holds alone, so a configuration grant never delivers one.
+    assert len(set(MUTATION_PURPOSES.values())) == 18
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1785,6 +1790,9 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "engineering.source.capture.commit": "workspace_contributor",
         "engineering.source.record": "workspace_contributor",
         "engineering.repository.register": "workspace_contributor",
+        "trigger.declare": "workspace_contributor",
+        "trigger.lifecycle": "workspace_contributor",
+        "trigger.ingest": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

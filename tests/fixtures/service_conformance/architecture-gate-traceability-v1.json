@@ -216,7 +216,11 @@
         "engineering.source.record",
         "engineering.repository.register",
         "analysis.start",
-        "decision.result_use.evaluate"
+        "decision.result_use.evaluate",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
+        "trigger.health"
       ]
     },
     {
@@ -345,7 +349,10 @@
         "engineering.review.record",
         "engineering.source.capture.commit",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest"
       ]
     },
     {
@@ -383,7 +390,10 @@
         "engineering.review.record",
         "engineering.source.capture.commit",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest"
       ]
     },
     {
@@ -476,7 +486,11 @@
         "engineering.source.record",
         "engineering.repository.register",
         "analysis.start",
-        "decision.result_use.evaluate"
+        "decision.result_use.evaluate",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
+        "trigger.health"
       ]
     },
     {
@@ -542,7 +556,11 @@
         "engineering.source.record",
         "engineering.repository.register",
         "analysis.start",
-        "decision.result_use.evaluate"
+        "decision.result_use.evaluate",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
+        "trigger.health"
       ]
     },
     {

@@ -10780,6 +10780,632 @@
           "request_id": "req-drue-uminor"
         }
       }
+    },
+    {
+      "id": "trigger.declare/primary-success",
+      "operation": "trigger.declare",
+      "description": "trigger.declare declares one trigger bound to a released Workflow version and starts its subscription active on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.declare-success",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.declare"
+        },
+        "operation": "trigger.declare",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "trigger_kind": "webhook",
+          "workflow_version": "1.0.0",
+          "plan_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event_type": "invoice.received",
+          "event_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "configuration_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subscription_state": "active",
+          "subscription_reason": "subscription.created"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.declare-success",
+          "audit_reference": "audit-trigger.declare"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "declaration_sequence": 1,
+          "subscription_state": "active",
+          "subscription_sequence": 1,
+          "declared_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.declare/honest-replay",
+      "operation": "trigger.declare",
+      "description": "trigger.declare repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "trigger.declare/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.declare-replay",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.declare"
+        },
+        "operation": "trigger.declare",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "trigger_kind": "webhook",
+          "workflow_version": "1.0.0",
+          "plan_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event_type": "invoice.received",
+          "event_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "configuration_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subscription_state": "active",
+          "subscription_reason": "subscription.created"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.declare-replay",
+          "audit_reference": "audit-trigger.declare"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "declaration_sequence": 1,
+          "subscription_state": "active",
+          "subscription_sequence": 1,
+          "declared_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.declare/idempotency-conflict",
+      "operation": "trigger.declare",
+      "description": "trigger.declare reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "trigger.declare/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.declare-conflict",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.declare"
+        },
+        "operation": "trigger.declare",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "trigger_kind": "webhook",
+          "workflow_version": "1.0.0",
+          "plan_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event_type": "invoice.received",
+          "event_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "configuration_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subscription_state": "paused",
+          "subscription_reason": "subscription.created"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.declare-conflict",
+          "audit_reference": "audit-trigger.declare"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "trigger.lifecycle/primary-success",
+      "operation": "trigger.lifecycle",
+      "description": "trigger.lifecycle moves a declared trigger's subscription from active to paused on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-success",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.lifecycle"
+        },
+        "operation": "trigger.lifecycle",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "reason": "operator.paused"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-success",
+          "audit_reference": "audit-trigger.lifecycle"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "subscription_sequence": 2,
+          "reason": "operator.paused",
+          "observed_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.lifecycle/honest-replay",
+      "operation": "trigger.lifecycle",
+      "description": "trigger.lifecycle repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "trigger.lifecycle/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-replay",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.lifecycle"
+        },
+        "operation": "trigger.lifecycle",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "reason": "operator.paused"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-replay",
+          "audit_reference": "audit-trigger.lifecycle"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "subscription_sequence": 2,
+          "reason": "operator.paused",
+          "observed_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.lifecycle/idempotency-conflict",
+      "operation": "trigger.lifecycle",
+      "description": "trigger.lifecycle reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "trigger.lifecycle/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-conflict",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.lifecycle"
+        },
+        "operation": "trigger.lifecycle",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "subscription_state": "active",
+          "reason": "operator.resumed"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-conflict",
+          "audit_reference": "audit-trigger.lifecycle"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "trigger.ingest/primary-success",
+      "operation": "trigger.ingest",
+      "description": "trigger.ingest admits one stimulus to an active trigger, recorded accepted and unlinked on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-success",
+          "required_capabilities": [
+            {
+              "id": "trigger.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.ingest"
+        },
+        "operation": "trigger.ingest",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "event_id": "event-1",
+          "event_idempotency_key": "key-1",
+          "event_type": "invoice.received",
+          "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "occurred_at": "2026-10-04T02:59:00.000000Z"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-success",
+          "audit_reference": "audit-trigger.ingest"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "trigger_observation_id": "obs-1",
+          "observation_sequence": 1,
+          "delivery_status": "accepted",
+          "processing": "unlinked",
+          "uncertainty": [
+            "processing_unlinked"
+          ],
+          "observed_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.ingest/honest-replay",
+      "operation": "trigger.ingest",
+      "description": "trigger.ingest repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "trigger.ingest/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-replay",
+          "required_capabilities": [
+            {
+              "id": "trigger.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.ingest"
+        },
+        "operation": "trigger.ingest",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "event_id": "event-1",
+          "event_idempotency_key": "key-1",
+          "event_type": "invoice.received",
+          "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "occurred_at": "2026-10-04T02:59:00.000000Z"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-replay",
+          "audit_reference": "audit-trigger.ingest"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "trigger_observation_id": "obs-1",
+          "observation_sequence": 1,
+          "delivery_status": "accepted",
+          "processing": "unlinked",
+          "uncertainty": [
+            "processing_unlinked"
+          ],
+          "observed_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.ingest/idempotency-conflict",
+      "operation": "trigger.ingest",
+      "description": "trigger.ingest reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "trigger.ingest/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-conflict",
+          "required_capabilities": [
+            {
+              "id": "trigger.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.ingest"
+        },
+        "operation": "trigger.ingest",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "event_id": "event-1",
+          "event_idempotency_key": "key-1",
+          "event_type": "invoice.received",
+          "envelope_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "occurred_at": "2026-10-04T02:59:00.000000Z"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-conflict",
+          "audit_reference": "audit-trigger.ingest"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "trigger.health/primary-success",
+      "operation": "trigger.health",
+      "description": "trigger.health reads one page of a Workflow's triggers: the first trigger, with a continuation token because another remains.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.health-primary",
+          "required_capabilities": [
+            {
+              "id": "trigger.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "trigger.health",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "limit": 1
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.health-primary"
+        },
+        "result": {
+          "items": [
+            {
+              "trigger_id": "trigger-1",
+              "trigger_kind": "webhook",
+              "workflow_version": "1.0.0",
+              "declaration_sequence": 1,
+              "event_type": "invoice.received",
+              "subscription": {
+                "state": "active",
+                "reason": "subscription.created",
+                "observed_at": "2026-10-04T03:00:00.000000Z",
+                "subscription_sequence": 1
+              },
+              "last_observation": {
+                "trigger_observation_id": "obs-1",
+                "observation_sequence": 1,
+                "event_id": "event-1",
+                "event_idempotency_key": "key-1",
+                "event_type": "invoice.received",
+                "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "occurred_at": "2026-10-04T02:59:00.000000Z",
+                "observed_at": "2026-10-04T03:10:00.000000Z",
+                "delivery_status": "accepted",
+                "processing": "unlinked",
+                "uncertainty": [
+                  "processing_unlinked"
+                ]
+              },
+              "observation_total": 1,
+              "observations": [
+                {
+                  "trigger_observation_id": "obs-1",
+                  "observation_sequence": 1,
+                  "event_id": "event-1",
+                  "event_idempotency_key": "key-1",
+                  "event_type": "invoice.received",
+                  "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "occurred_at": "2026-10-04T02:59:00.000000Z",
+                  "observed_at": "2026-10-04T03:10:00.000000Z",
+                  "delivery_status": "accepted",
+                  "processing": "unlinked",
+                  "uncertainty": [
+                    "processing_unlinked"
+                  ]
+                }
+              ],
+              "delivery_counts": {
+                "accepted": 1,
+                "duplicate": 0,
+                "dead_lettered": 0,
+                "uncertain": 0
+              },
+              "failures": [],
+              "uncertainty": [
+                "processing_unlinked"
+              ]
+            }
+          ],
+          "page": {
+            "continuation_token": "trigger-1"
+          }
+        }
+      }
+    },
+    {
+      "id": "trigger.health/page-2",
+      "operation": "trigger.health",
+      "description": "trigger.health second page: the request presents exactly the continuation token the first page issued, returns the next trigger, and issues no further token.",
+      "expect": {
+        "branch": "success",
+        "page_of": "trigger.health/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.health-page2",
+          "required_capabilities": [
+            {
+              "id": "trigger.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "trigger.health",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "limit": 1,
+          "page": {
+            "continuation_token": "trigger-1"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.health-page2"
+        },
+        "result": {
+          "items": [
+            {
+              "trigger_id": "trigger-2",
+              "trigger_kind": "manual",
+              "workflow_version": "1.0.0",
+              "declaration_sequence": 1,
+              "event_type": "invoice.received",
+              "subscription": {
+                "state": "paused",
+                "reason": "subscription.created",
+                "observed_at": "2026-10-04T03:01:00.000000Z",
+                "subscription_sequence": 1
+              },
+              "observation_total": 0,
+              "observations": [],
+              "delivery_counts": {
+                "accepted": 0,
+                "duplicate": 0,
+                "dead_lettered": 0,
+                "uncertain": 0
+              },
+              "failures": [],
+              "uncertainty": []
+            }
+          ],
+          "page": {}
+        }
+      }
     }
   ],
   "contract_version": "1.0",

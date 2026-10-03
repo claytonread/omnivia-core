@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The twenty-eight application commands map onto the
-twenty-eight operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The sixty-one application commands map onto the
+sixty-one operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -250,6 +250,14 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("decisions", "result-use"), "decision.result_use.evaluate", "decision_result_use"
     ),
+    ApplicationCommand(
+        ("trigger", "declare"), "trigger.declare", "trigger_configuration"
+    ),
+    ApplicationCommand(
+        ("trigger", "lifecycle"), "trigger.lifecycle", "trigger_configuration"
+    ),
+    ApplicationCommand(("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
+    ApplicationCommand(("trigger", "health"), "trigger.health", "trigger_observation"),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

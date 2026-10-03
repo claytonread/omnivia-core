@@ -3236,6 +3236,234 @@
         "workspace_migration_required",
         "workspace_not_granted"
       ]
+    },
+    {
+      "name": "trigger.declare",
+      "scope": {
+        "required_scopes": [
+          "trigger:configure"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareResult",
+      "required_capability": {
+        "id": "trigger.configure",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "trigger.lifecycle",
+      "scope": {
+        "required_scopes": [
+          "trigger:configure"
+        ],
+        "side_effect": "update",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleResult",
+      "required_capability": {
+        "id": "trigger.configure",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "trigger.ingest",
+      "scope": {
+        "required_scopes": [
+          "trigger:invoke"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestResult",
+      "required_capability": {
+        "id": "trigger.invoke",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "trigger.health",
+      "scope": {
+        "required_scopes": [
+          "trigger:read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthResult",
+      "required_capability": {
+        "id": "trigger.read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": true,
+        "max_page_size": 50
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
     }
   ]
 }

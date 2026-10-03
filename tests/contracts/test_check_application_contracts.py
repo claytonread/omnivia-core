@@ -1186,6 +1186,10 @@ CATALOGUE_MUTATIONS: dict[str, tuple[CatalogueMutation, str]] = {
         lambda c: _entry(c, "memory.list")["pagination"].__setitem__("max_page_size", 1000.0),
         "max_page_size must be the integer 1000",
     ),
+    "trigger-health-page-size-drift": (
+        lambda c: _entry(c, "trigger.health")["pagination"].__setitem__("max_page_size", 1000),
+        "max_page_size must be the integer 50",
+    ),
     "page-size-without-pagination": (
         lambda c: _entry(c, "memory.get")["pagination"].__setitem__("max_page_size", 1000),
         "a non-paginated operation must omit max_page_size",

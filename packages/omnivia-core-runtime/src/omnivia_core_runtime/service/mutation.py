@@ -125,6 +125,13 @@ ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
 #: identity. Its own purpose, like its own scope and capability, so neither a
 #: contributed observation nor a trusted source stream carries this authority.
 ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
+#: Declaring a trigger and moving its subscription are one configuration act, as the decision
+#: definition and model acts share one purpose: a grant to configure a trigger is the same
+#: authority whichever of the two it performs.
+TRIGGER_CONFIGURATION_PURPOSE: Final = "trigger_configuration"
+#: Delivering one stimulus to a declared trigger. Its own purpose, so a grant to configure
+#: triggers never carries the authority to deliver a stimulus to one.
+TRIGGER_INGESTION_PURPOSE: Final = "trigger_ingestion"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -161,6 +168,9 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.source.capture.commit": ENGINEERING_SOURCE_PURPOSE,
         "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
         "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
+        "trigger.declare": TRIGGER_CONFIGURATION_PURPOSE,
+        "trigger.lifecycle": TRIGGER_CONFIGURATION_PURPOSE,
+        "trigger.ingest": TRIGGER_INGESTION_PURPOSE,
     }
 )
 
@@ -224,6 +234,11 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Its own `engineering:repository` scope and `engineering.repository` capability
         # are what only an explicitly authorized local operator's grant holds.
         "engineering.repository.register": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Configuring a trigger and delivering a stimulus to one are contributor work in one
+        # workspace: neither reviews nor administers anything, and neither starts a run.
+        "trigger.declare": WORKSPACE_CONTRIBUTOR_ROLE,
+        "trigger.lifecycle": WORKSPACE_CONTRIBUTOR_ROLE,
+        "trigger.ingest": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 
