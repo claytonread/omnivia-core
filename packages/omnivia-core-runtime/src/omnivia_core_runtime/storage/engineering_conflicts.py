@@ -429,10 +429,9 @@ def _append_relation_candidate(
     """Append or retrieve one symmetric unresolved candidate for ``run``.
 
     Both exact endpoints must first enter the frozen preview frontier admitted by the
-    run principal's explicit label grant. Stage A has no immutable
-    stream/snapshot-to-checkout binding, so this helper can persist only
-    ``unresolved_overlap``. A later migration may admit ``scoped_difference`` once it
-    can prove that binding instead of inferring it from unequal stream identifiers.
+    run principal's explicit label grant. The persistence helper classifies the pair
+    as ``scoped_difference`` only on immutable checkout proof (migration 0063) and
+    otherwise keeps ``unresolved_overlap``.
     """
 
     anchor, other = _authorized_endpoint_pair(
@@ -450,6 +449,51 @@ def _append_relation_candidate(
         other=other,
         allocate_identifier=allocate_identifier,
     )
+
+
+def _classify_scope(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    endpoint_a: RelationEndpoint,
+    endpoint_b: RelationEndpoint,
+) -> tuple[str, str]:
+    """Return ``scoped_difference`` only when both endpoints' stored applicability
+    snapshots have immutable checkout proof for one repository and distinct checkouts.
+
+    Unequal labels, stream ids or model-supplied identifiers are never read; absent,
+    incomplete or disagreeing capture evidence keeps ``unresolved_overlap``. The
+    insert guard re-derives the same proof, so this is a hint, not the authority.
+    """
+
+    proven = connection.execute(
+        "SELECT 1 "
+        "FROM omnivia_engineering_preview_projection pa "
+        "JOIN omnivia_engineering_snapshot_checkout_proofs xa "
+        "ON xa.workspace_id = pa.workspace_id AND xa.snapshot_id = pa.snapshot_id "
+        "AND xa.repository_id = pa.repository_id "
+        "JOIN omnivia_engineering_preview_projection pb "
+        "ON pb.workspace_id = pa.workspace_id "
+        "JOIN omnivia_engineering_snapshot_checkout_proofs xb "
+        "ON xb.workspace_id = pb.workspace_id AND xb.snapshot_id = pb.snapshot_id "
+        "AND xb.repository_id = pb.repository_id "
+        "WHERE pa.workspace_id = ? AND pa.assembly_id = ? "
+        "AND pa.projection_version = 1 AND pa.content_digest = ? "
+        "AND pb.assembly_id = ? AND pb.projection_version = 1 "
+        "AND pb.content_digest = ? "
+        "AND xa.repository_id = xb.repository_id AND xa.checkout_id <> xb.checkout_id "
+        "LIMIT 1",
+        (
+            workspace_id,
+            endpoint_a.assembly_id,
+            endpoint_a.content_digest,
+            endpoint_b.assembly_id,
+            endpoint_b.content_digest,
+        ),
+    ).fetchone()
+    if proven is None:
+        return "unresolved_overlap", "related"
+    return "scoped_difference", "scoped_difference"
 
 
 def _append_authorized_relation_candidate(
@@ -495,6 +539,12 @@ def _append_authorized_relation_candidate(
     ).fetchone()
     if row is None:
         candidate_id = allocate_identifier("erc")
+        scope, relation = _classify_scope(
+            connection,
+            workspace_id=workspace_id,
+            endpoint_a=endpoint_a,
+            endpoint_b=endpoint_b,
+        )
         connection.execute(
             "INSERT INTO omnivia_engineering_relation_candidates "
             "(workspace_id, relation_candidate_id, endpoint_a_assembly_id, "
@@ -502,8 +552,7 @@ def _append_authorized_relation_candidate(
             "endpoint_b_assembly_id, endpoint_b_record_id, endpoint_b_version, "
             "endpoint_b_digest, detector_version, scope_classification, "
             "proposed_relation, status, first_discovery_run_id, recorded_at_us) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unresolved_overlap', "
-            "'related', 'pending', ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
             (
                 workspace_id,
                 candidate_id,
@@ -516,14 +565,16 @@ def _append_authorized_relation_candidate(
                 endpoint_b.version,
                 endpoint_b.content_digest,
                 run.detector_version,
+                scope,
+                relation,
                 run.discovery_run_id,
                 run.resolution_instant_us,
             ),
         )
         row = (
             candidate_id,
-            "unresolved_overlap",
-            "related",
+            scope,
+            relation,
             "pending",
             run.discovery_run_id,
             run.resolution_instant_us,

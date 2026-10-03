@@ -33,6 +33,19 @@ the whole content. It holds no connection and sees nothing but the candidates it
 is handed, so an unauthorised version cannot influence an authorised one's rank.
 A term that occurs only beyond a preview is not matched: finding it is an exact
 read or expansion of the version, which is where a full body is hydrated.
+
+**A query narrows the frontier before it is authorised, and only by identity.**
+`narrow_record_ids` asks SQLite which records have a version whose projection text
+could contain the query and returns record ids, never a preview. It is a candidate
+superset, not a result: the exact rule is still `rank_previews`, and what a caller
+sees, counts or is bound to is read only from the frontier those ids are then
+authorised through. A denied record's id may enter the narrowing and leaves it at
+the label fold, so it cannot reach a rank, a total, the frontier digest or a
+continuation. The narrowing is exact for ASCII-only text (where NFKC and case
+folding reduce to `lower`) and conservative for the rest: a row with any other
+character is always kept for the Python check. It is also skipped, in favour of the
+full authorised read, whenever any version in the domain lacks a current projection
+row, so absent and stale projections fail closed exactly as before.
 """
 
 from __future__ import annotations
@@ -76,6 +89,14 @@ PREVIEW_MAX_BYTES: Final = 2048
 #: Projection rows read per statement, so a statement stays under SQLite's oldest
 #: default bound on bound parameters however many versions a frontier admits.
 _ROW_BATCH: Final = 900
+
+#: `preview_search_text` as SQL: title, preview, kind and topic key, one per line. Title
+#: and preview are never empty (0053's CHECKs) and kind and topic key are NULL or
+#: non-empty, so the same parts are joined as in Python.
+_SEARCH_TEXT_SQL: Final = (
+    "(title || char(10) || preview || coalesce(char(10) || observation_kind, '') "
+    "|| coalesce(char(10) || topic_key, ''))"
+)
 
 
 class PreviewProjectionUnavailable(StorageError):
@@ -136,6 +157,7 @@ def read_authorized_previews(
     view: str | None,
     label_grant: EvidenceLabelGrant,
     record_ids: Sequence[str] | None = None,
+    query: str | None = None,
 ) -> tuple[tuple[PreviewCandidate, ...], str]:
     """Return bounded previews and their authorization-frontier digest.
 
@@ -145,9 +167,19 @@ def read_authorized_previews(
     the effective label grant and label-event stream, which lets a continuation bind
     the ACL epoch even when an attach/withdraw cycle leaves the same rows visible.
     ``record_ids`` is the durable-processor seam: when supplied, authorization and
-    projection reads are confined to that indexed stable-record page.
+    projection reads are confined to that indexed stable-record page. ``query`` narrows
+    the frontier to the records `narrow_record_ids` keeps, before authorization; the
+    previews returned are then a superset of the query's matches among the admitted
+    versions, to be ranked by `rank_previews`.
     """
     with read_snapshot(connection):
+        if record_ids is None and query is not None:
+            record_ids = narrow_record_ids(
+                connection,
+                workspace_id=workspace_id,
+                resolution_instant_us=resolution_instant_us,
+                query=query,
+            )
         frontier = read_authorized_memory_frontier(
             connection,
             workspace_id=workspace_id,
@@ -163,6 +195,64 @@ def read_authorized_previews(
             ),
             frontier.digest,
         )
+
+
+def narrow_record_ids(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    query: str,
+) -> tuple[str, ...] | None:
+    """The record ids whose versions' preview text could contain ``query``, or None.
+
+    Identity only: no preview is returned, and nothing here is authorised, so the
+    result is only ever the key set an authorised frontier is then read for. None
+    means "do not narrow, read the whole authorised frontier": the query is empty, or
+    some version recorded by the instant has no current projection row (absent or
+    stale), which only the authorised read may judge. The caller owns the read
+    snapshot.
+    ``ponytail:`` the text match is an unindexed SQLite scan of the projection (C
+    speed, no Python rows); a persisted trigram index is the upgrade if it ever
+    dominates, and rows with non-ASCII text are always returned for the Python check.
+    """
+    if not connection.in_transaction:
+        raise ValueError("preview narrowing requires the caller's active read snapshot")
+    needle = normalize_query(query)
+    if not needle:
+        return None
+    unhealthy = connection.execute(
+        "SELECT 1 FROM omnivia_authoritative_governed_version_metadata m "
+        "WHERE m.workspace_id = ? AND m.domain_scope = ? AND m.recorded_at_us <= ? "
+        "AND NOT EXISTS (SELECT 1 FROM omnivia_engineering_preview_projection p "
+        "WHERE p.workspace_id = m.workspace_id AND p.assembly_id = m.assembly_id "
+        "AND p.projection_version = ? AND p.content_digest = m.content_digest) LIMIT 1",
+        (workspace_id, OBSERVATION_DOMAIN, resolution_instant_us, PROJECTION_VERSION),
+    ).fetchone()
+    if unhealthy is not None:
+        return None
+    return tuple(
+        str(row[0])
+        for row in connection.execute(
+            "SELECT DISTINCT m.governed_record_id "
+            "FROM omnivia_authoritative_governed_version_metadata m "
+            "WHERE m.workspace_id = ? AND m.domain_scope = ? AND m.recorded_at_us <= ? "
+            "AND m.assembly_id IN (SELECT assembly_id "
+            "FROM omnivia_engineering_preview_projection "
+            "WHERE workspace_id = ? AND projection_version = ? "
+            f"AND (instr(lower({_SEARCH_TEXT_SQL}), ?) > 0 "
+            f"OR length(CAST({_SEARCH_TEXT_SQL} AS BLOB)) != length({_SEARCH_TEXT_SQL}))) "
+            "ORDER BY m.governed_record_id",
+            (
+                workspace_id,
+                OBSERVATION_DOMAIN,
+                resolution_instant_us,
+                workspace_id,
+                PROJECTION_VERSION,
+                needle,
+            ),
+        )
+    )
 
 
 def read_previews_for_frontier(
@@ -357,6 +447,7 @@ __all__ = [
     "PreviewCandidate",
     "PreviewProjectionStale",
     "PreviewProjectionUnavailable",
+    "narrow_record_ids",
     "preview_search_text",
     "rank_previews",
     "read_authorized_previews",

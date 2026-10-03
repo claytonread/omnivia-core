@@ -170,6 +170,12 @@ EXPECTED_ALLOCATION = (
         "candidate",
     ),
     (62, "0062_analysis_dataset_state.sql", "Structured Data", "candidate"),
+    (
+        63,
+        "0063_engineering_scoped_difference.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -241,6 +247,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # repair 97d1e8db, then to its evaluation-order repair d54b3f44, which is where
     # its current content lives.
     62: "d54b3f447456534b4e436225233b0ab858eae49e",
+    63: "2ed5e6a67763be23629eaaf392db70fd2b526084",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
