@@ -1453,7 +1453,6 @@ def _assemble_report(
         blockers.append("the source commit is unavailable")
     elif source["dirty"]:
         blockers.append("the working tree is dirty")
-    blockers.append("system-cold lane not executed: the OS page cache is not controlled")
     return {
         "report_format": REPORT_FORMAT,
         "spec": "SPEC-CORE-ENGMEM-001 section 20.2",
@@ -1517,7 +1516,8 @@ def _assemble_report(
         "cache": {
             "os_page_cache": {
                 "controlled": False,
-                "note": "not dropped or measured; a system-cold lane is pending",
+                "note": "not dropped or measured; no lane is system-cold, and cold means "
+                "SQLite connection/page-cache cold",
             },
             "cold": {
                 "label": "connection-cold",
@@ -1755,6 +1755,9 @@ def test_smoke_lane_report_satisfies_the_contract(smoke_report: dict[str, Any]) 
     assert short["max"] < medium["min"] < near["min"] <= near["max"] <= CHECKPOINT_PAYLOAD_CAP_BYTES
     assert near["min"] >= int(CHECKPOINT_PAYLOAD_CAP_BYTES * 0.95)
     assert report["reference"]["release_eligible"] is False
+    assert not any(
+        "system-cold" in blocker for blocker in report["reference"]["release_blockers"]
+    )
     json.dumps(report)  # the report serializes
 
 
