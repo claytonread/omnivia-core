@@ -74,6 +74,7 @@ __all__ = [
     "list_workflow_trigger_telemetry",
     "read_trigger_declaration",
     "read_trigger_telemetry",
+    "read_wait_signal_observation",
     "read_wait_signal_telemetry",
     "transaction_local_telemetry_writer",
     "trigger_telemetry_writer",
@@ -889,7 +890,13 @@ def list_workflow_trigger_telemetry(
     after_trigger_id: str | None = None,
     observation_limit: int = 5,
 ) -> TriggerTelemetryPage:
-    """One bounded page of a Workflow's triggers, ordered by trigger id."""
+    """One bounded page of a Workflow's triggers, ordered by trigger id.
+
+    This is the shared aggregation the trigger health requirement names: Expose trigger
+    health through a shared aggregation keyed by Project/Workflow, including per-trigger
+    subscription state, last observation, delivery/processing status, failures and
+    uncertainty.
+    """
     count = _window(limit, MAX_TRIGGER_PAGE, "limit")
     window = _window(
         observation_limit, MAX_PAGE_OBSERVATION_WINDOW, "observation_limit"
@@ -914,6 +921,26 @@ def list_workflow_trigger_telemetry(
         items=tuple(items),
         next_after_trigger_id=ids[count - 1] if len(ids) > count else None,
     )
+
+
+def read_wait_signal_observation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    wait_id: str,
+    wait_signal_observation_id: str,
+) -> WaitSignalObservation | None:
+    """One recorded signal of one wait, or `None`. A retry of a refused signal finds it here."""
+    row = connection.execute(
+        f"SELECT {_WAIT_COLUMNS} FROM {_WAIT_SIGNALS} "
+        "WHERE workspace_id = ? AND wait_id = ? AND wait_signal_observation_id = ?",
+        (
+            _text(workspace_id, _ID, "workspace_id"),
+            _text(wait_id, _ID, "wait_id"),
+            _text(wait_signal_observation_id, _ID, "wait_signal_observation_id"),
+        ),
+    ).fetchone()
+    return None if row is None else _wait_signal_from_row(row)
 
 
 def read_wait_signal_telemetry(

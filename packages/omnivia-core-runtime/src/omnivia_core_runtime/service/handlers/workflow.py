@@ -1035,7 +1035,9 @@ class WorkflowHandlers:
         except WaitNotFound as error:
             raise application_refusal(ERROR_CODE_NOT_FOUND, str(error)) from error
         except WaitResolutionConflict as error:
-            raise application_refusal(ERROR_CODE_CONFLICT, str(error)) from error
+            raise application_refusal(
+                ERROR_CODE_CONFLICT, str(error), audit_reference=error.audit_reference
+            ) from error
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
     def _require_wait_policy(

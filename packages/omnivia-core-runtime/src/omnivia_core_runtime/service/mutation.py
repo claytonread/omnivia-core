@@ -1020,6 +1020,43 @@ def execute_mutation(
         )
 
 
+def record_refused_audit(
+    connection: sqlite3.Connection,
+    *,
+    grant: MutationGrant,
+    context: AuthorizedApplicationContext,
+    audit_ref: str,
+    error_code: str,
+    recorded_at_us: int,
+) -> None:
+    """Write the audit event of a refused mutation, inside a fenced transaction of its own.
+
+    A refused mutation rolls back everything it wrote, its audit event included, so a
+    refusal that something must reference afterwards needs an event of its own. `refused`
+    is the outcome class 0007 admits for that, and it carries the error code.
+    """
+    connection.execute(
+        "INSERT INTO omnivia_application_audit_events "
+        "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
+        "correlation_id, trace_id, granted_authority_json, outcome_class, "
+        "error_code, recorded_at_us) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'refused', ?, ?)",
+        (
+            audit_ref,
+            grant.workspace_id,
+            grant.principal_id,
+            grant.operation,
+            grant.purpose,
+            context.request_id,
+            context.correlation_id,
+            context.trace_id,
+            to_canonical_json(context.authority.to_wire()),
+            error_code,
+            recorded_at_us,
+        ),
+    )
+
+
 def _require_current(grant: MutationGrant, clock: Clock) -> int:
     """The monotonic settlement reading, or a refusal because the grant expired.
 
