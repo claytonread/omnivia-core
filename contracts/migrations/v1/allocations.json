@@ -480,6 +480,17 @@
       "sha256": "a406360999ebf98ffea59d3ad5fb2699adad6742db4c14a35962299bc1385657",
       "introduced_commit": "1d49d70a561c34db9a6e088cce4f869f6554fe56",
       "accepted_commit": null
+    },
+    {
+      "number": 61,
+      "filename": "0061_engineering_legacy_identity.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 60,
+      "sha256": "c6e2c0509ad979e57113715284e6f8133a391ab43fd75a189261ea946e350405",
+      "introduced_commit": "70b473729995396c9cea39934fe23023dfbcdcd6",
+      "accepted_commit": null
     }
   ]
 }
