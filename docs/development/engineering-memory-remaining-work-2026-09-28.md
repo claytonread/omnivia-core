@@ -1,10 +1,27 @@
 # Engineering memory: remaining work register
 
-Date: 2026-09-28
-Superseded by: `engineering-memory-remaining-work-resolved-2026-09-29.md` and
-`engineering-memory-resolution-and-codex-handoff-2026-09-29.md` (29 September
-reconciliation packet). Corrections applied in place below, per that packet's
-reconciliation findings; the 29 September documents are the governing register.
+Date: 2026-09-28  
+Reconciled: 2026-10-03
+
+Current governing closeout sources are
+`engineering-memory-acceptance-evidence-2026-10-03.md`,
+`omnivia-core-engineering-memory-release-evidence-2026-09-27.md`, and
+`omnivia-core-engineering-memory-status-2026-09-27.md`. The two 29 September
+filenames previously named here do not exist in this checkout and are not evidence.
+
+## Current closeout state (2026-10-03)
+
+- AC-001–AC-063 have direct production-path evidence in the acceptance register.
+- The preview path narrows candidates by query before authorization/ranking; the
+  format-2 10k qualification report is complete.
+- AC-050 trusted-checkout scope classification is implemented by migration 0062.
+- AC-063 portable export/restore excludes installation-local authority and mappings,
+  preserves permitted stable history, and proves immediate revoked-evidence blocking.
+- AC-064 remains open until the running format-2 100k lane, full preflight and
+  supported-OS CI complete. The report records any target miss instead of hiding it.
+
+Sections 1–4 below are retained as the historical 28 September register. Their
+individual state labels are not current status; use the acceptance register above.
 
 ## Corrections applied 2026-09-29
 
