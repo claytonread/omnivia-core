@@ -65,6 +65,8 @@ def test_builder_defines_the_exact_standard_profile_and_candidate_evidence() -> 
         "compatibility-matrix.json",
         "qualification-result.json",
         "standard-lifecycle-result.json",
+        "mcp-authoring-qualification.json",
+        "run-mcp-authoring-qualification.py",
         "unsigned",
         "--no-index",
         "--only-binary=:all:",
@@ -699,6 +701,7 @@ def test_provenance_and_the_current_matrix_row_carry_the_same_host_identity(
         _first_party_packages(builder),
         [],
         _journey(),
+        {},
         {},
         [],
     )

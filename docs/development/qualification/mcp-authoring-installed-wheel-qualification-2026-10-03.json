@@ -1,0 +1,68 @@
+{
+  "environment": {
+    "machine": "arm64",
+    "python": "3.11.15",
+    "release": "27.0.0",
+    "system": "darwin"
+  },
+  "format": "omnivia.mcp-authoring-qualification.v1",
+  "journeys": {
+    "empty_workspace": {
+      "candidate_visibility": true,
+      "capture_and_search": true,
+      "core_restart_recovery": true,
+      "empty_workspace": true,
+      "proposed_memory": true,
+      "replay_and_conflict": true,
+      "revocation_fail_closed": true,
+      "service_healthy": true,
+      "tool_discovery": true
+    },
+    "import": {
+      "import_replay_and_conflict": true,
+      "import_start": true,
+      "job_observation": true,
+      "revocation_preserved_job": true,
+      "service_healthy": true,
+      "trusted_staging": true
+    }
+  },
+  "profile": "authoring",
+  "protocol_version": "2025-06-18",
+  "redaction": {
+    "credentials_recorded": false,
+    "endpoints_or_processes_recorded": false,
+    "model_responses_recorded": false,
+    "private_identifiers_recorded": false,
+    "private_paths_recorded": false,
+    "prompts_or_transcripts_recorded": false,
+    "stdio_recorded": false,
+    "submitted_content_recorded": false
+  },
+  "sdk_versions": {
+    "mcp": "2.0.0",
+    "mcp-types": "2.0.0"
+  },
+  "tool_count": 18,
+  "tools": [
+    "workspace_inspect",
+    "evidence_search",
+    "knowledge_search",
+    "memory_search",
+    "graph_traverse",
+    "context_pack_build",
+    "engineering_search",
+    "engineering_expand",
+    "engineering_context_build",
+    "decision_evaluate",
+    "decision_record_get",
+    "decision_record_list",
+    "decision_status",
+    "memory_create",
+    "evidence_capture",
+    "import_start",
+    "job_get",
+    "job_events"
+  ],
+  "verdict": "pass"
+}

@@ -1,7 +1,7 @@
 """Service-owned workspace bootstrap (R004-10, owner resolution 004 Packet B).
 
 The one shared implementation of "make this directory into a workspace a service
-can own". `omnivia init` invokes it as a subprocess and the MCP adapter may point
+can own". `omnivia-core-service --init` invokes it and the MCP adapter may point
 a user at it; neither imports this module. It lives here rather than in the CLI
 for the reason R004-10 gives -- exclusive database and workspace initialisation
 are legal in `omnivia-core-service` and nowhere else.
@@ -282,8 +282,8 @@ INSTALLATION_CATALOGUE_ENTRIES: Final = frozenset(
 #:
 #: Both refusals below used to count these as somebody else's content, and the
 #: consequence was not theoretical: opening `~/.omnivia` in Finder writes a
-#: `.DS_Store`, and one of those was enough to make `omnivia init` refuse that
-#: installation permanently -- `UNRELATED_DIRECTORY` for the workspace,
+#: `.DS_Store`, and one of those was enough to make workspace initialization
+#: refuse that installation permanently -- `UNRELATED_DIRECTORY` for the workspace,
 #: `UNRECOGNISED_INSTALLATION_STATE` for the installation state -- with no shipped
 #: command able to clear it.
 #:

@@ -1,51 +1,112 @@
 # MCP host interoperability
 
 `omnivia-core-mcp` is a stdio MCP server built on the official Model Context
-Protocol Python SDK. Nothing in it is specific to one host. This document
-records what the Standard-profile journey proves about that claim, in what form
-each host is configured, and what the candidate retains as evidence.
+Protocol Python SDK. Its protocol and authority are provider- and
+model-agnostic. Claude Code and Codex CLI are qualification hosts; neither is a
+source of Core authority.
 
-The executable proof is `scripts/run-standard-journey.py`, run inside the
-offline installed-wheel environment by `scripts/build-standard-candidate.py`.
+Two kinds of evidence are deliberately kept separate:
 
-## What this proves, and what it does not
+1. installed-wheel SDK journeys prove the host configuration shapes, protocol,
+   tool inventories and Core behavior from an isolated release artifact;
+2. real-host qualification proves that an installed Claude Code or Codex CLI
+   process can use those settings and drive the same workflows.
 
-For each named profile the journey writes that host's own native configuration
-document, reads it back, parses it, and starts the real server from the launch
-that document yields — then drives the session with the official Model Context
-Protocol Python SDK as the client.
+Configuration-form evidence must never be reported as real-host evidence.
 
-The Claude Desktop, Claude Code and Codex binaries are not installed and do not
-run here. No claim is made that those applications executed a session. What is
-proved is narrower and checkable: each host's configuration shape round-trips to
-the accepted launch, and the server that launch starts answers a standards-
-conformant MCP client with the identical six-tool manifest and populated results
-in every case. The profile names below name configuration forms, not processes.
+## Installed restricted-profile interoperability
 
-## The four accepted profiles
+`scripts/run-standard-journey.py`, executed inside the offline installed-wheel
+environment by `scripts/build-standard-candidate.py`, writes each supported
+host's native configuration document, reads it back, starts the real MCP server
+from that launch and drives it with the official Python MCP SDK.
 
-| Profile | `config_format` | Configured by |
+The Claude Desktop, Claude Code and Codex binaries do not run in this journey.
+The profile names identify configuration forms, not host processes.
+
+| Profile | `config_format` | Native form |
 |---|---|---|
 | `claude_desktop` | `claude_desktop_json` | `claude_desktop_config.json` |
 | `claude_code` | `claude_code_json` | `.mcp.json` |
 | `codex` | `codex_toml` | `config.toml` |
-| `official_python_sdk` | `official_python_sdk_stdio` | direct code configuration |
+| `official_python_sdk` | `official_python_sdk_stdio` | direct SDK parameters |
 
-`official_python_sdk` writes no file. It constructs the SDK's stdio server
-parameters in code, and it is the profile that proves no Claude-specific
-assumption is embedded in the server: the same six tools answer a client
-configured without any Claude configuration format in the path.
+Each profile gets a fresh stdio session. It initializes, advertises the exact
+restricted thirteen-tool inventory, exercises the accepted success or
+typed-refusal behavior, and closes before the next profile starts. All four
+inventories must be identical. The SDK decodes stdout as JSON-RPC, so any stray
+diagnostic byte fails the journey.
 
-## Accepted configuration
+The restricted inventory is:
 
-Claude Desktop and Claude Code both read an `mcpServers` object:
+1. `workspace_inspect`
+2. `evidence_search`
+3. `knowledge_search`
+4. `memory_search`
+5. `graph_traverse`
+6. `context_pack_build`
+7. `engineering_search`
+8. `engineering_expand`
+9. `engineering_context_build`
+10. `decision_evaluate`
+11. `decision_record_get`
+12. `decision_record_list`
+13. `decision_status`
+
+`decision_evaluate` has durable evaluation/job/audit effects but cannot mutate
+business records or authorize an action. The restricted profile is therefore a
+bounded non-authoring profile, not a universal read-only claim.
+
+## Installed authoring qualification
+
+`scripts/run-mcp-authoring-qualification.py` runs beside the restricted journey
+from the same isolated installed-wheel environment. It configures explicit
+authoring authority through `omnivia mcp configure`, then proves the exact
+eighteen-tool inventory: the restricted thirteen plus:
+
+1. `memory_create`
+2. `evidence_capture`
+3. `import_start`
+4. `job_get`
+5. `job_events`
+
+The qualification uses two isolated workspaces:
+
+- an empty workspace for capture, immediate search, evidence-backed proposed
+  memory, default/candidate visibility, replay, changed-input conflict, service
+  restart, fresh-session recovery and revocation;
+- a workspace containing one source staged by the installed trusted Core
+  maintenance path for import start, job/event observation, replay, conflict,
+  revocation and owner observation of the surviving committed job.
+
+The first workspace is checked empty through MCP before its first write. The
+import workspace is not described as empty: staging is outside the MCP
+milestone, and the qualification reads only the verified staged descriptor
+created by the installed Core path so it can name that handle to `import_start`.
+
+The retained record is
+`evidence/mcp-authoring/mcp-authoring-qualification.json`. Its closed schema is
+`docs/distribution/schemas/mcp-authoring-qualification-record-v1.schema.json`.
+The candidate builder rejects unknown fields, a non-passing gate, another tool
+inventory, an SDK version other than the reviewed pins, or a redaction flag that
+is not exactly false.
+
+## Accepted host configuration
+
+Claude Desktop and Claude Code use an `mcpServers` object:
 
 ```json
-{"mcpServers": {"omnivia-core": {"command": "<omnivia-core-mcp>",
-                                 "args": ["--config", "<omnivia-mcp.json>"]}}}
+{
+  "mcpServers": {
+    "omnivia-core": {
+      "command": "<omnivia-core-mcp>",
+      "args": ["--config", "<omnivia-mcp.json>"]
+    }
+  }
+}
 ```
 
-Codex reads a `mcp_servers` TOML table:
+Codex uses a `mcp_servers` TOML table:
 
 ```toml
 [mcp_servers."omnivia-core"]
@@ -53,89 +114,163 @@ command = "<omnivia-core-mcp>"
 args = ["--config", "<omnivia-mcp.json>"]
 ```
 
-That is the whole of an accepted document. One top-level table, one server named
-`omnivia-core`, and exactly the two fields `command` and `args`. The two
-placeholders are absolute local paths supplied by the installation; no
-credential, bearer token, endpoint or private path appears in a published
-example, and the configuration the server itself reads
-(`omnivia.mcp-config.v1`) is owner-private and named only by `--config`.
-
-## One fresh session per profile
-
-Each profile gets its own SDK stdio session against the same immutable
-candidate: the transport is opened, `initialize` is answered, `tools/list`
-returns exactly six tools, all six are called, and the transport is closed
-before the next profile starts. Nothing — transport, session, process or cached
-manifest — is shared between profiles, so a per-host difference cannot be hidden
-by reuse.
-
-The launch used for a session is the one the host's own configuration yields,
-read back out of the file that was just written rather than carried over in
-memory. Starting the server from what the journey already knew would prove
-nothing about a host's configuration mechanism. The client on the other end of
-every one of those launches is the official Python SDK, not the host
-application.
-
-All four manifests are then compared. A tool list that differs between hosts is
-the interoperability failure this evidence exists to exclude, and it fails the
-journey.
-
-Every one of the six calls must return a populated result. The journey creates
-the evidence, knowledge, memory, graph and context those tools read, so an empty
-answer is a failure rather than an accepted empty workspace.
-
-Stdio stdout is protocol-only. The official SDK decodes it as JSON-RPC and
-nothing else, so a log line or a stray child-process byte on stdout is a decode
-failure and that session does not complete. Server diagnostics go to a
-temporary stderr sink that is discarded with the session.
+That is the complete accepted entry. The installation substitutes absolute
+local paths. No credential, bearer, endpoint, environment override, URL,
+header, working directory or transport selector is accepted. The protected
+`omnivia.mcp-config.v1` file is owner-private and is named only by `--config`.
 
 ## Fail-closed configuration parsing
 
-A configuration the journey cannot account for field by field has not been
-qualified, so the reader admits the accepted document and nothing else. Every
-rejection below produces one payload-free message naming only the profile:
+The installed interoperability parser rejects every configuration it cannot
+account for field by field, including:
 
-- a document that does not parse as JSON or TOML;
-- a document that is not an object;
-- a top-level key that is not this family's server table, or any additional
-  top-level key;
-- a server key that is not `omnivia-core`, or a second server;
-- `command` absent, of the wrong type, or not the installed executable;
-- `args` absent, not a list, holding a non-string element, or not the exact
-  accepted argument list;
-- any additional entry field, including `env`, `url`, `headers`, `cwd`, a
-  bearer token, a transport selector, and any field a later schema adds.
+- malformed or non-object JSON/TOML;
+- an unknown top-level table, renamed server or second server;
+- a missing, wrong-type or unexpected command;
+- an argument list other than `--config` plus the installed path;
+- any additional entry field, including `env`, `url`, `headers`, `cwd`, bearer
+  material or a future field not reviewed by this version.
 
-Unsupported transport fields and schema drift are refused by the same rule
-rather than ignored: the accepted field set is closed, not a minimum.
+Rejections are fixed and payload-free.
 
-## Retained evidence
+## Retained installed-wheel evidence
 
-`mcp.hosts` in `standalone-journey-result.json` carries exactly one object per
-profile, and each object carries exactly these keys:
+The restricted `standalone-journey-result.json` retains only stable profile
+names, configuration formats, booleans, counts, tool names and verdicts. It
+retains no executable path, configuration path, endpoint, argument, stdout,
+stderr, credential, secret, process identifier or free text.
 
-| Key | Value |
-|---|---|
-| `client` | the profile name |
-| `config_format` | the form it read |
-| `connected` | `true` |
-| `session_completed` | `true` |
-| `tool_count` | `6` |
-| `tool_calls` | `6` |
-| `tools` | the six stable tool names |
-| `result_counts` | one non-sensitive count per tool |
-| `verdict` | `"pass"` |
+The authoring record retains only:
 
-Nothing else is retained. No executable path, configuration path, endpoint,
-argument, stdout, stderr, credential, secret, PID or free text reaches the
-transcript, and no failure message quotes one either.
+- its format, profile, protocol, tool count and stable tool names;
+- exact SDK versions;
+- bounded OS/Python identity strings;
+- fixed boolean outcomes for the two journeys;
+- fixed false redaction assertions;
+- the final verdict.
 
-`scripts/build-standard-candidate.py` refuses a candidate whose journey result
-does not carry all four profiles with exactly those nine keys and no others:
-`client` matching the profile it is filed under, `config_format` matching that
-profile's form, the four fixed proofs and `verdict` at exactly those values and
-types, `tools` the exact six sorted names, and `result_counts` exactly those six
-names each with a positive integer count. Types are compared exactly, so a
-boolean cannot stand in for a count. That gate and the
-journey's profile list are separate hard-coded copies — the two scripts share no
-module by design — and a test asserts they have not drifted apart.
+It cannot retain a path, principal, workspace, job, evidence or record
+identifier, credential, grant, submitted content, prompt, transcript, endpoint,
+process identifier, stdout/stderr or model response because its schema contains
+no field for one.
+
+## Operating the MCP server
+
+- The host starts one MCP process per configuration. The process reads its
+  `--config` document once, before it opens stdio. A changed configuration
+  therefore takes effect when the host starts the next process.
+- The bearer is not held. The server reads it from the protected store on every
+  call, so revocation or rotation applies to the next call, including a replay,
+  without a restart.
+- The MCP process neither owns the workspace lease nor stops a service it
+  started. The service outlives the host session. Service start, stop and
+  recovery are described in [Shared Core installation](shared-core-installation.md#headless-service-operation).
+- `import.start` takes only a server-issued `staged_source_ref`. No MCP tool
+  accepts a filesystem path or URL, so a model cannot choose what Core reads or
+  fetches. The staging boundary and the reason for it are in the same section.
+- The MCP server needs no Apple privacy entitlement and no protected-folder
+  permission for its own state. A protected-folder grant that the host
+  application holds for its own file access does not add a path input to any
+  tool.
+
+## Real-host qualification
+
+Real-host qualification must run actual installed Claude Code and Codex CLI
+processes against an exact candidate artifact. It must use temporary isolated
+host configuration and installation/workspace state, and must not modify the
+operator's normal host configuration.
+
+For each host the retained record must identify the exact host version and
+candidate digest and prove:
+
+1. native restricted and authoring configuration;
+2. initialize and exact tool discovery;
+3. the empty-workspace authoring journey;
+4. the staged-import and job-observation journey;
+5. same-key recovery after an intentionally interrupted response;
+6. protocol-only stdout, host restart and Core restart;
+7. authoring revocation and fail-closed mutation behavior.
+
+Model text is not acceptance evidence. A harness must independently verify Core
+state and validate the closed redacted record. Prompts and model responses are
+ephemeral and are not retained.
+
+As of the Phase 8 implementation start, the approved replacement host baseline
+is Claude Code `2.1.288`, Codex CLI `0.146.0`, and macOS `27.0` build `26A428`
+on arm64. These values qualify nothing by themselves; they become evidence only
+after the corresponding real-host run passes at the frozen candidate commit.
+
+The executable harness is `scripts/run-mcp-real-host-qualification.py`. A run
+names one host, its installed binary, one clean candidate directory, one
+explicit authentication file, the closed schema, and an output record:
+
+```bash
+.venv/bin/python scripts/run-mcp-real-host-qualification.py \
+  --host codex-cli \
+  --host-binary /absolute/path/to/codex \
+  --candidate /absolute/path/to/candidate \
+  --auth-file /absolute/path/to/auth.json \
+  --schema docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json \
+  --output /absolute/path/to/codex-record.json
+```
+
+For Claude Code, use `--host claude-code` with the installed Claude Code binary
+and a token-only authentication file:
+
+```bash
+.venv/bin/python scripts/run-mcp-real-host-qualification.py \
+  --host claude-code \
+  --host-binary /absolute/path/to/claude \
+  --candidate /absolute/path/to/candidate \
+  --auth-file /absolute/path/to/claude-token.txt \
+  --schema docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json \
+  --output /absolute/path/to/claude-record.json
+```
+
+### `--auth-file` by host
+
+The same flag carries a different kind of credential for each host. For both,
+the file must be a regular file owned by the operator's account, not a symbolic
+link, with no group or world permission bits. Any other file, or any read
+failure, is refused as `authentication_unavailable`, and the file's contents are
+never echoed.
+
+- **Codex CLI:** the file is an owner-only copy of Codex's `auth.json`. The
+  harness copies it by bytes into the isolated `CODEX_HOME` as a new owner-only
+  file. It never parses the file.
+- **Claude Code:** the file is token-only. It holds exactly the OAuth token
+  produced by `claude setup-token`, optionally followed by one LF, at most 1024
+  bytes, and nothing else. The accepted token itself is 16–512 characters from
+  the harness's portable-token character set. The harness checks that shape and
+  never copies the file. It injects the value only as
+  `CLAUDE_CODE_OAUTH_TOKEN` into the isolated Claude host environment, so no
+  credential file is written into the isolated home.
+
+For both hosts, `HOME` and the host's configuration variable (`CLAUDE_CONFIG_DIR`
+for Claude Code, `CODEX_HOME` for Codex CLI) remain isolated. The normal
+host configuration is not copied, read or changed by the harness, and the
+portable Claude token does not rely on the operator's keychain login. The token
+is held in memory only for the authentication check and Claude host sessions;
+the harness does not write it to disk or include it in a record. The MCP server
+process explicitly receives `CLAUDE_CODE_OAUTH_TOKEN` set to the empty string,
+so neither the proxy nor Core inherits the token even though the Claude host
+process has it.
+
+Before Core starts, the harness provisions the credential and asks that host's
+own authentication-status command to prove it works in the isolated home. A
+credential that is bound to the operator's keychain or normal configuration
+fails as `authentication_unavailable`. The harness does not weaken isolation or
+point the run at the operator's normal host state.
+
+Success and failure records are validated against the closed schema before an
+atomic write. Early failures use the schema's minimal failure branch; once the
+candidate, OS and host identities are verified, failures also carry the fixed
+profiles and independently observed gate booleans. Raw host streams, prompts,
+model text, identifiers, paths and credentials have no record field.
+
+An exact-tip host record is retained outside the candidate source tree and is
+keyed by its `source.revision` and wheel digests. Committing that record into
+the same tree would change the commit it claims to qualify, creating a
+self-reference. The pull-request or release acceptance evidence therefore
+attaches the schema-validated records to the already-frozen commit instead of
+adding a post-qualification source commit.

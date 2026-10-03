@@ -1,7 +1,9 @@
 # omnivia-core-mcp
 
 The Model Context Protocol server for OmniVia Core: a stdio MCP server that
-gives an AI host **read-only** access to one local OmniVia Core workspace.
+gives an AI host curated, profile-bound access to one local OmniVia Core
+workspace. The default `restricted` profile exposes thirteen reviewed tools;
+the explicitly enabled `authoring` profile exposes eighteen.
 
 Built on the official Model Context Protocol Python SDK v2 (owner resolution
 004, R004-05). There is no bespoke JSON-RPC or MCP stack in this package, and
@@ -58,10 +60,12 @@ The Standard-profile candidate proves this rather than asserting it. For each
 host profile — `claude_desktop`, `claude_code`, `codex` and
 `official_python_sdk` — it writes that host's native configuration shape, reads
 it back, and starts the server from the launch it yields; one fresh stdio
-session per profile then initialises, lists exactly six tools and calls all six,
-and the four manifests are compared. The client throughout is the official
-Python SDK: the Claude Desktop, Claude Code and Codex applications are not
-installed and do not run there. See
+session per profile then initialises, lists the exact restricted thirteen and
+exercises their accepted success or typed-refusal behavior. A separate
+installed-wheel authoring qualification configures the eighteen-tool profile
+and covers capture, proposed memory, import observation, restart, replay,
+conflict and revocation. Those installed SDK-driven checks do not claim that a
+third-party host binary ran; real-host evidence is recorded separately. See
 [MCP host interoperability](../../docs/distribution/mcp-host-interoperability.md).
 
 There is no default configuration path, environment lookup, or `--home`
@@ -128,7 +132,13 @@ into `connect`; the resulting credential is origin-bound, cached only by the
 shared client cache, and cleared on failed startup and session shutdown.
 
 If the workspace has not been initialised, the server refuses with an
-instruction to run `omnivia init` and **creates nothing**.
+instruction, and **creates nothing**. The owner chooses an absolute workspace
+root and runs the installed `omnivia-core-service --init` maintenance mode with
+explicit `--workspace` and this installation's `--installation-state`. Then the
+owner runs the installed `omnivia --installation-state ... mcp configure` with
+the registered workspace id and profile, and restarts the host. The MCP
+configuration carries the workspace id and installation state, not a workspace
+path, so the server cannot supply the `--workspace` value itself.
 
 ## The exposed surface
 
@@ -136,7 +146,7 @@ instruction to run `omnivia init` and **creates nothing**.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-Manifest version `1.1` advertises six tools, in this order:
+The `restricted` profile advertises thirteen tools, in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -146,14 +156,36 @@ Manifest version `1.1` advertises six tools, in this order:
 | `memory_search` | `memory.search` | `knowledge_retrieval` | `memory:read` | `memory.read` ≥ 1.0 |
 | `graph_traverse` | `graph.traverse` | `knowledge_retrieval` | `graph:read` | `graph.read` ≥ 1.0 |
 | `context_pack_build` | `context_pack.build` | `knowledge_retrieval` | `memory:read` | `context_pack.build` ≥ 1.0 |
+| `engineering_search` | `engineering.search` | `engineering_search` | catalogue-defined | catalogue-defined |
+| `engineering_expand` | `engineering.expand` | `engineering_expand` | catalogue-defined | catalogue-defined |
+| `engineering_context_build` | `engineering.context.build` | `engineering_context` | catalogue-defined | catalogue-defined |
+| `decision_evaluate` | `decision.evaluate` | `decision_evaluation` | catalogue-defined | catalogue-defined |
+| `decision_record_get` | `decision.record.get` | `decision_record` | catalogue-defined | catalogue-defined |
+| `decision_record_list` | `decision.record.list` | `decision_record` | catalogue-defined | catalogue-defined |
+| `decision_status` | `decision.status` | `decision_status` | catalogue-defined | catalogue-defined |
 
-Every one of them declares `side_effect: none` and `audit_category: read` in the
-operation catalogue, and the manifest refuses at import to admit anything else.
-Scopes, the capability identifier and its minimum version, and the idempotency
-hint are read off the catalogue entry rather than restated here — a model can
-neither supply nor override the principal, the workspace, the scopes, the
-purpose, the capability, or the service endpoint. `tools/list` is deterministic
-for a given package version.
+The `authoring` profile is those thirteen plus exactly five additions:
+
+| Tool | Operation | Purpose | Behavior |
+|---|---|---|---|
+| `memory_create` | `memory.create` | `memory_authoring` | idempotent mutation |
+| `evidence_capture` | `evidence.capture` | `content_ingestion` | idempotent mutation |
+| `import_start` | `import.start` | `content_ingestion` | idempotent mutation returning a job |
+| `job_get` | `job.get` | `job_observation` | read-only job observation |
+| `job_events` | `job.events` | `job_observation` | read-only paged event observation |
+
+The authoring additions are available only after the installed owner path
+records explicit authoring intent and Core grants the dedicated MCP principal
+the exact workspace-bounded rights. A configuration byte, host approval, model
+claim or per-call argument cannot widen that authority. Revocation is checked on
+the next call, including a replay.
+
+Scopes, capability identifiers and minimum versions, side effects, audit
+categories and idempotency posture are read from the canonical operation
+catalogue rather than restated in adapter code. A model can neither supply nor
+override the principal, workspace, scopes, purpose, capability or service
+endpoint. `tools/list` is deterministic for a given package version and admitted
+profile.
 
 ### Schemas
 
@@ -188,20 +220,23 @@ readable message and **no** `structuredContent`.
 ### Never exposed as model-callable tools
 
 Service start, stop, health, readiness, status and discovery; bootstrap and
-workspace initialisation; unrestricted filesystem path selection; administrative
-configuration; and every destructive or persistent mutation. These are not
-merely unadvertised — the allow-list is the only lookup the call path has, so an
+workspace initialisation; unrestricted filesystem path selection;
+administrative configuration; job cancellation and retry; governance approval;
+and every mutation not named by the selected manifest. These are not merely
+unadvertised — the allow-list is the only lookup the call path has, so an
 operation absent from it is not callable.
-
-Read-first is enforced at import: an entry whose catalogue metadata is not
-`side_effect="none"` and `audit_category="read"` makes the package fail to load.
 
 ## Lifecycle
 
 - The MCP process does **not** own the workspace lease.
 - The MCP process does **not stop** a service it started when the session ends.
   A service started here is an independent Core service, stopped only by
-  `omnivia stop` or an authorised platform lifecycle action.
+  `omnivia service stop` or an authorised platform lifecycle action.
+- The configuration document is read once, at process start. A changed
+  configuration takes effect in the next process the host starts. The bearer is
+  read per call, so revocation or rotation applies without a restart.
+- Service ownership, the staged-only import boundary and macOS permissions are
+  described in [Shared Core installation](../../docs/distribution/shared-core-installation.md#headless-service-operation).
 - **stdout is protocol-only.** Diagnostics and child-process output go to stderr.
   A startup failure writes not one byte of protocol and exits non-zero.
 
@@ -219,13 +254,15 @@ database implementation — and `omnivia-core` must never depend back on it.
 
 ## Status
 
-The tool surface, the exposure manifest, managed start, the stdio server and the
-call path are complete and tested end to end against a real MCP client and a real
-`omnivia-core-service`. `tests/test_mcp_stdio_end_to_end.py` calls all six tools
-over stdio against one governed workspace whose evidence, governed records and
-sealed relations were written through the accepted fenced Runtime writers in
-`tests/_mcp_v06_3_fixture.py` — the only place in this package's tests that
-imports the runtime at all.
+The two manifest profiles, managed start, the stdio server and the call path are
+tested end to end against the official MCP SDK and a real
+`omnivia-core-service`. The source-tree acceptance suites cover all thirteen
+restricted tools and all five authoring additions, including empty-workspace
+capture, proposed-memory visibility, durable import observation, replay,
+conflict, restart and revocation. The installed qualification is driven from a
+clean wheel-only environment and retains a closed redacted record. Qualification
+by actual Claude Code and Codex CLI processes is tracked separately from those
+SDK-driven tests and must not be inferred from a configuration-form round trip.
 
 **The shared-client integration is closed.** `server.connect` composes
 `ServiceClient` for both managed-local and remote mode. The shared client owns

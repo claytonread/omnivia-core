@@ -38,7 +38,7 @@ and believes the answer the running service's own lifecycle object gives, which 
 the same thing `omnivia start`'s `status` does and for the same reason.
 
 **This creates no workspace.** An unbootstrapped directory is refused with
-`missing_workspace` and nothing is written. `omnivia init` is Packet B.
+`missing_workspace` and nothing is written. `omnivia-core-service --init` is Packet B.
 
 **No auto-start, no daemon, no persistence.** On-demand start only: this runs when
 an adapter asks, spawns one detached child and exits. D-0018 and R004-17.
@@ -240,8 +240,8 @@ def managed_start(
             required_absent_path=required_absent_manifest,
         )
     except ManifestStoreError as refusal:
-        # Nothing is created here. `omnivia init` is a separate authorised command
-        # and this one starts an existing workspace only.
+        # Nothing is created here. `omnivia-core-service --init` is a separate
+        # authorised maintenance mode and this path starts an existing workspace only.
         return ManagedStartResult(
             status=ManagedStartStatus.FAILED,
             failure=ManagedStartFailure.MISSING_WORKSPACE,

@@ -143,7 +143,7 @@ def test_the_manifest_is_curated_not_the_whole_catalogue(profile: str) -> None:
     catalogue = {entry.name for entry in OPERATION_CATALOGUE}
     assert exposed < catalogue, "the manifest must be a strict subset"
     assert len(catalogue) > len(exposed) + 1, (
-        "the catalogue is a capability list of forty-three operations; a manifest "
+        "the catalogue is a capability list of fifty-seven operations; a manifest "
         "that had grown to nearly all of it would no longer be a curated surface"
     )
 
@@ -191,10 +191,10 @@ def test_the_authoring_profile_is_the_restricted_thirteen_plus_five() -> None:
 
 def test_restricted_is_the_safe_default_for_a_caller_that_names_no_profile() -> None:
     """`EXPOSURE_MANIFEST`, `tools()` and `exposed_by_tool_name()` all answer with
-    the read-only surface when nobody says otherwise. A caller written before
-    profiles existed -- the server's `tools/list` handler among them -- advertises
-    thirteen tools rather than eighteen, which is the failure mode this default
-    should have."""
+    the bounded non-authoring surface when nobody says otherwise. A caller
+    written before profiles existed -- the server's `tools/list` handler among
+    them -- advertises thirteen tools rather than eighteen, which is the failure
+    mode this default should have."""
     assert manifest.EXPOSURE_MANIFEST == manifest.exposure_manifest("restricted")
     assert manifest.tools() is manifest.tools("restricted")
     assert manifest.exposure_manifest() == manifest.exposure_manifest("restricted")
@@ -649,7 +649,7 @@ def test_a_mutation_wrapper_refuses_what_it_promises_to_refuse() -> None:
     jsonschema = pytest.importorskip("jsonschema")
     wrapper = manifest.input_schema(get_operation_metadata("import.start"))
     validator = jsonschema.Draft202012Validator(wrapper)
-    for invalid in (
+    invalid_inputs: tuple[dict[str, object], ...] = (
         {},  # neither property
         {"input": {}},  # no key
         {"idempotency_key": "import-001"},  # no input
@@ -660,7 +660,8 @@ def test_a_mutation_wrapper_refuses_what_it_promises_to_refuse() -> None:
         # `ImportStartInput` requires `source`; reaching that refusal means the
         # hoisted `$defs` closure resolved from the wrapper's root.
         {"input": {}, "idempotency_key": "import-001"},
-    ):
+    )
+    for invalid in invalid_inputs:
         assert not validator.is_valid(invalid), invalid
 
 

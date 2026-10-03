@@ -333,13 +333,18 @@ _WORKSPACE_MISMATCH: Final = (
 #: workspace, no service program, a launcher that would not answer or answered
 #: with something unreadable, a start that never became reachable -- into one
 #: payload-free refusal, and this is that refusal in this server's vocabulary
-#: plus the instruction only an adapter can give. Naming which of the causes it
-#: was would mean reporting a path, a launcher field or a child's output.
+#: plus the instruction only an adapter can give: the installed service program's
+#: own `--init` maintenance mode creates the workspace, then the owner path
+#: configures this server. Those are fixed names, not paths. Naming which of the
+#: causes it was would mean reporting a path, a launcher field or a child's output.
 _MANAGED_START_UNREACHABLE: Final = (
     "the managed service could not be started for this configuration. If this "
-    "installation has no workspace yet, run `omnivia init` to create one and "
-    "start this server again: this server starts an existing workspace and "
-    "creates none"
+    "installation has no workspace yet, choose an absolute workspace root and run "
+    "the installed `omnivia-core-service --init` with it as `--workspace` and this "
+    "installation's `--installation-state`. Then run the installed `omnivia "
+    "--installation-state <installation-state> mcp configure --host <host> "
+    "--workspace <workspace-id> --profile <profile>` and restart the host. This "
+    "server starts an existing workspace and creates none"
 )
 _NO_CREDENTIAL_RESOLVER: Final = (
     "remote service mode requires an injected trusted credential resolver"
@@ -496,8 +501,8 @@ def _connect_managed_local(
     translated rather than re-raised: what reaches a host on stderr is this
     server's own vocabulary about its own startup, with one instruction added
     that this adapter can give and the shared client deliberately cannot -- the
-    client does not know that `omnivia init` is the command, and must not carry
-    a CLI's name.
+    client does not know which maintenance mode creates a workspace, and must not
+    carry a CLI's name.
     """
     state = configuration.installation_state
     if state is None:  # pragma: no cover - the configuration model forbids it

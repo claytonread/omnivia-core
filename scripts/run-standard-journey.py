@@ -896,7 +896,7 @@ def _knowledge_search_visible(command: str, arguments: Sequence[str]) -> bool:
     query-token search already finds a record.
 
     Goes through `_mcp_session` directly rather than `_mcp_journey`: a single
-    tool call has no six-tool manifest to validate, and a session that fails
+    tool call has no thirteen-tool manifest to validate, and a session that fails
     to complete at all -- the server not yet answering, a transient transport
     hiccup -- is read the same as "not visible yet" and left to the caller's
     own bounded deadline rather than raised here.
