@@ -76,7 +76,7 @@ the recorded qualification reports and CI/OS evidence named below.
 | AC-061 | verified | `test_engineering_invalidation.py::test_out_of_order_gap_then_recovery_resumes_from_the_durable_cursor`; duplicate/convergence tests. |
 | AC-062 | verified | invalidation batch rollback/stale-generation tests, staged-source crash tests, and workspace fencing takeover matrix. |
 | AC-063 | verified | `test_engineering_portable.py`: portable round trip, stable IDs/lineage, installation-data exclusion, inert sessions, corrupt-artifact refusal, and immediate revoked-evidence search/context/citation blocking. |
-| AC-064 | pending final lane/CI | format-2 qualification harness and 10k report are complete. The 100k report, full preflight and supported-OS CI evidence must be attached before release completion. |
+| AC-064 | pending preflight/CI | format-2 10k and 100k workloads completed through production entry points. The 100k report records the measured search/context target misses and checkpoint pass. Full preflight, supported-OS CI and OS-controlled system-cold evidence remain before release completion. |
 
 ## Supported limitations
 
@@ -91,7 +91,8 @@ the recorded qualification reports and CI/OS evidence named below.
 
 ## Final release checks
 
-1. Commit the completed 100k format-2 report and update AC-064 to `verified`.
-2. Run `PATH="$PWD/.venv/bin:$PATH" ./scripts/preflight` from a clean tree.
-3. Open the pull request, pass all required supported-OS CI jobs, and link their results here.
-4. Confirm every primary test named above is included in the successful preflight/CI scope.
+1. Run `PATH="$PWD/.venv/bin:$PATH" ./scripts/preflight` from a clean tree.
+2. Open the pull request, pass all required supported-OS CI jobs, and link their results here.
+3. Execute and attach an OS-controlled system-cold lane before claiming release eligibility.
+4. Confirm every primary test named above is included in the successful preflight/CI scope,
+   then update AC-064 to `verified`.
