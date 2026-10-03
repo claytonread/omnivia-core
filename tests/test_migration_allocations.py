@@ -249,6 +249,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # its current content lives.
     62: "d54b3f447456534b4e436225233b0ab858eae49e",
     63: "2ed5e6a67763be23629eaaf392db70fd2b526084",
+    64: "8fe3f5f26f5e8ec2aa88dcb574ff4439e2a0faef",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
