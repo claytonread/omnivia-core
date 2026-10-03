@@ -430,7 +430,7 @@ def _append_relation_candidate(
 
     Both exact endpoints must first enter the frozen preview frontier admitted by the
     run principal's explicit label grant. The persistence helper classifies the pair
-    as ``scoped_difference`` only on immutable checkout proof (migration 0062) and
+    as ``scoped_difference`` only on immutable checkout proof (migration 0063) and
     otherwise keeps ``unresolved_overlap``.
     """
 

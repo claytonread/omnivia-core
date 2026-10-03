@@ -62,7 +62,7 @@ the recorded qualification reports and CI/OS evidence named below.
 | AC-047 | verified | conflict groups that cannot fit are emitted as atomic cited warnings or typed refusals in conflict/context budget tests. |
 | AC-048 | verified | `test_engineering_context_build.py::test_engineering_context_build_does_not_persist_a_pack_body`; replay/frozen-projection tests. |
 | AC-049 | verified | `test_engineering_conflict_discovery.py::test_resumable_processor_prefers_structural_then_authorized_lexical_matches`; bounded restart tests. |
-| AC-050 | verified | migration 0062; `test_scope_distinct_trusted_checkouts_of_one_repository_are_a_scoped_difference` and fail-closed scope guard matrix. |
+| AC-050 | verified | migration 0063; `test_scope_distinct_trusted_checkouts_of_one_repository_are_a_scoped_difference` and fail-closed scope guard matrix. |
 | AC-051 | verified | `test_engineering_conflict_discovery.py::test_malformed_assessor_verdicts_fail_closed_without_governance`. |
 | AC-052 | verified | `test_engineering_conflict_discovery.py::test_provider_unavailable_is_explicit_after_discovery_and_retrieval_still_works`; timeout test. |
 | AC-053 | verified | conflict assessment stores exact endpoints; stale/corrected endpoint resolution refuses through governed snapshot tests. |

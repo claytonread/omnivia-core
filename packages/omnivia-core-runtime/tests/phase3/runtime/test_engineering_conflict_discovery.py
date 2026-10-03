@@ -3,7 +3,7 @@
 The suite covers atomic enqueue, indexed resumable processing, exact provenance,
 authorization-safe structural and lexical matching, restart/replay, production
 execution and expand visibility. Checkout-proven scope classification (AC-050,
-migration 0062) is covered by the ``test_scope_*`` tests at the end of the file.
+migration 0063) is covered by the ``test_scope_*`` tests at the end of the file.
 """
 
 from __future__ import annotations
@@ -2301,7 +2301,7 @@ def test_assessment_rows_are_append_only(workspace: esc.Workspace) -> None:
         )
 
 
-# --- AC-050 checkout-proven scope classification (migration 0062) -------------------
+# --- AC-050 checkout-proven scope classification (migration 0063) -------------------
 
 
 def _seal_capture(

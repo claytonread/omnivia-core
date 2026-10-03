@@ -15,7 +15,7 @@ filenames previously named here do not exist in this checkout and are not eviden
   acceptance register. The implementation register is complete.
 - The preview path narrows candidates by query before authorization/ranking; the
   format-2 10k and 100k qualification reports are complete.
-- AC-050 trusted-checkout scope classification is implemented by migration 0062.
+- AC-050 trusted-checkout scope classification is implemented by migration 0063.
 - AC-063 portable export/restore excludes installation-local authority and mappings,
   preserves permitted stable history, and proves immediate revoked-evidence blocking.
 - AC-064 is verified by the local validation record, format-2 10k/100k reports and
