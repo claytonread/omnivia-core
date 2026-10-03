@@ -695,6 +695,36 @@ def test_teardown_of_named_cores_that_already_exited_signals_nothing(
     assert signalled == []
 
 
+@pytest.mark.parametrize(
+    "current", [pytest.param(_evidence(STARTED, "start-reused"), id="reused-pid"), pytest.param(None, id="indeterminate")]
+)
+def test_a_reaped_child_pid_held_by_another_live_process_is_never_signalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current: dict[str, Any] | None
+) -> None:
+    # The descriptor names the original child's integer; that child is reaped and
+    # the integer now runs another process whose identity cannot be proved.
+    journey, core, signalled = _teardown(tmp_path, monkeypatch, {STARTED: current})
+    with pytest.raises(journey.QualificationError, match="identity was not proved"):
+        journey._stop(core.process, core.descriptor)
+    assert signalled == []
+
+
+def test_a_reaped_child_pid_that_is_still_proved_is_signalled_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journey, core, signalled = _teardown(tmp_path, monkeypatch, {STARTED: _evidence(STARTED, "start-1")})
+    journey._stop(core.process, core.descriptor)
+    assert signalled == [STARTED]
+
+
+def test_a_reaped_child_pid_that_is_absent_signals_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journey, core, signalled = _teardown(tmp_path, monkeypatch, {})
+    journey._stop(core.process, core.descriptor)
+    assert signalled == []
+
+
 def test_the_empty_journey_teardown_stops_the_proved_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

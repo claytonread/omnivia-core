@@ -775,7 +775,10 @@ def _stop(process: Any, descriptor: Path, replacement: Mapping[str, Any] | None 
     named = _published(descriptor).get("process")
     survivors = [] if replacement is None else [replacement]
     planned = None if replacement is None else replacement.get("pid")
-    if isinstance(named, dict) and named.get("pid") not in (None, process.pid, planned):
+    # Only a child still running is this harness's own.  Once reaped, its integer
+    # may name a reused process, which must prove its identity like any other.
+    child = process.pid if process.poll() is None else None
+    if isinstance(named, dict) and named.get("pid") not in (None, child, planned):
         survivors.append(named)
     unproved = False
     for evidence in survivors:

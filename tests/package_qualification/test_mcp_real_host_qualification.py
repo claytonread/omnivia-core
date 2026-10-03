@@ -4150,6 +4150,92 @@ def test_a_core_process_that_is_absent_is_not_retained(
     assert context.retained is False
 
 
+class _Reaped:
+    """A started Core whose child exited and was reaped; its integer may be reused."""
+
+    returncode = 0
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    def poll(self) -> int:
+        return 0
+
+
+def _probes(lstart: str, boot: str) -> Any:
+    """The ``ps`` and ``sysctl`` identity probes, answering for one live process."""
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, (lstart if argv[0] == "/bin/ps" else boot) + "\n", "")
+
+    return run
+
+
+def test_a_reaped_child_pid_held_by_another_live_process_is_never_signalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = 2_000_000_001
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.process = cast(Any, _Reaped(pid))
+    _publish(context, _evidence(pid, "start-1"))
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: True)
+    monkeypatch.setattr(q.subprocess, "run", _probes("reused-start", "boot-1"))
+    monkeypatch.setattr(q, "_terminate_core_group", lambda p, process=None: calls.append((p, process is not None)) or True)
+    q.stop_core(context)
+    assert calls == []  # an unproved live pid is never signalled, not even as the known group
+    assert context.retained is True
+
+
+def test_a_reaped_child_pid_live_without_descriptor_evidence_is_never_signalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = 2_000_000_001
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.process = cast(Any, _Reaped(pid))
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: True)
+    monkeypatch.setattr(q.subprocess, "run", lambda *_a, **_k: pytest.fail("probed without evidence"))
+    monkeypatch.setattr(q, "_terminate_core_group", lambda p, process=None: calls.append((p, process is not None)) or True)
+    q.stop_core(context)
+    assert calls == []
+    assert context.retained is True
+
+
+def test_a_reaped_child_pid_proved_still_live_is_signalled_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = 2_000_000_001
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.process = cast(Any, _Reaped(pid))
+    _publish(context, _evidence(pid, "start-1"))
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: True)
+    monkeypatch.setattr(q.subprocess, "run", _probes("start-1", "boot-1"))
+    monkeypatch.setattr(q, "_terminate_core_group", lambda p, process=None: calls.append((p, process is not None)) or True)
+    q.stop_core(context)
+    assert calls == [(pid, False)]  # the proved same-PID process, once, through the non-child path
+    assert context.retained is False
+
+
+def test_a_reaped_child_pid_that_is_absent_signals_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = 2_000_000_001
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.process = cast(Any, _Reaped(pid))
+    _publish(context, _evidence(pid, "start-1"))
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: False)
+    monkeypatch.setattr(q.subprocess, "run", lambda *_a, **_k: pytest.fail("probed an absent pid"))
+    monkeypatch.setattr(q, "_terminate_core_group", lambda p, process=None: calls.append((p, process is not None)) or True)
+    q.stop_core(context)
+    assert calls == [(pid, True)]
+    assert context.retained is False
+
+
 @posix_only
 def test_core_group_shutdown_escalates_and_proves_the_whole_group_absent(
     monkeypatch: pytest.MonkeyPatch,

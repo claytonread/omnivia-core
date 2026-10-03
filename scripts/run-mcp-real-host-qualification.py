@@ -2409,11 +2409,18 @@ def stop_core(context: CoreContext) -> None:
     is never reported as a clean stop.
     """
     process = context.process
-    if process is not None and not _terminate_core_group(process.pid, process):
+    running = process is not None and process.poll() is None
+    # Once reaped, a live integer may name a reused process.  The known group is
+    # then never signalled: only descriptor evidence that proves identity may.
+    reused = process.pid if process is not None and not running and _pid_running(process.pid) else None
+    if process is not None and reused is None and not _terminate_core_group(process.pid, process):
         context.retained = True
     named = _published(context).get("process")
     pid = named.get("pid") if isinstance(named, dict) else None
-    started = None if process is None else process.pid
+    if reused is not None and pid != reused:
+        # A live same-PID process that no descriptor evidence names is uncertain.
+        context.retained = True
+    started = process.pid if process is not None and running else None
     unplanned = (
         pid
         if type(pid) is int and pid not in (started, context.replacement_pid) and _pid_running(pid)

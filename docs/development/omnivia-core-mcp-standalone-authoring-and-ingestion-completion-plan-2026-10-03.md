@@ -516,55 +516,61 @@ Current local status at the time of this plan update:
 
 | Area | State | Evidence or next action |
 |---|---|---|
-| Eleven-finding repair round | implemented, uncommitted | Complete diff remains to receive one final independent read-only review |
-| Relay fail-closed/deadlock repair | implemented and locally verified | Three new real-proxy regressions are included in the 553-test focused gate |
-| Focused qualification/traceability gate | passing | 553 tests pass (515 at the Gate A review baseline, plus 31 completed-review and seven final-review regressions); strict mypy for both qualification scripts, Ruff and `git diff --check` pass |
-| Phase 2 shared-launcher failure | corrected and locally verified | The complete local Phase 2 suite passes after the final-review repair with 596 tests and four expected platform-specific skips; require fresh Linux, macOS and Windows results after push |
-| Broader integration gate | passing | The four named directories pass 2,659 tests after the final-review repair. The earlier 2,652, 2,645, 1,902 and 1,796 results are historical; 1,902 covered only the MCP package, CLI package and three focused files |
-| Qualified runtime commit and candidate | not frozen | Freeze only after the final independent read-only review, reviewed checkpoint commit and push |
+| Pushed reviewed checkpoint | complete | PR #167 points to `ffa1b36c336b9e540e3b869710dc67d041a0e4f8`; that exact tip passed the 553-test focused gate, the 2,659-test four-directory gate, strict mypy, Ruff, `git diff --check`, and Phase 2 with 596 passing and four expected skips |
+| Standard candidate for `ffa1b36c` | built and verified, now superseded for closeout | `/private/tmp/omnivia-core-standard-ffa1b36c` was built cleanly without `--allow-dirty`; its key is `73eca52dbd69b41fdbffa78369009f736ea4e5b82bc8ef42f7ff425dadc8d0ef`, but the later teardown correction changes harness behavior and therefore requires a new Gate C candidate before real-host qualification |
+| Final PID-reuse teardown correction | implemented, reviewed and locally verified; uncommitted | Four code/test files contain the fail-closed same-PID-after-reap correction and eight regressions. Codex independently reviewed the recovered Claude diff: an unproved live reused PID receives no signal and retains cleanup, a completely proved live PID is stopped once through the non-child path, and an absent original PID still permits known-group cleanup. The three-file focused gate passes 561 tests, the four-directory gate passes 2,667 tests, strict mypy, Ruff and `git diff --check` pass, and Phase 2 passes 596 tests with four expected skips |
+| Hosted checks for `ffa1b36c` | in progress, not final acceptance evidence | Evidence-search jobs are green on Linux, macOS and Windows; Core acceptance and the three Phase 2 jobs are still running. These checks qualify only the superseded checkpoint and must run again on the evidence-closeout head |
+| Qualified runtime commit and final candidate | not frozen | Accept or repair the uncommitted teardown diff, rerun all affected gates, commit and push, then rebuild the candidate from that clean exact tip |
 | Real-host records | not current | Historical Codex records are diagnostic only; both hosts must run against the same new candidate |
 | Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
 
-#### Gate A — accept or repair the uncommitted review response
+The remaining critical path is therefore:
 
-1. Review the complete uncommitted repair against `9022e2aa`, with
-   particular attention to:
-   - the complete excluded-operation set and its v1.4 addendum basis;
-   - `decision.evaluate` refusal and owner-observation semantics;
-   - wheel closure, hashes and source-isolation guarantees;
-   - MCP protocol negotiation, pagination and frame bounds;
-   - digest canonicalization, cleanup and child-process reaping;
-   - exact revocation classification and truthful evidence booleans.
-2. Rerun the three focused qualification/traceability files and record the
-   actual count from the current diff; the current local result is 553 passing
-   tests (515 at the Gate A review baseline, before the completed review's 31
-   and the final review's seven regressions), and historical counts must not be
-   carried forward.
-3. Run Ruff, strict mypy for both qualification scripts and `git diff --check`.
-4. Run the broader four-directory gate. The current post-final-review result is
-   2,659 passing tests. The 1,902-test figure covered only the MCP package, CLI
-   package and three focused files and was not this gate; the earlier 2,652,
-   2,645 and 1,796 results are historical and superseded.
-5. Obtain a fresh independent read-only correctness/security review of the
-   entire current diff. Resolve every actionable finding and repeat the affected
-   checks.
-6. Commit and push one reviewed repair checkpoint only after Gates A.1-A.5 pass.
+1. commit and push the independently reviewed PID-reuse teardown repair whose
+   measured status/count prose and local gates are now current;
+2. build and verify a new clean Standard candidate from that exact pushed tip;
+3. after explicit external-data authorization, run Codex CLI and Claude Code
+   against the same candidate and retain only redacted schema-valid records;
+4. land an evidence-only closeout commit, run full preflight and require every
+   hosted check on that exact head;
+5. request merge authorization, then separately record the release disposition
+   and request any worktree-cleanup authorization.
+
+#### Gate A — accept or repair the final teardown response
+
+1. Review the four-file uncommitted diff against `ffa1b36c`, with particular
+   attention to the distinction between a still-running original child and a
+   reaped child whose numeric PID may have been reused.
+2. Prove that a live descriptor-named same PID is signalled only after complete
+   pid/start-time/boot-id identity proof, that an unproved live PID fails
+   cleanup closed without being signalled, and that an absent PID is harmless.
+3. The three focused qualification/traceability files pass 561 tests on the
+   current diff; 553 is the historical `ffa1b36c` checkpoint result.
+4. Ruff, strict mypy for both qualification scripts and `git diff --check` pass.
+5. The broader four-directory gate passes 2,667 tests. The 1,902-test figure
+   covered only the MCP package, CLI package and three focused files and was not
+   this gate; the earlier 2,659, 2,652, 2,645 and 1,796 results are historical
+   and superseded.
+6. The complete Phase 2 suite passes 596 tests with four expected
+   platform-specific skips after the teardown correction.
+7. Codex completed a fresh independent read-only correctness/security review of
+   the current diff. It found that real-host teardown still attempted known-group
+   termination before classifying a reaped child's live reused PID; the follow-up
+   repair now classifies first, and all affected checks were repeated.
+8. Update only measured status/count prose, then commit and push one reviewed
+   repair checkpoint after Gates A.1-A.7 pass.
 
 Exit condition: the working tree is clean, the repair is independently accepted,
 and the pushed checkpoint has reproducible local results.
 
-#### Gate B — clear the known hosted-platform failure
+#### Gate B — confirm the hosted-platform correction remains green
 
-The current pushed PR tip `9022e2aa` is blocked on all three Phase 2 platform
-jobs. The shared-launcher ownership test found the literal
-`omnivia-core-service` in `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py`.
-The smallest architecture-correct correction is now present in the uncommitted
-repair and its targeted ownership regression passes. Do not weaken the test.
-The complete local Phase 2 suite passes after the final-review repair with 596
-tests and four expected
-platform-specific skips. Include the correction in the reviewed candidate and
-require fresh Linux, macOS and Windows results after the next push.
+The shared-launcher ownership failure was corrected before `ffa1b36c`, and the
+complete local Phase 2 suite passed there with 596 tests and four expected
+platform-specific skips. Do not weaken the ownership test. Rerun the suite after
+the final teardown diff, then require fresh Linux, macOS and Windows jobs on the
+new pushed tip and again on the final evidence-closeout head.
 
 Exit condition: the local Phase 2 suite passes and the correction has been
 reviewed together with the qualification changes.
@@ -651,7 +657,9 @@ recorded; no implicit release or worktree deletion has occurred.
 |---|---|---|
 | Claude Code qualification credential | blocked; token file absent | Operator runs `claude setup-token` and supplies a token-only owner-protected file outside the repository |
 | Real-host external data flow | blocked; no specific approval recorded | Obtain explicit user approval to send fixed qualification prompts and bounded service-derived results through the Codex and Claude providers |
-| PR #167 hosted checks | pushed tip is blocked; local launcher correction awaits full Phase 2 verification | Pass the full local Phase 2 suite, push the reviewed candidate, and obtain fresh exact-head checks |
+| Final teardown diff | implemented but not accepted or committed | Complete Codex review, local gates and independent review; update measured counts, then commit and push |
+| Final Standard candidate | previous `ffa1b36c` candidate is superseded for closeout | Rebuild from the clean accepted teardown tip without `--allow-dirty` and rerun installed journeys |
+| PR #167 hosted checks | checkpoint checks are in progress, but are not the final evidence-head checks | Obtain fresh exact-head checks after the teardown commit and again after the evidence-only closeout commit |
 | Merge | not authorized | Request explicit authorization only after Gate F |
 | Release publication | not authorized and out of scope | Record publication as deferred unless separately authorized |
 | Worktree cleanup | not authorized | Preserve both completion worktrees until separately authorized |

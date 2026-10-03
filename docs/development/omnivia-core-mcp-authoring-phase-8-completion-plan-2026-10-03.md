@@ -407,23 +407,22 @@ against the later frozen tip rather than any historical candidate.
 Counts from before the repair round are historical. The post-repair counts are
 given in the next block.
 
-Current uncommitted repair (`9022e2aa` plus all review corrections, including
-the Gate A repair and the final-review repair): the three named focused files
-pass with 553 tests. The Gate A review baseline was 515, the completed review
-repair added 31 regressions (546), and the final-review repair added seven more
-for runtime-root ownership, the SIGKILL crash restart, identity-proved authoring
-teardown, permission-denied process probes, exited-leader group cleanup,
-bootstrap failure cleanup, async session cleanup and non-vacuous completion
-claims. Ruff, strict mypy on both qualification scripts and
+Current working tree (`ffa1b36c` plus the reviewed PID-reuse teardown
+correction): the three named focused files pass with 561 tests. The Gate A
+review baseline was 515, the completed review repair added 31 regressions (546),
+the final-review repair added seven more (553), and the teardown correction adds
+eight regressions proving that a reaped child's reused numeric PID is never
+signalled without complete identity proof while an absent PID still permits
+known-group cleanup. Ruff, strict mypy on both qualification scripts and
 `git diff --check` are clean. The complete Phase 2 suite passes after the
-final-review repair with 596 tests and four expected platform-specific skips,
+teardown correction with 596 tests and four expected platform-specific skips,
 including the shared-launcher ownership regression.
 A live installed authoring journey passed before the final local corrections in
 this round; it must be rerun from the frozen candidate. The broader MCP, CLI,
-package-qualification and service-conformance gate now passes 2,659 tests after
-the final-review repair. The 1,902-test result covered only the MCP package, the
+package-qualification and service-conformance gate now passes 2,667 tests after
+the teardown correction. The 1,902-test result covered only the MCP package, the
 CLI package and the three focused files and was not that four-directory gate;
-the earlier 2,652, 2,645 and 1,796 results are historical.
+the earlier 2,659, 2,652, 2,645 and 1,796 results are historical.
 
 Earlier results follow. They are historical and none is current candidate
 evidence:
