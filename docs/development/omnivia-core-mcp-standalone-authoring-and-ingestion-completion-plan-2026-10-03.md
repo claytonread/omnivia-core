@@ -76,9 +76,12 @@ The completion lane must preserve those guarantees and avoid broad rewrites.
 The active closeout branch is based on current `origin/main`. Its pushed
 checkpoints include `72d5a4ff` for the documentation/conformance repairs,
 `cf061a09` for the seventeen-step harness, tests and record schema, and
-`960ed703` for the PR #108 disposition map. The combined line still requires
-independent review and candidate freeze, so none of those checkpoints is the
-final immutable qualification candidate.
+`960ed703` for the initial PR #108 disposition map. The latest pushed tip is
+`c13d7f8b99b09ffe162bab1daec36642f56ea47a`. A first independent review found
+qualification gaps and an incomplete paginated PR #108 inventory. Corrections
+are locally green but still require a second independent review, checkpoint and
+candidate freeze, so none of those checkpoints is the final immutable
+qualification candidate.
 
 Completed on the branch:
 
@@ -98,17 +101,18 @@ Completed on the branch:
   the implemented behavior;
 - the real-host harness and closed record schema now represent every step in
   the section 8 journey, including excluded-tool refusal, replay/conflict,
-  stable event paging, revocation and post-host Core health; 315 focused tests
-  and a 1,711-test MCP/CLI/traceability integration gate pass;
-- the 100 paths changed by historical PR #108 are classified in
+  stable event paging, revocation and post-host Core health; 335 focused tests
+  and a 1,731-test MCP/CLI/traceability integration gate pass;
+- the 121 paths changed by historical PR #108 are classified in
   `omnivia-core-pr-108-file-disposition-map-2026-10-04.md`: 2 already ported,
-  11 rewritten for the current architecture, 77 already superseded and 10
+  12 rewritten for the current architecture, 96 already superseded and 11
   rejected.
 
 Remaining before completion:
 
-1. complete independent review of the current harness/map diff, checkpoint it,
-   and freeze the resulting clean source tip;
+1. complete a second independent review of the corrected harness/map diff,
+   resolve any actionable findings, checkpoint it, and freeze the resulting
+   clean source tip;
 2. build and verify release-form artifacts from that exact tip;
 3. run both real hosts against the frozen artifacts;
 4. obtain a token-only Claude credential outside the repository from
@@ -125,9 +129,9 @@ Remaining before completion:
 
 | Order | Work package | Status | Exit condition |
 |---|---|---|---|
-| 1 | Stabilize current branch | in progress | Current harness/map diff independently reviewed, checkpointed and pushed |
-| 2 | Close planning evidence | complete and pushed | This plan and the complete 100-path PR #108 file-disposition map are tracked |
-| 3 | Complete harness coverage | complete and pushed | Automated tests prove every section 8 case and reject incomplete evidence |
+| 1 | Stabilize current branch | in progress | Corrected harness/map diff passes second independent review, is checkpointed and pushed |
+| 2 | Close planning evidence | corrected locally; checkpoint pending | This plan and the complete 121-path PR #108 file-disposition map are tracked |
+| 3 | Complete harness coverage | complete locally; review/push pending | Automated tests prove every section 8 case and reject incomplete evidence |
 | 4 | Freeze candidate | pending | Clean source tip, release wheels, SDK pins, and host versions are immutable |
 | 5 | Run real hosts | blocked on Claude token and frozen tip | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
 | 6 | Reconcile records | pending | Traceability and docs cite the exact qualified source tree without overstating historical evidence |

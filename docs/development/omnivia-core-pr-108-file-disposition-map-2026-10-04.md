@@ -9,7 +9,7 @@
 
 PR #108 remains closed and must not be merged or cherry-picked wholesale. Every changed path is classified below using the four dispositions required by the completion plan. “Already superseded” means the accepted PR #107/current-main implementation is authoritative, not that the PR #108 blob should be copied. “Reject” means the PR #108 version is deliberately excluded from this completion lane; any future cross-platform hardening needs its own current-main review.
 
-Summary: 2 port, 11 rewrite for current architecture, 77 already superseded, 10 reject; 100 paths total.
+Summary: 2 port, 12 rewrite for current architecture, 96 already superseded, 11 reject; 121 paths total.
 
 ## File-level map
 
@@ -115,6 +115,27 @@ Summary: 2 port, 11 rewrite for current architecture, 77 already superseded, 10 
 | `scripts/qualification-stage-import-source.py` | rewrite for current architecture | The intent is retained only through current-main documentation or the replacement installed-wheel/real-host qualification architecture. |
 | `scripts/run-host-qualification.py` | rewrite for current architecture | The intent is retained only through current-main documentation or the replacement installed-wheel/real-host qualification architecture. |
 | `scripts/run-standard-journey.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `src/omnivia_core/contracts/v1/__init__.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `src/omnivia_core/contracts/v1/conformance.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `src/omnivia_core/contracts/v1/generated.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `src/omnivia_core/contracts/v1/semantics_evidence.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/fixtures/operation-catalogue-v1.json` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/test_adapter_conformance.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/test_generated.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/test_operation_catalogue.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/test_runtime_contracts.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/test_semantics_evidence_capture.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/contracts/test_workflow_run_conformance.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/fixtures/service_conformance/architecture-gate-traceability-v1.json` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/fixtures/service_conformance/operation-traceability-v1.json` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/package_qualification/test_standard_candidate_builder.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/package_qualification/test_standard_journey.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/service_conformance/test_architecture_gate_traceability.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/service_conformance/test_mcp_authoring_traceability.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/service_conformance/test_mcp_real_host_qualification.py` | rewrite for current architecture | The intent is retained only through current-main documentation or the replacement installed-wheel/real-host qualification architecture. |
+| `tests/service_conformance/test_operation_traceability.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
+| `tests/test_core_acceptance_workflow.py` | reject | Do not port the PR #108 file version; it is stale evidence/release state or later divergent platform hardening outside this completion lane. |
+| `tests/test_migration_allocations.py` | already superseded | Accepted PR #107/current-main implementation and tests are authoritative; no PR #108 file content is needed. |
 
 ## Integration guardrails
 
@@ -122,4 +143,3 @@ Summary: 2 port, 11 rewrite for current architecture, 77 already superseded, 10 
 - The two “port” rows identify the already-completed selective import; they do not authorize another import.
 - Qualification evidence from PR #108 is historical only and cannot satisfy final exact-tip Claude Code or Codex acceptance.
 - Release notes remain deferred until exact-tip qualification, review, preflight, hosted checks, and the explicit release decision.
-

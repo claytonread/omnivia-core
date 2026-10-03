@@ -70,6 +70,8 @@ INTERRUPTED_KEY: Final = f"{QUALIFICATION_TOKEN}-interrupted-1"
 HOST_TIMEOUT: Final = 300.0
 CORE_TIMEOUT: Final = 60.0
 SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
+MCP_PROTOCOL_VERSION: Final = "2025-06-18"
+MAX_PROTOCOL_OUTPUT_BYTES: Final = 1_048_576
 CLAUDE_TOKEN_VARIABLE: Final = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_TOKEN_FILE_BYTES: Final = 1024
 _CLAUDE_TOKEN: Final = re.compile(r"[A-Za-z0-9._~+/=-]{16,512}")
@@ -735,6 +737,10 @@ BOOTSTRAP_TIMEOUT: Final = 900.0
 #: Runs one command with an explicit environment and returns its transient
 #: output.  Seam: tests replace it, so no pip or wheel is ever executed.
 Runner = Callable[[Sequence[str], Mapping[str, str], Path, float], "subprocess.CompletedProcess[bytes]"]
+ProtocolRunner = Callable[
+    [Sequence[str], bytes, Mapping[str, str], Path, float],
+    "subprocess.CompletedProcess[bytes]",
+]
 
 #: Executed inside the candidate venv: reports the SDK pins and whether every
 #: first-party distribution is a non-editable install under that venv.
@@ -764,6 +770,24 @@ def _run_transient(
         env=dict(env),
         cwd=cwd,
         stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _run_protocol(
+    argv: Sequence[str],
+    payload: bytes,
+    env: Mapping[str, str],
+    cwd: Path,
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        list(argv),
+        input=payload,
+        env=dict(env),
+        cwd=cwd,
         capture_output=True,
         timeout=timeout,
         check=False,
@@ -909,6 +933,7 @@ VIOLATION_KINDS: Final = frozenset(
         "not_jsonrpc_2_0",
         "duplicate_request",
         "invalid_tool_call",
+        "invalid_tool_result",
         "invalid_tool_inventory",
     }
 )
@@ -936,7 +961,9 @@ def _is_names(value: object) -> bool:
 
 #: What a failed call was refused for.  Only these closed classes are observed;
 #: the refusal text itself is classified in the relay and never kept.
-REFUSALS: Final = frozenset({"none", "idempotency_conflict", "not_callable", "other"})
+REFUSALS: Final = frozenset(
+    {"none", "idempotency_conflict", "not_callable", "not_exposed", "other"}
+)
 
 
 #: The closed observation vocabulary: event type -> required fields.  Nothing
@@ -1007,6 +1034,8 @@ def refusal_class(result: object) -> str:
     text = re.sub(r"\s+", "", "".join(item for item in texts if isinstance(item, str)))
     if '"code":"idempotency_conflict"' in text:
         return "idempotency_conflict"
+    if "isnotatoolthisserverexposes" in text:
+        return "not_exposed"
     if "couldnotbecalled" in text:  # "could not be called": the revoked principal's refusal
         return "not_callable"
     return "other"
@@ -1260,6 +1289,8 @@ class _Relay:
         else:
             failed = not ok or (isinstance(result, dict) and result.get("isError") is True)
             structured = result.get("structuredContent") if isinstance(result, dict) else None
+            if not failed and not isinstance(structured, dict):
+                raise _Violation("invalid_tool_result")
             self.observer.emit(
                 "tool_call_response",
                 tool=tool,
@@ -1396,11 +1427,17 @@ class ObservationSummary:
     violation: bool
     #: Per answered call, in order: (tool, refusal class, result digest).
     outcomes: tuple[tuple[str, str, str], ...] = ()
+    #: A second MCP initialize after the paused request: a substituted process.
+    initialized_after_pause: bool = False
 
 
 def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSummary:
     listed = [e["tool_names"] for e in events if e["event"] == "tools_list_response" and e["ok"]]
+    paused_at = next(
+        (index for index, e in enumerate(events) if e["event"] == "request_paused"), len(events)
+    )
     return ObservationSummary(
+        initialized_after_pause=any(e["event"] == "initialize_request" for e in events[paused_at:]),
         initialized=any(e["event"] == "initialize_response" and e["ok"] for e in events),
         listed=bool(listed),
         listed_tools=tuple(listed[0]) if listed else (),
@@ -1972,6 +2009,40 @@ def revoke_authoring(
         raise QualificationError(ReasonCode.GATE_FAILED)
 
 
+def verify_revoked(installed: InstalledCandidate, context: CoreContext, host: str) -> None:
+    """Require the installed owner status path to confirm both halves are revoked."""
+    admin_host = _host_admin_name(host)
+    completed = _run_text(
+        [
+            str(installed.cli),
+            "--installation-state",
+            str(context.installation),
+            "mcp",
+            "status",
+            "--host",
+            admin_host,
+            "--json",
+        ]
+    )
+    try:
+        document = _mapping(json.loads(completed.stdout), ReasonCode.GATE_FAILED)
+        rows = document.get("hosts")
+        row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
+    except ValueError:
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    if (
+        completed.returncode != 0
+        or completed.stderr
+        or not isinstance(row, dict)
+        or row.get("host") != admin_host
+        or row.get("service") != "reachable"
+        or row.get("grant") != "revoked"
+        or row.get("credential") != "absent"
+        or row.get("configuration") != "absent"
+    ):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+
+
 def owner_call(
     installed: InstalledCandidate,
     context: CoreContext,
@@ -2156,6 +2227,22 @@ def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
     )
 
 
+def _sequence_prompt(calls: Sequence[tuple[str, Mapping[str, Any]]], marker: str) -> str:
+    steps = "\n".join(
+        f"{number}. Call {tool} (displayed as {claude_tool_name(tool)}) with exactly this JSON: "
+        f"{json.dumps(arguments, sort_keys=True, separators=(',', ':'))}"
+        for number, (tool, arguments) in enumerate(calls, start=1)
+    )
+    return (
+        "This is an isolated MCP qualification step. Use only the configured "
+        f"{SERVER_KEY} MCP server. Make these calls in this exact order, each exactly "
+        "once, one after another. Do not add, remove, rewrite or infer any value, and "
+        "do not call any other tool. Whether a call succeeds or returns an error, "
+        f"continue with the next call. After the last call output exactly {marker} and "
+        f"nothing else.\n{steps}"
+    )
+
+
 def _absent_tool_prompt(tool: str, marker: str) -> str:
     return (
         "This is an isolated MCP qualification step. Use only the configured "
@@ -2193,6 +2280,90 @@ def _single_outcome(result: HostRunResult, tool: str) -> tuple[str, str]:
     return outcomes[0]
 
 
+def _excluded_probe_payload(tool: str) -> bytes:
+    messages = (
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "omnivia-qualification", "version": "1"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": {}},
+        },
+    )
+    return b"".join(
+        json.dumps(message, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+        for message in messages
+    )
+
+
+def probe_excluded_tool(
+    installed: InstalledCandidate,
+    core_config: Path,
+    root: Path,
+    host: str,
+    tools: tuple[str, ...],
+    tool: str,
+    *,
+    run: ProtocolRunner = _run_protocol,
+) -> None:
+    """Send a real ``tools/call`` through the proxy and require an allow-list refusal."""
+    layout = host_layout(root, host)
+    create_layout(layout)
+    observation = layout.root / "observation.jsonl"
+    spec = layout.root / "proxy-spec.json"
+    child = mcp_server_entry(installed.mcp, core_config)
+    try:
+        write_proxy_spec(
+            spec,
+            child=[child["command"], *child["args"]],
+            observation=observation,
+            interruption=None,
+        )
+        proxy = proxy_server_entry(installed.python, spec)
+        completed = run(
+            [proxy["command"], *proxy["args"]],
+            _excluded_probe_payload(tool),
+            host_environment(layout, installed.python),
+            layout.workspace,
+            CORE_TIMEOUT,
+        )
+        if (
+            completed.returncode != 0
+            or not completed.stdout
+            or len(completed.stdout) > MAX_PROTOCOL_OUTPUT_BYTES
+        ):
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        summary = summarize_observation(read_observation(observation))
+    except (OSError, subprocess.SubprocessError):
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    expected = (tool, arguments_digest({}))
+    if (
+        summary.violation
+        or not summary.initialized
+        or not summary.listed
+        or summary.listed_tools != tools
+        or summary.called != (tool,)
+        or summary.requests != (expected,)
+        or summary.responded != (tool,)
+        or summary.succeeded
+        or summary.tool_errors != (tool,)
+        or summary.outcomes
+        != ((tool, "not_exposed", canonical_result_digest(None)),)
+    ):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+
+
 @dataclass
 class HostDriver:
     host: str
@@ -2210,8 +2381,7 @@ class HostDriver:
 
     def _run(
         self,
-        tool: str,
-        arguments: Mapping[str, Any],
+        calls: Sequence[tuple[str, Mapping[str, Any]]],
         *,
         pages: int = 1,
         interrupt: bool = False,
@@ -2220,10 +2390,15 @@ class HostDriver:
         on_paused: Callable[[], None] = lambda: None,
         absent: bool = False,
     ) -> HostRunResult:
-        """Run one fresh host process: one call, or ``pages`` ordered calls to ``tool``."""
+        """Run one fresh host process: ``calls`` in order, or ``pages`` calls to the first.
+
+        Only the first call can be interrupted or paused; later calls run in this
+        same process, so they are admitted by the launch that admitted the first.
+        """
         self.sequence += 1
         marker = f"OMNIVIA_MCP_QUALIFICATION_STEP_{self.sequence}_DONE"
         layout = host_layout(self.root / f"session-{self.sequence:02d}", self.host)
+        tool, arguments = calls[0]
         digest = arguments_digest(arguments)
         interruption = Interruption(tool, digest) if interrupt else None
         pause: PauseBefore | None = None
@@ -2237,12 +2412,12 @@ class HostDriver:
 
         if absent:
             prompt = _absent_tool_prompt(tool, marker)
+        elif pages > 1:
+            prompt = _traversal_prompt(tool, arguments, pages, marker)
+        elif len(calls) > 1:
+            prompt = _sequence_prompt(calls, marker)
         else:
-            prompt = (
-                _traversal_prompt(tool, arguments, pages, marker)
-                if pages > 1
-                else _tool_prompt(tool, arguments, marker)
-            )
+            prompt = _tool_prompt(tool, arguments, marker)
         result = run_host_session(
             host=self.host,
             binary=self.binary,
@@ -2252,7 +2427,7 @@ class HostDriver:
             auth_file=self.auth_file,
             prompt=prompt,
             marker=marker,
-            tools=(tool,),
+            tools=tuple(dict.fromkeys(name for name, _ in calls)),
             timeout=HOST_TIMEOUT,
             interruption=interruption,
             pause_before=pause,
@@ -2279,8 +2454,8 @@ class HostDriver:
         return result
 
     def prove_absent(self, tool: str) -> None:
-        """Prove one normative sentinel is neither listed nor dispatched by the host."""
-        result = self._run(tool, {}, absent=True)
+        """Prove one sentinel is absent to the host and rejected by server dispatch."""
+        result = self._run([(tool, {})], absent=True)
         summary = result.summary
         if (
             tool in summary.listed_tools
@@ -2299,6 +2474,14 @@ class HostDriver:
         ):
             self.progress("excluded_tool_dispatchable")
             raise QualificationError(ReasonCode.GATE_FAILED)
+        probe_excluded_tool(
+            self.installed,
+            self.core_config,
+            self.root / f"excluded-probe-{self.sequence:02d}",
+            self.host,
+            self.tools,
+            tool,
+        )
 
     def call(
         self,
@@ -2314,8 +2497,7 @@ class HostDriver:
         _remaining_missing_retries: int = 2,
     ) -> HostRunResult:
         result = self._run(
-            tool,
-            arguments,
+            [(tool, arguments)],
             interrupt=interrupt,
             on_withheld=on_withheld,
             pause_before=pause_before,
@@ -2389,9 +2571,52 @@ class HostDriver:
             raise QualificationError(ReasonCode.GATE_FAILED)
         return result
 
+    def refuse_in_order(
+        self,
+        calls: Sequence[tuple[str, Mapping[str, Any]]],
+        *,
+        on_paused: Callable[[], None],
+    ) -> HostRunResult:
+        """One admitted session makes ``calls`` in order; each must be refused as not_callable.
+
+        The first request is paused until ``on_paused`` has run (the revocation), then
+        released.  No later call is retried in a fresh process: a process started after
+        the revocation cannot initialize, so that retry could only ever fail.
+        """
+        result = self._run(calls, pause_before=True, on_paused=on_paused)
+        summary = result.summary
+        expected = [(tool, arguments_digest(arguments)) for tool, arguments in calls]
+        observed = [
+            request for request in summary.requests if request[0] not in SAFE_AUXILIARY_TOOLS
+        ]
+        refused = [
+            (tool, refusal)
+            for tool, refusal, _ in summary.outcomes
+            if tool not in SAFE_AUXILIARY_TOOLS
+        ]
+        if (
+            not result.paused
+            or not summary.paused
+            or summary.initialized_after_pause
+            or observed != expected
+            or refused != [(tool, "not_callable") for tool, _ in calls]
+            or any(tool in summary.succeeded for tool, _ in calls)
+        ):
+            self.progress("host_sequence_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if (
+            not result.exited_cleanly
+            or not result.marker_seen
+            or summary.withheld
+            or len(summary.responded) != len(summary.called)
+        ):
+            self.progress("host_completion_mismatch")
+            raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+        return result
+
     def traverse(self, tool: str, arguments: Mapping[str, Any], *, pages: int) -> HostRunResult:
         """One host process pages ``tool`` exactly ``pages`` times, each call succeeding."""
-        result = self._run(tool, arguments, pages=pages)
+        result = self._run([(tool, arguments)], pages=pages)
         summary = result.summary
         if (
             not result.exited_cleanly
@@ -2696,7 +2921,7 @@ def _ambiguous_response(
 
     def observe_commit() -> None:
         nonlocal committed
-        _require(
+        if (
             _count(
                 installed,
                 context,
@@ -2704,8 +2929,9 @@ def _ambiguous_response(
                 {"query": INTERRUPTED_SOURCE_ID},
                 "evidence",
             )
-            == 1
-        )
+            != 1
+        ):
+            raise QualificationError(ReasonCode.INTERRUPTION_BOUNDARY_UNOBSERVABLE)
         committed = True
 
     interrupted = authoring.call(
@@ -2769,58 +2995,51 @@ def _revocation(
 ) -> None:
     """Revoke every authoring principal, then prove each later call fails closed."""
     before = _journey_counts(installed, context)
-    revoked = False
 
-    def revoke_before_call() -> None:
-        nonlocal revoked
+    def revoke_primary() -> None:
         revoke_authoring(installed, context, host)
-        revoked = True
+        verify_revoked(installed, context, host)
 
-    # The fresh capture is paused until the revocation has landed, so it is the
-    # in-flight request that must be refused, not a request sent afterwards.
-    authoring.call(
-        "evidence_capture",
-        _capture_arguments(AFTER_REVOKE_SOURCE_ID, AFTER_REVOKE_KEY, "must not settle"),
-        expected_error=True,
-        refusal="not_callable",
-        pause_before=True,
-        on_paused=revoke_before_call,
+    # One admitted session: the first capture is paused until the revocation has
+    # landed, so it is the in-flight request that must be refused.  The same-key
+    # capture replay and the same-key memory replay reuse that session.
+    authoring.refuse_in_order(
+        [
+            (
+                "evidence_capture",
+                _capture_arguments(AFTER_REVOKE_SOURCE_ID, AFTER_REVOKE_KEY, "must not settle"),
+            ),
+            (
+                "evidence_capture",
+                _capture_arguments(
+                    INTERRUPTED_SOURCE_ID,
+                    INTERRUPTED_KEY,
+                    f"interrupted response note {QUALIFICATION_TOKEN}\n",
+                ),
+            ),
+            ("memory_create", _memory_arguments(principal)),
+        ],
+        on_paused=revoke_primary,
     )
-    _require(revoked)
     authoring.progress("revocation_host_ok")
     _require(_journey_counts(installed, context) == before)
-    _record_true(ledger, "i8", "mutation_fail_closed")
+    _record_true(ledger, "i8", "mutation_fail_closed", "replay_fail_closed")
 
-    authoring.call(
-        "evidence_capture",
-        _capture_arguments(
-            INTERRUPTED_SOURCE_ID,
-            INTERRUPTED_KEY,
-            f"interrupted response note {QUALIFICATION_TOKEN}\n",
-        ),
-        expected_error=True,
-        refusal="not_callable",
-    )
-    authoring.call(
-        "memory_create",
-        _memory_arguments(principal),
-        expected_error=True,
-        refusal="not_callable",
-    )
-    _require(_journey_counts(installed, context) == before)
+    # The import principal is a separate authoring context with its own Core.  Its
+    # session is admitted before its revocation, which lands on the paused read.
+    def revoke_import() -> None:
+        revoke_authoring(installed, imported.context, host)
+        verify_revoked(installed, imported.context, host)
 
-    # The import principal is a separate authoring context with its own Core.
-    revoke_authoring(installed, imported.context, host)
-    imported.driver.call(
-        "job_get", {"job_id": imported.job_id}, expected_error=True, refusal="not_callable"
+    imported.driver.refuse_in_order(
+        [
+            ("job_get", {"job_id": imported.job_id}),
+            ("job_events", {"job_id": imported.job_id}),
+            ("import_start", imported.arguments),
+        ],
+        on_paused=revoke_import,
     )
-    imported.driver.call(
-        "job_events", {"job_id": imported.job_id}, expected_error=True, refusal="not_callable"
-    )
-    imported.driver.call(
-        "import_start", imported.arguments, expected_error=True, refusal="not_callable"
-    )
-    _record_true(ledger, "i8", "replay_fail_closed", "job_reads_fail_closed")
+    _record_true(ledger, "i8", "job_reads_fail_closed")
 
     owner_job = owner_call(installed, imported.context, ("job", "get"), {"job_id": imported.job_id})
     job = owner_job.get("job")
