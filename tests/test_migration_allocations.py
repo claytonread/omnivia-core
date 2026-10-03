@@ -237,9 +237,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     58: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
     59: "fc2ab5e6ee96cf536d03523d4c062f6f111be41f",
     # 0062 was introduced by 4c0e9798 and repinned to its evidence-escape repair
-    # 80d67b6a and then to its closed-evidence repair ee187e1a, which is where its
-    # current content lives.
-    62: "ee187e1ab4b1ba70a5b44edc8eab7262e5ceda54",
+    # 80d67b6a, then to its closed-evidence repair ee187e1a, then to its portability
+    # repair 97d1e8db, which is where its current content lives.
+    62: "97d1e8db721ce21b9ba7e7f2093d798de117fe33",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
