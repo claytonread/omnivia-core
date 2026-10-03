@@ -23,10 +23,10 @@ Evidence is a closed shape. `coverage` and `source_observation` each carry exact
 the fields their shape names (`_COVERAGE_SHAPE`, `_SOURCE_SHAPE`), and every field is
 an identifier, a digest, a bounded integer, an instant, a word from its vocabulary or
 a list of unique identifiers. The writer checks that shape and the cross-bindings
-before it canonicalises; the reader checks the same after the digest, so a stored row
-that does not verify is refused the way a written one is. The checks below refuse
-early, naming fields but never values; the schema's CHECKs and triggers stay the
-final boundary for every writer.
+before it canonicalises. The reader checks the storage bound and the digest before it
+decodes, then the same shape, so a stored row that does not verify is refused the way a
+written one is. The checks below refuse early, naming fields but never values; the
+schema's CHECKs and triggers stay the final boundary for every writer.
 """
 
 from __future__ import annotations
@@ -424,8 +424,14 @@ def _record(row: tuple[Any, ...]) -> DatasetStateRecord:
     )
 
 
-def _stored_evidence(text: str, digest: str) -> dict[str, Any]:
+def _stored_evidence(text: object, digest: str) -> dict[str, Any]:
     """Decode one stored evidence document, refusing bytes its digest does not name."""
+    # The storage bound is read from the stored bytes before anything decodes them, the same
+    # 2 to 8192 bytes the schema's CHECK admits, so a row written past it is refused on read.
+    if not isinstance(text, str):
+        raise DatasetStateInvalid("stored dataset state evidence is not text")
+    if not 2 <= len(text.encode("utf-8")) <= EVIDENCE_MAX_BYTES:
+        raise DatasetStateInvalid("stored dataset state evidence is outside its byte bound")
     # A closed shape is shallow, so nesting this interpreter cannot decode is refused as
     # invalid rather than leaking its RecursionError.
     try:

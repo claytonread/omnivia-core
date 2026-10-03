@@ -167,6 +167,9 @@ TOO_DEEP = "nested deeper than 32 levels"
 COVERAGE_SHAPE = "coverage evidence is outside its closed shape"
 SOURCE_SHAPE = "source observation evidence is outside its closed shape"
 BOUND = "is not bound to its row"
+#: The reader's refusals of stored evidence before it decodes it: its storage bound, and its type.
+STORED_BOUND = "is outside its byte bound"
+STORED_TEXT = "is not text"
 
 
 def _not_null(column: str) -> str:
@@ -386,11 +389,12 @@ def _stored(base: str, text: str) -> dict[str, object]:
 
 
 def _bare_table() -> sqlite3.Connection:
-    """The observation table alone, with its CHECKs and no guard trigger, so a row written
-    here is stored exactly as given and the reader's own checks are what refuse it."""
+    """The observation table and its projection, with their CHECKs and no guard trigger, so
+    a row written here is stored exactly as given and the reader's checks refuse it."""
     connection = sqlite3.connect(":memory:")
     migration = next(item for item in load_migrations() if item.version == MIGRATION_VERSION)
-    connection.execute(split_sql_statements(migration.sql)[0])
+    for statement in split_sql_statements(migration.sql)[:2]:
+        connection.execute(statement)
     return connection
 
 
@@ -451,6 +455,24 @@ def test_0062_adds_exactly_its_table_projection_and_three_guards() -> None:
         ("view", VIEW),
         *(("trigger", name) for name in GUARDS.values()),
     }
+
+
+def test_0062_orders_members_by_canonical_text_and_never_by_a_json_table_id() -> None:
+    """SQLite documents a JSON table's `id` as housekeeping with no order, so no comparison in
+    the migration may read member order from one."""
+    migration = next(item for item in load_migrations() if item.version == MIGRATION_VERSION)
+    ordering = re.compile(r"\.id\s*(<|>)|(<|>)=?\s*[\w.]*\.id\b")
+    assert ordering.search(migration.sql) is None
+
+
+def test_0062_walks_depth_inside_a_subquery_and_never_as_a_statement_clause() -> None:
+    """A trigger's statements do not take a common table expression directly, only one that a
+    sub-select embeds, so each recursive walk must open inside parentheses."""
+    migration = next(item for item in load_migrations() if item.version == MIGRATION_VERSION)
+    walks = list(re.finditer(r"\bWITH\s+RECURSIVE\b", migration.sql))
+    assert len(walks) == 2
+    for walk in walks:
+        assert migration.sql[: walk.start()].rstrip().endswith("(")
 
 
 def test_the_migrated_workspace_is_guarded_canonical_and_clean(owned: m2.Owned) -> None:
@@ -871,6 +893,11 @@ LISTING = '"listing-2026-10-04"'
 _OVERSIZED_COVERAGE = _text(
     _coverage(proof_refs=[f"{index:03d}-" + "p" * 124 for index in range(64)])
 )
+#: The source interval with its bounds in canonical key order, for the out-of-order rows.
+_ORDERED_INTERVAL = {
+    "end_exclusive_at_us": BASE_US,
+    "start_inclusive_at_us": BASE_US - 60_000_000,
+}
 
 #: Raw text the shapes do not admit, as (document, label, text, refusal). An escape is
 #: decoded before the shape reads it, so an escape that decodes to a valid value is
@@ -952,6 +979,18 @@ RAW_EVIDENCE: tuple[tuple[str, str, str, str], ...] = (
             '{"id":"source-erp","revision_id":"source-erp-r4"}',
             '{"revision_id":"source-erp-r4","id":"source-erp"}',
         ),
+        SOURCE_SHAPE,
+    ),
+    (
+        "source_observation",
+        "top-level fields out of canonical order",
+        _unsorted(_source(observation_interval=_ORDERED_INTERVAL)),
+        SOURCE_SHAPE,
+    ),
+    (
+        "source_observation",
+        "interval fields out of canonical order",
+        SOURCE_JSON.replace(to_canonical_json(_ORDERED_INTERVAL), _unsorted(_ORDERED_INTERVAL)),
         SOURCE_SHAPE,
     ),
     ("coverage", "a document that is not minified", COVERAGE_JSON.replace(",", ", "), CHECK),
@@ -1063,6 +1102,32 @@ def test_the_schema_refuses_raw_evidence_text_the_shapes_do_not_admit(
 ) -> None:
     _admitted_then_undone(refusing)
     _refused(refusing, refusal, **{f"{base}_json": text})
+
+
+def _nested(field: str, depth: int) -> str:
+    """An object whose `field` holds empty arrays nested `depth` levels deep, the root being
+    level 0."""
+    return '{"' + field + '":' + "[" * depth + "]" * depth + "}"
+
+
+@pytest.mark.parametrize(
+    ("base", "field", "depth", "refusal"),
+    [
+        pytest.param(base, field, depth, refusal, id=f"{base}-{depth}")
+        for base, field, shape in (
+            ("coverage", "accepted_rows", COVERAGE_SHAPE),
+            ("source_observation", "source_ref", SOURCE_SHAPE),
+        )
+        for depth, refusal in ((32, shape), (33, TOO_DEEP))
+    ],
+)
+def test_the_depth_ceiling_is_exactly_32_levels(
+    refusing: m2.Owned, base: str, field: str, depth: int, refusal: str
+) -> None:
+    """A document 32 levels deep passes the depth walk and is refused only by its shape; one
+    33 levels deep is refused as too deep."""
+    _admitted_then_undone(refusing)
+    _refused(refusing, refusal, **{f"{base}_json": _nested(field, depth)})
 
 
 def test_each_document_is_bound_to_the_row_it_describes(refusing: m2.Owned) -> None:
@@ -1492,6 +1557,36 @@ def test_a_stored_row_that_does_not_verify_or_contradicts_itself_is_refused_on_r
         m2.insert(connection, TABLE, _raw_row(**overrides))
         with pytest.raises(dataset_state.DatasetStateInvalid, match=refusal):
             _history(connection, "dataset-raw")
+    finally:
+        connection.close()
+
+
+def _refused_by_every_read(connection: sqlite3.Connection, refusal: str) -> None:
+    with pytest.raises(dataset_state.DatasetStateInvalid, match=refusal):
+        _history(connection, "dataset-raw")
+    with pytest.raises(dataset_state.DatasetStateInvalid, match=refusal):
+        _current(connection, "dataset-raw")
+
+
+def test_a_stored_document_past_the_byte_bound_is_refused_by_every_read() -> None:
+    """Canonical, correctly digested and closed-shape, the document is stored only because the
+    CHECKs are disabled here; the reader refuses it on its bytes, before any decoding."""
+    assert len(_OVERSIZED_COVERAGE.encode("utf-8")) > dataset_state.EVIDENCE_MAX_BYTES
+    connection = _bare_table()
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        m2.insert(connection, TABLE, _raw_row(**_stored("coverage", _OVERSIZED_COVERAGE)))
+        _refused_by_every_read(connection, STORED_BOUND)
+    finally:
+        connection.close()
+
+
+def test_stored_evidence_that_is_not_text_is_refused_by_every_read() -> None:
+    connection = _bare_table()
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        m2.insert(connection, TABLE, _raw_row(coverage_json=COVERAGE_JSON.encode("utf-8")))
+        _refused_by_every_read(connection, STORED_TEXT)
     finally:
         connection.close()
 

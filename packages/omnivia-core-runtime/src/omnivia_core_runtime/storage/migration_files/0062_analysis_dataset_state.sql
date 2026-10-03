@@ -53,9 +53,14 @@
 -- minified, no negative number. Canonical evidence never needs an escape, and SQLite
 -- before 3.45 decodes `\u0000` by cutting the string short. The sign check exists
 -- because `json()` keeps `-0` as written while the reader's canonical form is `0`.
--- Sorted keys are checked by the guard, and the reader verifies the digest and the
--- canonical form. A depth walk over both documents keeps them within 32 levels as
--- defence in depth; the closed shapes are far shallower than that.
+-- The guard checks member order by rebuilding each document with its keys in canonical
+-- order and comparing the result with the stored text. SQLite runs a BEFORE trigger ahead
+-- of the table's CHECKs, so that comparison is made only on text the CHECKs already admit
+-- in form: any other text is refused by its CHECK, under the message it had before. Member
+-- position is never read from a JSON table's `id`: SQLite documents it as housekeeping with
+-- no order. The reader verifies the digest and the canonical form. A
+-- depth walk over both documents, along the parent links of `json_tree`, keeps them within
+-- 32 levels as defence in depth; the closed shapes are far shallower than that.
 --
 -- Every write runs inside the caller's `fenced_transaction`. The INSERT guard carries
 -- the complete connection-authority, guard, workspace-state and lease predicate and
@@ -283,23 +288,25 @@ BEGIN
        OR (typeof(NEW.source_observation_json) = 'text'
            AND json_type(NEW.source_observation_json) IS NOT 'object');
 
-    WITH RECURSIVE coverage_walk(depth, kind, body) AS (
-        SELECT 0, 'object', NEW.coverage_json
-        UNION ALL
-        SELECT w.depth + 1, e."type", e.value
-        FROM coverage_walk w, json_each(w.body) e
-        WHERE w.kind IN ('object', 'array') AND w.depth <= 32)
     SELECT RAISE(ABORT, 'omnivia: coverage evidence is nested deeper than 32 levels')
-    WHERE (SELECT MAX(depth) FROM coverage_walk) > 32;
+    WHERE typeof(NEW.coverage_json) = 'text'
+      AND (WITH RECURSIVE coverage_walk(id, depth) AS (
+               SELECT t.id, 0 FROM json_tree(NEW.coverage_json) t WHERE t.parent IS NULL
+               UNION ALL
+               SELECT c.id, w.depth + 1
+               FROM coverage_walk w JOIN json_tree(NEW.coverage_json) c ON c.parent = w.id
+               WHERE w.depth <= 32
+           ) SELECT MAX(depth) FROM coverage_walk) > 32;
 
-    WITH RECURSIVE source_walk(depth, kind, body) AS (
-        SELECT 0, 'object', NEW.source_observation_json
-        UNION ALL
-        SELECT w.depth + 1, e."type", e.value
-        FROM source_walk w, json_each(w.body) e
-        WHERE w.kind IN ('object', 'array') AND w.depth <= 32)
     SELECT RAISE(ABORT, 'omnivia: source observation evidence is nested deeper than 32 levels')
-    WHERE (SELECT MAX(depth) FROM source_walk) > 32;
+    WHERE typeof(NEW.source_observation_json) = 'text'
+      AND (WITH RECURSIVE source_walk(id, depth) AS (
+               SELECT t.id, 0 FROM json_tree(NEW.source_observation_json) t WHERE t.parent IS NULL
+               UNION ALL
+               SELECT c.id, w.depth + 1
+               FROM source_walk w JOIN json_tree(NEW.source_observation_json) c ON c.parent = w.id
+               WHERE w.depth <= 32
+           ) SELECT MAX(depth) FROM source_walk) > 32;
 
     SELECT RAISE(ABORT, 'omnivia: coverage evidence is outside its closed shape')
     WHERE typeof(NEW.coverage_json) = 'text'
@@ -308,9 +315,21 @@ BEGIN
                WHERE key IN ('accepted_rows', 'conflicting_rows', 'deduplicated_rows',
                              'expected_source_rows', 'proof_kind', 'proof_refs',
                              'rejected_rows', 'scope_digest')) IS NOT 8
-           OR (SELECT COUNT(*) FROM json_each(NEW.coverage_json) a,
-                                    json_each(NEW.coverage_json) b
-               WHERE a.key < b.key AND a.id > b.id) > 0
+           OR (instr(NEW.coverage_json, char(92)) = 0
+               AND instr(NEW.coverage_json, '":-') = 0
+               AND instr(NEW.coverage_json, '[-') = 0
+               AND instr(NEW.coverage_json, ',-') = 0
+               AND json(NEW.coverage_json) = NEW.coverage_json
+               AND json_object(
+                       'accepted_rows', json_extract(NEW.coverage_json, '$.accepted_rows'),
+                       'conflicting_rows', json_extract(NEW.coverage_json, '$.conflicting_rows'),
+                       'deduplicated_rows', json_extract(NEW.coverage_json, '$.deduplicated_rows'),
+                       'expected_source_rows', json_extract(NEW.coverage_json, '$.expected_source_rows'),
+                       'proof_kind', json_extract(NEW.coverage_json, '$.proof_kind'),
+                       'proof_refs', json(json_extract(NEW.coverage_json, '$.proof_refs')),
+                       'rejected_rows', json_extract(NEW.coverage_json, '$.rejected_rows'),
+                       'scope_digest', json_extract(NEW.coverage_json, '$.scope_digest'))
+                   IS NOT NEW.coverage_json)
            OR json_type(NEW.coverage_json, '$.scope_digest') IS NOT 'text'
            OR length(json_extract(NEW.coverage_json, '$.scope_digest')) IS NOT 71
            OR substr(json_extract(NEW.coverage_json, '$.scope_digest'), 1, 7) IS NOT 'sha256:'
@@ -356,16 +375,40 @@ BEGIN
                              'observation_interval', 'scope_digest', 'snapshot_token_ref',
                              'source_cutoff_at_us', 'source_incarnation', 'source_ref',
                              'verification_at_us')) IS NOT 10
-           OR (SELECT COUNT(*) FROM json_each(NEW.source_observation_json) a,
-                                    json_each(NEW.source_observation_json) b
-               WHERE a.key < b.key AND a.id > b.id) > 0
+           OR (instr(NEW.source_observation_json, char(92)) = 0
+               AND instr(NEW.source_observation_json, '":-') = 0
+               AND instr(NEW.source_observation_json, '[-') = 0
+               AND instr(NEW.source_observation_json, ',-') = 0
+               AND json(NEW.source_observation_json) = NEW.source_observation_json
+               AND json_object(
+                       'applied_checkpoint_ref',
+                           json_extract(NEW.source_observation_json, '$.applied_checkpoint_ref'),
+                       'evidence_kind', json_extract(NEW.source_observation_json, '$.evidence_kind'),
+                       'evidence_refs',
+                           json(json_extract(NEW.source_observation_json, '$.evidence_refs')),
+                       'observation_interval', json(json_object(
+                           'end_exclusive_at_us', json_extract(NEW.source_observation_json,
+                               '$.observation_interval.end_exclusive_at_us'),
+                           'start_inclusive_at_us', json_extract(NEW.source_observation_json,
+                               '$.observation_interval.start_inclusive_at_us'))),
+                       'scope_digest', json_extract(NEW.source_observation_json, '$.scope_digest'),
+                       'snapshot_token_ref',
+                           json_extract(NEW.source_observation_json, '$.snapshot_token_ref'),
+                       'source_cutoff_at_us',
+                           json_extract(NEW.source_observation_json, '$.source_cutoff_at_us'),
+                       'source_incarnation',
+                           json_extract(NEW.source_observation_json, '$.source_incarnation'),
+                       'source_ref', json(json_object(
+                           'id', json_extract(NEW.source_observation_json, '$.source_ref.id'),
+                           'revision_id',
+                               json_extract(NEW.source_observation_json, '$.source_ref.revision_id'))),
+                       'verification_at_us',
+                           json_extract(NEW.source_observation_json, '$.verification_at_us'))
+                   IS NOT NEW.source_observation_json)
            OR json_type(NEW.source_observation_json, '$.source_ref') IS NOT 'object'
            OR (SELECT COUNT(*) FROM json_each(NEW.source_observation_json, '$.source_ref')) IS NOT 2
            OR (SELECT COUNT(DISTINCT key) FROM json_each(NEW.source_observation_json, '$.source_ref')
                WHERE key IN ('id', 'revision_id')) IS NOT 2
-           OR (SELECT COUNT(*) FROM json_each(NEW.source_observation_json, '$.source_ref') a,
-                                    json_each(NEW.source_observation_json, '$.source_ref') b
-               WHERE a.key < b.key AND a.id > b.id) > 0
            OR json_type(NEW.source_observation_json, '$.source_ref.id') IS NOT 'text'
            OR length(json_extract(NEW.source_observation_json, '$.source_ref.id')) NOT BETWEEN 1 AND 128
            OR json_extract(NEW.source_observation_json, '$.source_ref.id') NOT GLOB '[A-Za-z0-9]*'
@@ -380,9 +423,6 @@ BEGIN
            OR (SELECT COUNT(*) FROM json_each(NEW.source_observation_json, '$.observation_interval')) IS NOT 2
            OR (SELECT COUNT(DISTINCT key) FROM json_each(NEW.source_observation_json, '$.observation_interval')
                WHERE key IN ('start_inclusive_at_us', 'end_exclusive_at_us')) IS NOT 2
-           OR (SELECT COUNT(*) FROM json_each(NEW.source_observation_json, '$.observation_interval') a,
-                                    json_each(NEW.source_observation_json, '$.observation_interval') b
-               WHERE a.key < b.key AND a.id > b.id) > 0
            OR json_type(NEW.source_observation_json, '$.observation_interval.start_inclusive_at_us') IS NOT 'integer'
            OR typeof(json_extract(NEW.source_observation_json, '$.observation_interval.start_inclusive_at_us')) IS NOT 'integer'
            OR json_extract(NEW.source_observation_json, '$.observation_interval.start_inclusive_at_us') < 1
