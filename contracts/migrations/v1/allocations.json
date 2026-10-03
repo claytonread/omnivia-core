@@ -491,6 +491,17 @@
       "sha256": "c6e2c0509ad979e57113715284e6f8133a391ab43fd75a189261ea946e350405",
       "introduced_commit": "70b473729995396c9cea39934fe23023dfbcdcd6",
       "accepted_commit": null
+    },
+    {
+      "number": 62,
+      "filename": "0062_engineering_scoped_difference.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 61,
+      "sha256": "92605c37127527503bed7da3e75bf1dab89429d3ecda235af7b0dd64dd35d2dd",
+      "introduced_commit": "0000000000000000000000000000000000000000",
+      "accepted_commit": null
     }
   ]
 }

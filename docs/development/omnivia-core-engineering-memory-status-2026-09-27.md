@@ -45,7 +45,7 @@ clients as `engineering capture`.
 
 1. **CLI vertical** (`test_engineering_cli.py`): the spec §1.1 initial slice — register → append (fenced) → close-with-final-checkpoint → handoff → working-context search → resume pack — through the installed `omnivia` entry point against a real managed-start service; plus the AC-023 stale-predecessor typed refusal.
 2. **Migration/restore** (`test_engineering_restore.py`): verified backup → restore → row-identical engineering tables (checkpoints by digest+sequence, sessions, snapshots) and the observation still readable at its exact version through the production surface (AC-063 storage half).
-3. **Qualification lanes** (`test_engineering_qualification.py`, env-gated): 10k and 100k-observation synthetic corpora; p50/p95/p99 for `engineering.search`, `engineering.context.build`, `continuity.checkpoint.append`; reports written to `benchmarks/reports/engineering-memory/lane-<n>.json`.
+3. **Qualification lanes** (`test_engineering_qualification.py`, env-gated): 10k and 100k-observation synthetic corpora; reports written to `benchmarks/reports/engineering-memory/lane-<n>.json`. The harness now produces the §20.2 report contract (`engineering-memory-qualification/2`: worktrees, ACL, long code spans, conflict groups, three checkpoint size classes, cold/warm/concurrent lanes, environment, source and policy identity, resource observations); the contract is validated by ordinary-suite tests at a tiny corpus. The format-2 10k and 100k lanes and a system-cold lane are **pending**; see the release-evidence document.
 4. **Release evidence manifest**: `omnivia-core-engineering-memory-release-evidence-2026-09-27.md`.
 
 ## Performance qualification (measured 2026-09-27/29, this machine)
@@ -69,7 +69,9 @@ Lane 10 000 observations (`benchmarks/reports/engineering-memory/lane-10000.json
 
 The scaling curve confirms the 10k finding: the preview path scores the full admitted candidate set in Python per query (no SQL-side top-k), so search latency grows roughly linearly with corpus size, and pack construction — which hydrates, renders and checksums over the same frontier — grows super-linearly past it (2.96 s at 10k → 29.3 s at 100k). The chunked folds answered correctly at every scale, so these are **latency** gaps, not correctness gaps: §20.3's resource-correctness gates held (bounded hydration, no cap disabled, no ACL shortcut). The identified production follow-up remains §11.3's SQL-side top-k / permission-partitioned scoring lane; until it lands, a 100k-scale supported-configuration claim would be dishonest, and the checkpoint path (p95 1.65 ms against a 200 ms target) is already production-shaped.
 
-These are measurements, not release guarantees. The fixture still needs the worktree, ACL, conflict, cache-state, concurrency and environment dimensions required by spec §20.2 before it can serve as release qualification.
+**Update (preview-search narrowing).** Search and pack build now narrow the record-id space by query in SQLite (identity only, before authorization) and rank only the authorised matches, so Python-side work follows the query's matches rather than the corpus. The tables above are the pre-change measurements. A 10k re-measure of the same lane (40 search / 15 pack samples) gave search p95 143 ms and pack p95 477 ms; checkpoint append is unchanged. No 100k re-measure has been run: the SQLite text match and projection-health probe are still unindexed scans, so 100k remains to be qualified.
+
+These are measurements, not release guarantees, and all of the tables above are format-1 diagnostics (platform, machine, Python and CPU count only). The fixture now carries the worktree, ACL, conflict, cache-state, concurrency and environment dimensions required by spec §20.2, but no format-2 report has been generated at 10k or 100k yet: those lanes, and a system-cold lane, remain pending.
 
 ## Honest limitations (carried into the release note)
 

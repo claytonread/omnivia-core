@@ -21,7 +21,66 @@ One row per shipped capability. "Producer" is the code path that writes authorit
 
 ## Performance qualification
 
-Current report: `benchmarks/reports/engineering-memory/lane-10000.json`. There is no valid completed 100k report; the stale rerun was stopped after its code changed, and a fresh run remains pending after the search and pack scale fixes are integrated. These are diagnostic measurements on the producing machine, not §20.2 release qualification yet: the present fixture lacks multiple worktrees, ACL partitions, conflict groups, cache-state and concurrency lanes, and a complete environment/commit record. The 10k search and pack p95 measurements exceed the proposed targets; no latency guarantee is claimed.
+SPEC-CORE-ENGMEM-001 §20.2 qualification is produced by `packages/omnivia-core-runtime/tests/phase3/runtime/test_engineering_qualification.py` (`run_lane`; contract `validate_report`). No latency is asserted anywhere; every correctness gate (authorization partition, `current_safe` applicability, conflict visibility, budgets) is asserted on every sample, in every lane.
+
+### Lane status
+
+| Lane | Status |
+|---|---|
+| Harness, report contract and tiny-corpus smoke (ordinary suite, no wall-clock assertions) | Implemented; runs in the suite |
+| 10k, report format `engineering-memory-qualification/2` | **Pending** |
+| 100k, report format `engineering-memory-qualification/2` | **Pending** |
+| Reference-hardware run (4 cores / 16 GiB / local SSD) | **Pending** |
+| System-cold lane (operating-system page cache controlled) | **Pending**; the harness cannot control it, so no lane is called system-cold |
+
+`benchmarks/reports/engineering-memory/lane-{2000,3000,10000,100000}.json` are the earlier format-1 diagnostics (platform, machine, Python and CPU count only; no worktree, conflict, cold/warm, concurrency or resource dimensions). They are retained as history, are not §20.2 evidence, and are replaced when the format-2 lanes run. They exceeded the proposed search and pack targets; no latency guarantee is claimed.
+
+### Running a lane
+
+```
+OMNIVIA_ENGINEERING_QUALIFICATION=1 OMNIVIA_QUALIFICATION_CORPUS=100000 \
+OMNIVIA_QUALIFICATION_STORAGE_CLASS=local-ssd \
+  python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_engineering_qualification.py \
+  -k performance_qualification_lane -s
+```
+
+One lane per invocation; the report is `benchmarks/reports/engineering-memory/lane-<corpus>.json` (override the directory with `OMNIVIA_QUALIFICATION_REPORT_DIR`). Optional inputs, all `OMNIVIA_QUALIFICATION_*`: `WORKTREES` (3), `CONFLICT_GROUPS` (corpus/1000, 2–200), `SEARCH_SAMPLES` (100), `PACK_SAMPLES` (30), `CHECKPOINT_SAMPLES` (100 per size class), `COLD_SAMPLES` (10 per operation), `READERS` (4), `READER_REQUESTS` (25 each), `WRITER_CHECKPOINTS` (25). `STORAGE_CLASS` is the operator's declaration: a storage class cannot be detected safely from the standard library, so an undeclared run reports `undeclared` and is not release-eligible.
+
+### Fixture (corpus generator `engineering-memory-qualification-corpus` v2)
+
+- **Worktrees.** Real Git worktrees of one logical repository (default 3), each registered through `engineering.repository.register`, sealed by the production `capture_working_tree_snapshot_owned` and committed through `engineering.source.capture.commit`. Fixed Git dates make the sealed manifests reproducible. The corpus is placed `(index // 2) % worktrees`. A record is `matched` only at a target in its own worktree's source stream, so `current_safe` requests target a worktree holding a member of the queried bucket.
+- **ACL partitions.** Every tenth non-conflict record is evidence-backed by an open artifact; the rest carry the owner-held `group.engineering` label. The restricted-reader lane asserts every returned record is in the open set. Conflict members carry no evidence and are open to every reader.
+- **Long code spans.** Every fourth non-conflict record has 1 900-character code in both `summary` and `what`. (A `source_span` dependency would make the record's applicability `unknown`, so spans are carried in content, not dependencies.)
+- **Conflict groups.** Pairs of observations sharing a topic key and a worktree, seeded first so their discovery runs are the oldest queued. The production `EngineeringConflictExecutor` drains exactly those runs; the report records the discovery backlog before and after, and that every group produced exactly one relation. No semantic assessment provider runs, so each group is a structural `unresolved_overlap` and never an assessed material conflict; the conflict-group context-build lane asserts the group is visible, atomic and names exactly its two records. The rest of the discovery backlog is deliberately not drained.
+- **Checkpoint payloads.** Short (~120 B), medium (16 KiB) and near-limit (cap − 8 KiB = 253 952 canonical bytes of the 262 144-byte cap), sized with the production canonicalizer and interleaved on one session.
+
+### Report contract (`engineering-memory-qualification/2`)
+
+`validate_report` fails a report missing any of these; it never inspects a latency value.
+
+| Block | Contents |
+|---|---|
+| `run` | start/finish timestamps, seed seconds |
+| `environment` | `cpu` (model, logical and physical count), `memory.physical_bytes`, `storage` (class and its source), `os` (name, version, build, architecture), `runtimes` (Python, SQLite, Core runtime and contract versions) |
+| `source` | exact `commit`, `branch`, `dirty`, `dirty_path_count`, `dirty_digest` (status, tracked diff and untracked bytes), or an explicit `unavailable` reason |
+| `migration`, `database` | applied head number and name; journal mode, synchronous, page and cache size and other connection PRAGMAs |
+| `corpus` | generator, version, observation count, `digest` over every record's canonical form, record kinds, `acl`, `code_spans`, `source_snapshots` (snapshot digest; per worktree: checkout id, snapshot, stream, sequence, manifest digest, coverage, observation count), `conflict_groups` (count, method, discovery counts), `checkpoint_payloads` |
+| `policy`, `effective_context_budget` | digest and snapshot of the production limits in force (candidate cap, budgets, pack and projection versions, discovery budgets, checkpoint cap, authorization partition); the effective 4 000-token / 16 KiB budget |
+| `cache`, `concurrency`, `sampling` | the cold and warm procedures with what each does and does not control; the declared concurrent workload; every sample count |
+| `lanes.cold`, `lanes.warm` | per operation: n, min, p50, p95, p99, max, mean (ms); checkpoint classes add `payload_bytes`; each lane also carries timestamps and `resources` |
+| `lanes.concurrent` | declared workload, total requests, wall seconds, throughput, and per operation end-to-end, service and gate-wait percentiles |
+| `resources` | process peak RSS, CPU seconds, database bytes at each lane boundary; unavailable fields are `null` with a stated reason |
+| `reference` | the reference profile, the warm-target comparison and `release_blockers` |
+
+Operations in every lane: `engineering.search`, `.search.current_safe`, `.search.acl_partitioned_reader`, `engineering.context.build`, `.context.build.current_safe`, `.context.build.conflict_groups`, and `continuity.checkpoint.append.{short,medium,near_limit}`.
+
+### What the lanes control, and what they do not
+
+- **Cold is connection-cold.** Before every cold sample the workspace connection is closed and the workspace adopted again, as a service restart does: a fresh SQLite connection, page cache, prepared statements and dispatcher; the operation then runs once with no warm-up. The operating-system page cache, CPU caches and process-level Python caches are not controlled.
+- **Warm** is five discarded requests per operation on one connection, then the samples on that connection.
+- **Concurrent** is four reader threads cycling every read operation while one writer appends checkpoints. Every request goes through the same single SQLite gate the production socket and HTTP transports hold around dispatch, so requests queue exactly as production requests do; the lane measures end-to-end latency under bounded client load, not parallel execution inside Core.
+- **Resources** are standard-library only: `ru_maxrss` is the *process* high-water mark (the whole pytest run so far), current RSS exists only on Linux, and no working-set figure is captured.
+- **Reference targets** (preview search p95 ≤ 300 ms, 4k-token / 16 KiB context build p95 ≤ 1 000 ms, checkpoint commit p95 ≤ 200 ms) are compared against the warm lane's worst p95 over the listed operations. `within_target` is advisory unless `release_blockers` is empty. The blockers are: corpus below 100 000, fewer than 4 logical cores, under 16 GiB RAM, storage not declared `local-ssd`, an unknown or dirty source, and the unexecuted system-cold lane (always present today, so `release_eligible` is false until that lane exists).
 
 ## Migration / rollout evidence
 
