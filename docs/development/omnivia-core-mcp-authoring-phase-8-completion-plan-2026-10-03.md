@@ -5,7 +5,9 @@
 **Owner:** Codex (orchestration, review, acceptance); Claude Code (bounded implementation)
 **Target repository:** `omnivia-core`
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
-**Implementation checkpoint:** `6ad05f2d525770992b3f05b88fbfdc7bb0007d51`
+**Reviewed predecessor checkpoint:** `36fa677f9fb57ca37661d33d998d1f326a7db874`
+**Final candidate:** not frozen; the last harness hardening and this evidence
+update must be committed together before release-form qualification begins.
 
 ## 1. Objective
 
@@ -265,19 +267,43 @@ persisted or recorded, and the MCP server process explicitly receives an empty
 value for that variable. For `--host codex-cli`, `--auth-file` remains an
 owner-only copy of `auth.json`. The interoperability guide states these
 host-specific semantics.
-The focused real-host harness and schema suite now contains 315 tests, up from
+The focused real-host harness and schema suite now contains 358 tests, up from
 219. It exercises the complete seventeen-step journey, including a real-host
 attempt to dispatch an excluded sentinel, stable canonical replay and conflict
 classification for all three mutations, stable paginated events, imported
 evidence retrieval, revocation fail-closed behavior, owner observation after
 revocation and Core health after every host exit.
 
-No Claude real-host record exists yet, so Claude Code has not passed I-1
-through I-8, and no I row is green. WP3 remains open for the final Claude record
-and for rerunning both hosts at a new frozen final tip. The real-host part of
-WP5 and final WP6 closeout also remain open. This documentation edit creates a
-new candidate commit, so the current PR tip is not treated as exact after it.
-Both hosts must be rerun at the new frozen tip.
+The first expanded diagnostic at clean candidate `960ed703` failed closed after
+revocation because the harness launched a fresh host process, which correctly
+could not initialize after its installed credential was removed. The repaired
+harness keeps the already-admitted real host session open, pauses its first
+post-revocation request until revocation lands, and requires every later call in
+that same session to fail closed. A disposable Codex CLI rerun against that
+historical candidate passed the repaired journey; it remains diagnostic rather
+than exact-tip acceptance.
+
+Independent review then found four acceptance weaknesses: the historical PR
+#108 disposition inventory had stopped at GitHub's first 100 files, excluded
+tool absence relied too heavily on model behavior, successful result hashing
+could accept missing structured data, and the revocation classifier accepted a
+generic `could not be called` phrase. The corrected disposition map now covers
+all 121 paths. The harness now probes excluded dispatch deterministically,
+rejects every malformed structured-result shape, and accepts revocation only
+when the installed credential store emits its exact fixed sanitized missing
+message. Generic timeout, transport, cancellation and not-callable failures no
+longer satisfy I-8. A fresh independent read-only review found no remaining
+code defect; its three test-coverage observations were added before acceptance.
+
+No exact-tip Claude or Codex real-host record exists yet, so no I row is green.
+WP3 remains open for both final host records. An authenticated Codex diagnostic
+of the stricter classifier was not started because the execution policy requires
+explicit approval before locally derived qualification data may be sent through
+an external model connection. Claude qualification also still requires the
+owner-only token file produced outside the repository by `claude setup-token`.
+The real-host part of WP5 and final WP6 closeout therefore remain open. This
+documentation edit creates a new candidate commit, so both hosts must be run
+against the later frozen tip rather than any historical candidate.
 
 ### Checks
 
@@ -287,15 +313,16 @@ Both hosts must be rerun at the new frozen tip.
 - focused Phase 8 package/traceability tests: 120 passed;
 - local transport lifecycle suite: 36 passed;
 - partial-client shutdown stress: 100/100 passed;
-- full `PYTHON=.venv/bin/python ./scripts/preflight`: pass, including 28,296
+- historical full `PYTHON=.venv/bin/python ./scripts/preflight`: pass, including 28,296
   Python tests, 23 benchmark tests, Ruff, strict mypy, all five wheel builds and
-  isolated installs, and 59 Swift tests.
-- real-host harness/schema focused suite: 315 focused tests, with targeted Ruff,
+  isolated installs, and 59 Swift tests; final-tip rerun pending;
+- real-host harness/schema focused suite: 358 focused tests, with targeted Ruff,
   strict mypy, schema validation and diff hygiene passing;
-- combined MCP, CLI, authoring traceability and real-host harness gate: 1,711
+- combined MCP, CLI, authoring traceability and real-host harness gate: 1,764
   passed;
-- Codex CLI real-host journey at clean `4ec9fa17`: pass; historical after the
-  later documentation commit, so not final exact-tip acceptance;
+- Codex CLI real-host journey at clean `4ec9fa17`: pass; the repaired same-session
+  journey also passed diagnostically against historical candidate `960ed703`;
+  neither is final exact-tip acceptance;
 - Claude Code isolated authentication preflight: correctly fails closed as
   `authentication_unavailable`.
 
@@ -313,20 +340,31 @@ a fresh service for host and owner observations. Host subscription credentials
 may be keychain-bound even when a credential file exists, so presence is not
 authentication proof; the isolated host must verify its own login before Core
 starts. Exact-tip host records cannot be committed into the commit they name,
-so acceptance must attach them externally to the frozen revision.
+so acceptance must attach them externally to the frozen revision. Revocation
+evidence must distinguish the exact installed-credential-missing outcome from
+generic client failure; otherwise a timeout or transport failure can look like
+a security success. GitHub PR file listings are paginated and must be compared
+with the full base-to-head Git diff before a disposition map is accepted.
 
 ### Improvements Needed
 
 Portable token support is implemented. The remaining Claude action is external:
 provision the token-only file outside the repository, then rerun both hosts at
 the new frozen tip. Keep the separate Windows named-pipe hardening follow-up
-from section 9.
+from section 9. The delegation workflow also needs a single-writer qualification
+freeze: concurrent background lanes repeatedly committed and pushed while an
+exact-tip candidate was being prepared. A connector/process follow-up should
+serialize same-worktree writers, prohibit autonomous commit/push while a
+candidate is frozen, and use renewable monitor leases without spawning a second
+writer.
 
 ### Next Step
 
-Provision the Claude token-only file outside the repository, generated from
-`claude setup-token` and owner-only. Then build one clean exact candidate at the
-new frozen tip, rerun both Codex CLI and Claude Code lanes, retain the closed
-redacted records outside the source tree, run full preflight, update PR #167,
-and obtain fresh hosted checks. Merge remains blocked until the user explicitly
+Commit and push the reviewed hardening, freeze that exact tip, build one clean
+candidate, and rerun the installed restricted, authoring and lifecycle journeys.
+Then run full preflight, update PR #167 and obtain fresh hosted checks. Real-host
+acceptance additionally requires explicit authorization for the authenticated
+external model data flow and an owner-only Claude token file generated outside
+the repository with `claude setup-token`. Retain only the closed redacted host
+records outside the source tree. Merge remains blocked until the user explicitly
 authorizes it and the hosted checks are green at the latest tip.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
 import importlib.util
 import inspect
@@ -2258,6 +2259,131 @@ def test_relay_refuses_a_success_without_structured_content(tmp_path: Path) -> N
     assert error.value.kind == "invalid_tool_result"
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        *(
+            {"isError": True, "content": [], "structuredContent": value}
+            for value in ({"code": "x"}, None, ["x"], "x", 0)
+        ),
+        {"isError": False, "content": []},
+        *(
+            {"isError": False, "content": [], "structuredContent": value}
+            for value in (None, ["x"], "x", 0)
+        ),
+    ],
+)
+def test_relay_requires_structured_content_exactly_on_success(
+    tmp_path: Path, result: dict[str, Any]
+) -> None:
+    observer = q._Observer(tmp_path / "events.jsonl")
+    relay = q._Relay(observer, None)
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "evidence_capture", "arguments": {}},
+    }
+    relay.request(_frame(request))
+    with pytest.raises(q._Violation) as error:
+        relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": result}))
+    observer.close()
+    assert error.value.kind == "invalid_tool_result"
+
+
+def _refused(text: str) -> dict[str, Any]:
+    return {"isError": True, "content": [{"type": "text", "text": text}]}
+
+
+def test_only_the_exact_installed_credential_message_is_credential_missing() -> None:
+    assert (
+        q.refusal_class(_refused("this  installation holds no\ncredential for that reference"))
+        == "credential_missing"
+    )
+    # The server wrapper's real shape: the exact message wins over the generic phrase.
+    wrapped = "evidence_capture could not be called: this installation holds no credential for that reference"
+    assert q.refusal_class(_refused(wrapped)) == "credential_missing"
+    assert q.refusal_class(_refused("The tool could not be called")) == "not_callable"
+    for text in ("timed out", "transport closed", "request cancelled", "holds no credential"):
+        assert q.refusal_class(_refused(text)) == "other"
+
+
+def test_the_credential_missing_class_is_in_the_closed_vocabulary() -> None:
+    event = {
+        "event": "tool_call_response",
+        "seq": 1,
+        "tool": "job_get",
+        "ok": True,
+        "tool_error": True,
+        "result_digest": "0" * 64,
+        "refusal": "credential_missing",
+    }
+    assert q.validate_event(event) == event
+    with pytest.raises(q.QualificationError):
+        q.validate_event({**event, "refusal": "credential_gone"})
+
+
+def test_a_retained_credential_missing_refusal_keeps_no_raw_text(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    observer = q._Observer(path)
+    relay = q._Relay(observer, None)
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "job_get", "arguments": {}},
+    }
+    message = "this installation holds no credential for that reference"
+    relay.request(_frame(request))
+    relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": _refused(message)}))
+    observer.close()
+    summary = q.summarize_observation(q.read_observation(path))
+    assert summary.outcomes == (("job_get", "credential_missing", q.canonical_result_digest(None)),)
+    assert "holds no credential" not in path.read_text(encoding="ascii")
+
+
+_ORDERED_CALLS = [
+    ("evidence_capture", {"input": {}, "idempotency_key": "fixed"}),
+    ("memory_create", {"input": {}, "idempotency_key": "fixed"}),
+    ("job_get", {"job_id": "job"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("position", "observed"),
+    [(None, None)]
+    + [
+        (position, observed)
+        for position in range(3)
+        for observed in ("not_callable", "other", "none")
+    ],
+)
+def test_refuse_in_order_requires_the_credential_missing_class_at_every_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: int | None, observed: str | None
+) -> None:
+    outcomes = tuple(
+        (tool, observed if index == position else "credential_missing", q.canonical_result_digest(None))
+        for index, (tool, _) in enumerate(_ORDERED_CALLS)
+    )
+    requests = tuple((tool, q.arguments_digest(arguments)) for tool, arguments in _ORDERED_CALLS)
+
+    def run(**kwargs: Any) -> Any:
+        kwargs["pause_before"].release.parent.mkdir(parents=True, exist_ok=True)
+        kwargs["on_paused"]()
+        result = _outcome_result(requests, outcomes)
+        summary = dataclasses.replace(result.summary, paused=True)
+        return dataclasses.replace(result, summary=summary, paused=True)
+
+    monkeypatch.setattr(q, "run_host_session", run)
+    driver = _driver(tmp_path)
+    if position is None:
+        driver.refuse_in_order(_ORDERED_CALLS, on_paused=lambda: None)
+        return
+    with pytest.raises(q.QualificationError) as error:
+        driver.refuse_in_order(_ORDERED_CALLS, on_paused=lambda: None)
+    assert _code(error) is Reason.GATE_FAILED
+
+
 def test_an_excluded_tool_refusal_has_its_own_closed_class() -> None:
     result = {
         "isError": True,
@@ -2492,7 +2618,7 @@ class FakeCore:
 
     def mutate(self, tool: str, arguments: dict[str, Any]) -> tuple[str, Any]:
         if self.revoked and self.tamper != "revocation_ignored":
-            return "not_callable", None
+            return "credential_missing", None
         key, payload = arguments["idempotency_key"], arguments["input"]
         if key not in self.keyed:
             result = self._create(tool, payload)
@@ -2540,7 +2666,7 @@ class FakeCore:
         if tool in MUTATIONS:
             return self.mutate(tool, arguments)
         if self.revoked and self.tamper != "revocation_ignored" and tool != "workspace_inspect":
-            return "not_callable", None
+            return "credential_missing", None
         return "none", self.read(tool, arguments)
 
 
@@ -2683,7 +2809,7 @@ def _journey(
                 log.append(f"call:{name}")
                 requests.append((name, q.arguments_digest(args)))
                 refusal, structured = core.serve(name, args)
-                if index == 1 and core.tamper == "wrong_post_revoke_refusal" and refusal == "not_callable":
+                if index == 1 and core.tamper == "wrong_post_revoke_refusal" and refusal == "credential_missing":
                     refusal = "idempotency_conflict"
                 outcomes.append((name, refusal, q.canonical_result_digest(structured)))
         if not self.healthy():
@@ -2800,7 +2926,7 @@ def test_a_journey_that_violates_one_observation_is_refused(
     "tamper",
     [
         # Each admitted session must be served exactly the planned calls, in order,
-        # with the planned digests, each refused as not_callable.
+        # with the planned digests, each refused as credential_missing.
         "skipped_post_revoke",
         "reordered_post_revoke",
         "duplicated_post_revoke",

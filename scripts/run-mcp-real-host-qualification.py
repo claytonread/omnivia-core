@@ -962,7 +962,7 @@ def _is_names(value: object) -> bool:
 #: What a failed call was refused for.  Only these closed classes are observed;
 #: the refusal text itself is classified in the relay and never kept.
 REFUSALS: Final = frozenset(
-    {"none", "idempotency_conflict", "not_callable", "not_exposed", "other"}
+    {"none", "idempotency_conflict", "not_callable", "not_exposed", "credential_missing", "other"}
 )
 
 
@@ -1036,7 +1036,10 @@ def refusal_class(result: object) -> str:
         return "idempotency_conflict"
     if "isnotatoolthisserverexposes" in text:
         return "not_exposed"
-    if "couldnotbecalled" in text:  # "could not be called": the revoked principal's refusal
+    # The fixed sanitized message of the installed-credential store: proof the credential is gone.
+    if "thisinstallationholdsnocredentialforthatreference" in text:
+        return "credential_missing"
+    if "couldnotbecalled" in text:  # "could not be called": a generic refusal, not proof of revocation
         return "not_callable"
     return "other"
 
@@ -1289,7 +1292,11 @@ class _Relay:
         else:
             failed = not ok or (isinstance(result, dict) and result.get("isError") is True)
             structured = result.get("structuredContent") if isinstance(result, dict) else None
-            if not failed and not isinstance(structured, dict):
+            if failed:
+                # A failed call must not carry the field at all, whatever its value.
+                if isinstance(result, dict) and "structuredContent" in result:
+                    raise _Violation("invalid_tool_result")
+            elif not isinstance(structured, dict):
                 raise _Violation("invalid_tool_result")
             self.observer.emit(
                 "tool_call_response",
@@ -2577,7 +2584,7 @@ class HostDriver:
         *,
         on_paused: Callable[[], None],
     ) -> HostRunResult:
-        """One admitted session makes ``calls`` in order; each must be refused as not_callable.
+        """One admitted session makes ``calls`` in order; each must be refused as credential_missing.
 
         The first request is paused until ``on_paused`` has run (the revocation), then
         released.  No later call is retried in a fresh process: a process started after
@@ -2599,7 +2606,7 @@ class HostDriver:
             or not summary.paused
             or summary.initialized_after_pause
             or observed != expected
-            or refused != [(tool, "not_callable") for tool, _ in calls]
+            or refused != [(tool, "credential_missing") for tool, _ in calls]
             or any(tool in summary.succeeded for tool, _ in calls)
         ):
             self.progress("host_sequence_mismatch")
