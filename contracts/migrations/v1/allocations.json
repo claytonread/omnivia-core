@@ -513,6 +513,17 @@
       "sha256": "44206c9e3460b837eba580e6103e5b600ba597c2c75106f57ec8d09d6aaeffe3",
       "introduced_commit": "2ed5e6a67763be23629eaaf392db70fd2b526084",
       "accepted_commit": null
+    },
+    {
+      "number": 64,
+      "filename": "0064_managed_skills_registry.sql",
+      "owner": "Agent Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 63,
+      "sha256": "fd3169622556f27ddfee9be00be25ea7125afa1301a24fbb3d80e25065797f8b",
+      "introduced_commit": null,
+      "accepted_commit": null
     }
   ]
 }
