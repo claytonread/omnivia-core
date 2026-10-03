@@ -2,6 +2,15 @@
 
 **Date:** 2026-09-27 · **Spec:** `SPEC-CORE-ENGMEM-001` v1.0 (2026-09-25) · **Plan:** `omnivia-core-engineering-memory-implementation-plan-2026-09-26.md`
 
+## Final closeout (verified 2026-10-04)
+
+The Engineering Memory implementation is complete on `main` through PR #169
+(merge `8863c7d6`). The final migration head is 0063. Acceptance criteria
+AC-001 through AC-064 are verified in
+`engineering-memory-acceptance-evidence-2026-10-03.md`. The delivery sequence and
+PR-H2 sections below preserve the implementation history; later closeout evidence
+and the committed format-2 qualification reports supersede their branch-era status.
+
 ## Delivery sequence
 
 | PR | Scope | Spec packages |
@@ -15,9 +24,9 @@
 | #135 | Immutable working-tree source capture | P0-01 (capture foundation) |
 | #134 (merged) | Installed CLI search, expansion and context-pack qualification | P0-07 (consumer proof) |
 | #136 (merged) | Trusted repository/checkout registration | P0-01 (registration) |
-| #137 (this PR, open) | CLI continuity proof, migration/restore evidence, diagnostic scale measurements, SQL frontier chunking and query-bounded `current_safe` search | P0-07 (qualification work) |
+| #137 (merged; historical milestone) | CLI continuity proof, migration/restore evidence, diagnostic scale measurements, SQL frontier chunking and query-bounded `current_safe` search | P0-07 (qualification work) |
 
-## What exists on `main` today
+## Historical `main` snapshot at PR #137
 
 - **Ten engineering operations** in the frozen catalogue: `continuity.session.register`, `continuity.checkpoint.append`, `continuity.session.close`, `continuity.handoff.read`, `engineering.search`, `engineering.expand`, `engineering.context.build`, `context.priority.set`, `engineering.review.record`, `engineering.source.record`.
 - **Seven migrations** (0047–0053): repository identity, continuity, applicability, source coverage, dependency carry, dependency lookup, preview projection.
@@ -67,7 +76,7 @@ Lane 10 000 observations (`benchmarks/reports/engineering-memory/lane-10000.json
 | `engineering.context.build` (investigate, 10 samples) | 29.3 s | 31.2 s | 31.2 s | over target by ~30× |
 | `continuity.checkpoint.append` (100 samples) | 1.10 ms | 1.65 ms | 10.5 ms | inside target |
 
-The scaling curve confirms the 10k finding: the preview path scores the full admitted candidate set in Python per query (no SQL-side top-k), so search latency grows roughly linearly with corpus size, and pack construction — which hydrates, renders and checksums over the same frontier — grows super-linearly past it (2.96 s at 10k → 29.3 s at 100k). The chunked folds answered correctly at every scale, so these are **latency** gaps, not correctness gaps: §20.3's resource-correctness gates held (bounded hydration, no cap disabled, no ACL shortcut). The identified production follow-up remains §11.3's SQL-side top-k / permission-partitioned scoring lane; until it lands, a 100k-scale supported-configuration claim would be dishonest, and the checkpoint path (p95 1.65 ms against a 200 ms target) is already production-shaped.
+The scaling curve confirmed the 10k finding: the preview path scored the full admitted candidate set in Python per query (no SQL-side top-k), so search latency grew roughly linearly with corpus size, and pack construction — which hydrated, rendered and checksummed over the same frontier — grew super-linearly past it (2.96 s at 10k → 29.3 s at 100k). The chunked folds answered correctly at every scale, so these were **latency** gaps, not correctness gaps: §20.3's resource-correctness gates held (bounded hydration, no cap disabled, no ACL shortcut). This run identified §11.3's SQL-side top-k / permission-partitioned scoring lane as the production follow-up; the format-2 update below records the later query-narrowing implementation and its current measurements.
 
 **Update (format-2 qualification, 2026-10-03 UTC).** Search and pack build now narrow the record-id space by query in SQLite (identity only, before authorization) and rank only authorised matches. The committed format-2 10k lane passed every advisory warm target (worst search p95 195.774 ms, context p95 251.832 ms, checkpoint p95 20.699 ms). The format-2 100k reference lane completed end to end at source `f3de24f7`: worst search p95 2,505.244 ms and context p95 3,801.514 ms missed their 300 ms and 1,000 ms targets; checkpoint p95 21.636 ms passed. The remaining scan cost is measured and explicit.
 
@@ -75,11 +84,12 @@ These are measurements, not release guarantees. The older tables above remain fo
 
 ## Honest limitations (carried into the release note)
 
-- Lease expiry and binding-generation fencing are recorded but not enforced (§7.3).
-- Single-principal Personal mode only; no validated organisational isolation (§19.4).
+- Lease expiry and binding generation are enforced at settlement. Cross-principal continuity sharing remains outside the supported v1 Personal-mode profile (§19.4).
 - Applicability is dependency-qualified against recorded source streams. Core has a bounded local polling producer, durable-seal crash recovery, restart-persistent scheduling fairness and indexed pending lookup. Platform filesystem notifications and Dev semantic parser/indexer adapters remain external integration work.
-- Context packs do not yet emit known-conflict warnings; conflict discovery and governed reconciliation are incomplete release work.
+- Context packs emit structural conflict warnings, including `unresolved_overlap`, and governed endpoint checks are enforced.
 - Semantic assessment (P2-08) is deliberately not implemented; it waits on the owner gates G-2 (Laya distribution pin) and G-3 (signed-manifest trust anchor).
+- The v1 renderer uses a deterministic named-tokenizer count that is not a host-model tokenizer. The negotiated byte-only v2 representation omits token and tokenizer fields, and unsupported exact-tokenizer requests fail closed before storage.
+- Whole-file digest selectors are supported. Other stored selector shapes fail closed in the v1 profile.
 - Performance numbers are lane measurements on the development machine that produced them, not qualified release guarantees (§20.2).
 
 ## Owner gates still open
