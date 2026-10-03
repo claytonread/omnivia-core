@@ -460,9 +460,10 @@ Claude Code 2.1.288, Codex CLI 0.146.0 and macOS 27.0 (build 26A428, arm64)
 matrix that the items below refer to. The addendum does not mark any item green.
 
 The installed-wheel work is complete and retained above. The real-host harness
-and its closed schema now exist, and a diagnostic Codex CLI 0.146.0 run against
-the clean `f576ef3d` candidate passed I-1 through I-8. That run validates the
-harness but is not final exact-tip acceptance. Claude Code 2.1.288 currently
+and its closed schema now exist, and Codex CLI 0.146.0 passed I-1 through I-8
+against the clean `4ec9fa17c447c81e58056d99e703b587fcf0afa3` candidate. The
+later documentation commit makes that result historical diagnostic evidence;
+it is not final exact-tip acceptance. Claude Code 2.1.288 currently
 fails the isolated authentication preflight because its operator subscription
 login is keychain-bound and the copied credential is not portable. Phase 8
 still owns:

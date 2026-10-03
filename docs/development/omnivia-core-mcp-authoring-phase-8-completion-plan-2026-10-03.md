@@ -239,11 +239,12 @@ focused lifecycle suite and 100 independent repetitions of the partial-client
 case pass after the repair.
 
 WP3's executable harness and closed record schema are implemented and covered
-by deterministic tests. Against the clean `f576ef3d` diagnostic candidate,
+by deterministic tests. Against the clean
+`4ec9fa17c447c81e58056d99e703b587fcf0afa3` candidate,
 Codex CLI 0.146.0 completed I-1 through I-8: both inventories, authoring,
 import observation, response interruption and replay, restart, protocol-only
 stdout, and live revocation all passed. This is diagnostic evidence for the
-harness, not final exact-tip acceptance.
+harness and that revision, not final exact-tip acceptance at the later tip.
 
 Claude Code 2.1.288 is installed and the operator session is authenticated, but
 that subscription login is keychain-bound: copying `.credentials.json` into an
@@ -287,7 +288,8 @@ Both hosts must be rerun at the new frozen tip.
   isolated installs, and 59 Swift tests.
 - real-host harness/schema focused suite: 219 focused tests (earlier checkpoint:
   194 passed, with targeted Ruff and strict mypy passing);
-- Codex CLI diagnostic real-host journey at `f576ef3d`: pass;
+- Codex CLI real-host journey at clean `4ec9fa17`: pass; historical after the
+  later documentation commit, so not final exact-tip acceptance;
 - Claude Code isolated authentication preflight: correctly fails closed as
   `authentication_unavailable`.
 

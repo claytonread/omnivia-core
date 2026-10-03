@@ -649,7 +649,7 @@ def test_a_mutation_wrapper_refuses_what_it_promises_to_refuse() -> None:
     jsonschema = pytest.importorskip("jsonschema")
     wrapper = manifest.input_schema(get_operation_metadata("import.start"))
     validator = jsonschema.Draft202012Validator(wrapper)
-    for invalid in (
+    invalid_inputs: tuple[dict[str, object], ...] = (
         {},  # neither property
         {"input": {}},  # no key
         {"idempotency_key": "import-001"},  # no input
@@ -660,7 +660,8 @@ def test_a_mutation_wrapper_refuses_what_it_promises_to_refuse() -> None:
         # `ImportStartInput` requires `source`; reaching that refusal means the
         # hoisted `$defs` closure resolved from the wrapper's root.
         {"input": {}, "idempotency_key": "import-001"},
-    ):
+    )
+    for invalid in invalid_inputs:
         assert not validator.is_valid(invalid), invalid
 
 

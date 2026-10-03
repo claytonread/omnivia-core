@@ -274,7 +274,11 @@ def test_every_pytest_node_the_record_names_resolves_to_a_real_test() -> None:
         scope = _scope(ast.parse(source, filename=str(module)).body)
         for segment in path[:-1]:
             assert segment in scope, node_id
-            scope = _scope(scope[segment].body)  # type: ignore[union-attr]
+            parent = scope[segment]
+            assert isinstance(
+                parent, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ), node_id
+            scope = _scope(parent.body)
         leaf, _, parameter = path[-1].partition("[")
         assert leaf in scope, node_id
         if parameter:
@@ -419,10 +423,16 @@ def _exposed(name: str) -> list[dict[str, str]]:
     """Each ``ExposedOperation(...)`` literal in one manifest tuple, in order."""
     tuple_value = _assigned(name)
     assert isinstance(tuple_value, ast.Tuple), name
-    rows = []
+    rows: list[dict[str, str]] = []
     for call in tuple_value.elts:
         assert isinstance(call, ast.Call), name
-        rows.append({keyword.arg: ast.literal_eval(keyword.value) for keyword in call.keywords})
+        row: dict[str, str] = {}
+        for keyword in call.keywords:
+            assert keyword.arg is not None, name
+            value = ast.literal_eval(keyword.value)
+            assert isinstance(value, str), name
+            row[keyword.arg] = value
+        rows.append(row)
     return rows
 
 
@@ -445,7 +455,9 @@ def _cells(text: str) -> list[list[str]]:
 
 
 def _side_effect(operation: str) -> str:
-    return CATALOGUE[operation]["scope"]["side_effect"]
+    value = CATALOGUE[operation]["scope"]["side_effect"]
+    assert isinstance(value, str), operation
+    return value
 
 
 def test_the_restricted_and_authoring_inventories_are_the_reviewed_thirteen_and_eighteen() -> None:
@@ -490,6 +502,11 @@ def test_the_side_effecting_operations_are_exactly_the_admitted_mutations() -> N
         "import.start",
         "decision.evaluate",
     }
+
+
+def test_memory_create_is_documented_as_proposed_only() -> None:
+    assert "proposed-only governed memory record" in ADDENDUM
+    assert "never creates accepted canonical knowledge" in ADDENDUM
 
 
 def test_every_tool_is_classified_from_the_catalogue_in_manifest_order() -> None:

@@ -70,7 +70,8 @@ Items 1 to 6 are the six v1.3 read tools, with their v1.3 bindings unchanged. It
 
 The authoring profile is the thirteen restricted tools, in the order above, followed by these five, in manifest order:
 
-14. `memory_create` (`memory.create`): a mutation that creates a governed memory record.
+14. `memory_create` (`memory.create`): a mutation that creates an evidence-backed,
+    proposed-only governed memory record. It never creates accepted canonical knowledge.
 15. `evidence_capture` (`evidence.capture`): a mutation that captures one submitted document as an L0 evidence artifact.
 16. `import_start` (`import.start`): a mutation that starts an import. It always answers with a job.
 17. `job_get` (`job.get`): a read that observes one job.
@@ -175,7 +176,13 @@ A catalogue operation that is added but not exposed changes no inventory. It is 
 | I-7 | Prove protocol-only stdout, host restart, Core service restart and continued observation | pending-phase-8 | pending-phase-8 |
 | I-8 | Revoke authoring and prove that writes fail closed under the documented restart model | pending-phase-8 | pending-phase-8 |
 
-Two points qualify the table. First, the Codex CLI 0.146.0 run against candidate `f576ef3d` was diagnostic evidence for the harness, not exact-tip acceptance. Second, no Claude Code real-host record exists. Its isolated authentication requires a portable token-only file, which is an external input.
+Two points qualify the table. First, Codex CLI 0.146.0 passed I-1 through I-8
+against the clean `4ec9fa17c447c81e58056d99e703b587fcf0afa3` candidate. That
+record validated the real-host lane at that revision, but this addendum creates
+a later tip, so the result is historical diagnostic evidence rather than final
+exact-tip acceptance. Second, no Claude Code real-host record exists. Its
+isolated authentication requires a portable token-only file, which is an
+external input.
 
 Real-host acceptance requires the exact frozen tip, with schema-validated records retained outside the source tree and attached to acceptance evidence. The record must name the source commit and wheel digests.
 
