@@ -177,6 +177,40 @@ state and validate the closed redacted record. Prompts and model responses are
 ephemeral and are not retained.
 
 As of the Phase 8 implementation start, the approved replacement host baseline
-is Claude Code `2.1.286`, Codex CLI `0.146.0`, and macOS `27.0` build `26A428`
+is Claude Code `2.1.288`, Codex CLI `0.146.0`, and macOS `27.0` build `26A428`
 on arm64. These values qualify nothing by themselves; they become evidence only
 after the corresponding real-host run passes at the frozen candidate commit.
+
+The executable harness is `scripts/run-mcp-real-host-qualification.py`. A run
+names one host, its installed binary, one clean candidate directory, one
+explicit authentication file, the closed schema, and an output record:
+
+```bash
+.venv/bin/python scripts/run-mcp-real-host-qualification.py \
+  --host codex-cli \
+  --host-binary /absolute/path/to/codex \
+  --candidate /absolute/path/to/candidate \
+  --auth-file /absolute/path/to/auth.json \
+  --schema docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json \
+  --output /absolute/path/to/codex-record.json
+```
+
+The same command uses `--host claude-code` for Claude Code. Before Core starts,
+the harness copies the named credential by bytes into the isolated host home
+and asks that host's own authentication-status command to prove the copy is
+usable. A credential that is present but bound to the operator's keychain or
+normal configuration fails as `authentication_unavailable`; the harness does
+not weaken isolation or point the run at the operator's normal host state.
+
+Success and failure records are validated against the closed schema before an
+atomic write. Early failures use the schema's minimal failure branch; once the
+candidate, OS and host identities are verified, failures also carry the fixed
+profiles and independently observed gate booleans. Raw host streams, prompts,
+model text, identifiers, paths and credentials have no record field.
+
+An exact-tip host record is retained outside the candidate source tree and is
+keyed by its `source.revision` and wheel digests. Committing that record into
+the same tree would change the commit it claims to qualify, creating a
+self-reference. The pull-request or release acceptance evidence therefore
+attaches the schema-validated records to the already-frozen commit instead of
+adding a post-qualification source commit.

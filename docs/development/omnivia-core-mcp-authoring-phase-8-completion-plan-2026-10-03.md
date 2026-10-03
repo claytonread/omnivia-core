@@ -5,7 +5,7 @@
 **Owner:** Codex (orchestration, review, acceptance); Claude Code (bounded implementation)
 **Target repository:** `omnivia-core`
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
-**Release-candidate base:** `7406badb33e00c4d753331d767a3cac1c2bb52ef`
+**Implementation checkpoint:** `6ad05f2d525770992b3f05b88fbfdc7bb0007d51`
 
 ## 1. Objective
 
@@ -58,7 +58,7 @@ At execution start the approved replacement baseline is:
 
 | Component | Qualification value |
 |---|---|
-| Claude Code | `2.1.286` |
+| Claude Code | `2.1.288` |
 | Codex CLI | `0.146.0` |
 | macOS | `27.0` build `26A428`, arm64 |
 | MCP SDK | `mcp==2.0.0`, `mcp-types==2.0.0` from `scripts/mcp-wheelhouse-constraints.txt` |
@@ -119,7 +119,7 @@ state and the redacted result schema.
 
 ### WP4 — Produce a redacted qualification record
 
-The committed record may contain only:
+The retained record may contain only:
 
 - final commit and artifact SHA-256 digests;
 - OS version, build, and architecture;
@@ -134,13 +134,19 @@ workspace or principal identifiers, submitted content, prompts, transcripts,
 endpoints, process identifiers, raw stdout/stderr, or model responses. A schema
 validator and negative tests must enforce the closed field set.
 
+The record is attached to acceptance evidence outside the candidate source
+tree. It must name the frozen source commit and wheel digests. Committing it
+into that same tree would change the commit it names, so a post-qualification
+record commit is not accepted as exact-tip evidence.
+
 ### WP5 — Exact-tip acceptance
 
 At one frozen commit:
 
 1. build the wheelhouse and install with the reviewed pins;
 2. run restricted and authoring installed-wheel journeys;
-3. run both real-host qualification lanes;
+3. run both real-host qualification lanes and attach their schema-validated
+   records to that frozen tip without another source commit;
 4. run focused MCP, CLI, runtime, security, recovery, and redaction tests;
 5. run `./scripts/preflight`;
 6. push a pull request and obtain the required GitHub checks at that exact tip:
@@ -229,10 +235,24 @@ now shuts down the stream before close and uses a bounded loopback wake-up. The
 focused lifecycle suite and 100 independent repetitions of the partial-client
 case pass after the repair.
 
-WP3, the real-host part of WP5, and final WP6 closeout remain open. Codex CLI is
-authenticated and available for its isolated lane. Claude Code 2.1.286 is
-installed but its local authentication state is logged out, so its lane cannot
-start until the operator authenticates that host.
+WP3's executable harness and closed record schema are implemented and covered
+by deterministic tests. Against the clean `f576ef3d` diagnostic candidate,
+Codex CLI 0.146.0 completed I-1 through I-8: both inventories, authoring,
+import observation, response interruption and replay, restart, protocol-only
+stdout, and live revocation all passed. This is diagnostic evidence for the
+harness, not final exact-tip acceptance.
+
+Claude Code 2.1.288 is installed and the operator session is authenticated, but
+that subscription login is keychain-bound: copying `.credentials.json` into an
+isolated home makes Claude's own `auth status` report logged out. The harness
+now fails this condition before Core starts with
+`authentication_unavailable`. The final Claude lane requires a portable,
+scoped credential that works in the isolated home; using the operator's normal
+home/configuration is not an acceptable workaround.
+
+WP3 remains open for the final Claude record and for rerunning both hosts at the
+frozen final tip. The real-host part of WP5 and final WP6 closeout also remain
+open.
 
 ### Checks
 
@@ -245,6 +265,11 @@ start until the operator authenticates that host.
 - full `PYTHON=.venv/bin/python ./scripts/preflight`: pass, including 28,296
   Python tests, 23 benchmark tests, Ruff, strict mypy, all five wheel builds and
   isolated installs, and 59 Swift tests.
+- real-host harness/schema focused suite: 194 passed; targeted Ruff and strict
+  mypy pass;
+- Codex CLI diagnostic real-host journey at `f576ef3d`: pass;
+- Claude Code isolated authentication preflight: correctly fails closed as
+  `authentication_unavailable`.
 
 ### Lessons Learned
 
@@ -254,15 +279,23 @@ An isolated Git worktree also needs its own editable virtual environment: using
 another checkout's editable environment makes source-versus-wheel comparison
 read the wrong branch. Local IPC shutdown must actively wake both a blocked
 frame read and a blocked accept rather than race a timeout boundary.
+Core's exclusive database ownership also applies to independent qualification:
+durable SQLite inspection must occur across a real Core shutdown, followed by
+a fresh service for host and owner observations. Host subscription credentials
+may be keychain-bound even when a credential file exists, so presence is not
+authentication proof; the isolated host must verify its own login before Core
+starts. Exact-tip host records cannot be committed into the commit they name,
+so acceptance must attach them externally to the frozen revision.
 
 ### Improvements Needed
 
-The Claude delegation and real-host lane need a valid Claude Code login. Keep
-the separate Windows named-pipe hardening follow-up from section 9.
+The Claude real-host lane needs a portable scoped credential, not merely a
+valid operator login. Keep the separate Windows named-pipe hardening follow-up
+from section 9.
 
 ### Next Step
 
-Commit the preflight-green implementation, build a clean exact candidate, then
-execute the isolated Codex CLI and Claude Code real-host lanes. Retain only the
-closed redacted host records, update I-1 through I-8 from direct evidence, and
-open the closeout pull request for the required hosted checks.
+Obtain a portable Claude credential for the isolated lane. Then commit and
+rebase the implementation, build one clean exact candidate, rerun both hosts,
+retain the closed redacted records outside the source tree, run full preflight,
+and open the closeout pull request for the required hosted checks.

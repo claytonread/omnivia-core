@@ -61,7 +61,7 @@ these four prove different things, and the fourth is a human reading code.
 |---|---|---|
 | `AUTO` | An automated test in this source tree, run by `pytest` against the working copy and the developer virtual environment. | Nothing about the built wheels, the pinned SDK, or an installed host. |
 | `WHEEL` | Offline installed-wheel qualification: `scripts/check-package-builds.sh` installs each distribution into an isolated environment with `--no-index --only-binary=:all: --find-links`, from a wheelhouse staged at the reviewed pins in `scripts/mcp-wheelhouse-constraints.txt`. | It is not an offline *acquisition* proof. That script's Phase 1 reaches the configured package index on purpose and says so in its own header; only Phase 2, the installation, is index-free. |
-| `HOST` | A recorded session in which an approved installed host binary -- currently Claude Code 2.1.286 or Codex CLI 0.146.0 -- launched the server and drove it. | Nothing in this repository is one. See section 4. |
+| `HOST` | A recorded session in which an approved installed host binary -- currently Claude Code 2.1.288 or Codex CLI 0.146.0 -- launched the server and drove it. | Harness tests and diagnostic runs are not final exact-tip host acceptance. See sections 4 and 9. |
 | `REVIEW` | A human read of named source, recorded in section 8 of this document. | It is not a test and does not re-run. |
 
 ---
@@ -133,7 +133,7 @@ Each group is one command. `python` below is the repository's `.venv/bin/python`
 | G8 this record | the traceability machine check | `.venv/bin/python -m pytest tests/service_conformance/test_mcp_authoring_traceability.py -q` |
 | G9 packaging | pinned offline wheelhouse install -- Phase 8 | `PYTHON=.venv/bin/python scripts/check-package-builds.sh` |
 | G10 repository gate | everything the required check runs | `./scripts/preflight` |
-| G11 real host | Phase 8 -- no command exists in this repository yet | see section 9 |
+| G11 real host | installed Claude Code or Codex CLI against one exact candidate | `.venv/bin/python scripts/run-mcp-real-host-qualification.py --host <claude-code|codex-cli> --host-binary <absolute-path> --candidate <candidate-directory> --auth-file <portable-auth-file> --schema docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json --output <external-record-path>` |
 
 ---
 
@@ -450,10 +450,16 @@ What closed the two review rows that were `partial`:
 
 ## 9. What Phase 8 still owns
 
-The installed-wheel work is complete and retained above. Phase 8 still owns:
+The installed-wheel work is complete and retained above. The real-host harness
+and its closed schema now exist, and a diagnostic Codex CLI 0.146.0 run against
+the clean `f576ef3d` candidate passed I-1 through I-8. That run validates the
+harness but is not final exact-tip acceptance. Claude Code 2.1.288 currently
+fails the isolated authentication preflight because its operator subscription
+login is keychain-bound and the copied credential is not portable. Phase 8
+still owns:
 
 1. Run the empty-workspace and import journeys against the approved replacement
-   baseline: Claude Code 2.1.286, Codex CLI 0.146.0, and macOS 27.0 build
+   baseline: Claude Code 2.1.288, Codex CLI 0.146.0, and macOS 27.0 build
    26A428 on arm64; retain a
    redacted record of discovery, capture and search, proposed-memory creation,
    import observation, restart and revocation. (I-1 through I-8, and B-12)
@@ -463,3 +469,7 @@ The installed-wheel work is complete and retained above. Phase 8 still owns:
 3. Run the clean-tip wheel build, full preflight and required hosted checks at
    the final release-candidate commit; the retained local receipt is diagnostic
    evidence, not the final exact-tip release sign-off.
+4. Retain each schema-validated host record outside the frozen source tree and
+   attach it to acceptance evidence keyed by its source revision and wheel
+   digests. A record commit after the run would change the revision it claims
+   to qualify and is not exact-tip evidence.

@@ -1,0 +1,2724 @@
+#!/usr/bin/env python3
+"""Qualify installed OmniVia Core MCP authoring through a real supported host.
+
+The harness imports no OmniVia package.  It validates and installs a clean
+candidate offline, isolates the selected host's configuration and credentials,
+observes MCP JSON-RPC through a transparent fail-closed proxy, independently
+checks durable Core state, and retains only the closed redacted result record.
+Every public failure is a stable reason code; command output, model text,
+prompts, paths, credentials and private run identifiers never reach the record.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import contextlib
+import enum
+import hashlib
+import importlib.util
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import tomllib
+import venv
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any, Final
+
+SCRIPT_DIR: Final = Path(__file__).resolve().parent
+AUTHORING_SCRIPT: Final = SCRIPT_DIR / "run-mcp-authoring-qualification.py"
+RECORD_FORMAT: Final = "omnivia.mcp-real-host-qualification.v1"
+PROVENANCE_FORMAT: Final = "omnivia.standard-build-provenance.v1"
+MANIFEST_FORMAT: Final = "omnivia.standard-release-manifest.v1"
+SERVER_KEY: Final = "omnivia-core"
+SUPPORTED_SYSTEM: Final = "darwin"
+SUPPORTED_MACHINE: Final = "arm64"
+OS_PRODUCT: Final = "macOS"
+FIRST_PARTY: Final = (
+    "omnivia-core",
+    "omnivia-core-runtime",
+    "omnivia-core-client",
+    "omnivia-core-cli",
+    "omnivia-core-mcp",
+)
+SDK_PINS: Final = {"mcp": "2.0.0", "mcp-types": "2.0.0"}
+HOST_VERSIONS: Final = {"claude-code": "2.1.288", "codex-cli": "0.146.0"}
+SCRIPT_PATH: Final = Path(__file__).resolve()
+RESTRICTED_TOOL_COUNT: Final = 13
+AUTHORING_TOOL_COUNT: Final = 18
+QUALIFICATION_TOKEN: Final = "omnivia-real-host-qualification-v1"
+DIRECT_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-direct-source"
+INTERRUPTED_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-interrupted-source"
+STAGED_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-staged-source"
+CAPTURE_KEY: Final = f"{QUALIFICATION_TOKEN}-capture-1"
+MEMORY_KEY: Final = f"{QUALIFICATION_TOKEN}-memory-1"
+IMPORT_KEY: Final = f"{QUALIFICATION_TOKEN}-import-1"
+INTERRUPTED_KEY: Final = f"{QUALIFICATION_TOKEN}-interrupted-1"
+HOST_TIMEOUT: Final = 300.0
+CORE_TIMEOUT: Final = 60.0
+SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+#: The gates of requirements §13.I.  Every subcheck is an independently
+#: observed boolean; the ledger starts every one closed.
+GATES: Final = {
+    "i1": ("candidate_installed", "entrypoints_resolved"),
+    "i2": ("restricted_configured", "authoring_configured"),
+    "i3": ("initialize_verified", "restricted_tools_exact", "authoring_tools_exact"),
+    "i4": ("capture_and_search", "proposed_memory", "default_invisible", "candidate_visible"),
+    "i5": ("staged_import", "job_observed"),
+    "i6": (
+        "commit_observed_before_response",
+        "host_stopped_before_response",
+        "same_key_replayed",
+        "single_durable_effect",
+        "changed_input_conflict",
+    ),
+    "i7": ("stdout_protocol_only", "host_restart_observed", "core_restart_observed"),
+    "i8": ("authoring_revoked", "mutation_fail_closed", "core_healthy"),
+}
+
+
+class ReasonCode(enum.Enum):
+    """The closed vocabulary of outcomes; the only diagnostic a run may emit."""
+
+    NONE = "none"
+    CANDIDATE_INVALID = "candidate_invalid"
+    CANDIDATE_DIRTY = "candidate_dirty"
+    WHEEL_DIGEST_MISMATCH = "wheel_digest_mismatch"
+    SDK_PIN_MISMATCH = "sdk_pin_mismatch"
+    PLATFORM_UNSUPPORTED = "platform_unsupported"
+    HOST_VERSION_UNSUPPORTED = "host_version_unsupported"
+    HOST_BINARY_UNAVAILABLE = "host_binary_unavailable"
+    AUTHENTICATION_UNAVAILABLE = "authentication_unavailable"
+    LIVE_RUNNER_UNAVAILABLE = "live_runner_unavailable"
+    HOST_TIMEOUT = "host_timeout"
+    HOST_OUTPUT_AMBIGUOUS = "host_output_ambiguous"
+    INTERRUPTION_BOUNDARY_UNOBSERVABLE = "interruption_boundary_unobservable"
+    MODEL_EVIDENCE_REJECTED = "model_evidence_rejected"
+    GATE_FAILED = "gate_failed"
+    RECORD_INVALID = "record_invalid"
+    INSTALL_FAILED = "install_failed"
+    ENTRYPOINT_UNRESOLVED = "entrypoint_unresolved"
+    PROTOCOL_VIOLATION = "protocol_violation"
+    HOST_LAUNCH_FAILED = "host_launch_failed"
+
+
+class QualificationError(Exception):
+    """A fail-closed refusal that carries a reason code and no free text."""
+
+    def __init__(self, code: ReasonCode) -> None:
+        super().__init__(code.value)
+        self.code = code
+
+
+# --- inventories -----------------------------------------------------------
+
+
+def _authoring_tools() -> tuple[str, ...]:
+    """Read the accepted authoring inventory without executing its module."""
+    tree = ast.parse(AUTHORING_SCRIPT.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "AUTHORING_TOOLS"
+            and node.value is not None
+        ):
+            value = ast.literal_eval(node.value)
+            if isinstance(value, tuple) and all(isinstance(name, str) for name in value):
+                return value
+    raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
+AUTHORING_TOOLS: Final = _authoring_tools()
+#: The authoring profile is the restricted profile plus five additions, in the
+#: manifest's exposure order.
+RESTRICTED_TOOLS: Final = AUTHORING_TOOLS[:RESTRICTED_TOOL_COUNT]
+PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_TOOLS}
+SAFE_AUXILIARY_TOOLS: Final = frozenset(
+    {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
+)
+
+# --- candidate, platform and pin validation --------------------------------
+
+_REVISION = re.compile(r"[0-9a-f]{40}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _normalized(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _mapping(value: object, code: ReasonCode = ReasonCode.CANDIDATE_INVALID) -> Mapping[str, Any]:
+    if not isinstance(value, dict):
+        raise QualificationError(code)
+    return value
+
+
+def require_clean_source(provenance: Mapping[str, Any]) -> str:
+    """Return the exact clean source revision or refuse."""
+    if provenance.get("format") != PROVENANCE_FORMAT:
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    source = _mapping(provenance.get("source"))
+    dirty = source.get("dirty")
+    if not isinstance(dirty, bool):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    if dirty:
+        raise QualificationError(ReasonCode.CANDIDATE_DIRTY)
+    revision = source.get("revision")
+    if not isinstance(revision, str) or not _REVISION.fullmatch(revision):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    return revision
+
+
+def require_platform(system: object, machine: object) -> None:
+    """Accept only darwin/arm64."""
+    if system != SUPPORTED_SYSTEM or machine != SUPPORTED_MACHINE:
+        raise QualificationError(ReasonCode.PLATFORM_UNSUPPORTED)
+
+
+def require_sdk_pins(wheels: Sequence[object]) -> None:
+    """Require exactly one wheel for each pinned SDK package, at its pin."""
+    versions: dict[str, list[object]] = {name: [] for name in SDK_PINS}
+    for entry in wheels:
+        item = _mapping(entry)
+        name = item.get("name")
+        if isinstance(name, str) and _normalized(name) in versions:
+            versions[_normalized(name)].append(item.get("version"))
+    if any(found != [pin] for found, pin in zip(versions.values(), SDK_PINS.values(), strict=True)):
+        raise QualificationError(ReasonCode.SDK_PIN_MISMATCH)
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verified_wheels(
+    wheels: Sequence[object], candidate: Path
+) -> dict[str, tuple[Path, str]]:
+    """Return each first-party wheel's path and SHA-256 after matching file to manifest."""
+    entries: dict[str, list[Mapping[str, Any]]] = {name: [] for name in FIRST_PARTY}
+    for entry in wheels:
+        item = _mapping(entry)
+        name = item.get("name")
+        normalized = _normalized(name) if isinstance(name, str) else ""
+        if item.get("first_party") is True or normalized in entries:
+            if normalized not in entries or item.get("first_party") is not True:
+                raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+            entries[normalized].append(item)
+    verified: dict[str, tuple[Path, str]] = {}
+    for name, found in entries.items():
+        if len(found) != 1:
+            raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+        relative = found[0].get("path")
+        expected = found[0].get("sha256")
+        if not isinstance(relative, str) or not isinstance(expected, str):
+            raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+        parts = PurePosixPath(relative).parts
+        if len(parts) != 2 or parts[0] != "wheels" or parts[1] in {"", ".", ".."}:
+            raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+        path = candidate / "wheels" / parts[1]
+        if path.is_symlink() or not path.is_file():
+            raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+        actual = _file_digest(path)
+        if not _SHA256.fullmatch(expected) or actual != expected:
+            raise QualificationError(ReasonCode.WHEEL_DIGEST_MISMATCH)
+        verified[name] = (path, actual)
+    return verified
+
+
+def verify_first_party_wheels(
+    wheels: Sequence[object], candidate: Path
+) -> dict[str, str]:
+    """Return each first-party wheel's SHA-256 after matching file to manifest."""
+    return {name: digest for name, (_, digest) in _verified_wheels(wheels, candidate).items()}
+
+
+@dataclass(frozen=True)
+class Candidate:
+    revision: str
+    wheels: Mapping[str, str]
+
+
+def _json_document(path: Path) -> Mapping[str, Any]:
+    try:
+        return _mapping(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID) from None
+
+
+def load_candidate(candidate: Path) -> Candidate:
+    """Validate a built candidate directory against its own metadata."""
+    provenance = _json_document(candidate / "metadata" / "build-provenance.json")
+    manifest = _json_document(candidate / "metadata" / "release-manifest.json")
+    revision = require_clean_source(provenance)
+    closure = _mapping(provenance.get("dependency_resolution"))
+    builder_host = _mapping(provenance.get("host"))
+    if (
+        manifest.get("format") != MANIFEST_FORMAT
+        or manifest.get("source_revision") != revision
+        or closure.get("exact_closure_verified") is not True
+    ):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    require_platform(builder_host.get("system"), builder_host.get("machine"))
+    wheels = manifest.get("wheels")
+    if not isinstance(wheels, list):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    require_sdk_pins(wheels)
+    return Candidate(revision, verify_first_party_wheels(wheels, candidate))
+
+
+# --- native host commands and configuration --------------------------------
+
+
+def mcp_server_entry(mcp_executable: Path, core_config: Path) -> dict[str, Any]:
+    """The one stdio entry both hosts launch: the installed MCP entry point."""
+    return {"command": str(mcp_executable), "args": ["--config", str(core_config)]}
+
+
+def claude_tool_name(tool: str) -> str:
+    return f"mcp__{SERVER_KEY}__{tool}"
+
+
+def claude_mcp_config(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {"mcpServers": {SERVER_KEY: dict(entry)}}
+
+
+def claude_command(
+    binary: Path, *, mcp_config: Path, prompt: str, tools: Sequence[str]
+) -> list[str]:
+    """One non-interactive run with named MCP calls pre-authorized and no prompts."""
+    allowed = ",".join(claude_tool_name(tool) for tool in tools)
+    return [
+        str(binary),
+        "-p",
+        prompt,
+        "--mcp-config",
+        str(mcp_config),
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "--allowedTools",
+        allowed,
+        "--permission-mode",
+        "dontAsk",
+        "--permission-prompts",
+        "none",
+        "--setting-sources",
+        "project",
+    ]
+
+
+def codex_config_toml(entry: Mapping[str, Any]) -> str:
+    """The ``config.toml`` text: no approval prompts, one stdio server (JSON strings are TOML)."""
+    arguments = ", ".join(json.dumps(argument) for argument in entry["args"])
+    return (
+        'approval_policy = "never"\n\n'
+        f"[mcp_servers.{SERVER_KEY}]\n"
+        f"command = {json.dumps(entry['command'])}\n"
+        f"args = [{arguments}]\n"
+    )
+
+
+def codex_mcp_add_command(binary: Path, entry: Mapping[str, Any]) -> list[str]:
+    return [str(binary), "mcp", "add", SERVER_KEY, "--", entry["command"], *entry["args"]]
+
+
+def codex_command(
+    binary: Path, *, workspace: Path, prompt: str, last_message: Path
+) -> list[str]:
+    """One ephemeral, read-only, non-interactive Codex run."""
+    return [
+        str(binary),
+        "exec",
+        "--ephemeral",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--config",
+        'approval_policy="never"',
+        "--json",
+        "--output-last-message",
+        str(last_message),
+        "--cd",
+        str(workspace),
+        prompt,
+    ]
+
+
+# --- isolated host layout and authentication copy -------------------------
+
+
+def make_private_directory(path: Path) -> None:
+    """Create ``path`` and any missing parents with mode 0700."""
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o700)
+
+
+@dataclass(frozen=True)
+class HostLayout:
+    root: Path
+    home: Path
+    config_dir: Path
+    workspace: Path
+    auth_destination: Path
+    config_variable: str
+
+    @property
+    def temporary(self) -> Path:
+        return self.root / "tmp"
+
+    def environment(self) -> dict[str, str]:
+        """The variables that redirect the host; the caller merges the rest."""
+        return {"HOME": str(self.home), self.config_variable: str(self.config_dir)}
+
+
+def host_layout(root: Path, host: str) -> HostLayout:
+    home = root / "home"
+    if host == "claude-code":
+        config_dir, auth, variable = home / ".claude", ".credentials.json", "CLAUDE_CONFIG_DIR"
+    elif host == "codex-cli":
+        config_dir, auth, variable = home / ".codex", "auth.json", "CODEX_HOME"
+    else:
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    return HostLayout(root, home, config_dir, root / "workspace", config_dir / auth, variable)
+
+
+def create_layout(layout: HostLayout) -> None:
+    for directory in (layout.home, layout.config_dir, layout.workspace, layout.temporary):
+        make_private_directory(directory)
+
+
+def _open_auth_source(source: Path) -> int:
+    """Open an owner-owned regular file with no group or world bits; else refuse."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError:
+        raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE) from None
+    status = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_uid != os.getuid()
+        or not status.st_mode & stat.S_IRUSR
+        or status.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+    ):
+        os.close(descriptor)
+        raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE)
+    return descriptor
+
+
+def require_auth_file(source: Path) -> None:
+    os.close(_open_auth_source(source))
+
+
+def copy_auth_file(source: Path, destination: Path) -> None:
+    """Copy one explicit authentication file by bytes, never parsing it.
+
+    The destination is created exclusively with mode 0600 inside 0700 parents.
+    Returns nothing, and every refusal is ``authentication_unavailable``.
+    """
+    descriptor = _open_auth_source(source)
+    try:
+        make_private_directory(destination.parent)
+        written = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.fchmod(written, 0o600)
+            with os.fdopen(descriptor, "rb", closefd=False) as reader, os.fdopen(
+                written, "wb", closefd=False
+            ) as writer:
+                shutil.copyfileobj(reader, writer)
+        except OSError:
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(written)
+    except OSError:
+        raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE) from None
+    finally:
+        os.close(descriptor)
+
+
+# --- fail-closed gate ledger ----------------------------------------------
+
+
+class Evidence(enum.Enum):
+    """Where an observation came from; only the harness's own inspection counts."""
+
+    INDEPENDENT = "independent"
+    MODEL = "model"
+
+
+class GateStatus(enum.Enum):
+    PENDING = "pending"
+    PASSED = "passed"
+    FAILED = "failed"
+
+
+class GateLedger:
+    """Every subcheck starts closed; only an independent, boolean observation moves it.
+
+    ``False`` always wins: a failed subcheck stays failed whatever follows, and
+    a passed one is downgraded by a later failing observation.  Model text,
+    markers and non-boolean values are refused, never recorded.
+    """
+
+    def __init__(self) -> None:
+        self._status = {
+            (gate, check): GateStatus.PENDING
+            for gate, checks in GATES.items()
+            for check in checks
+        }
+
+    def record(self, gate: str, check: str, observed: object, *, source: Evidence) -> None:
+        if source is not Evidence.INDEPENDENT or type(observed) is not bool:
+            raise QualificationError(ReasonCode.MODEL_EVIDENCE_REJECTED)
+        key = (gate, check)
+        if key not in self._status:
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+        if observed is False:
+            self._status[key] = GateStatus.FAILED
+        elif self._status[key] is GateStatus.PENDING:
+            self._status[key] = GateStatus.PASSED
+
+    def status(self, gate: str, check: str) -> GateStatus:
+        return self._status[(gate, check)]
+
+    def gate_passed(self, gate: str) -> bool:
+        return all(self._status[(gate, check)] is GateStatus.PASSED for check in GATES[gate])
+
+    def all_passed(self) -> bool:
+        return all(self.gate_passed(gate) for gate in GATES)
+
+    def as_record(self) -> dict[str, dict[str, bool]]:
+        return {
+            gate: {check: self._status[(gate, check)] is GateStatus.PASSED for check in checks}
+            for gate, checks in GATES.items()
+        }
+
+
+# --- record, schema validation and atomic output --------------------------
+
+
+@dataclass(frozen=True)
+class OsIdentity:
+    version: str
+    build: str
+    architecture: str
+
+
+@dataclass(frozen=True)
+class HostIdentity:
+    name: str
+    version: str
+
+
+def utc_timestamp(moment: datetime) -> str:
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_record(
+    *,
+    candidate: Candidate,
+    os_identity: OsIdentity,
+    host: HostIdentity,
+    ledger: GateLedger,
+    started_at: datetime,
+    finished_at: datetime,
+    reason: ReasonCode | None = None,
+) -> dict[str, Any]:
+    """Build the closed record from structured observations only.
+
+    The verdict is derived, never supplied: it is ``pass`` only when no reason
+    is given, the host is the pinned version and every gate is independently
+    observed true.
+    """
+    started, finished = utc_timestamp(started_at), utc_timestamp(finished_at)
+    if host.name not in HOST_VERSIONS or finished < started:
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    if reason is ReasonCode.NONE:
+        reason = None
+    if reason is None and host.version != HOST_VERSIONS[host.name]:
+        reason = ReasonCode.HOST_VERSION_UNSUPPORTED
+    if reason is None and not ledger.all_passed():
+        reason = ReasonCode.GATE_FAILED
+    return {
+        "format": RECORD_FORMAT,
+        "verdict": "pass" if reason is None else "fail",
+        "reason_code": (reason or ReasonCode.NONE).value,
+        "source": {"revision": candidate.revision, "clean": True},
+        "wheels": {name: candidate.wheels[name] for name in FIRST_PARTY},
+        "os": {
+            "product": OS_PRODUCT,
+            "version": os_identity.version,
+            "build": os_identity.build,
+            "architecture": os_identity.architecture,
+        },
+        "host": {"name": host.name, "version": host.version},
+        "sdk_versions": dict(SDK_PINS),
+        "profiles": {
+            profile: {"tool_count": len(tools), "tools": list(tools)}
+            for profile, tools in PROFILE_TOOLS.items()
+        },
+        "gates": ledger.as_record(),
+        "started_at": started,
+        "finished_at": finished,
+    }
+
+
+def build_minimal_failure_record(
+    reason: ReasonCode, *, started_at: datetime, finished_at: datetime
+) -> dict[str, Any]:
+    """Build the closed failure shape when verified run metadata is unavailable."""
+    if reason is ReasonCode.NONE:
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    started, finished = utc_timestamp(started_at), utc_timestamp(finished_at)
+    if finished < started:
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    return {
+        "format": RECORD_FORMAT,
+        "verdict": "fail",
+        "reason_code": reason.value,
+        "started_at": started,
+        "finished_at": finished,
+    }
+
+
+def load_schema(path: Path) -> Mapping[str, Any]:
+    import jsonschema  # lazy: the proxy mode runs on the stdlib alone
+
+    try:
+        schema = _mapping(json.loads(path.read_text(encoding="utf-8")), ReasonCode.RECORD_INVALID)
+        jsonschema.Draft202012Validator.check_schema(schema)
+    except (OSError, ValueError, jsonschema.SchemaError):
+        raise QualificationError(ReasonCode.RECORD_INVALID) from None
+    return schema
+
+
+def validate_record(record: object, schema: Mapping[str, Any]) -> None:
+    import jsonschema
+
+    if not jsonschema.Draft202012Validator(schema).is_valid(record):
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
+def write_record(
+    record: Mapping[str, Any],
+    schema: Mapping[str, Any],
+    output: Path,
+    *,
+    replace: Callable[[Path, Path], object] = os.replace,
+) -> None:
+    """Validate, then publish ``output`` atomically; never leave a partial file."""
+    validate_record(record, schema)
+    text = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".record-", dir=output.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        replace(temporary, output)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise QualificationError(ReasonCode.RECORD_INVALID) from None
+
+
+# --- installed-candidate bootstrap -----------------------------------------
+
+CANDIDATE_MARKER: Final = "OMNIVIA_REAL_HOST_QUALIFICATION_CANDIDATE"
+CONSOLE_SCRIPTS: Final = ("omnivia-core-service", "omnivia", "omnivia-core-mcp")
+BOOTSTRAP_TIMEOUT: Final = 900.0
+
+#: Runs one command with an explicit environment and returns its transient
+#: output.  Seam: tests replace it, so no pip or wheel is ever executed.
+Runner = Callable[[Sequence[str], Mapping[str, str], Path, float], "subprocess.CompletedProcess[bytes]"]
+
+#: Executed inside the candidate venv: reports the SDK pins and whether every
+#: first-party distribution is a non-editable install under that venv.
+_PROBE: Final = """
+import importlib.metadata as m, json, sys
+from pathlib import Path
+prefix = Path(sys.prefix).resolve()
+first = json.loads(sys.argv[1])
+def inside(name):
+    return Path(m.distribution(name).locate_file("")).resolve().is_relative_to(prefix)
+def editable(name):
+    raw = m.distribution(name).read_text("direct_url.json")
+    return raw is not None and "dir_info" in json.loads(raw)
+print(json.dumps({
+    "versions": {n: m.version(n) for n in ("mcp", "mcp-types")},
+    "inside": all(inside(n) for n in first),
+    "editable": any(editable(n) for n in first),
+}))
+"""
+
+
+def _run_transient(
+    argv: Sequence[str], env: Mapping[str, str], cwd: Path, timeout: float
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        list(argv),
+        env=dict(env),
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _create_venv(path: Path) -> None:
+    venv.EnvBuilder(with_pip=True).create(path)
+
+
+@dataclass(frozen=True)
+class InstalledCandidate:
+    venv: Path
+    python: Path
+    service: Path
+    cli: Path
+    mcp: Path
+
+
+def bootstrap_candidate(
+    candidate_dir: Path,
+    candidate: Candidate,
+    root: Path,
+    *,
+    run: Runner = _run_transient,
+    create_venv: Callable[[Path], object] = _create_venv,
+) -> InstalledCandidate:
+    """Install exactly the candidate's wheels offline into a fresh venv under ``root``.
+
+    Every failure is a stable reason code; pip output and paths are discarded.
+    """
+    manifest = _json_document(candidate_dir / "metadata" / "release-manifest.json")
+    entries = manifest.get("wheels")
+    if not isinstance(entries, list):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    verified = _verified_wheels(entries, candidate_dir)
+    if {name: digest for name, (_, digest) in verified.items()} != dict(candidate.wheels):
+        raise QualificationError(ReasonCode.WHEEL_DIGEST_MISMATCH)
+    home = root / "bootstrap-home"
+    make_private_directory(home)
+    environment = {"PATH": SYSTEM_PATH, "HOME": str(home), "PYTHONNOUSERSITE": "1"}
+    environment_directory = root / "candidate-venv"
+    python = environment_directory / "bin" / "python"
+    try:
+        create_venv(environment_directory)
+        installed = run(
+            [
+                str(python), "-I", "-m", "pip", "install",
+                "--isolated", "--no-index", "--only-binary=:all:",
+                "--disable-pip-version-check", "--no-input",
+                "--find-links", str(candidate_dir / "wheels"),
+                *[str(path) for path, _ in verified.values()],
+            ],
+            environment,
+            root,
+            BOOTSTRAP_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise QualificationError(ReasonCode.INSTALL_FAILED) from None
+    if installed.returncode != 0:
+        raise QualificationError(ReasonCode.INSTALL_FAILED)
+    resolved_root = environment_directory.resolve()
+    scripts: list[Path] = []
+    for name in CONSOLE_SCRIPTS:
+        script = environment_directory / "bin" / name
+        if (
+            script.is_symlink()
+            or not script.is_file()
+            or not os.access(script, os.X_OK)
+            or not script.resolve().is_relative_to(resolved_root)
+        ):
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+        scripts.append(script)
+    try:
+        probed = run(
+            [str(python), "-I", "-c", _PROBE, json.dumps(list(FIRST_PARTY))],
+            environment,
+            root,
+            BOOTSTRAP_TIMEOUT,
+        )
+        report = json.loads(probed.stdout.decode("utf-8"))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise QualificationError(ReasonCode.INSTALL_FAILED) from None
+    if probed.returncode != 0 or not isinstance(report, dict):
+        raise QualificationError(ReasonCode.INSTALL_FAILED)
+    if report.get("versions") != SDK_PINS:
+        raise QualificationError(ReasonCode.SDK_PIN_MISMATCH)
+    if report.get("inside") is not True or report.get("editable") is not False:
+        raise QualificationError(ReasonCode.INSTALL_FAILED)
+    return InstalledCandidate(environment_directory, python, *scripts)
+
+
+def _mcp_origin() -> str | None:
+    try:
+        spec = importlib.util.find_spec("mcp")
+    except (ImportError, ValueError):
+        return None
+    return None if spec is None else spec.origin
+
+
+def in_candidate_runtime(
+    environ: Mapping[str, str],
+    prefix: str,
+    *,
+    mcp_origin: Callable[[], str | None] = _mcp_origin,
+) -> bool:
+    """True when re-executed under the candidate venv; refuse a mismatched marker."""
+    marker = environ.get(CANDIDATE_MARKER)
+    if marker is None:
+        return False
+    venv_root = Path(prefix).resolve()
+    origin = mcp_origin()
+    if Path(marker).resolve() != venv_root or origin is None or not Path(origin).resolve().is_relative_to(venv_root):
+        raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+    return True
+
+
+def reexec_under_candidate(
+    installed: InstalledCandidate,
+    argv: Sequence[str],
+    *,
+    environ: Mapping[str, str] | None = None,
+    execve: Callable[[str, list[str], dict[str, str]], object] = os.execve,
+) -> None:
+    """Replace this process with the harness running on the candidate's Python."""
+    environment = dict(os.environ if environ is None else environ)
+    environment[CANDIDATE_MARKER] = str(installed.venv)
+    python = str(installed.python)
+    execve(python, [python, "-I", str(SCRIPT_PATH), *argv], environment)
+
+
+# --- transparent stdio proxy and its observation stream --------------------
+
+INTERNAL_PROXY: Final = "--internal-proxy"
+PROXY_VIOLATION_EXIT: Final = 3
+PROXY_WITHHELD_EXIT: Final = 4
+_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+VIOLATION_KINDS: Final = frozenset(
+    {
+        "malformed",
+        "not_json",
+        "not_object",
+        "not_jsonrpc_2_0",
+        "duplicate_request",
+        "invalid_tool_call",
+        "invalid_tool_inventory",
+    }
+)
+
+
+def _is_bool(value: object) -> bool:
+    return type(value) is bool
+
+
+def _is_name(value: object) -> bool:
+    return isinstance(value, str) and _NAME.fullmatch(value) is not None
+
+
+def _is_digest(value: object) -> bool:
+    return isinstance(value, str) and _SHA256.fullmatch(value) is not None
+
+
+def _is_count(value: object) -> bool:
+    return type(value) is int and 0 <= value <= 10_000
+
+
+def _is_names(value: object) -> bool:
+    return isinstance(value, list) and len(value) <= 256 and all(_is_name(item) for item in value)
+
+
+#: The closed observation vocabulary: event type -> required fields.  Nothing
+#: else, in particular no argument, content, result, path or process identity,
+#: can be written to or read from the stream.
+EVENT_SHAPES: Final[dict[str, dict[str, Callable[[object], bool]]]] = {
+    "proxy_started": {},
+    "initialize_request": {},
+    "initialize_response": {"ok": _is_bool},
+    "tools_list_request": {},
+    "tools_list_response": {"ok": _is_bool, "tool_count": _is_count, "tool_names": _is_names},
+    "tool_call_request": {"tool": _is_name, "arguments_digest": _is_digest},
+    "tool_call_response": {"tool": _is_name, "ok": _is_bool, "tool_error": _is_bool},
+    "request_paused": {"tool": _is_name},
+    "response_withheld": {"tool": _is_name},
+    "protocol_violation": {"kind": lambda value: value in VIOLATION_KINDS},
+}
+
+
+def validate_event(event: object) -> dict[str, Any]:
+    """Return ``event`` if it is exactly one closed event; else refuse."""
+    if not isinstance(event, dict):
+        raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+    shape = EVENT_SHAPES.get(event.get("event"))  # type: ignore[arg-type]
+    seq = event.get("seq")
+    if (
+        shape is None
+        or type(seq) is not int
+        or seq < 1
+        or set(event) != {"event", "seq", *shape}
+        or not all(check(event[field]) for field, check in shape.items())
+    ):
+        raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+    return event
+
+
+def arguments_digest(arguments: object) -> str:
+    """SHA-256 of the canonical JSON of a tool call's arguments."""
+    canonical = json.dumps(
+        arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class Interruption:
+    """The one call whose response the proxy withholds."""
+
+    tool: str
+    arguments_digest: str
+
+    def __post_init__(self) -> None:
+        if not _is_name(self.tool) or not _is_digest(self.arguments_digest):
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
+@dataclass(frozen=True)
+class PauseBefore:
+    """Pause one exact tool request until the harness publishes ``release``."""
+
+    tool: str
+    arguments_digest: str
+    release: Path
+
+    def __post_init__(self) -> None:
+        if not _is_name(self.tool) or not _is_digest(self.arguments_digest):
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
+def _write_private(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def write_proxy_spec(
+    path: Path,
+    *,
+    child: Sequence[str],
+    observation: Path,
+    interruption: Interruption | None = None,
+    pause_before: PauseBefore | None = None,
+) -> None:
+    """Write the private spec the proxy reads: its child command, stream and target."""
+    document = {
+        "child": list(child),
+        "observation": str(observation),
+        "interrupt": None
+        if interruption is None
+        else {"tool": interruption.tool, "arguments_digest": interruption.arguments_digest},
+        "pause_before": None
+        if pause_before is None
+        else {
+            "tool": pause_before.tool,
+            "arguments_digest": pause_before.arguments_digest,
+            "release": str(pause_before.release),
+        },
+    }
+    _write_private(path, json.dumps(document))
+
+
+def proxy_server_entry(python: Path, spec: Path) -> dict[str, Any]:
+    """The stdio entry a host launches in place of the MCP entry point."""
+    return {"command": str(python), "args": ["-I", str(SCRIPT_PATH), INTERNAL_PROXY, str(spec)]}
+
+
+def _load_spec(
+    path: Path,
+) -> tuple[list[str], Path, Interruption | None, PauseBefore | None]:
+    try:
+        document = _mapping(json.loads(path.read_text(encoding="utf-8")), ReasonCode.RECORD_INVALID)
+        if set(document) != {"child", "observation", "interrupt", "pause_before"}:
+            raise ValueError
+        child = document["child"]
+        observation = document["observation"]
+        target = document["interrupt"]
+        paused = document["pause_before"]
+        if (
+            not isinstance(child, list)
+            or not child
+            or not all(isinstance(item, str) for item in child)
+            or not isinstance(observation, str)
+        ):
+            raise ValueError
+        interruption = None
+        if target is not None:
+            if not isinstance(target, dict) or set(target) != {"tool", "arguments_digest"}:
+                raise ValueError
+            interruption = Interruption(target["tool"], target["arguments_digest"])
+        pause_before = None
+        if paused is not None:
+            if (
+                not isinstance(paused, dict)
+                or set(paused) != {"tool", "arguments_digest", "release"}
+                or not isinstance(paused["release"], str)
+            ):
+                raise ValueError
+            pause_before = PauseBefore(
+                paused["tool"], paused["arguments_digest"], Path(paused["release"])
+            )
+    except (OSError, ValueError, KeyError, TypeError):
+        raise QualificationError(ReasonCode.RECORD_INVALID) from None
+    return child, Path(observation), interruption, pause_before
+
+
+class _Violation(Exception):
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+def _reject_constant(_: str) -> None:
+    raise ValueError
+
+
+def _parse_frame(frame: bytes) -> dict[str, Any]:
+    """Parse one newline-terminated JSON-RPC object from a copy of a relayed frame."""
+    if not frame.endswith(b"\n") or not frame.strip():
+        raise _Violation("malformed")
+    try:
+        value = json.loads(frame.decode("utf-8"), parse_constant=_reject_constant)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise _Violation("not_json") from None
+    if not isinstance(value, dict):
+        raise _Violation("not_object")
+    if value.get("jsonrpc") != "2.0":
+        raise _Violation("not_jsonrpc_2_0")
+    return value
+
+
+def _request_key(identifier: object) -> str | None:
+    if isinstance(identifier, str) or (type(identifier) is int):
+        return json.dumps(identifier)
+    return None
+
+
+class _Observer:
+    """Append-only private event stream; every event is validated against the closed shapes."""
+
+    def __init__(self, path: Path) -> None:
+        self._descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        os.fchmod(self._descriptor, 0o600)
+        self._lock = threading.Lock()
+        self._sequence = 0
+
+    def emit(self, event: str, **fields: object) -> None:
+        with self._lock:
+            self._sequence += 1
+            record = validate_event({"event": event, "seq": self._sequence, **fields})
+            line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+            os.write(self._descriptor, line.encode("ascii"))
+
+    def close(self) -> None:
+        descriptor, self._descriptor = self._descriptor, -1
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+class _Relay:
+    def __init__(
+        self,
+        observer: _Observer,
+        interruption: Interruption | None,
+        pause_before: PauseBefore | None = None,
+    ) -> None:
+        self.observer = observer
+        self.interruption = interruption
+        self.pause_before = pause_before
+        self.pause_consumed = False
+        self.pending: dict[str, tuple[str, str | None, bool]] = {}
+        self.lock = threading.Lock()
+        self.violated = threading.Event()
+        self.released = threading.Event()
+
+    def request(self, frame: bytes) -> None:
+        message = _parse_frame(frame)
+        method = message.get("method")
+        key = _request_key(message.get("id"))
+        if not isinstance(method, str) or key is None:
+            return
+        if method == "initialize":
+            self.observer.emit("initialize_request")
+            entry: tuple[str, str | None, bool] = (method, None, False)
+        elif method == "tools/list":
+            self.observer.emit("tools_list_request")
+            entry = (method, None, False)
+        elif method == "tools/call":
+            params = message.get("params")
+            if not isinstance(params, dict) or not _is_name(params.get("name")):
+                raise _Violation("invalid_tool_call")
+            tool = params["name"]
+            try:
+                digest = arguments_digest(params.get("arguments", {}))
+            except (ValueError, RecursionError):
+                raise _Violation("not_json") from None
+            target = self.interruption
+            self.observer.emit("tool_call_request", tool=tool, arguments_digest=digest)
+            pause = self.pause_before
+            if (
+                not self.pause_consumed
+                and pause is not None
+                and (tool, digest) == (pause.tool, pause.arguments_digest)
+            ):
+                self.pause_consumed = True
+                self.observer.emit("request_paused", tool=tool)
+                while not pause.release.is_file() and not self.released.wait(0.01):
+                    pass
+            entry = (method, tool, target is not None and (tool, digest) == (target.tool, target.arguments_digest))
+        else:
+            return
+        with self.lock:
+            if key in self.pending:
+                raise _Violation("duplicate_request")
+            self.pending[key] = entry
+
+    def response(self, frame: bytes) -> bool:
+        """Observe a server frame; True means it must be withheld, never forwarded."""
+        message = _parse_frame(frame)
+        key = _request_key(message.get("id"))
+        if "method" in message or key is None:
+            return False
+        with self.lock:
+            entry = self.pending.pop(key, None)
+        if entry is None:
+            return False
+        method, tool, targeted = entry
+        result = message.get("result")
+        ok = isinstance(result, dict) and "error" not in message
+        if method == "initialize":
+            self.observer.emit("initialize_response", ok=ok)
+        elif method == "tools/list":
+            tools = result.get("tools") if isinstance(result, dict) else None
+            if (
+                not isinstance(tools, list)
+                or len(tools) > 256
+                or not all(isinstance(item, dict) and _is_name(item.get("name")) for item in tools)
+            ):
+                raise _Violation("invalid_tool_inventory")
+            names = [item["name"] for item in tools]
+            self.observer.emit(
+                "tools_list_response", ok=ok, tool_count=len(tools), tool_names=names
+            )
+        elif targeted:
+            self.observer.emit("response_withheld", tool=tool)
+            return True
+        else:
+            failed = not ok or (isinstance(result, dict) and result.get("isError") is True)
+            self.observer.emit("tool_call_response", tool=tool, ok=ok, tool_error=failed)
+        return False
+
+    def violation(self, kind: str) -> None:
+        if not self.violated.is_set():
+            self.violated.set()
+            self.observer.emit("protocol_violation", kind=kind)
+
+
+def _stop(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+
+
+def run_proxy(spec_path: Path) -> int:
+    """Relay stdin/stdout to the installed MCP entry point, byte for byte.
+
+    Frames are newline-delimited JSON-RPC (the MCP stdio framing).  Each frame is
+    forwarded exactly as read; observation parses only a copy.  A frame that is
+    not a JSON object fails closed: it is not forwarded, the child is stopped
+    and the proxy exits non-zero.  The child's stderr stays on this process's
+    stderr, never stdout.  The one configured interruption target's response is
+    withheld indefinitely and never replaced.
+    """
+    child_command, observation, interruption, pause_before = _load_spec(spec_path)
+    try:
+        observer = _Observer(observation)
+    except OSError:
+        return 2
+    relay = _Relay(observer, interruption, pause_before)
+    try:
+        try:
+            child = subprocess.Popen(child_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        except OSError:
+            return 2
+        assert child.stdin is not None and child.stdout is not None
+        observer.emit("proxy_started")
+
+        def terminate(_signal: int, _frame: object) -> None:
+            _stop(child)
+            os._exit(143)
+
+        signal.signal(signal.SIGTERM, terminate)
+        signal.signal(signal.SIGHUP, terminate)
+
+        def pump_host() -> None:
+            try:
+                for frame in iter(sys.stdin.buffer.readline, b""):
+                    relay.request(frame)
+                    child.stdin.write(frame)  # type: ignore[union-attr]
+                    child.stdin.flush()  # type: ignore[union-attr]
+            except _Violation as violation:
+                relay.violation(violation.kind)
+                _stop(child)
+            except OSError:
+                pass
+            finally:
+                relay.released.set()
+                try:
+                    child.stdin.close()  # type: ignore[union-attr]
+                except OSError:
+                    pass
+
+        threading.Thread(target=pump_host, daemon=True).start()
+        withheld = False
+        try:
+            for frame in iter(child.stdout.readline, b""):
+                if relay.response(frame):
+                    withheld = True
+                    relay.released.wait()
+                    break
+                sys.stdout.buffer.write(frame)
+                sys.stdout.buffer.flush()
+        except _Violation as violation:
+            relay.violation(violation.kind)
+        except OSError:
+            pass
+        _stop(child)
+        if relay.violated.is_set():
+            return PROXY_VIOLATION_EXIT
+        return PROXY_WITHHELD_EXIT if withheld else (child.returncode or 0)
+    finally:
+        observer.close()
+
+
+def proxy_main(arguments: Sequence[str]) -> int:
+    try:
+        if len(arguments) != 1:
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+        return run_proxy(Path(arguments[0]))
+    except (QualificationError, OSError):
+        print("reason_code=record_invalid", file=sys.stderr)
+        return 2
+
+
+def read_observation(path: Path) -> list[dict[str, Any]]:
+    """Read and strictly validate the stream; an absent stream is empty."""
+    try:
+        text = path.read_text(encoding="ascii") if path.exists() else ""
+        events = [validate_event(json.loads(line)) for line in text.splitlines()]
+    except (OSError, ValueError):
+        raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS) from None
+    if [event["seq"] for event in events] != list(range(1, len(events) + 1)):
+        raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+    return events
+
+
+@dataclass(frozen=True)
+class ObservationSummary:
+    """What the proxy independently saw; derived from events only."""
+
+    initialized: bool
+    listed: bool
+    listed_tools: tuple[str, ...]
+    called: tuple[str, ...]
+    requests: tuple[tuple[str, str], ...]
+    responded: tuple[str, ...]
+    succeeded: tuple[str, ...]
+    tool_errors: tuple[str, ...]
+    paused: bool
+    withheld: bool
+    violation: bool
+
+
+def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSummary:
+    listed = [e["tool_names"] for e in events if e["event"] == "tools_list_response" and e["ok"]]
+    return ObservationSummary(
+        initialized=any(e["event"] == "initialize_response" and e["ok"] for e in events),
+        listed=bool(listed),
+        listed_tools=tuple(listed[0]) if listed else (),
+        called=tuple(e["tool"] for e in events if e["event"] == "tool_call_request"),
+        requests=tuple(
+            (e["tool"], e["arguments_digest"])
+            for e in events
+            if e["event"] == "tool_call_request"
+        ),
+        responded=tuple(e["tool"] for e in events if e["event"] == "tool_call_response"),
+        succeeded=tuple(
+            e["tool"]
+            for e in events
+            if e["event"] == "tool_call_response" and e["ok"] and not e["tool_error"]
+        ),
+        tool_errors=tuple(
+            e["tool"]
+            for e in events
+            if e["event"] == "tool_call_response" and e["tool_error"]
+        ),
+        paused=any(e["event"] == "request_paused" for e in events),
+        withheld=any(e["event"] == "response_withheld" for e in events),
+        violation=any(e["event"] == "protocol_violation" for e in events),
+    )
+
+
+# --- isolated host process runner ------------------------------------------
+
+
+def _write_private_file(path: Path, text: str) -> None:
+    try:
+        _write_private(path, text)
+    except OSError:
+        raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
+
+
+def write_host_config(layout: HostLayout, host: str, entry: Mapping[str, Any]) -> Path:
+    """Write the native per-run MCP configuration for ``host`` and return its path."""
+    if host == "claude-code":
+        path = layout.root / "claude-mcp.json"
+        _write_private_file(path, json.dumps(claude_mcp_config(entry)))
+    elif host == "codex-cli":
+        path = layout.config_dir / "config.toml"
+        _write_private_file(path, codex_config_toml(entry))
+    else:
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    return path
+
+
+def host_environment(layout: HostLayout, binary: Path) -> dict[str, str]:
+    """A minimal environment: no operator variable, credential or config reaches the host."""
+    return {
+        "PATH": f"{binary.parent}:{SYSTEM_PATH}",
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": str(layout.temporary),
+        **layout.environment(),
+    }
+
+
+def host_command(
+    host: str,
+    binary: Path,
+    layout: HostLayout,
+    config: Path,
+    *,
+    prompt: str,
+    tools: Sequence[str],
+) -> list[str]:
+    if host == "claude-code":
+        return claude_command(binary, mcp_config=config, prompt=prompt, tools=tools)
+    if host == "codex-cli":
+        return codex_command(
+            binary, workspace=layout.workspace, prompt=prompt, last_message=layout.root / "last-message.txt"
+        )
+    raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
+_VERSION = re.compile(r"\b\d+\.\d+\.\d+\b")
+_IDENTITY: Final = {"claude-code": "claude code", "codex-cli": "codex"}
+
+
+def host_version(
+    host: str, binary: Path, env: Mapping[str, str], cwd: Path, *, run: Runner = _run_transient
+) -> str:
+    """Run ``--version`` transiently and return only the normalized exact version."""
+    try:
+        completed = run([str(binary), "--version"], env, cwd, 60.0)
+        text = completed.stdout.decode("utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        raise QualificationError(ReasonCode.HOST_BINARY_UNAVAILABLE) from None
+    versions = _VERSION.findall(text)
+    if completed.returncode != 0 or len(versions) != 1 or _IDENTITY[host] not in text.lower():
+        raise QualificationError(ReasonCode.HOST_VERSION_UNSUPPORTED)
+    return str(versions[0])
+
+
+def require_host_version(
+    host: str, binary: Path, env: Mapping[str, str], cwd: Path, *, run: Runner = _run_transient
+) -> str:
+    version = host_version(host, binary, env, cwd, run=run)
+    if version != HOST_VERSIONS[host]:
+        raise QualificationError(ReasonCode.HOST_VERSION_UNSUPPORTED)
+    return version
+
+
+def require_host_authentication(
+    host: str,
+    binary: Path,
+    layout: HostLayout,
+    auth_file: Path,
+    *,
+    run: Runner = _run_transient,
+) -> None:
+    """Prove the copied credential works in the isolated host home."""
+    create_layout(layout)
+    copy_auth_file(auth_file, layout.auth_destination)
+    command = (
+        [str(binary), "auth", "status", "--json"]
+        if host == "claude-code"
+        else [str(binary), "login", "status"]
+    )
+    try:
+        completed = run(
+            command,
+            host_environment(layout, binary),
+            layout.workspace,
+            60.0,
+        )
+        if host == "claude-code":
+            status = json.loads(completed.stdout.decode("utf-8"))
+            authenticated = isinstance(status, dict) and status.get("loggedIn") is True
+        else:
+            # Codex 0.146.0 writes both its PATH-alias warning and the stable
+            # login-status sentence to stderr.  Treat either transient channel
+            # as status input, then discard both without retaining them.
+            authenticated = b"logged in" in (
+                completed.stdout + completed.stderr
+            ).lower()
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
+        authenticated = False
+        completed = subprocess.CompletedProcess([], 1, b"", b"")
+    if completed.returncode != 0 or not authenticated:
+        raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE)
+
+
+@dataclass(frozen=True)
+class HostRunResult:
+    """Typed outcome of one host run.  It holds no host output and no model text.
+
+    ``marker_seen`` is a transient orchestration signal only; it is never gate
+    evidence.  Gates may be fed from ``summary`` and Core's own state only.
+    """
+
+    summary: ObservationSummary
+    marker_seen: bool
+    exited_cleanly: bool
+    interrupted: bool
+    paused: bool
+
+
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def run_host(
+    command: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
+    observation: Path,
+    marker: str,
+    timeout: float,
+    on_withheld: Callable[[], None] = lambda: None,
+    on_paused: Callable[[], None] = lambda: None,
+    poll_interval: float = 0.05,
+) -> HostRunResult:
+    """Run one host in its own process group and always kill the group afterwards.
+
+    When the proxy reports a withheld response, ``on_withheld`` runs (the caller
+    inspects Core's durable state there) and the group is then killed before
+    the host can receive that response.  Host stdout and stderr go to
+    unnamed temporary files, are read only for the marker and are discarded.
+    """
+    deadline = time.monotonic() + timeout
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            process = subprocess.Popen(
+                list(command),
+                cwd=cwd,
+                env=dict(env),
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+        except OSError:
+            raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
+        interrupted = timed_out = paused = False
+        try:
+            while process.poll() is None:
+                if not paused and _event_seen(observation, "request_paused"):
+                    on_paused()
+                    paused = True
+                if _withheld_seen(observation):
+                    on_withheld()
+                    interrupted = True
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                time.sleep(poll_interval)
+        finally:
+            _kill_group(process)
+        if timed_out:
+            raise QualificationError(ReasonCode.HOST_TIMEOUT)
+        stdout.seek(0)
+        marker_seen = marker.encode("utf-8") in stdout.read()
+    return HostRunResult(
+        summarize_observation(read_observation(observation)),
+        marker_seen,
+        process.returncode == 0 and not interrupted,
+        interrupted,
+        paused,
+    )
+
+
+def _withheld_seen(observation: Path) -> bool:
+    return _event_seen(observation, "response_withheld")
+
+
+def _event_seen(observation: Path, event: str) -> bool:
+    try:
+        needle = f'"event":"{event}"'.encode("ascii")
+        return needle in observation.read_bytes()
+    except OSError:
+        return False
+
+
+def run_host_session(
+    *,
+    host: str,
+    binary: Path,
+    layout: HostLayout,
+    installed: InstalledCandidate,
+    core_config: Path,
+    auth_file: Path,
+    prompt: str,
+    marker: str,
+    tools: Sequence[str],
+    timeout: float,
+    interruption: Interruption | None = None,
+    pause_before: PauseBefore | None = None,
+    on_withheld: Callable[[], None] = lambda: None,
+    on_paused: Callable[[], None] = lambda: None,
+) -> HostRunResult:
+    """Lay out an isolated host, point it at the proxy and run it once."""
+    create_layout(layout)
+    copy_auth_file(auth_file, layout.auth_destination)
+    observation = layout.root / "observation.jsonl"
+    spec = layout.root / "proxy-spec.json"
+    child = mcp_server_entry(installed.mcp, core_config)
+    try:
+        write_proxy_spec(
+            spec,
+            child=[child["command"], *child["args"]],
+            observation=observation,
+            interruption=interruption,
+            pause_before=pause_before,
+        )
+    except OSError:
+        raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
+    config = write_host_config(layout, host, proxy_server_entry(installed.python, spec))
+    command = host_command(host, binary, layout, config, prompt=prompt, tools=tools)
+    return run_host(
+        command,
+        env=host_environment(layout, binary),
+        cwd=layout.workspace,
+        observation=observation,
+        marker=marker,
+        timeout=timeout,
+        on_withheld=on_withheld,
+        on_paused=on_paused,
+    )
+
+
+# --- Core lifecycle and independent state inspection ----------------------
+
+
+def _run_text(
+    arguments: Sequence[str], *, timeout: float = CORE_TIMEOUT
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            list(arguments),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+
+
+def _output_document(completed: subprocess.CompletedProcess[str]) -> Mapping[str, Any]:
+    if completed.returncode != 0 or completed.stderr:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    try:
+        return _mapping(json.loads(completed.stdout), ReasonCode.GATE_FAILED)
+    except ValueError:
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+
+
+@dataclass
+class CoreContext:
+    root: Path
+    workspace: Path
+    installation: Path
+    workspace_id: str
+    process: subprocess.Popen[str] | None = None
+    replacement_pid: int | None = None
+
+    @property
+    def database(self) -> Path:
+        return self.workspace / "workspace.sqlite"
+
+    @property
+    def descriptor(self) -> Path:
+        return self.installation / "runtime" / self.workspace_id / "service.json"
+
+
+def initialize_core(installed: InstalledCandidate, root: Path) -> CoreContext:
+    make_private_directory(root)
+    workspace = root / "workspace"
+    installation = root / "installation-state"
+    document = _output_document(
+        _run_text(
+            [
+                str(installed.service),
+                "--workspace",
+                str(workspace),
+                "--installation-state",
+                str(installation),
+                "--init",
+            ]
+        )
+    )
+    workspace_document = document.get("workspace")
+    workspace_id = (
+        workspace_document.get("workspace_id")
+        if isinstance(workspace_document, dict)
+        else None
+    )
+    if not isinstance(workspace_id, str) or not workspace_id:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return CoreContext(root, workspace, installation, workspace_id)
+
+
+def _wait_ready(context: CoreContext, process: subprocess.Popen[str]) -> Mapping[str, Any]:
+    deadline = time.monotonic() + CORE_TIMEOUT
+    while time.monotonic() < deadline:
+        if context.descriptor.is_file():
+            try:
+                document = _mapping(
+                    json.loads(context.descriptor.read_text(encoding="utf-8")),
+                    ReasonCode.GATE_FAILED,
+                )
+            except (OSError, ValueError):
+                document = {}
+            if document.get("ready") is True:
+                return document
+        if process.poll() is not None:
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        time.sleep(0.05)
+    raise QualificationError(ReasonCode.GATE_FAILED)
+
+
+def start_core(installed: InstalledCandidate, context: CoreContext) -> int:
+    endpoint = f"unix://{context.root / 'core.sock'}"
+    try:
+        process = subprocess.Popen(
+            [
+                str(installed.service),
+                "--workspace",
+                str(context.workspace),
+                "--installation-state",
+                str(context.installation),
+                "--endpoint",
+                endpoint,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError:
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    context.process = process
+    descriptor = _wait_ready(context, process)
+    process_document = descriptor.get("process")
+    process_id = (
+        process_document.get("pid") if isinstance(process_document, dict) else None
+    )
+    if type(process_id) is not int or process_id != process.pid:
+        stop_core(context)
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return process_id
+
+
+def _wait_pid_absent(pid: int) -> None:
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        time.sleep(0.05)
+
+
+def stop_core(context: CoreContext) -> None:
+    process = context.process
+    if process is not None and process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+    replacement = context.replacement_pid
+    if replacement is not None:
+        try:
+            os.kill(replacement, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        _wait_pid_absent(replacement)
+
+
+def _host_admin_name(host: str) -> str:
+    if host == "claude-code":
+        return host
+    if host == "codex-cli":
+        return "codex"
+    raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
+def configure_profile(
+    installed: InstalledCandidate, context: CoreContext, host: str, profile: str
+) -> Path:
+    completed = _run_text(
+        [
+            str(installed.cli),
+            "--installation-state",
+            str(context.installation),
+            "mcp",
+            "configure",
+            "--host",
+            _host_admin_name(host),
+            "--workspace",
+            context.workspace_id,
+            "--profile",
+            profile,
+        ],
+        timeout=600.0,
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    try:
+        document = (
+            _mapping(json.loads(completed.stdout), ReasonCode.GATE_FAILED)
+            if host == "claude-code"
+            else _mapping(tomllib.loads(completed.stdout), ReasonCode.GATE_FAILED)
+        )
+    except (ValueError, tomllib.TOMLDecodeError):
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    servers = document.get("mcpServers")
+    if host == "codex-cli":
+        servers = document.get("mcp_servers")
+    entry = servers.get(SERVER_KEY) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or set(entry) != {"command", "args"}:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    arguments = entry.get("args")
+    if (
+        entry.get("command") not in {str(installed.mcp), installed.mcp.name}
+        or not isinstance(arguments, list)
+        or len(arguments) != 2
+        or arguments[0] != "--config"
+        or not isinstance(arguments[1], str)
+    ):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    config = Path(arguments[1])
+    try:
+        inside = config.resolve().is_relative_to(context.installation.resolve())
+    except OSError:
+        inside = False
+    if not inside or config.is_symlink() or not config.is_file():
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return config
+
+
+def configuration_principal(config: Path) -> str:
+    try:
+        document = _mapping(
+            json.loads(config.read_text(encoding="utf-8")), ReasonCode.GATE_FAILED
+        )
+    except (OSError, ValueError):
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    principal = document.get("principal_id")
+    if not isinstance(principal, str) or not principal:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return principal
+
+
+def revoke_authoring(
+    installed: InstalledCandidate, context: CoreContext, host: str
+) -> None:
+    completed = _run_text(
+        [
+            str(installed.cli),
+            "--installation-state",
+            str(context.installation),
+            "mcp",
+            "revoke",
+            "--host",
+            _host_admin_name(host),
+        ]
+    )
+    expected = f"revoked {_host_admin_name(host)}\n"
+    if completed.returncode != 0 or completed.stderr or completed.stdout != expected:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+
+
+def owner_call(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    path: Sequence[str],
+    payload: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    arguments = [
+        str(installed.cli),
+        "--installation-state",
+        str(context.installation),
+        "--workspace-id",
+        context.workspace_id,
+        *path,
+    ]
+    if payload is not None:
+        arguments.extend(
+            ["--input-json", json.dumps(payload, sort_keys=True, separators=(",", ":"))]
+        )
+    if path[0] != "service":
+        arguments.extend(["--principal", "local-user"])
+    arguments.append("--json")
+    envelope = _output_document(_run_text(arguments))
+    if path[0] == "service":
+        return envelope
+    result = envelope.get("result")
+    if not isinstance(result, dict) or "error" in envelope:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return result
+
+
+def owner_rows(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    path: Sequence[str],
+    payload: Mapping[str, Any],
+    field: str,
+) -> list[object]:
+    result = owner_call(installed, context, path, payload)
+    rows = result.get(field)
+    if not isinstance(rows, list):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return rows
+
+
+def core_healthy(installed: InstalledCandidate, context: CoreContext) -> bool:
+    return owner_call(installed, context, ("service", "health")).get("status") == "pass"
+
+
+def restart_core(installed: InstalledCandidate, context: CoreContext) -> None:
+    process = context.process
+    if process is None or process.poll() is not None:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    first_pid = process.pid
+    try:
+        os.killpg(first_pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    if not core_healthy(installed, context):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    deadline = time.monotonic() + CORE_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            descriptor = _mapping(
+                json.loads(context.descriptor.read_text(encoding="utf-8")),
+                ReasonCode.GATE_FAILED,
+            )
+        except (OSError, ValueError):
+            time.sleep(0.05)
+            continue
+        process_document = descriptor.get("process")
+        replacement = (
+            process_document.get("pid") if isinstance(process_document, dict) else None
+        )
+        if descriptor.get("ready") is True and type(replacement) is int and replacement != first_pid:
+            context.replacement_pid = replacement
+            return
+        time.sleep(0.05)
+    raise QualificationError(ReasonCode.GATE_FAILED)
+
+
+def stage_source(installed: InstalledCandidate, context: CoreContext) -> Mapping[str, Any]:
+    source = context.root / "staged-source.txt"
+    source.write_text(f"staged import {QUALIFICATION_TOKEN}\n", encoding="utf-8")
+    captured = _output_document(
+        _run_text(
+            [
+                str(installed.service),
+                "--workspace",
+                str(context.workspace),
+                "--installation-state",
+                str(context.installation),
+                "--capture-source",
+                str(source),
+                "--source-id",
+                STAGED_SOURCE_ID,
+                "--media-type",
+                "text/plain",
+            ]
+        )
+    )
+    if captured.get("status") != "captured":
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    try:
+        with contextlib.closing(sqlite3.connect(context.database)) as connection:
+            row = connection.execute(
+                "SELECT s.staged_source_ref, s.source_kind, s.declared_checksum, "
+                "s.content_length_bytes, s.media_type, s.source_version "
+                "FROM omnivia_staged_sources s "
+                "JOIN omnivia_evidence_artifacts e "
+                "ON e.workspace_id = s.workspace_id "
+                "AND e.staged_source_ref = s.staged_source_ref "
+                "WHERE e.source_native_id = ? AND s.staging_outcome = 'verified'",
+                (STAGED_SOURCE_ID,),
+            ).fetchone()
+    except sqlite3.Error:
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    if row is None:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    descriptor: dict[str, Any] = {
+        "staged_source_ref": row[0],
+        "source_kind": row[1],
+        "content_checksum": row[2],
+        "content_length_bytes": row[3],
+        "media_type": row[4],
+    }
+    if row[5] is not None:
+        descriptor["source_version"] = row[5]
+    return descriptor
+
+
+def imported_job(context: CoreContext) -> str:
+    deadline = time.monotonic() + CORE_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            with contextlib.closing(sqlite3.connect(context.database)) as connection:
+                rows = connection.execute(
+                    "SELECT j.job_id, j.state FROM omnivia_durable_jobs j "
+                    "JOIN omnivia_application_import_claims c ON c.job_id = j.job_id "
+                    "AND c.workspace_id = ? ORDER BY j.job_id",
+                    (context.workspace_id,),
+                ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        if len(rows) == 1 and rows[0][1] == "succeeded" and isinstance(rows[0][0], str):
+            return str(rows[0][0])
+        if len(rows) > 1:
+            break
+        time.sleep(0.05)
+    raise QualificationError(ReasonCode.GATE_FAILED)
+
+
+def inspect_settled_import_job(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    progress: Callable[[str], None] = lambda _stage: None,
+) -> str:
+    """Read the durable import only while Core is not the database owner."""
+    stop_core(context)
+    progress("import_core_stopped_for_inspection")
+    job_id = imported_job(context)
+    start_core(installed, context)
+    progress("import_core_restarted")
+    return job_id
+
+
+# --- deterministic real-host journey --------------------------------------
+
+
+def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
+    payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    return (
+        "This is an isolated MCP qualification step. Use only the configured "
+        f"{SERVER_KEY} MCP server. Call exactly one tool named {tool}; it may be "
+        f"displayed as {claude_tool_name(tool)}. Use it now with exactly the JSON "
+        "arguments below; do not add, remove, rewrite or infer values. "
+        "Do not call another tool. Whether the tool succeeds or returns an error, "
+        f"after it finishes output exactly {marker} and nothing else.\nJSON:{payload}"
+    )
+
+
+@dataclass
+class HostDriver:
+    host: str
+    binary: Path
+    auth_file: Path
+    installed: InstalledCandidate
+    core_config: Path
+    root: Path
+    tools: tuple[str, ...]
+    progress: Callable[[str], None] = lambda _stage: None
+    sequence: int = 0
+    protocol_clean: bool = True
+
+    def call(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_error: bool = False,
+        interrupt: bool = False,
+        on_withheld: Callable[[], None] = lambda: None,
+        pause_before: bool = False,
+        on_paused: Callable[[], None] = lambda: None,
+        _remaining_missing_retries: int = 2,
+    ) -> HostRunResult:
+        self.sequence += 1
+        marker = f"OMNIVIA_MCP_QUALIFICATION_STEP_{self.sequence}_DONE"
+        layout = host_layout(self.root / f"session-{self.sequence:02d}", self.host)
+        digest = arguments_digest(arguments)
+        interruption = Interruption(tool, digest) if interrupt else None
+        pause: PauseBefore | None = None
+        release = layout.root / "release-request"
+        if pause_before:
+            pause = PauseBefore(tool, digest, release)
+
+        def release_request() -> None:
+            on_paused()
+            _write_private(release, "release\n")
+
+        result = run_host_session(
+            host=self.host,
+            binary=self.binary,
+            layout=layout,
+            installed=self.installed,
+            core_config=self.core_config,
+            auth_file=self.auth_file,
+            prompt=_tool_prompt(tool, arguments, marker),
+            marker=marker,
+            tools=(tool,),
+            timeout=HOST_TIMEOUT,
+            interruption=interruption,
+            pause_before=pause,
+            on_withheld=on_withheld,
+            on_paused=release_request if pause_before else on_paused,
+        )
+        summary = result.summary
+        self.protocol_clean = self.protocol_clean and not summary.violation
+        if summary.violation:
+            self.progress("host_protocol_violation")
+            raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
+        if not summary.initialized:
+            self.progress("host_initialize_missing")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if not summary.listed:
+            self.progress("host_inventory_missing")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if summary.listed_tools != self.tools:
+            self.progress("host_inventory_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if tool not in summary.called:
+            self.progress("host_target_call_missing")
+            if _remaining_missing_retries > 0:
+                return self.call(
+                    tool,
+                    arguments,
+                    expected_error=expected_error,
+                    interrupt=interrupt,
+                    on_withheld=on_withheld,
+                    pause_before=pause_before,
+                    on_paused=on_paused,
+                    _remaining_missing_retries=_remaining_missing_retries - 1,
+                )
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if not set(summary.called).issubset({tool, *SAFE_AUXILIARY_TOOLS}):
+            self.progress("host_call_set_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        target_requests = [request for request in summary.requests if request[0] == tool]
+        if (
+            not target_requests
+            or any(request != (tool, digest) for request in target_requests)
+            or len(summary.requests) != len(summary.called)
+        ):
+            self.progress("host_arguments_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if interrupt:
+            if (
+                not result.interrupted
+                or not summary.withheld
+                or tool in summary.responded
+                or result.exited_cleanly
+            ):
+                self.progress("host_interruption_mismatch")
+                raise QualificationError(ReasonCode.INTERRUPTION_BOUNDARY_UNOBSERVABLE)
+            return result
+        if (
+            not result.exited_cleanly
+            or not result.marker_seen
+            or summary.withheld
+            or result.paused != pause_before
+            or summary.paused != pause_before
+            or len(summary.responded) != len(summary.called)
+        ):
+            self.progress("host_completion_mismatch")
+            raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+        if expected_error:
+            if (
+                summary.tool_errors.count(tool) != len(target_requests)
+                or tool in summary.succeeded
+            ):
+                self.progress("host_expected_error_mismatch")
+                raise QualificationError(ReasonCode.GATE_FAILED)
+        elif (
+            summary.succeeded.count(tool) != len(target_requests)
+            or tool in summary.tool_errors
+        ):
+            self.progress("host_expected_success_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        return result
+
+
+def _capture_arguments(source: str, key: str, text: str) -> dict[str, Any]:
+    return {
+        "input": {
+            "source_native_id": source,
+            "media_type": "text/markdown",
+            "text": text,
+        },
+        "idempotency_key": key,
+    }
+
+
+def _memory_arguments(principal: str) -> dict[str, Any]:
+    source = {"kind": "direct_submission", "source_id": DIRECT_SOURCE_ID}
+    return {
+        "input": {
+            "record_type": "memory.fact",
+            "domain_scope": "product.core",
+            "content": {"fact": f"real host fact {QUALIFICATION_TOKEN}"},
+            "evidence_disposition": "available",
+            "sources": [source],
+            "assertion": {
+                "actor_id": principal,
+                "actor_kind": "agent",
+                "actor_role": "author",
+                "asserted_at": "2026-10-03T00:00:00Z",
+                "evidence": [{"source": source}],
+            },
+        },
+        "idempotency_key": MEMORY_KEY,
+    }
+
+
+def _record_true(ledger: GateLedger, gate: str, *checks: str) -> None:
+    for check in checks:
+        ledger.record(gate, check, True, source=Evidence.INDEPENDENT)
+
+
+def qualify_host(
+    *,
+    host: str,
+    binary: Path,
+    auth_file: Path,
+    installed: InstalledCandidate,
+    run_root: Path,
+    progress: Callable[[str], None] = lambda _stage: None,
+    ledger: GateLedger | None = None,
+) -> GateLedger:
+    ledger = GateLedger() if ledger is None else ledger
+    _record_true(ledger, "i1", "candidate_installed", "entrypoints_resolved")
+    context = initialize_core(installed, run_root / "core")
+    progress("core_initialized")
+    start_core(installed, context)
+    progress("core_started")
+    try:
+        restricted_config = configure_profile(installed, context, host, "restricted")
+        progress("restricted_configured")
+        _record_true(ledger, "i2", "restricted_configured")
+        restricted = HostDriver(
+            host,
+            binary,
+            auth_file,
+            installed,
+            restricted_config,
+            run_root / "restricted-host",
+            RESTRICTED_TOOLS,
+            progress,
+        )
+        restricted.call("workspace_inspect", {})
+        progress("restricted_host_ok")
+        _record_true(
+            ledger,
+            "i3",
+            "initialize_verified",
+            "restricted_tools_exact",
+        )
+
+        authoring_config = configure_profile(installed, context, host, "authoring")
+        progress("authoring_configured")
+        principal = configuration_principal(authoring_config)
+        _record_true(ledger, "i2", "authoring_configured")
+        authoring = HostDriver(
+            host,
+            binary,
+            auth_file,
+            installed,
+            authoring_config,
+            run_root / "authoring-host",
+            AUTHORING_TOOLS,
+            progress,
+        )
+
+        if owner_rows(
+            installed,
+            context,
+            ("evidence", "search"),
+            {"query": QUALIFICATION_TOKEN},
+            "evidence",
+        ) or owner_rows(
+            installed,
+            context,
+            ("memory", "search"),
+            {"query": QUALIFICATION_TOKEN},
+            "records",
+        ):
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        direct_capture = _capture_arguments(
+            DIRECT_SOURCE_ID,
+            CAPTURE_KEY,
+            f"real host captured note {QUALIFICATION_TOKEN}\n",
+        )
+        authoring.call("evidence_capture", direct_capture)
+        progress("capture_host_ok")
+        authoring.call("evidence_search", {"query": QUALIFICATION_TOKEN})
+        progress("capture_search_host_ok")
+        direct_rows = owner_rows(
+            installed,
+            context,
+            ("evidence", "search"),
+            {"query": DIRECT_SOURCE_ID},
+            "evidence",
+        )
+        if len(direct_rows) != 1:
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        _record_true(ledger, "i4", "capture_and_search")
+
+        authoring.call("memory_create", _memory_arguments(principal))
+        progress("memory_create_host_ok")
+        authoring.call("memory_search", {"query": QUALIFICATION_TOKEN})
+        authoring.call(
+            "memory_search", {"query": QUALIFICATION_TOKEN, "view": "candidates"}
+        )
+        progress("memory_search_hosts_ok")
+        default_rows = owner_rows(
+            installed,
+            context,
+            ("memory", "search"),
+            {"query": QUALIFICATION_TOKEN},
+            "records",
+        )
+        candidate_rows = owner_rows(
+            installed,
+            context,
+            ("memory", "search"),
+            {"query": QUALIFICATION_TOKEN, "view": "candidates"},
+            "records",
+        )
+        if default_rows or len(candidate_rows) != 1:
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        _record_true(
+            ledger,
+            "i4",
+            "proposed_memory",
+            "default_invisible",
+            "candidate_visible",
+        )
+        _record_true(ledger, "i3", "authoring_tools_exact")
+
+        import_context = initialize_core(installed, run_root / "import-core")
+        progress("import_core_initialized")
+        staged = stage_source(installed, import_context)
+        progress("source_staged")
+        start_core(installed, import_context)
+        progress("import_core_started")
+        try:
+            import_config = configure_profile(
+                installed, import_context, host, "authoring"
+            )
+            import_driver = HostDriver(
+                host,
+                binary,
+                auth_file,
+                installed,
+                import_config,
+                run_root / "import-host",
+                AUTHORING_TOOLS,
+                progress,
+            )
+            import_arguments = {
+                "input": {"source": dict(staged)},
+                "idempotency_key": IMPORT_KEY,
+            }
+            import_driver.call("import_start", import_arguments)
+            progress("import_start_host_ok")
+            # The runtime owns the workspace database exclusively while it is
+            # serving.  Inspect only across a real service shutdown, then use a
+            # fresh service for both host and owner observations of the job.
+            job_id = inspect_settled_import_job(
+                installed, import_context, progress
+            )
+            import_driver.call("job_get", {"job_id": job_id})
+            import_driver.call("job_events", {"job_id": job_id})
+            progress("job_observation_hosts_ok")
+            job = owner_call(
+                installed, import_context, ("job", "get"), {"job_id": job_id}
+            ).get("job")
+            events = owner_call(
+                installed,
+                import_context,
+                ("job", "events"),
+                {"job_id": job_id},
+            ).get("events")
+            if not isinstance(job, dict) or job.get("state") != "succeeded":
+                raise QualificationError(ReasonCode.GATE_FAILED)
+            if not isinstance(events, list) or len(events) < 2:
+                raise QualificationError(ReasonCode.GATE_FAILED)
+            if not import_driver.protocol_clean:
+                raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
+            _record_true(ledger, "i5", "staged_import", "job_observed")
+        finally:
+            stop_core(import_context)
+
+        interrupted_arguments = _capture_arguments(
+            INTERRUPTED_SOURCE_ID,
+            INTERRUPTED_KEY,
+            f"interrupted response note {QUALIFICATION_TOKEN}\n",
+        )
+        committed = False
+
+        def observe_commit() -> None:
+            nonlocal committed
+            rows = owner_rows(
+                installed,
+                context,
+                ("evidence", "search"),
+                {"query": INTERRUPTED_SOURCE_ID},
+                "evidence",
+            )
+            if len(rows) != 1:
+                raise QualificationError(ReasonCode.INTERRUPTION_BOUNDARY_UNOBSERVABLE)
+            committed = True
+
+        interrupted = authoring.call(
+            "evidence_capture",
+            interrupted_arguments,
+            interrupt=True,
+            on_withheld=observe_commit,
+        )
+        progress("interruption_host_ok")
+        if not committed or not interrupted.interrupted:
+            raise QualificationError(ReasonCode.INTERRUPTION_BOUNDARY_UNOBSERVABLE)
+        _record_true(
+            ledger,
+            "i6",
+            "commit_observed_before_response",
+            "host_stopped_before_response",
+        )
+        authoring.call("evidence_capture", interrupted_arguments)
+        rows_after_replay = owner_rows(
+            installed,
+            context,
+            ("evidence", "search"),
+            {"query": INTERRUPTED_SOURCE_ID},
+            "evidence",
+        )
+        if len(rows_after_replay) != 1:
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        changed = _capture_arguments(
+            INTERRUPTED_SOURCE_ID,
+            INTERRUPTED_KEY,
+            f"changed interrupted response note {QUALIFICATION_TOKEN}\n",
+        )
+        authoring.call("evidence_capture", changed, expected_error=True)
+        progress("replay_conflict_hosts_ok")
+        _record_true(
+            ledger,
+            "i6",
+            "same_key_replayed",
+            "single_durable_effect",
+            "changed_input_conflict",
+        )
+
+        restart_core(installed, context)
+        progress("core_restarted")
+        authoring.call("evidence_search", {"query": INTERRUPTED_SOURCE_ID})
+        progress("post_restart_host_ok")
+        if len(
+            owner_rows(
+                installed,
+                context,
+                ("evidence", "search"),
+                {"query": INTERRUPTED_SOURCE_ID},
+                "evidence",
+            )
+        ) != 1:
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        _record_true(
+            ledger,
+            "i7",
+            "host_restart_observed",
+            "core_restart_observed",
+        )
+
+        revoked = False
+
+        def revoke_before_call() -> None:
+            nonlocal revoked
+            revoke_authoring(installed, context, host)
+            revoked = True
+
+        authoring.call(
+            "evidence_capture",
+            _capture_arguments(
+                f"{DIRECT_SOURCE_ID}-after-revoke",
+                f"{CAPTURE_KEY}-after-revoke",
+                "must not settle",
+            ),
+            expected_error=True,
+            pause_before=True,
+            on_paused=revoke_before_call,
+        )
+        progress("revocation_host_ok")
+        if not revoked or not core_healthy(installed, context):
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        _record_true(
+            ledger,
+            "i8",
+            "authoring_revoked",
+            "mutation_fail_closed",
+            "core_healthy",
+        )
+        if not restricted.protocol_clean or not authoring.protocol_clean:
+            raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
+        _record_true(ledger, "i7", "stdout_protocol_only")
+        return ledger
+    finally:
+        stop_core(context)
+
+
+def os_identity(
+    *,
+    mac_version: Callable[[], tuple[str, tuple[str, ...], str]] = platform.mac_ver,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> OsIdentity:
+    version = mac_version()[0]
+    try:
+        completed = run(
+            ["/usr/bin/sw_vers", "-buildVersion"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise QualificationError(ReasonCode.PLATFORM_UNSUPPORTED) from None
+    build = completed.stdout.strip()
+    if (
+        completed.returncode != 0
+        or not re.fullmatch(r"[0-9]{1,3}[A-Z][0-9]{1,5}[a-z]?", build)
+        or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version)
+    ):
+        raise QualificationError(ReasonCode.PLATFORM_UNSUPPORTED)
+    return OsIdentity(version, build, platform.machine().lower())
+
+
+def installed_from_prefix(prefix: Path) -> InstalledCandidate:
+    scripts = prefix / "bin"
+    installed = InstalledCandidate(
+        prefix,
+        scripts / "python",
+        scripts / "omnivia-core-service",
+        scripts / "omnivia",
+        scripts / "omnivia-core-mcp",
+    )
+    resolved = prefix.resolve()
+    if not installed.python.is_file() or not os.access(installed.python, os.X_OK):
+        raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+    for path in (installed.service, installed.cli, installed.mcp):
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or not os.access(path, os.X_OK)
+            or not path.resolve().is_relative_to(resolved)
+        ):
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+    return installed
+
+
+# --- command line ---------------------------------------------------------
+
+
+def _preflight(arguments: argparse.Namespace) -> None:
+    load_candidate(arguments.candidate)
+    require_platform(platform.system().lower(), platform.machine().lower())
+    binary: Path = arguments.host_binary
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise QualificationError(ReasonCode.HOST_BINARY_UNAVAILABLE)
+    require_auth_file(arguments.auth_file)
+    load_schema(arguments.schema)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments_list = list(sys.argv[1:] if argv is None else argv)
+    if arguments_list[:1] == [INTERNAL_PROXY]:  # hidden: launched by a host, not by a person
+        return proxy_main(arguments_list[1:])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", choices=sorted(HOST_VERSIONS))
+    parser.add_argument("--host-binary", type=Path)
+    parser.add_argument("--candidate", type=Path)
+    parser.add_argument("--auth-file", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--schema", type=Path)
+    parser.add_argument("--runtime-root", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--diagnostic-stages", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--validate-record", type=Path, help="validate an existing record and exit"
+    )
+    arguments = parser.parse_args(arguments_list)
+
+    def trace(stage: str) -> None:
+        if arguments.diagnostic_stages:
+            print(f"stage={stage}", file=sys.stderr, flush=True)
+
+    if arguments.schema is None:
+        parser.error("--schema is required")
+    started_at = datetime.now(UTC)
+    candidate: Candidate | None = None
+    identity: OsIdentity | None = None
+    host_identity: HostIdentity | None = None
+    ledger = GateLedger()
+    try:
+        if arguments.validate_record is not None:
+            try:
+                record = json.loads(arguments.validate_record.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raise QualificationError(ReasonCode.RECORD_INVALID) from None
+            validate_record(record, load_schema(arguments.schema))
+            print("record valid")
+            return 0
+        required = ("host", "host_binary", "candidate", "auth_file", "output")
+        if any(getattr(arguments, name) is None for name in required):
+            parser.error("qualification requires --host, --host-binary, --candidate, "
+                         "--auth-file and --output")
+        _preflight(arguments)
+        trace("preflight_ok")
+        candidate = load_candidate(arguments.candidate)
+        runtime_root: Path | None = arguments.runtime_root
+        if runtime_root is None:
+            temporary_parent = "/tmp" if Path("/tmp").is_dir() else None
+            runtime_root = Path(
+                tempfile.mkdtemp(prefix="ovmcp-real-", dir=temporary_parent)
+            )
+            runtime_root.chmod(0o700)
+            try:
+                installed = bootstrap_candidate(
+                    arguments.candidate, candidate, runtime_root
+                )
+                trace("bootstrap_ok")
+                _write_private(
+                    runtime_root / "bootstrap-receipt.json",
+                    json.dumps(
+                        {
+                            "revision": candidate.revision,
+                            "wheels": dict(candidate.wheels),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                environment = {
+                    "PATH": SYSTEM_PATH,
+                    "LANG": "en_US.UTF-8",
+                    "TMPDIR": str(runtime_root),
+                }
+                reexec_under_candidate(
+                    installed,
+                    [*arguments_list, "--runtime-root", str(runtime_root)],
+                    environ=environment,
+                )
+            except BaseException:
+                shutil.rmtree(runtime_root, ignore_errors=True)
+                raise
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+
+        if not in_candidate_runtime(os.environ, sys.prefix):
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+        trace("candidate_runtime_ok")
+        if Path(sys.prefix).resolve() != (runtime_root / "candidate-venv").resolve():
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+        receipt = _json_document(runtime_root / "bootstrap-receipt.json")
+        if receipt != {"revision": candidate.revision, "wheels": dict(candidate.wheels)}:
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+        installed = installed_from_prefix(Path(sys.prefix))
+        trace("candidate_receipt_ok")
+        try:
+            version_layout = host_layout(runtime_root / "version", arguments.host)
+            create_layout(version_layout)
+            version = require_host_version(
+                arguments.host,
+                arguments.host_binary,
+                host_environment(version_layout, arguments.host_binary),
+                version_layout.workspace,
+            )
+            host_identity = HostIdentity(arguments.host, version)
+            trace("host_version_ok")
+            require_host_authentication(
+                arguments.host,
+                arguments.host_binary,
+                host_layout(runtime_root / "authentication", arguments.host),
+                arguments.auth_file,
+            )
+            trace("host_authentication_ok")
+            identity = os_identity()
+            ledger = qualify_host(
+                host=arguments.host,
+                binary=arguments.host_binary,
+                auth_file=arguments.auth_file,
+                installed=installed,
+                run_root=runtime_root / "qualification",
+                progress=trace,
+                ledger=ledger,
+            )
+            trace("journey_ok")
+            record = build_record(
+                candidate=candidate,
+                os_identity=identity,
+                host=host_identity,
+                ledger=ledger,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+            )
+            write_record(record, load_schema(arguments.schema), arguments.output)
+            trace("record_ok")
+            print("qualification pass")
+            return 0
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
+    except QualificationError as error:
+        if (
+            arguments.output is not None
+            and arguments.schema is not None
+            and arguments.validate_record is None
+        ):
+            try:
+                finished_at = datetime.now(UTC)
+                record = (
+                    build_record(
+                        candidate=candidate,
+                        os_identity=identity,
+                        host=host_identity,
+                        ledger=ledger,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        reason=error.code,
+                    )
+                    if candidate is not None
+                    and identity is not None
+                    and host_identity is not None
+                    else build_minimal_failure_record(
+                        error.code,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                    )
+                )
+                write_record(record, load_schema(arguments.schema), arguments.output)
+            except QualificationError:
+                pass
+        print(f"reason_code={error.code.value}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
