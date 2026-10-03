@@ -70,6 +70,9 @@ INTERRUPTED_KEY: Final = f"{QUALIFICATION_TOKEN}-interrupted-1"
 HOST_TIMEOUT: Final = 300.0
 CORE_TIMEOUT: Final = 60.0
 SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
+CLAUDE_TOKEN_VARIABLE: Final = "CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_TOKEN_FILE_BYTES: Final = 1024
+_CLAUDE_TOKEN: Final = re.compile(r"[A-Za-z0-9._~+/=-]{16,512}")
 
 #: The gates of requirements §13.I.  Every subcheck is an independently
 #: observed boolean; the ledger starts every one closed.
@@ -298,7 +301,8 @@ def claude_tool_name(tool: str) -> str:
 
 
 def claude_mcp_config(entry: Mapping[str, Any]) -> dict[str, Any]:
-    return {"mcpServers": {SERVER_KEY: dict(entry)}}
+    """The Claude MCP document; the server's empty token variable overrides any inherited token."""
+    return {"mcpServers": {SERVER_KEY: {**entry, "env": {CLAUDE_TOKEN_VARIABLE: ""}}}}
 
 
 def claude_command(
@@ -466,6 +470,37 @@ def copy_auth_file(source: Path, destination: Path) -> None:
         raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE) from None
     finally:
         os.close(descriptor)
+
+
+def read_claude_token(source: Path) -> str:
+    """Return the one OAuth token ``claude setup-token`` produced, or refuse.
+
+    The file holds the token alone, optionally followed by one LF.  Its text is
+    checked and returned, never echoed, copied or included in any refusal.
+    """
+    descriptor = _open_auth_source(source)
+    try:
+        with os.fdopen(descriptor, "rb") as reader:
+            raw = reader.read(CLAUDE_TOKEN_FILE_BYTES + 1)
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE) from None
+    token = text.removesuffix("\n")
+    if len(raw) > CLAUDE_TOKEN_FILE_BYTES or not _CLAUDE_TOKEN.fullmatch(token):
+        raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE)
+    return token
+
+
+def provision_credential(host: str, layout: HostLayout, auth_file: Path) -> dict[str, str]:
+    """Place Codex's ``auth.json``, or return Claude's token for its environment only.
+
+    Claude never gets a credential file: its token reaches the host solely as
+    ``CLAUDE_CODE_OAUTH_TOKEN``, which overrides any keychain login.
+    """
+    if host == "claude-code":
+        return {CLAUDE_TOKEN_VARIABLE: read_claude_token(auth_file)}
+    copy_auth_file(auth_file, layout.auth_destination)
+    return {}
 
 
 # --- fail-closed gate ledger ----------------------------------------------
@@ -1335,13 +1370,20 @@ def write_host_config(layout: HostLayout, host: str, entry: Mapping[str, Any]) -
     return path
 
 
-def host_environment(layout: HostLayout, binary: Path) -> dict[str, str]:
-    """A minimal environment: no operator variable, credential or config reaches the host."""
+def host_environment(
+    layout: HostLayout, binary: Path, credential: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """A minimal environment: no operator variable or ambient config reaches the host.
+
+    ``credential`` is the only extra input, given by ``provision_credential``: the
+    provisioned portable credential intentionally reaches the host.
+    """
     return {
         "PATH": f"{binary.parent}:{SYSTEM_PATH}",
         "LANG": "en_US.UTF-8",
         "TMPDIR": str(layout.temporary),
         **layout.environment(),
+        **(credential or {}),
     }
 
 
@@ -1399,9 +1441,9 @@ def require_host_authentication(
     *,
     run: Runner = _run_transient,
 ) -> None:
-    """Prove the copied credential works in the isolated host home."""
+    """Prove the provisioned credential works in the isolated host home."""
     create_layout(layout)
-    copy_auth_file(auth_file, layout.auth_destination)
+    credential = provision_credential(host, layout, auth_file)
     command = (
         [str(binary), "auth", "status", "--json"]
         if host == "claude-code"
@@ -1410,7 +1452,7 @@ def require_host_authentication(
     try:
         completed = run(
             command,
-            host_environment(layout, binary),
+            host_environment(layout, binary, credential),
             layout.workspace,
             60.0,
         )
@@ -1559,7 +1601,7 @@ def run_host_session(
 ) -> HostRunResult:
     """Lay out an isolated host, point it at the proxy and run it once."""
     create_layout(layout)
-    copy_auth_file(auth_file, layout.auth_destination)
+    credential = provision_credential(host, layout, auth_file)
     observation = layout.root / "observation.jsonl"
     spec = layout.root / "proxy-spec.json"
     child = mcp_server_entry(installed.mcp, core_config)
@@ -1577,7 +1619,7 @@ def run_host_session(
     command = host_command(host, binary, layout, config, prompt=prompt, tools=tools)
     return run_host(
         command,
-        env=host_environment(layout, binary),
+        env=host_environment(layout, binary, credential),
         cwd=layout.workspace,
         observation=observation,
         marker=marker,
@@ -2546,7 +2588,10 @@ def _preflight(arguments: argparse.Namespace) -> None:
     binary: Path = arguments.host_binary
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise QualificationError(ReasonCode.HOST_BINARY_UNAVAILABLE)
-    require_auth_file(arguments.auth_file)
+    if arguments.host == "claude-code":
+        read_claude_token(arguments.auth_file)
+    else:
+        require_auth_file(arguments.auth_file)
     load_schema(arguments.schema)
 
 

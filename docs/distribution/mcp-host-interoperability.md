@@ -195,12 +195,53 @@ explicit authentication file, the closed schema, and an output record:
   --output /absolute/path/to/codex-record.json
 ```
 
-The same command uses `--host claude-code` for Claude Code. Before Core starts,
-the harness copies the named credential by bytes into the isolated host home
-and asks that host's own authentication-status command to prove the copy is
-usable. A credential that is present but bound to the operator's keychain or
-normal configuration fails as `authentication_unavailable`; the harness does
-not weaken isolation or point the run at the operator's normal host state.
+For Claude Code, use `--host claude-code` with the installed Claude Code binary
+and a token-only authentication file:
+
+```bash
+.venv/bin/python scripts/run-mcp-real-host-qualification.py \
+  --host claude-code \
+  --host-binary /absolute/path/to/claude \
+  --candidate /absolute/path/to/candidate \
+  --auth-file /absolute/path/to/claude-token.txt \
+  --schema docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json \
+  --output /absolute/path/to/claude-record.json
+```
+
+### `--auth-file` by host
+
+The same flag carries a different kind of credential for each host. For both,
+the file must be a regular file owned by the operator's account, not a symbolic
+link, with no group or world permission bits. Any other file, or any read
+failure, is refused as `authentication_unavailable`, and the file's contents are
+never echoed.
+
+- **Codex CLI:** the file is an owner-only copy of Codex's `auth.json`. The
+  harness copies it by bytes into the isolated `CODEX_HOME` as a new owner-only
+  file. It never parses the file.
+- **Claude Code:** the file is token-only. It holds exactly the OAuth token
+  produced by `claude setup-token`, optionally followed by one LF, at most 1024
+  bytes, and nothing else. The accepted token itself is 16–512 characters from
+  the harness's portable-token character set. The harness checks that shape and
+  never copies the file. It injects the value only as
+  `CLAUDE_CODE_OAUTH_TOKEN` into the isolated Claude host environment, so no
+  credential file is written into the isolated home.
+
+For both hosts, `HOME` and the host's configuration variable (`CLAUDE_CONFIG_DIR`
+for Claude Code, `CODEX_HOME` for Codex CLI) remain isolated. The normal
+host configuration is not copied, read or changed by the harness, and the
+portable Claude token does not rely on the operator's keychain login. The token
+is held in memory only for the authentication check and Claude host sessions;
+the harness does not write it to disk or include it in a record. The MCP server
+process explicitly receives `CLAUDE_CODE_OAUTH_TOKEN` set to the empty string,
+so neither the proxy nor Core inherits the token even though the Claude host
+process has it.
+
+Before Core starts, the harness provisions the credential and asks that host's
+own authentication-status command to prove it works in the isolated home. A
+credential that is bound to the operator's keychain or normal configuration
+fails as `authentication_unavailable`. The harness does not weaken isolation or
+point the run at the operator's normal host state.
 
 Success and failure records are validated against the closed schema before an
 atomic write. Early failures use the schema's minimal failure branch; once the

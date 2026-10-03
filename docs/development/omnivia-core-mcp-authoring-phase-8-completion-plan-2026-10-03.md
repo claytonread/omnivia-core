@@ -244,15 +244,32 @@ harness, not final exact-tip acceptance.
 
 Claude Code 2.1.288 is installed and the operator session is authenticated, but
 that subscription login is keychain-bound: copying `.credentials.json` into an
-isolated home makes Claude's own `auth status` report logged out. The harness
-now fails this condition before Core starts with
-`authentication_unavailable`. The final Claude lane requires a portable,
-scoped credential that works in the isolated home; using the operator's normal
-home/configuration is not an acceptable workaround.
+isolated home makes Claude's own `auth status` report logged out. Without a
+portable credential, the harness fails this condition before Core starts with
+`authentication_unavailable`. Using the operator's normal home/configuration is
+not an acceptable workaround.
 
-WP3 remains open for the final Claude record and for rerunning both hosts at the
-frozen final tip. The real-host part of WP5 and final WP6 closeout also remain
-open.
+Portable token support is now implemented. For `--host claude-code`,
+`--auth-file` names a token-only file holding the OAuth token produced by
+`claude setup-token` (optionally ending in one LF). The harness injects that
+value only as `CLAUDE_CODE_OAUTH_TOKEN` into the isolated Claude host
+environment. `HOME` and `CLAUDE_CONFIG_DIR` stay isolated, the harness does not
+copy, read or change the normal host configuration, and the portable token does
+not rely on the operator's keychain login. The token value is held in memory
+only for the authentication check and Claude host sessions and is never
+persisted or recorded, and the MCP server process explicitly receives an empty
+value for that variable. For `--host codex-cli`, `--auth-file` remains an
+owner-only copy of `auth.json`. The interoperability guide states these
+host-specific semantics.
+The focused real-host harness and schema suite now contains 219 tests, up from
+194.
+
+No Claude real-host record exists yet, so Claude Code has not passed I-1
+through I-8, and no I row is green. WP3 remains open for the final Claude record
+and for rerunning both hosts at a new frozen final tip. The real-host part of
+WP5 and final WP6 closeout also remain open. This documentation edit creates a
+new candidate commit, so the current PR tip is not treated as exact after it.
+Both hosts must be rerun at the new frozen tip.
 
 ### Checks
 
@@ -265,8 +282,8 @@ open.
 - full `PYTHON=.venv/bin/python ./scripts/preflight`: pass, including 28,296
   Python tests, 23 benchmark tests, Ruff, strict mypy, all five wheel builds and
   isolated installs, and 59 Swift tests.
-- real-host harness/schema focused suite: 194 passed; targeted Ruff and strict
-  mypy pass;
+- real-host harness/schema focused suite: 219 focused tests (earlier checkpoint:
+  194 passed, with targeted Ruff and strict mypy passing);
 - Codex CLI diagnostic real-host journey at `f576ef3d`: pass;
 - Claude Code isolated authentication preflight: correctly fails closed as
   `authentication_unavailable`.
@@ -289,13 +306,16 @@ so acceptance must attach them externally to the frozen revision.
 
 ### Improvements Needed
 
-The Claude real-host lane needs a portable scoped credential, not merely a
-valid operator login. Keep the separate Windows named-pipe hardening follow-up
+Portable token support is implemented. The remaining Claude action is external:
+provision the token-only file outside the repository, then rerun both hosts at
+the new frozen tip. Keep the separate Windows named-pipe hardening follow-up
 from section 9.
 
 ### Next Step
 
-Obtain a portable Claude credential for the isolated lane. Then commit and
-rebase the implementation, build one clean exact candidate, rerun both hosts,
-retain the closed redacted records outside the source tree, run full preflight,
-and open the closeout pull request for the required hosted checks.
+Provision the Claude token-only file outside the repository, generated from
+`claude setup-token` and owner-only. Then build one clean exact candidate at the
+new frozen tip, rerun both Codex CLI and Claude Code lanes, retain the closed
+redacted records outside the source tree, run full preflight, update PR #167,
+and obtain fresh hosted checks. Merge remains blocked until the user explicitly
+authorizes it and the hosted checks are green at the latest tip.

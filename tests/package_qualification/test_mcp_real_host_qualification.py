@@ -360,7 +360,9 @@ ENTRY = {"command": "/venv/bin/omnivia-core-mcp", "args": ["--config", "/state/m
 def test_the_stdio_entry_and_claude_config_have_the_native_shape() -> None:
     entry = q.mcp_server_entry(Path("/venv/bin/omnivia-core-mcp"), Path("/state/mcp.json"))
     assert entry == ENTRY
-    assert q.claude_mcp_config(entry) == {"mcpServers": {"omnivia-core": ENTRY}}
+    assert q.claude_mcp_config(entry) == {
+        "mcpServers": {"omnivia-core": {**ENTRY, "env": {"CLAUDE_CODE_OAUTH_TOKEN": ""}}}
+    }
 
 
 def test_the_claude_command_is_strict_isolated_and_tool_limited() -> None:
@@ -1317,19 +1319,10 @@ def test_host_version_accepts_only_one_pinned_native_identity(tmp_path: Path) ->
 
 
 @posix_only
-@pytest.mark.parametrize(
-    ("host", "stdout", "stderr"),
-    [
-        ("claude-code", b'{"loggedIn":true,"email":"discarded"}\n', b""),
-        ("codex-cli", b"", b"warning\nLogged in using ChatGPT\n"),
-    ],
-)
-def test_host_authentication_is_proved_only_inside_the_isolated_home(
-    host: str, stdout: bytes, stderr: bytes, tmp_path: Path
-) -> None:
+def test_host_authentication_is_proved_only_inside_the_isolated_home(tmp_path: Path) -> None:
     auth = _auth(tmp_path)
-    layout = q.host_layout(tmp_path / "isolated", host)
-    binary = tmp_path / host
+    layout = q.host_layout(tmp_path / "isolated", "codex-cli")
+    binary = tmp_path / "codex-cli"
     binary.write_text("", encoding="utf-8")
     binary.chmod(0o755)
 
@@ -1337,11 +1330,10 @@ def test_host_authentication_is_proved_only_inside_the_isolated_home(
         assert layout.auth_destination.read_bytes() == SECRET
         assert environment["HOME"] == str(layout.home)
         assert cwd == layout.workspace and timeout == 60.0
-        expected = "auth" if host == "claude-code" else "login"
-        assert arguments[1] == expected
-        return subprocess.CompletedProcess(arguments, 0, stdout, stderr)
+        assert arguments[1] == "login"
+        return subprocess.CompletedProcess(arguments, 0, b"", b"warning\nLogged in using ChatGPT\n")
 
-    q.require_host_authentication(host, binary, layout, auth, run=run)
+    q.require_host_authentication("codex-cli", binary, layout, auth, run=run)
 
 
 @posix_only
@@ -1352,12 +1344,224 @@ def test_an_unusable_copied_host_credential_fails_before_a_journey(tmp_path: Pat
             "claude-code",
             tmp_path / "claude",
             layout,
-            _auth(tmp_path),
+            _token_file(tmp_path),
             run=lambda *_: subprocess.CompletedProcess(
                 [], 0, b'{"loggedIn":false}', b"discarded"
             ),
         )
     assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+
+
+# --- Claude token and Codex file credentials -------------------------------
+
+TOKEN = "sk-ant-oat01-AbCdEf0123456789_-.~+/=DoNotLeakThisTokenValue"
+
+
+def _token_file(
+    tmp_path: Path, content: bytes | None = None, mode: int = 0o600, name: str = "claude-token"
+) -> Path:
+    source = tmp_path / name
+    source.write_bytes(TOKEN.encode("ascii") + b"\n" if content is None else content)
+    source.chmod(mode)
+    return source
+
+
+def _claude_binary(tmp_path: Path) -> Path:
+    binary = tmp_path / "claude"
+    binary.write_text("", encoding="utf-8")
+    binary.chmod(0o755)
+    return binary
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "content", [TOKEN.encode("ascii") + b"\n", TOKEN.encode("ascii"), ("a" * 512).encode() + b"\n"]
+)
+def test_a_claude_token_file_yields_one_bounded_portable_token(tmp_path: Path, content: bytes) -> None:
+    assert q.read_claude_token(_token_file(tmp_path, content)) == content.rstrip(b"\n").decode()
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"",
+        b"\n",
+        b"short\n",
+        b"a" * 513 + b"\n",
+        b"a" * 2048,
+        b"sk-ant-oat01-" + b"\xff" * 8,
+        TOKEN.encode("ascii") + b"\nsecond-line\n",
+        TOKEN.encode("ascii") + b"\r\n",
+        TOKEN.encode("ascii") + b"\n\n",
+        b" " + TOKEN.encode("ascii"),
+        TOKEN.encode("ascii") + b" ",
+        TOKEN.encode("ascii") + b"\x00",
+        b"\t" + TOKEN.encode("ascii") + b"\n",
+        TOKEN.encode("ascii") + b"\x1b[0m",
+        TOKEN.encode("ascii") + "é".encode(),
+    ],
+)
+def test_malformed_claude_token_files_are_refused_without_disclosure(
+    tmp_path: Path, content: bytes
+) -> None:
+    source = _token_file(tmp_path, content)
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    calls: list[Any] = []
+
+    with pytest.raises(q.QualificationError) as error:
+        q.require_host_authentication(
+            "claude-code",
+            _claude_binary(tmp_path),
+            layout,
+            source,
+            run=lambda *args: calls.append(args),
+        )
+    assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+    assert calls == []
+    text = repr(error.value) + str(error.value)
+    assert "sk-ant" not in text and str(source) not in text
+    with pytest.raises(q.QualificationError) as preflight:
+        q.read_claude_token(source)
+    assert _code(preflight) is Reason.AUTHENTICATION_UNAVAILABLE
+
+
+@posix_only
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o666])
+def test_a_claude_token_file_with_group_or_world_bits_is_refused(tmp_path: Path, mode: int) -> None:
+    with pytest.raises(q.QualificationError) as error:
+        q.read_claude_token(_token_file(tmp_path, mode=mode))
+    assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+    with pytest.raises(q.QualificationError):
+        q.read_claude_token(tmp_path / "absent-token")
+
+
+@posix_only
+def test_claude_authentication_injects_only_the_token_into_the_minimal_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "operator-ambient-value-000000")
+    source = _token_file(tmp_path)
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(arguments: Any, environment: Any, cwd: Path, timeout: float) -> Any:
+        seen.append((list(arguments), dict(environment)))
+        return subprocess.CompletedProcess(arguments, 0, b'{"loggedIn":true}', b"")
+
+    q.require_host_authentication("claude-code", _claude_binary(tmp_path), layout, source, run=run)
+    [(arguments, environment)] = seen
+    assert arguments[1:] == ["auth", "status", "--json"]
+    assert environment == {
+        "PATH": f"{tmp_path}:{q.SYSTEM_PATH}",
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": str(layout.temporary),
+        "HOME": str(layout.home),
+        "CLAUDE_CONFIG_DIR": str(layout.config_dir),
+        "CLAUDE_CODE_OAUTH_TOKEN": TOKEN,
+    }
+    assert not layout.auth_destination.exists()
+    assert source.read_bytes() == TOKEN.encode("ascii") + b"\n"
+
+
+@posix_only
+def test_every_claude_session_receives_the_token_and_nothing_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _token_file(tmp_path)
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    installed = q.InstalledCandidate(
+        tmp_path / "venv",
+        tmp_path / "venv" / "python",
+        tmp_path / "venv" / "service",
+        tmp_path / "venv" / "omnivia",
+        tmp_path / "venv" / "mcp",
+    )
+    sentinel = object()
+    seen: dict[str, Any] = {}
+
+    def fake_run_host(command: Any, **kwargs: Any) -> object:
+        seen.update(command=list(command), **kwargs)
+        return sentinel
+
+    monkeypatch.setattr(q, "run_host", fake_run_host)
+    result = q.run_host_session(
+        host="claude-code",
+        binary=_claude_binary(tmp_path),
+        layout=layout,
+        installed=installed,
+        core_config=tmp_path / "core.json",
+        auth_file=source,
+        prompt="prompt-text",
+        marker="marker-text",
+        tools=q.RESTRICTED_TOOLS,
+        timeout=1.0,
+    )
+    assert result is sentinel
+    assert seen["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == TOKEN
+    assert seen["env"]["CLAUDE_CONFIG_DIR"] == str(layout.config_dir)
+    assert seen["env"]["HOME"] == str(layout.home)
+    assert "--strict-mcp-config" in seen["command"]
+    config_text = (layout.root / "claude-mcp.json").read_text(encoding="utf-8")
+    server = json.loads(config_text)["mcpServers"][q.SERVER_KEY]
+    assert server["env"] == {"CLAUDE_CODE_OAUTH_TOKEN": ""}
+    assert TOKEN not in config_text
+    assert not (layout.config_dir / ".credentials.json").exists()
+    persisted = [path for path in layout.root.rglob("*") if path.is_file()]
+    assert persisted and all(TOKEN.encode("ascii") not in path.read_bytes() for path in persisted)
+
+
+@posix_only
+def test_codex_keeps_its_copied_auth_file_and_never_receives_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = _auth(tmp_path)
+    layout = q.host_layout(tmp_path / "isolated", "codex-cli")
+    binary = tmp_path / "codex-cli"
+    binary.write_text("", encoding="utf-8")
+    binary.chmod(0o755)
+    seen: list[dict[str, str]] = []
+
+    def run(arguments: Any, environment: Any, cwd: Path, timeout: float) -> Any:
+        seen.append(dict(environment))
+        return subprocess.CompletedProcess(arguments, 0, b"Logged in\n", b"")
+
+    q.require_host_authentication("codex-cli", binary, layout, auth, run=run)
+    assert layout.auth_destination.read_bytes() == SECRET
+    assert stat.S_IMODE(layout.auth_destination.stat().st_mode) == 0o600
+    assert set(seen[0]) == {"PATH", "LANG", "TMPDIR", "HOME", "CODEX_HOME"}
+    config = q.write_host_config(layout, "codex-cli", ENTRY)
+    assert config.read_text(encoding="utf-8") == q.codex_config_toml(ENTRY)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in config.read_text(encoding="utf-8")
+
+    # Codex copies a token-shaped file verbatim; it is never read as a token.
+    second = q.host_layout(tmp_path / "second", "codex-cli")
+    token_shaped = _token_file(tmp_path, name="codex-token-shaped")
+    assert q.provision_credential("codex-cli", second, token_shaped) == {}
+    assert second.auth_destination.read_bytes() == TOKEN.encode("ascii") + b"\n"
+
+
+def test_the_token_reaches_no_run_outside_an_authenticated_claude_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "operator-ambient-value-000000")
+    layout = q.host_layout(tmp_path, "claude-code")
+    binary = _claude_binary(tmp_path)
+    assert q.host_environment(layout, binary, {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN})[
+        "CLAUDE_CODE_OAUTH_TOKEN"
+    ] == TOKEN
+    seen: list[Any] = []
+
+    def runner(argv: Any, env: Any, cwd: Path, timeout: float) -> Any:
+        seen.append(dict(env))
+        return subprocess.CompletedProcess(argv, 0, b"2.1.288 (Claude Code)\n", b"")
+
+    q.require_host_version("claude-code", binary, q.host_environment(layout, binary), tmp_path, run=runner)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in seen[0]
+    codex = q.host_layout(tmp_path, "codex-cli")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in q.host_environment(
+        codex, binary, q.provision_credential("codex-cli", codex, _auth(tmp_path))
+    )
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex-cli"])
@@ -1590,9 +1794,7 @@ def run(
     binary = tmp_path / "host-binary"
     binary.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
     binary.chmod(0o755)
-    auth = tmp_path / "auth.bin"
-    auth.write_bytes(SECRET)
-    auth.chmod(0o600)
+    auth = _token_file(tmp_path, name="auth.bin")
     output = tmp_path / "out" / "record.json"
 
     def invoke(**overrides: Any) -> tuple[int, str, str]:
@@ -1692,6 +1894,18 @@ def test_candidate_runtime_executes_the_live_runner_and_writes_one_pass_record(
     assert record["host"] == {"name": host, "version": version}
     assert record["source"] == {"revision": REVISION, "clean": True}
     assert not runtime.exists()
+
+
+@posix_only
+def test_a_malformed_claude_token_is_refused_and_never_echoed(
+    run: Any, tmp_path: Path
+) -> None:
+    bad = _token_file(tmp_path, TOKEN.encode("ascii") + b"\nsecond-line\n", name="bad-token")
+    status, out, err = run(**{"--auth-file": bad})
+    assert (status, out, err) == (1, "", "reason_code=authentication_unavailable\n")
+    record_text = run.output.read_text(encoding="utf-8")
+    assert json.loads(record_text)["reason_code"] == "authentication_unavailable"
+    assert "sk-ant" not in record_text and "second-line" not in record_text
 
 
 @posix_only
