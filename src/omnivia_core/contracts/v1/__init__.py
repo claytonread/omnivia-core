@@ -916,6 +916,7 @@ from .semantics_operations import (
     validate_operation_request_metadata,
 )
 from .semantics_result_use import (
+    ResultUseRequestError,
     evaluate_result_use,
 )
 from .semantics_runtime import (
@@ -1642,6 +1643,7 @@ __all__ = [
     "ResponseMetadata",
     "ResultUseEvaluateInput",
     "ResultUseEvaluateResult",
+    "ResultUseRequestError",
     "RetryClass",
     "RetryClassMismatchError",
     "Run",
