@@ -1693,6 +1693,54 @@ def test_host_driver_refuses_an_unexpected_mutation(
     assert _code(error) is Reason.GATE_FAILED
 
 
+def test_host_driver_proves_an_excluded_tool_is_neither_listed_nor_dispatched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        q,
+        "run_host_session",
+        lambda **_kwargs: _host_result(called=(), requests=()),
+    )
+    driver = q.HostDriver(
+        "codex-cli",
+        tmp_path / "codex",
+        tmp_path / "auth",
+        object(),
+        tmp_path / "core.json",
+        tmp_path / "sessions",
+        q.AUTHORING_TOOLS,
+    )
+    driver.prove_absent("job_cancel")
+
+
+def test_host_driver_refuses_an_excluded_tool_dispatch_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = "job_cancel"
+    digest = q.arguments_digest({})
+    monkeypatch.setattr(
+        q,
+        "run_host_session",
+        lambda **_kwargs: _host_result(
+            called=(tool,),
+            requests=((tool, digest),),
+            errors=(tool,),
+        ),
+    )
+    driver = q.HostDriver(
+        "codex-cli",
+        tmp_path / "codex",
+        tmp_path / "auth",
+        object(),
+        tmp_path / "core.json",
+        tmp_path / "sessions",
+        q.AUTHORING_TOOLS,
+    )
+    with pytest.raises(q.QualificationError) as error:
+        driver.prove_absent(tool)
+    assert _code(error) is Reason.GATE_FAILED
+
+
 def test_host_driver_releases_the_same_paused_request_after_revocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1965,3 +2013,528 @@ def test_the_validation_only_mode_checks_a_record(
         assert q.main(["--schema", str(SCHEMA), "--validate-record", str(target)]) == 1
         captured = capsys.readouterr()
         assert (captured.out, captured.err) == ("", "reason_code=record_invalid\n")
+
+
+# --- independent result, refusal and page observations ---------------------
+
+
+def _outcome_result(
+    requests: tuple[tuple[str, str], ...],
+    outcomes: tuple[tuple[str, str, str], ...],
+) -> Any:
+    return q.HostRunResult(
+        q.ObservationSummary(
+            initialized=True,
+            listed=True,
+            listed_tools=q.AUTHORING_TOOLS,
+            called=tuple(tool for tool, _ in requests),
+            requests=requests,
+            responded=tuple(tool for tool, _, _ in outcomes),
+            succeeded=tuple(tool for tool, refusal, _ in outcomes if refusal == "none"),
+            tool_errors=tuple(tool for tool, refusal, _ in outcomes if refusal != "none"),
+            paused=False,
+            withheld=False,
+            violation=False,
+            outcomes=outcomes,
+        ),
+        marker_seen=True,
+        exited_cleanly=True,
+        interrupted=False,
+        paused=False,
+    )
+
+
+def _driver(tmp_path: Path, **kwargs: Any) -> Any:
+    return q.HostDriver(
+        "codex-cli",
+        tmp_path / "codex",
+        tmp_path / "auth",
+        object(),
+        tmp_path / "core.json",
+        tmp_path / "sessions",
+        q.AUTHORING_TOOLS,
+        **kwargs,
+    )
+
+
+def test_relay_keeps_result_digests_and_closed_refusal_classes_only(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    observer = q._Observer(path)
+    relay = q._Relay(observer, None)
+
+    def call(identifier: int, name: str) -> dict[str, Any]:
+        arguments = {"input": {"secret": "do-not-retain"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": identifier,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+
+    def answer(identifier: int, result: dict[str, Any]) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": identifier, "result": result}
+
+    conflict = {
+        "isError": True,
+        "content": [{"type": "text", "text": '{ "code" : "idempotency_conflict" }'}],
+    }
+    not_callable = {
+        "isError": True,
+        "content": [{"type": "text", "text": "The tool could not be called"}],
+    }
+    unknown = {"isError": True, "content": [{"type": "text", "text": "unrecognized detail"}]}
+    captured = {
+        "isError": False,
+        "content": [],
+        "structuredContent": {"evidence": [1], "page": {"continuation_token": "private-token"}},
+    }
+    for request, response in (
+        (call(1, "evidence_capture"), answer(1, captured)),
+        (call(2, "memory_create"), answer(2, conflict)),
+        (call(3, "evidence_search"), answer(3, not_callable)),
+        (call(4, "job_get"), answer(4, unknown)),
+    ):
+        relay.request(_frame(request))
+        relay.response(_frame(response))
+    observer.close()
+
+    summary = q.summarize_observation(q.read_observation(path))
+    assert summary.outcomes == (
+        ("evidence_capture", "none", q.canonical_result_digest({"evidence": [1]})),
+        ("memory_create", "idempotency_conflict", q.canonical_result_digest(None)),
+        ("evidence_search", "not_callable", q.canonical_result_digest(None)),
+        ("job_get", "other", q.canonical_result_digest(None)),
+    )
+    text = path.read_text(encoding="ascii")
+    for retained in ("do-not-retain", "private-token", "unrecognized", "could not be called"):
+        assert retained not in text
+
+
+def test_a_page_position_never_changes_the_result_digest() -> None:
+    page = {"events": [{"sequence": 0}], "job_id": "job-1", "snapshot_event_count": 2}
+    paged = {**page, "page": {"continuation_token": "token-for-one-principal"}}
+    exhausted = {**page, "page": {}}
+    assert q.canonical_result_digest(paged) == q.canonical_result_digest(exhausted)
+    assert q.canonical_result_digest(page) == q.canonical_result_digest(exhausted)
+    assert q.canonical_result_digest(page) != q.canonical_result_digest({**page, "events": []})
+
+
+def test_refusal_classes_are_a_closed_vocabulary() -> None:
+    event = {
+        "event": "tool_call_response",
+        "seq": 1,
+        "tool": "job_get",
+        "ok": True,
+        "tool_error": True,
+        "result_digest": "0" * 64,
+        "refusal": "the service said no",
+    }
+    with pytest.raises(q.QualificationError) as error:
+        q.validate_event(event)
+    assert _code(error) is Reason.HOST_OUTPUT_AMBIGUOUS
+
+
+@pytest.mark.parametrize(
+    ("observed", "accepted"),
+    [("idempotency_conflict", True), ("other", False), ("not_callable", False), ("none", False)],
+)
+def test_an_expected_refusal_must_be_the_observed_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observed: str, accepted: bool
+) -> None:
+    tool = "evidence_capture"
+    arguments = {"input": {}, "idempotency_key": "fixed"}
+    digest = q.arguments_digest(arguments)
+    outcome = (tool, observed, q.canonical_result_digest(None))
+    monkeypatch.setattr(
+        q,
+        "run_host_session",
+        lambda **_kwargs: _outcome_result(((tool, digest),), (outcome,)),
+    )
+    driver = _driver(tmp_path)
+    if accepted:
+        driver.call(tool, arguments, expected_error=True, refusal="idempotency_conflict")
+        return
+    with pytest.raises(q.QualificationError) as error:
+        driver.call(tool, arguments, expected_error=True, refusal="idempotency_conflict")
+    assert _code(error) is Reason.GATE_FAILED
+
+
+@pytest.mark.parametrize("sent", [1, 2, 3])
+def test_a_traversal_is_exactly_the_expected_ordered_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent: int
+) -> None:
+    tool = "job_events"
+    arguments = {"job_id": "job-1", "limit": 1}
+    requests = ((tool, q.arguments_digest(arguments)),) + tuple(
+        (tool, q.arguments_digest({**arguments, "page": {"continuation_token": f"t{n}"}}))
+        for n in range(1, sent)
+    )
+    outcomes = tuple(
+        (tool, "none", q.canonical_result_digest({"events": [n]})) for n in range(sent)
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _outcome_result(requests, outcomes))
+    driver = _driver(tmp_path)
+    if sent != 2:
+        with pytest.raises(q.QualificationError) as error:
+            driver.traverse(tool, arguments, pages=2)
+        assert _code(error) is Reason.GATE_FAILED
+        return
+    result = driver.traverse(tool, arguments, pages=2)
+    assert [digest for _, digest in q._outcomes(result.summary, tool)] == [
+        q.canonical_result_digest({"events": [0]}),
+        q.canonical_result_digest({"events": [1]}),
+    ]
+
+
+def test_core_health_is_read_after_each_host_exit_before_its_result_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = "workspace_inspect"
+    arguments: dict[str, Any] = {}
+    digest = q.arguments_digest(arguments)
+    order: list[str] = []
+
+    def run(**_kwargs: Any) -> Any:
+        order.append("host-exit")
+        return _outcome_result(((tool, digest),), ((tool, "none", q.canonical_result_digest(None)),))
+
+    def unhealthy() -> bool:
+        order.append("healthy-read")
+        return False
+
+    monkeypatch.setattr(q, "run_host_session", run)
+    with pytest.raises(q.QualificationError) as error:
+        _driver(tmp_path, healthy=unhealthy).call(tool, arguments)
+    assert _code(error) is Reason.GATE_FAILED
+    assert order == ["host-exit", "healthy-read"]
+
+
+def _event(sequence: int) -> dict[str, Any]:
+    return {"sequence": sequence, "occurred_at": "2026-10-03T09:00:00Z", "state": "running"}
+
+
+def _page(events: list[dict[str, Any]], snapshot: int, token: str | None = None) -> dict[str, Any]:
+    return {
+        "job_id": "job-1",
+        "events": events,
+        "snapshot_event_count": snapshot,
+        "page": {} if token is None else {"continuation_token": token},
+    }
+
+
+def test_verified_event_stream_accepts_one_contiguous_snapshot() -> None:
+    pages = [_page([_event(0)], 2, "t1"), _page([_event(1)], 2)]
+    assert [event["sequence"] for event in q.verified_event_stream(pages, 1)] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [_page([_event(0)], 2, "t1"), _page([_event(2)], 2)],  # a gap
+        [_page([_event(0)], 2, "t1"), _page([_event(0)], 2)],  # a repeat
+        [_page([_event(0)], 2, "t1"), _page([_event(1)], 3)],  # the snapshot moved
+        [_page([_event(0), _event(1)], 2)],  # more than the page limit
+        [_page([_event(0)], 2)],  # short of the snapshot
+    ],
+)
+def test_verified_event_stream_refuses_any_gap_or_drift(pages: list[dict[str, Any]]) -> None:
+    with pytest.raises(q.QualificationError) as error:
+        q.verified_event_stream(pages, 1)
+    assert _code(error) is Reason.GATE_FAILED
+
+
+def test_owner_event_pages_follow_each_token_until_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any] | None] = []
+    replies = [_page([_event(0)], 2, "t1"), _page([_event(1)], 2)]
+
+    def owner(_installed: Any, _context: Any, _path: Any, payload: Any = None) -> Any:
+        calls.append(payload)
+        return replies.pop(0)
+
+    monkeypatch.setattr(q, "owner_call", owner)
+    pages = q.owner_event_pages(object(), object(), "job-1", 1)  # type: ignore[arg-type]
+    assert len(pages) == 2
+    assert calls == [
+        {"job_id": "job-1", "limit": 1},
+        {"job_id": "job-1", "limit": 1, "page": {"continuation_token": "t1"}},
+    ]
+
+
+# --- the real-host journey over an in-memory Core and host -----------------
+
+JOB_EVENTS: list[dict[str, Any]] = [
+    {"sequence": 0, "occurred_at": "2026-10-03T09:00:00Z", "state": "running"},
+    {"sequence": 1, "occurred_at": "2026-10-03T09:00:01Z", "state": "succeeded"},
+]
+JOURNEY_STAGED: dict[str, Any] = {
+    "staged_source_ref": "ref-1",
+    "source_kind": "staged_file",
+    "content_checksum": "c" * 64,
+    "content_length_bytes": 24,
+    "media_type": "text/plain",
+}
+MUTATIONS = frozenset({"evidence_capture", "memory_create", "import_start"})
+
+
+class FakeCore:
+    """The Core behaviour the journey depends on: keyed writes, replays, revocation and pages."""
+
+    def __init__(self, tamper: str | None) -> None:
+        self.tamper = tamper
+        self.revoked = False
+        self.keyed: dict[str, tuple[Any, dict[str, Any]]] = {}
+        self.evidence: list[dict[str, Any]] = []
+        self.memories: list[dict[str, Any]] = []
+        self.jobs: list[str] = []
+
+    def single_job(self) -> str:
+        if len(self.jobs) != 1:
+            raise q.QualificationError(Reason.GATE_FAILED)
+        return self.jobs[0]
+
+    def _create(self, tool: str, payload: Any) -> dict[str, Any]:
+        if tool == "evidence_capture":
+            self.evidence.append({"source_native_id": payload["source_native_id"], "text": payload["text"]})
+            return {"evidence": {"source_native_id": payload["source_native_id"]}}
+        if tool == "memory_create":
+            self.memories.append({"fact": payload["content"]["fact"]})
+            return {"record": {"fact": payload["content"]["fact"]}}
+        job = f"job-{len(self.jobs) + 1}"
+        self.jobs.append(job)
+        self.evidence.append({"source_native_id": q.STAGED_SOURCE_ID, "text": f"staged import {q.QUALIFICATION_TOKEN}"})
+        return {"job": {"job_id": job, "state": "succeeded"}}
+
+    def mutate(self, tool: str, arguments: dict[str, Any]) -> tuple[str, Any]:
+        if self.revoked and self.tamper != "revocation_ignored":
+            return "not_callable", None
+        key, payload = arguments["idempotency_key"], arguments["input"]
+        if key not in self.keyed:
+            result = self._create(tool, payload)
+            self.keyed[key] = (payload, result)
+            return "none", result
+        stored_payload, stored = self.keyed[key]
+        if payload != stored_payload and self.tamper != "accept_conflict":
+            return "idempotency_conflict", None
+        if self.tamper == "replay_changes_result":
+            return "none", {**stored, "replayed": True}
+        if self.tamper == "duplicate_job" and tool == "import_start":
+            return "none", self._create(tool, payload)
+        return "none", stored
+
+    def read(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if tool == "evidence_search":
+            query = arguments["query"]
+            return {
+                "evidence": [
+                    row
+                    for row in self.evidence
+                    if query in row["source_native_id"] or query in row["text"]
+                ]
+            }
+        if tool == "memory_search":
+            return {"records": list(self.memories) if arguments.get("view") == "candidates" else []}
+        if tool == "job_get":
+            return {"job": {"job_id": arguments["job_id"], "state": "succeeded"}}
+        if tool == "job_events":
+            start = int(arguments["page"]["continuation_token"].split(":")[1]) if "page" in arguments else 0
+            rows = JOB_EVENTS[start : start + arguments.get("limit", 1000)]
+            next_at = start + len(rows)
+            page = {"continuation_token": f"offset:{next_at}"} if next_at < len(JOB_EVENTS) else {}
+            return {
+                "job_id": arguments["job_id"],
+                "events": rows,
+                "snapshot_event_count": len(JOB_EVENTS),
+                "page": page,
+            }
+        return {}
+
+    def serve(self, tool: str, arguments: dict[str, Any]) -> tuple[str, Any]:
+        if tool in MUTATIONS:
+            return self.mutate(tool, arguments)
+        if self.revoked and self.tamper != "revocation_ignored" and tool != "workspace_inspect":
+            return "not_callable", None
+        return "none", self.read(tool, arguments)
+
+
+def _in_order(log: list[str], needles: list[str]) -> bool:
+    position = 0
+    for needle in needles:
+        if needle not in log[position:]:
+            return False
+        position = log.index(needle, position) + 1
+    return True
+
+
+def _journey(
+    monkeypatch: pytest.MonkeyPatch, root: Path, tamper: str | None = None
+) -> tuple[q.GateLedger, list[str]]:
+    cores: dict[Path, FakeCore] = {}
+    log: list[str] = []
+
+    def initialize(_installed: Any, path: Path) -> Any:
+        cores[path] = FakeCore(tamper)
+        return q.CoreContext(path, path / "workspace", path / "installation", f"ws-{path.name}")
+
+    def start(_installed: Any, context: Any) -> int:
+        log.append(f"start:{context.root.name}")
+        return 1
+
+    def stop(context: Any) -> None:
+        log.append(f"stop:{context.root.name}")
+
+    def restart(_installed: Any, context: Any) -> None:
+        log.append(f"restart:{context.root.name}")
+
+    def revoke(_installed: Any, context: Any, _host: str) -> None:
+        cores[context.root].revoked = True
+        log.append(f"revoke:{context.root.name}")
+
+    def owner(_installed: Any, context: Any, path: tuple[str, ...], payload: Any = None) -> dict[str, Any]:
+        if path == ("service", "health"):
+            return {"status": "pass"}
+        names = {
+            ("evidence", "search"): "evidence_search",
+            ("memory", "search"): "memory_search",
+            ("job", "get"): "job_get",
+            ("job", "events"): "job_events",
+        }
+        return cores[context.root].read(names[path], dict(payload or {}))
+
+    def run(self: Any, tool: str, arguments: dict[str, Any], *, pages: int = 1, interrupt: bool = False,
+            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None,
+            absent: bool = False) -> Any:
+        core = cores[Path(self.core_config).parent]
+        digest = q.arguments_digest(arguments)
+        log.append(f"host:{tool}:{'interrupt' if interrupt else 'pause' if pause_before else 'call'}")
+        if absent:
+            if core.tamper == "excluded_dispatched":
+                return q.HostRunResult(
+                    q.ObservationSummary(
+                        initialized=True, listed=True, listed_tools=self.tools,
+                        called=(tool,), requests=((tool, digest),), responded=(tool,), succeeded=(),
+                        tool_errors=(tool,), paused=False, withheld=False, violation=False,
+                    ),
+                    marker_seen=True, exited_cleanly=True, interrupted=False, paused=False,
+                )
+            return q.HostRunResult(
+                q.ObservationSummary(
+                    initialized=True, listed=True, listed_tools=self.tools,
+                    called=(), requests=(), responded=(), succeeded=(), tool_errors=(),
+                    paused=False, withheld=False, violation=False,
+                ),
+                marker_seen=True, exited_cleanly=True, interrupted=False, paused=False,
+            )
+        if pause_before:
+            on_paused()
+        if interrupt:
+            core.mutate(tool, arguments)  # committed; the response is then withheld
+            on_withheld()
+            log.append(f"exit:{tool}")
+            return q.HostRunResult(
+                q.ObservationSummary(
+                    initialized=True, listed=True, listed_tools=self.tools,
+                    called=(tool,), requests=((tool, digest),), responded=(), succeeded=(),
+                    tool_errors=(), paused=False, withheld=True, violation=False,
+                ),
+                marker_seen=False, exited_cleanly=False, interrupted=True, paused=False,
+            )
+        requests: list[tuple[str, str]] = []
+        outcomes: list[tuple[str, str, str]] = []
+        current = dict(arguments)
+        for _ in range(pages):
+            requests.append((tool, q.arguments_digest(current)))
+            refusal, structured = core.serve(tool, current)
+            if refusal == "none" and tool == "job_events" and core.tamper == "host_page_differs":
+                structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
+            outcomes.append((tool, refusal, q.canonical_result_digest(structured)))
+            token = (structured or {}).get("page", {}).get("continuation_token")
+            if pages > 1 and token:
+                current = {**arguments, "page": {"continuation_token": token}}
+        if not self.healthy():
+            raise q.QualificationError(Reason.GATE_FAILED)
+        return q.HostRunResult(
+            q.ObservationSummary(
+                initialized=True, listed=True, listed_tools=self.tools,
+                called=tuple(name for name, _ in requests), requests=tuple(requests),
+                responded=tuple(name for name, _, _ in outcomes),
+                succeeded=tuple(name for name, refusal, _ in outcomes if refusal == "none"),
+                tool_errors=tuple(name for name, refusal, _ in outcomes if refusal != "none"),
+                paused=pause_before, withheld=False, violation=False, outcomes=tuple(outcomes),
+            ),
+            marker_seen=True, exited_cleanly=True, interrupted=False, paused=pause_before,
+        )
+
+    monkeypatch.setattr(q, "initialize_core", initialize)
+    monkeypatch.setattr(q, "start_core", start)
+    monkeypatch.setattr(q, "stop_core", stop)
+    monkeypatch.setattr(q, "restart_core", restart)
+    monkeypatch.setattr(q, "revoke_authoring", revoke)
+    monkeypatch.setattr(q, "owner_call", owner)
+    monkeypatch.setattr(q, "stage_source", lambda _installed, _context: dict(JOURNEY_STAGED))
+    monkeypatch.setattr(
+        q, "configure_profile", lambda _installed, context, _host, profile: context.root / f"{profile}.json"
+    )
+    monkeypatch.setattr(q, "configuration_principal", lambda config: f"principal:{config.stem}")
+    monkeypatch.setattr(q, "imported_job", lambda context: cores[context.root].single_job())
+    monkeypatch.setattr(q.HostDriver, "_run", run)
+    ledger = q.GateLedger()
+    q.qualify_host(
+        host="codex-cli",
+        binary=root / "codex",
+        auth_file=root / "auth",
+        installed=object(),  # type: ignore[arg-type]
+        run_root=root,
+        progress=log.append,
+        ledger=ledger,
+    )
+    return ledger, log
+
+
+def test_the_journey_proves_every_gate_in_the_pinned_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, log = _journey(monkeypatch, tmp_path)
+    assert ledger.all_passed()
+    # interrupt -> host exit -> Core restart -> same-key replay by a fresh host
+    assert _in_order(
+        log,
+        [
+            "host:evidence_capture:interrupt",
+            "exit:evidence_capture",
+            "restart:core",
+            "host:evidence_capture:call",
+        ],
+    )
+    # the revocation lands on the paused in-flight call, before any later call
+    assert _in_order(
+        log,
+        ["host:evidence_capture:pause", "revoke:core", "revoke:import-core", "host:job_get:call"],
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "accept_conflict",
+        "replay_changes_result",
+        "duplicate_job",
+        "host_page_differs",
+        "revocation_ignored",
+        "excluded_dispatched",
+    ],
+)
+def test_a_journey_that_violates_one_observation_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    with pytest.raises(q.QualificationError) as error:
+        _journey(monkeypatch, tmp_path, tamper)
+    assert _code(error) is Reason.GATE_FAILED
+
+
+@pytest.mark.parametrize(("gate", "check"), ALL_CHECKS)
+def test_a_pass_record_needs_every_observation_true(gate: str, check: str) -> None:
+    record = _pass_record()
+    record["gates"][gate][check] = False
+    assert not jsonschema.Draft202012Validator(_schema()).is_valid(record)

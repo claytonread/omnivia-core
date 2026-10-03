@@ -355,7 +355,9 @@
           "required": [
             "initialize_verified",
             "restricted_tools_exact",
-            "authoring_tools_exact"
+            "authoring_tools_exact",
+            "excluded_tools_absent",
+            "excluded_tool_undispatchable"
           ],
           "properties": {
             "initialize_verified": {
@@ -365,6 +367,12 @@
               "type": "boolean"
             },
             "authoring_tools_exact": {
+              "type": "boolean"
+            },
+            "excluded_tools_absent": {
+              "type": "boolean"
+            },
+            "excluded_tool_undispatchable": {
               "type": "boolean"
             }
           }
@@ -376,7 +384,11 @@
             "capture_and_search",
             "proposed_memory",
             "default_invisible",
-            "candidate_visible"
+            "candidate_visible",
+            "capture_replay_stable",
+            "capture_changed_conflict",
+            "memory_replay_stable",
+            "memory_changed_conflict"
           ],
           "properties": {
             "capture_and_search": {
@@ -390,6 +402,18 @@
             },
             "candidate_visible": {
               "type": "boolean"
+            },
+            "capture_replay_stable": {
+              "type": "boolean"
+            },
+            "capture_changed_conflict": {
+              "type": "boolean"
+            },
+            "memory_replay_stable": {
+              "type": "boolean"
+            },
+            "memory_changed_conflict": {
+              "type": "boolean"
             }
           }
         },
@@ -398,13 +422,33 @@
           "additionalProperties": false,
           "required": [
             "staged_import",
-            "job_observed"
+            "job_observed",
+            "import_replay_stable",
+            "import_changed_conflict",
+            "job_events_paged",
+            "job_events_match_owner",
+            "imported_evidence_retrieved"
           ],
           "properties": {
             "staged_import": {
               "type": "boolean"
             },
             "job_observed": {
+              "type": "boolean"
+            },
+            "import_replay_stable": {
+              "type": "boolean"
+            },
+            "import_changed_conflict": {
+              "type": "boolean"
+            },
+            "job_events_paged": {
+              "type": "boolean"
+            },
+            "job_events_match_owner": {
+              "type": "boolean"
+            },
+            "imported_evidence_retrieved": {
               "type": "boolean"
             }
           }
@@ -415,6 +459,7 @@
           "required": [
             "commit_observed_before_response",
             "host_stopped_before_response",
+            "core_restarted_before_replay",
             "same_key_replayed",
             "single_durable_effect",
             "changed_input_conflict"
@@ -424,6 +469,9 @@
               "type": "boolean"
             },
             "host_stopped_before_response": {
+              "type": "boolean"
+            },
+            "core_restarted_before_replay": {
               "type": "boolean"
             },
             "same_key_replayed": {
@@ -463,6 +511,9 @@
           "required": [
             "authoring_revoked",
             "mutation_fail_closed",
+            "replay_fail_closed",
+            "job_reads_fail_closed",
+            "owner_job_observed_after_revoke",
             "core_healthy"
           ],
           "properties": {
@@ -470,6 +521,15 @@
               "type": "boolean"
             },
             "mutation_fail_closed": {
+              "type": "boolean"
+            },
+            "replay_fail_closed": {
+              "type": "boolean"
+            },
+            "job_reads_fail_closed": {
+              "type": "boolean"
+            },
+            "owner_job_observed_after_revoke": {
               "type": "boolean"
             },
             "core_healthy": {
@@ -555,7 +615,9 @@
                 "required": [
                   "initialize_verified",
                   "restricted_tools_exact",
-                  "authoring_tools_exact"
+                  "authoring_tools_exact",
+                  "excluded_tools_absent",
+                  "excluded_tool_undispatchable"
                 ],
                 "properties": {
                   "initialize_verified": {
@@ -565,6 +627,12 @@
                     "const": true
                   },
                   "authoring_tools_exact": {
+                    "const": true
+                  },
+                  "excluded_tools_absent": {
+                    "const": true
+                  },
+                  "excluded_tool_undispatchable": {
                     "const": true
                   }
                 }
@@ -576,7 +644,11 @@
                   "capture_and_search",
                   "proposed_memory",
                   "default_invisible",
-                  "candidate_visible"
+                  "candidate_visible",
+                  "capture_replay_stable",
+                  "capture_changed_conflict",
+                  "memory_replay_stable",
+                  "memory_changed_conflict"
                 ],
                 "properties": {
                   "capture_and_search": {
@@ -590,6 +662,18 @@
                   },
                   "candidate_visible": {
                     "const": true
+                  },
+                  "capture_replay_stable": {
+                    "const": true
+                  },
+                  "capture_changed_conflict": {
+                    "const": true
+                  },
+                  "memory_replay_stable": {
+                    "const": true
+                  },
+                  "memory_changed_conflict": {
+                    "const": true
                   }
                 }
               },
@@ -598,13 +682,33 @@
                 "additionalProperties": false,
                 "required": [
                   "staged_import",
-                  "job_observed"
+                  "job_observed",
+                  "import_replay_stable",
+                  "import_changed_conflict",
+                  "job_events_paged",
+                  "job_events_match_owner",
+                  "imported_evidence_retrieved"
                 ],
                 "properties": {
                   "staged_import": {
                     "const": true
                   },
                   "job_observed": {
+                    "const": true
+                  },
+                  "import_replay_stable": {
+                    "const": true
+                  },
+                  "import_changed_conflict": {
+                    "const": true
+                  },
+                  "job_events_paged": {
+                    "const": true
+                  },
+                  "job_events_match_owner": {
+                    "const": true
+                  },
+                  "imported_evidence_retrieved": {
                     "const": true
                   }
                 }
@@ -615,6 +719,7 @@
                 "required": [
                   "commit_observed_before_response",
                   "host_stopped_before_response",
+                  "core_restarted_before_replay",
                   "same_key_replayed",
                   "single_durable_effect",
                   "changed_input_conflict"
@@ -624,6 +729,9 @@
                     "const": true
                   },
                   "host_stopped_before_response": {
+                    "const": true
+                  },
+                  "core_restarted_before_replay": {
                     "const": true
                   },
                   "same_key_replayed": {
@@ -663,6 +771,9 @@
                 "required": [
                   "authoring_revoked",
                   "mutation_fail_closed",
+                  "replay_fail_closed",
+                  "job_reads_fail_closed",
+                  "owner_job_observed_after_revoke",
                   "core_healthy"
                 ],
                 "properties": {
@@ -670,6 +781,15 @@
                     "const": true
                   },
                   "mutation_fail_closed": {
+                    "const": true
+                  },
+                  "replay_fail_closed": {
+                    "const": true
+                  },
+                  "job_reads_fail_closed": {
+                    "const": true
+                  },
+                  "owner_job_observed_after_revoke": {
                     "const": true
                   },
                   "core_healthy": {

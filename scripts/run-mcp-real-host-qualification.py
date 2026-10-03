@@ -79,19 +79,53 @@ _CLAUDE_TOKEN: Final = re.compile(r"[A-Za-z0-9._~+/=-]{16,512}")
 GATES: Final = {
     "i1": ("candidate_installed", "entrypoints_resolved"),
     "i2": ("restricted_configured", "authoring_configured"),
-    "i3": ("initialize_verified", "restricted_tools_exact", "authoring_tools_exact"),
-    "i4": ("capture_and_search", "proposed_memory", "default_invisible", "candidate_visible"),
-    "i5": ("staged_import", "job_observed"),
+    "i3": (
+        "initialize_verified",
+        "restricted_tools_exact",
+        "authoring_tools_exact",
+        "excluded_tools_absent",
+        "excluded_tool_undispatchable",
+    ),
+    "i4": (
+        "capture_and_search",
+        "proposed_memory",
+        "default_invisible",
+        "candidate_visible",
+        "capture_replay_stable",
+        "capture_changed_conflict",
+        "memory_replay_stable",
+        "memory_changed_conflict",
+    ),
+    "i5": (
+        "staged_import",
+        "job_observed",
+        "import_replay_stable",
+        "import_changed_conflict",
+        "job_events_paged",
+        "job_events_match_owner",
+        "imported_evidence_retrieved",
+    ),
     "i6": (
         "commit_observed_before_response",
         "host_stopped_before_response",
+        "core_restarted_before_replay",
         "same_key_replayed",
         "single_durable_effect",
         "changed_input_conflict",
     ),
     "i7": ("stdout_protocol_only", "host_restart_observed", "core_restart_observed"),
-    "i8": ("authoring_revoked", "mutation_fail_closed", "core_healthy"),
+    "i8": (
+        "authoring_revoked",
+        "mutation_fail_closed",
+        "replay_fail_closed",
+        "job_reads_fail_closed",
+        "owner_job_observed_after_revoke",
+        "core_healthy",
+    ),
 }
+#: Owner paging for the import job: one event per page, so its two events span pages.
+IMPORT_PAGE_SIZE: Final = 1
+MAX_EVENT_PAGES: Final = 64
 
 
 class ReasonCode(enum.Enum):
@@ -900,6 +934,11 @@ def _is_names(value: object) -> bool:
     return isinstance(value, list) and len(value) <= 256 and all(_is_name(item) for item in value)
 
 
+#: What a failed call was refused for.  Only these closed classes are observed;
+#: the refusal text itself is classified in the relay and never kept.
+REFUSALS: Final = frozenset({"none", "idempotency_conflict", "not_callable", "other"})
+
+
 #: The closed observation vocabulary: event type -> required fields.  Nothing
 #: else, in particular no argument, content, result, path or process identity,
 #: can be written to or read from the stream.
@@ -910,7 +949,13 @@ EVENT_SHAPES: Final[dict[str, dict[str, Callable[[object], bool]]]] = {
     "tools_list_request": {},
     "tools_list_response": {"ok": _is_bool, "tool_count": _is_count, "tool_names": _is_names},
     "tool_call_request": {"tool": _is_name, "arguments_digest": _is_digest},
-    "tool_call_response": {"tool": _is_name, "ok": _is_bool, "tool_error": _is_bool},
+    "tool_call_response": {
+        "tool": _is_name,
+        "ok": _is_bool,
+        "tool_error": _is_bool,
+        "result_digest": _is_digest,
+        "refusal": lambda value: value in REFUSALS,
+    },
     "request_paused": {"tool": _is_name},
     "response_withheld": {"tool": _is_name},
     "protocol_violation": {"kind": lambda value: value in VIOLATION_KINDS},
@@ -940,6 +985,31 @@ def arguments_digest(arguments: object) -> str:
         arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def canonical_result_digest(structured: object) -> str:
+    """Digest of one structured result with only its pagination position removed.
+
+    A continuation token is bound to the principal that issued it, so the host's
+    and the owner's pages of one snapshot differ in ``page`` alone.
+    """
+    if isinstance(structured, dict):
+        structured = {key: value for key, value in structured.items() if key != "page"}
+    return arguments_digest(structured)
+
+
+def refusal_class(result: object) -> str:
+    """Classify a call's outcome into a closed refusal class; its text is never kept."""
+    if not isinstance(result, dict) or result.get("isError") is not True:
+        return "none"
+    content = result.get("content")
+    texts = [item.get("text") for item in content if isinstance(item, dict)] if isinstance(content, list) else []
+    text = re.sub(r"\s+", "", "".join(item for item in texts if isinstance(item, str)))
+    if '"code":"idempotency_conflict"' in text:
+        return "idempotency_conflict"
+    if "couldnotbecalled" in text:  # "could not be called": the revoked principal's refusal
+        return "not_callable"
+    return "other"
 
 
 @dataclass(frozen=True)
@@ -1189,7 +1259,15 @@ class _Relay:
             return True
         else:
             failed = not ok or (isinstance(result, dict) and result.get("isError") is True)
-            self.observer.emit("tool_call_response", tool=tool, ok=ok, tool_error=failed)
+            structured = result.get("structuredContent") if isinstance(result, dict) else None
+            self.observer.emit(
+                "tool_call_response",
+                tool=tool,
+                ok=ok,
+                tool_error=failed,
+                result_digest=canonical_result_digest(structured),
+                refusal=refusal_class(result) if ok else "other",
+            )
         return False
 
     def violation(self, kind: str) -> None:
@@ -1316,6 +1394,8 @@ class ObservationSummary:
     paused: bool
     withheld: bool
     violation: bool
+    #: Per answered call, in order: (tool, refusal class, result digest).
+    outcomes: tuple[tuple[str, str, str], ...] = ()
 
 
 def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSummary:
@@ -1344,6 +1424,11 @@ def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSum
         paused=any(e["event"] == "request_paused" for e in events),
         withheld=any(e["event"] == "response_withheld" for e in events),
         violation=any(e["event"] == "protocol_violation" for e in events),
+        outcomes=tuple(
+            (e["tool"], e["refusal"], e["result_digest"])
+            for e in events
+            if e["event"] == "tool_call_response"
+        ),
     )
 
 
@@ -2071,6 +2156,43 @@ def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
     )
 
 
+def _absent_tool_prompt(tool: str, marker: str) -> str:
+    return (
+        "This is an isolated MCP qualification step. Use only the configured "
+        f"{SERVER_KEY} MCP server. Attempt to use the excluded tool named {tool}; "
+        f"it may be displayed as {claude_tool_name(tool)}. Do not call any other "
+        "tool. The excluded tool must be unavailable. After confirming that it "
+        f"cannot be called, output exactly {marker} and nothing else."
+    )
+
+
+def _traversal_prompt(tool: str, arguments: Mapping[str, Any], pages: int, marker: str) -> str:
+    payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    return (
+        "This is an isolated MCP qualification step. Use only the configured "
+        f"{SERVER_KEY} MCP server. Call the tool {tool} (displayed as "
+        f"{claude_tool_name(tool)}) exactly {pages} times, one call after another. "
+        "The first call uses exactly the JSON arguments below. Each later call uses "
+        "the same arguments and adds a page object whose continuation_token is copied "
+        "verbatim from the page field of the immediately previous result. Do not add, "
+        "remove, rewrite or infer any other value. Do not call another tool. Whether a "
+        f"call succeeds or returns an error, after the last call output exactly {marker} "
+        f"and nothing else.\nJSON:{payload}"
+    )
+
+
+def _outcomes(summary: ObservationSummary, tool: str) -> list[tuple[str, str]]:
+    """The (refusal class, result digest) of each answered call to ``tool``, in order."""
+    return [(refusal, digest) for name, refusal, digest in summary.outcomes if name == tool]
+
+
+def _single_outcome(result: HostRunResult, tool: str) -> tuple[str, str]:
+    outcomes = _outcomes(result.summary, tool)
+    if len(outcomes) != 1:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return outcomes[0]
+
+
 @dataclass
 class HostDriver:
     host: str
@@ -2081,21 +2203,24 @@ class HostDriver:
     root: Path
     tools: tuple[str, ...]
     progress: Callable[[str], None] = lambda _stage: None
+    #: Core's own health, read after every host process exits.
+    healthy: Callable[[], bool] = lambda: True
     sequence: int = 0
     protocol_clean: bool = True
 
-    def call(
+    def _run(
         self,
         tool: str,
         arguments: Mapping[str, Any],
         *,
-        expected_error: bool = False,
+        pages: int = 1,
         interrupt: bool = False,
         on_withheld: Callable[[], None] = lambda: None,
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
-        _remaining_missing_retries: int = 2,
+        absent: bool = False,
     ) -> HostRunResult:
+        """Run one fresh host process: one call, or ``pages`` ordered calls to ``tool``."""
         self.sequence += 1
         marker = f"OMNIVIA_MCP_QUALIFICATION_STEP_{self.sequence}_DONE"
         layout = host_layout(self.root / f"session-{self.sequence:02d}", self.host)
@@ -2110,6 +2235,14 @@ class HostDriver:
             on_paused()
             _write_private(release, "release\n")
 
+        if absent:
+            prompt = _absent_tool_prompt(tool, marker)
+        else:
+            prompt = (
+                _traversal_prompt(tool, arguments, pages, marker)
+                if pages > 1
+                else _tool_prompt(tool, arguments, marker)
+            )
         result = run_host_session(
             host=self.host,
             binary=self.binary,
@@ -2117,7 +2250,7 @@ class HostDriver:
             installed=self.installed,
             core_config=self.core_config,
             auth_file=self.auth_file,
-            prompt=_tool_prompt(tool, arguments, marker),
+            prompt=prompt,
             marker=marker,
             tools=(tool,),
             timeout=HOST_TIMEOUT,
@@ -2131,6 +2264,9 @@ class HostDriver:
         if summary.violation:
             self.progress("host_protocol_violation")
             raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
+        if not self.healthy():
+            self.progress("core_unhealthy_after_host_exit")
+            raise QualificationError(ReasonCode.GATE_FAILED)
         if not summary.initialized:
             self.progress("host_initialize_missing")
             raise QualificationError(ReasonCode.GATE_FAILED)
@@ -2140,6 +2276,53 @@ class HostDriver:
         if summary.listed_tools != self.tools:
             self.progress("host_inventory_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
+        return result
+
+    def prove_absent(self, tool: str) -> None:
+        """Prove one normative sentinel is neither listed nor dispatched by the host."""
+        result = self._run(tool, {}, absent=True)
+        summary = result.summary
+        if (
+            tool in summary.listed_tools
+            or summary.called
+            or summary.requests
+            or summary.responded
+            or summary.succeeded
+            or summary.tool_errors
+            or summary.outcomes
+            or not result.exited_cleanly
+            or not result.marker_seen
+            or result.interrupted
+            or result.paused
+            or summary.withheld
+            or summary.paused
+        ):
+            self.progress("excluded_tool_dispatchable")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+
+    def call(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_error: bool = False,
+        refusal: str | None = None,
+        interrupt: bool = False,
+        on_withheld: Callable[[], None] = lambda: None,
+        pause_before: bool = False,
+        on_paused: Callable[[], None] = lambda: None,
+        _remaining_missing_retries: int = 2,
+    ) -> HostRunResult:
+        result = self._run(
+            tool,
+            arguments,
+            interrupt=interrupt,
+            on_withheld=on_withheld,
+            pause_before=pause_before,
+            on_paused=on_paused,
+        )
+        summary = result.summary
+        digest = arguments_digest(arguments)
         if tool not in summary.called:
             self.progress("host_target_call_missing")
             if _remaining_missing_retries > 0:
@@ -2147,6 +2330,7 @@ class HostDriver:
                     tool,
                     arguments,
                     expected_error=expected_error,
+                    refusal=refusal,
                     interrupt=interrupt,
                     on_withheld=on_withheld,
                     pause_before=pause_before,
@@ -2192,11 +2376,36 @@ class HostDriver:
             ):
                 self.progress("host_expected_error_mismatch")
                 raise QualificationError(ReasonCode.GATE_FAILED)
+            if refusal is not None and [
+                observed for observed, _ in _outcomes(summary, tool)
+            ] != [refusal] * len(target_requests):
+                self.progress("host_refusal_mismatch")
+                raise QualificationError(ReasonCode.GATE_FAILED)
         elif (
             summary.succeeded.count(tool) != len(target_requests)
             or tool in summary.tool_errors
         ):
             self.progress("host_expected_success_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        return result
+
+    def traverse(self, tool: str, arguments: Mapping[str, Any], *, pages: int) -> HostRunResult:
+        """One host process pages ``tool`` exactly ``pages`` times, each call succeeding."""
+        result = self._run(tool, arguments, pages=pages)
+        summary = result.summary
+        if (
+            not result.exited_cleanly
+            or not result.marker_seen
+            or result.paused
+            or summary.paused
+            or summary.withheld
+            or set(summary.called) != {tool}
+            or len(summary.requests) != pages
+            or summary.requests[0] != (tool, arguments_digest(arguments))
+            or summary.succeeded.count(tool) != pages
+            or summary.tool_errors
+        ):
+            self.progress("host_traversal_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
         return result
 
@@ -2212,13 +2421,13 @@ def _capture_arguments(source: str, key: str, text: str) -> dict[str, Any]:
     }
 
 
-def _memory_arguments(principal: str) -> dict[str, Any]:
+def _memory_arguments(principal: str, fact: str = f"real host fact {QUALIFICATION_TOKEN}") -> dict[str, Any]:
     source = {"kind": "direct_submission", "source_id": DIRECT_SOURCE_ID}
     return {
         "input": {
             "record_type": "memory.fact",
             "domain_scope": "product.core",
-            "content": {"fact": f"real host fact {QUALIFICATION_TOKEN}"},
+            "content": {"fact": fact},
             "evidence_disposition": "available",
             "sources": [source],
             "assertion": {
@@ -2236,6 +2445,393 @@ def _memory_arguments(principal: str) -> dict[str, Any]:
 def _record_true(ledger: GateLedger, gate: str, *checks: str) -> None:
     for check in checks:
         ledger.record(gate, check, True, source=Evidence.INDEPENDENT)
+
+
+AFTER_REVOKE_SOURCE_ID: Final = f"{DIRECT_SOURCE_ID}-after-revoke"
+AFTER_REVOKE_KEY: Final = f"{CAPTURE_KEY}-after-revoke"
+
+
+def _require(condition: bool) -> None:
+    if not condition:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+
+
+def _count(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    path: Sequence[str],
+    payload: Mapping[str, Any],
+    field: str,
+) -> int:
+    return len(owner_rows(installed, context, path, payload, field))
+
+
+def _memory_counts(installed: InstalledCandidate, context: CoreContext) -> tuple[int, int]:
+    """Owner-observed (default view, candidate view) memory counts for the journey token."""
+    default = _count(
+        installed, context, ("memory", "search"), {"query": QUALIFICATION_TOKEN}, "records"
+    )
+    candidates = _count(
+        installed,
+        context,
+        ("memory", "search"),
+        {"query": QUALIFICATION_TOKEN, "view": "candidates"},
+        "records",
+    )
+    return default, candidates
+
+
+def _journey_counts(installed: InstalledCandidate, context: CoreContext) -> tuple[int, ...]:
+    """Every durable row the journey may create, as the owner counts them."""
+
+    def evidence(query: str) -> int:
+        return _count(installed, context, ("evidence", "search"), {"query": query}, "evidence")
+
+    return (
+        evidence(DIRECT_SOURCE_ID),
+        evidence(INTERRUPTED_SOURCE_ID),
+        evidence(AFTER_REVOKE_SOURCE_ID),
+        *_memory_counts(installed, context),
+    )
+
+
+def owner_event_pages(
+    installed: InstalledCandidate, context: CoreContext, job_id: str, limit: int
+) -> list[Mapping[str, Any]]:
+    """Walk every page of a job's events as the owner, following each continuation token."""
+    pages: list[Mapping[str, Any]] = []
+    payload: dict[str, Any] = {"job_id": job_id, "limit": limit}
+    while True:
+        page = owner_call(installed, context, ("job", "events"), payload)
+        pages.append(page)
+        token = _continuation(page)
+        if token is None:
+            return pages
+        _require(len(pages) < MAX_EVENT_PAGES)
+        payload = {"job_id": job_id, "limit": limit, "page": {"continuation_token": token}}
+
+
+def _continuation(page: Mapping[str, Any]) -> str | None:
+    position = page.get("page")
+    if not isinstance(position, dict):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    token = position.get("continuation_token")
+    if token is None:
+        return None
+    if not isinstance(token, str) or not token:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return token
+
+
+def verified_event_stream(pages: Sequence[Mapping[str, Any]], limit: int) -> list[object]:
+    """Return the events of one stable snapshot, contiguous and ordered, or refuse."""
+    snapshots = {page.get("snapshot_event_count") for page in pages}
+    _require(len(snapshots) == 1)
+    snapshot = snapshots.pop()
+    _require(type(snapshot) is int)
+    events: list[object] = []
+    for page in pages:
+        rows = page.get("events")
+        if not isinstance(rows, list) or len(rows) > limit:
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        sequences = [row.get("sequence") if isinstance(row, dict) else None for row in rows]
+        _require(sequences == list(range(len(events), len(events) + len(rows))))
+        events.extend(rows)
+    _require(len(events) == snapshot)
+    return events
+
+
+@dataclass(frozen=True)
+class ImportJourney:
+    context: CoreContext
+    driver: HostDriver
+    arguments: Mapping[str, Any]
+    job_id: str
+    events: list[object]
+
+
+def _direct_mutations(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    authoring: HostDriver,
+    principal: str,
+    ledger: GateLedger,
+) -> None:
+    """Capture and memory: exact replays keep one effect; changed payloads conflict."""
+    capture = _capture_arguments(
+        DIRECT_SOURCE_ID, CAPTURE_KEY, f"real host captured note {QUALIFICATION_TOKEN}\n"
+    )
+    first = _single_outcome(authoring.call("evidence_capture", capture), "evidence_capture")
+    authoring.call("evidence_search", {"query": QUALIFICATION_TOKEN})
+    authoring.progress("capture_search_host_ok")
+    _require(
+        _count(installed, context, ("evidence", "search"), {"query": DIRECT_SOURCE_ID}, "evidence")
+        == 1
+    )
+    _record_true(ledger, "i4", "capture_and_search")
+
+    replay = _single_outcome(authoring.call("evidence_capture", capture), "evidence_capture")
+    _require(replay == first)
+    _require(
+        _count(installed, context, ("evidence", "search"), {"query": DIRECT_SOURCE_ID}, "evidence")
+        == 1
+    )
+    _record_true(ledger, "i4", "capture_replay_stable")
+    changed = _capture_arguments(
+        DIRECT_SOURCE_ID, CAPTURE_KEY, f"changed real host captured note {QUALIFICATION_TOKEN}\n"
+    )
+    authoring.call("evidence_capture", changed, expected_error=True, refusal="idempotency_conflict")
+    _require(
+        _count(installed, context, ("evidence", "search"), {"query": DIRECT_SOURCE_ID}, "evidence")
+        == 1
+    )
+    _record_true(ledger, "i4", "capture_changed_conflict")
+
+    created = _single_outcome(authoring.call("memory_create", _memory_arguments(principal)), "memory_create")
+    authoring.call("memory_search", {"query": QUALIFICATION_TOKEN})
+    authoring.call("memory_search", {"query": QUALIFICATION_TOKEN, "view": "candidates"})
+    authoring.progress("memory_search_hosts_ok")
+    _require(_memory_counts(installed, context) == (0, 1))
+    _record_true(ledger, "i4", "proposed_memory", "default_invisible", "candidate_visible")
+
+    replayed = _single_outcome(authoring.call("memory_create", _memory_arguments(principal)), "memory_create")
+    _require(replayed == created)
+    _require(_memory_counts(installed, context) == (0, 1))
+    _record_true(ledger, "i4", "memory_replay_stable")
+    authoring.call(
+        "memory_create",
+        _memory_arguments(principal, f"changed real host fact {QUALIFICATION_TOKEN}"),
+        expected_error=True,
+        refusal="idempotency_conflict",
+    )
+    _require(_memory_counts(installed, context) == (0, 1))
+    _record_true(ledger, "i4", "memory_changed_conflict")
+
+
+def _import_journey(
+    installed: InstalledCandidate,
+    run_root: Path,
+    host: str,
+    binary: Path,
+    auth_file: Path,
+    ledger: GateLedger,
+    progress: Callable[[str], None],
+) -> ImportJourney:
+    """Import one staged source; the import Core stays up for the rest of the run."""
+    context = initialize_core(installed, run_root / "import-core")
+    try:
+        staged = stage_source(installed, context)
+        start_core(installed, context)
+        config = configure_profile(installed, context, host, "authoring")
+        driver = HostDriver(
+            host,
+            binary,
+            auth_file,
+            installed,
+            config,
+            run_root / "import-host",
+            AUTHORING_TOOLS,
+            progress,
+            healthy=lambda: core_healthy(installed, context),
+        )
+        arguments = {"input": {"source": dict(staged)}, "idempotency_key": IMPORT_KEY}
+        started = _single_outcome(driver.call("import_start", arguments), "import_start")
+        replayed = _single_outcome(driver.call("import_start", arguments), "import_start")
+        _require(replayed == started)
+        _record_true(ledger, "i5", "staged_import", "import_replay_stable")
+        changed = {
+            "input": {
+                "source": {**staged, "content_length_bytes": int(staged["content_length_bytes"]) + 1}
+            },
+            "idempotency_key": IMPORT_KEY,
+        }
+        driver.call("import_start", changed, expected_error=True, refusal="idempotency_conflict")
+        _record_true(ledger, "i5", "import_changed_conflict")
+        # The runtime owns the database while serving; inspection stops Core and
+        # also proves exactly one durable job exists.
+        job_id = inspect_settled_import_job(installed, context, progress)
+
+        owner_job = owner_call(installed, context, ("job", "get"), {"job_id": job_id})
+        job = owner_job.get("job")
+        _require(isinstance(job, dict) and job.get("state") == "succeeded")
+        read = _single_outcome(driver.call("job_get", {"job_id": job_id}), "job_get")
+        _require(read[1] == canonical_result_digest(owner_job))
+        _record_true(ledger, "i5", "job_observed")
+
+        pages = owner_event_pages(installed, context, job_id, IMPORT_PAGE_SIZE)
+        events = verified_event_stream(pages, IMPORT_PAGE_SIZE)
+        _require(len(pages) > 1)
+        unpaged = owner_call(installed, context, ("job", "events"), {"job_id": job_id}).get("events")
+        _require(unpaged == events)
+        traversal = driver.traverse(
+            "job_events", {"job_id": job_id, "limit": IMPORT_PAGE_SIZE}, pages=len(pages)
+        )
+        host_pages = [digest for _, digest in _outcomes(traversal.summary, "job_events")]
+        _require(host_pages == [canonical_result_digest(page) for page in pages])
+        _record_true(ledger, "i5", "job_events_paged", "job_events_match_owner")
+
+        evidence_query = {"query": STAGED_SOURCE_ID}
+        owner_evidence = owner_call(installed, context, ("evidence", "search"), evidence_query)
+        _require(bool(owner_evidence.get("evidence")))
+        retrieved = _single_outcome(driver.call("evidence_search", evidence_query), "evidence_search")
+        _require(retrieved[1] == canonical_result_digest(owner_evidence))
+        _record_true(ledger, "i5", "imported_evidence_retrieved")
+        return ImportJourney(context, driver, arguments, job_id, events)
+    except BaseException:
+        stop_core(context)
+        raise
+
+
+def _ambiguous_response(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    authoring: HostDriver,
+    ledger: GateLedger,
+) -> None:
+    """A committed response is withheld, the host exits, Core restarts, then the key is replayed."""
+    arguments = _capture_arguments(
+        INTERRUPTED_SOURCE_ID, INTERRUPTED_KEY, f"interrupted response note {QUALIFICATION_TOKEN}\n"
+    )
+    committed = False
+
+    def observe_commit() -> None:
+        nonlocal committed
+        _require(
+            _count(
+                installed,
+                context,
+                ("evidence", "search"),
+                {"query": INTERRUPTED_SOURCE_ID},
+                "evidence",
+            )
+            == 1
+        )
+        committed = True
+
+    interrupted = authoring.call(
+        "evidence_capture", arguments, interrupt=True, on_withheld=observe_commit
+    )
+    _require(committed and interrupted.interrupted)
+    _record_true(ledger, "i6", "commit_observed_before_response", "host_stopped_before_response")
+
+    restart_core(installed, context)
+    authoring.progress("core_restarted")
+    _record_true(ledger, "i7", "core_restart_observed")
+    _record_true(ledger, "i6", "core_restarted_before_replay")
+
+    first = _single_outcome(authoring.call("evidence_capture", arguments), "evidence_capture")
+    second = _single_outcome(authoring.call("evidence_capture", arguments), "evidence_capture")
+    _require(first == second)
+    _require(
+        _count(
+            installed,
+            context,
+            ("evidence", "search"),
+            {"query": INTERRUPTED_SOURCE_ID},
+            "evidence",
+        )
+        == 1
+    )
+    _record_true(ledger, "i6", "same_key_replayed", "single_durable_effect")
+    _record_true(ledger, "i7", "host_restart_observed")
+
+    authoring.call(
+        "evidence_capture",
+        _capture_arguments(
+            INTERRUPTED_SOURCE_ID,
+            INTERRUPTED_KEY,
+            f"changed interrupted response note {QUALIFICATION_TOKEN}\n",
+        ),
+        expected_error=True,
+        refusal="idempotency_conflict",
+    )
+    _require(
+        _count(
+            installed,
+            context,
+            ("evidence", "search"),
+            {"query": INTERRUPTED_SOURCE_ID},
+            "evidence",
+        )
+        == 1
+    )
+    _record_true(ledger, "i6", "changed_input_conflict")
+
+
+def _revocation(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    host: str,
+    authoring: HostDriver,
+    principal: str,
+    imported: ImportJourney,
+    ledger: GateLedger,
+) -> None:
+    """Revoke every authoring principal, then prove each later call fails closed."""
+    before = _journey_counts(installed, context)
+    revoked = False
+
+    def revoke_before_call() -> None:
+        nonlocal revoked
+        revoke_authoring(installed, context, host)
+        revoked = True
+
+    # The fresh capture is paused until the revocation has landed, so it is the
+    # in-flight request that must be refused, not a request sent afterwards.
+    authoring.call(
+        "evidence_capture",
+        _capture_arguments(AFTER_REVOKE_SOURCE_ID, AFTER_REVOKE_KEY, "must not settle"),
+        expected_error=True,
+        refusal="not_callable",
+        pause_before=True,
+        on_paused=revoke_before_call,
+    )
+    _require(revoked)
+    authoring.progress("revocation_host_ok")
+    _require(_journey_counts(installed, context) == before)
+    _record_true(ledger, "i8", "mutation_fail_closed")
+
+    authoring.call(
+        "evidence_capture",
+        _capture_arguments(
+            INTERRUPTED_SOURCE_ID,
+            INTERRUPTED_KEY,
+            f"interrupted response note {QUALIFICATION_TOKEN}\n",
+        ),
+        expected_error=True,
+        refusal="not_callable",
+    )
+    authoring.call(
+        "memory_create",
+        _memory_arguments(principal),
+        expected_error=True,
+        refusal="not_callable",
+    )
+    _require(_journey_counts(installed, context) == before)
+
+    # The import principal is a separate authoring context with its own Core.
+    revoke_authoring(installed, imported.context, host)
+    imported.driver.call(
+        "job_get", {"job_id": imported.job_id}, expected_error=True, refusal="not_callable"
+    )
+    imported.driver.call(
+        "job_events", {"job_id": imported.job_id}, expected_error=True, refusal="not_callable"
+    )
+    imported.driver.call(
+        "import_start", imported.arguments, expected_error=True, refusal="not_callable"
+    )
+    _record_true(ledger, "i8", "replay_fail_closed", "job_reads_fail_closed")
+
+    owner_job = owner_call(installed, imported.context, ("job", "get"), {"job_id": imported.job_id})
+    job = owner_job.get("job")
+    owner_events = owner_call(
+        installed, imported.context, ("job", "events"), {"job_id": imported.job_id}
+    ).get("events")
+    _require(isinstance(job, dict) and job.get("state") == "succeeded")
+    _require(owner_events == imported.events)
+    _record_true(ledger, "i8", "owner_job_observed_after_revoke")
+    _require(core_healthy(installed, context) and core_healthy(installed, imported.context))
+    _record_true(ledger, "i8", "authoring_revoked", "core_healthy")
 
 
 def qualify_host(
@@ -2267,15 +2863,11 @@ def qualify_host(
             run_root / "restricted-host",
             RESTRICTED_TOOLS,
             progress,
+            healthy=lambda: core_healthy(installed, context),
         )
         restricted.call("workspace_inspect", {})
         progress("restricted_host_ok")
-        _record_true(
-            ledger,
-            "i3",
-            "initialize_verified",
-            "restricted_tools_exact",
-        )
+        _record_true(ledger, "i3", "initialize_verified", "restricted_tools_exact")
 
         authoring_config = configure_profile(installed, context, host, "authoring")
         progress("authoring_configured")
@@ -2290,8 +2882,8 @@ def qualify_host(
             run_root / "authoring-host",
             AUTHORING_TOOLS,
             progress,
+            healthy=lambda: core_healthy(installed, context),
         )
-
         if owner_rows(
             installed,
             context,
@@ -2306,225 +2898,33 @@ def qualify_host(
             "records",
         ):
             raise QualificationError(ReasonCode.GATE_FAILED)
-        direct_capture = _capture_arguments(
-            DIRECT_SOURCE_ID,
-            CAPTURE_KEY,
-            f"real host captured note {QUALIFICATION_TOKEN}\n",
-        )
-        authoring.call("evidence_capture", direct_capture)
-        progress("capture_host_ok")
-        authoring.call("evidence_search", {"query": QUALIFICATION_TOKEN})
-        progress("capture_search_host_ok")
-        direct_rows = owner_rows(
-            installed,
-            context,
-            ("evidence", "search"),
-            {"query": DIRECT_SOURCE_ID},
-            "evidence",
-        )
-        if len(direct_rows) != 1:
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        _record_true(ledger, "i4", "capture_and_search")
-
-        authoring.call("memory_create", _memory_arguments(principal))
-        progress("memory_create_host_ok")
-        authoring.call("memory_search", {"query": QUALIFICATION_TOKEN})
-        authoring.call(
-            "memory_search", {"query": QUALIFICATION_TOKEN, "view": "candidates"}
-        )
-        progress("memory_search_hosts_ok")
-        default_rows = owner_rows(
-            installed,
-            context,
-            ("memory", "search"),
-            {"query": QUALIFICATION_TOKEN},
-            "records",
-        )
-        candidate_rows = owner_rows(
-            installed,
-            context,
-            ("memory", "search"),
-            {"query": QUALIFICATION_TOKEN, "view": "candidates"},
-            "records",
-        )
-        if default_rows or len(candidate_rows) != 1:
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        _record_true(
-            ledger,
-            "i4",
-            "proposed_memory",
-            "default_invisible",
-            "candidate_visible",
-        )
+        _direct_mutations(installed, context, authoring, principal, ledger)
         _record_true(ledger, "i3", "authoring_tools_exact")
+        progress("direct_mutations_ok")
 
-        import_context = initialize_core(installed, run_root / "import-core")
-        progress("import_core_initialized")
-        staged = stage_source(installed, import_context)
-        progress("source_staged")
-        start_core(installed, import_context)
-        progress("import_core_started")
+        authoring.prove_absent("job_cancel")
+        _record_true(ledger, "i3", "excluded_tools_absent", "excluded_tool_undispatchable")
+        progress("excluded_tool_refused")
+
+        imported = _import_journey(
+            installed, run_root / "import", host, binary, auth_file, ledger, progress
+        )
         try:
-            import_config = configure_profile(
-                installed, import_context, host, "authoring"
-            )
-            import_driver = HostDriver(
-                host,
-                binary,
-                auth_file,
-                installed,
-                import_config,
-                run_root / "import-host",
-                AUTHORING_TOOLS,
-                progress,
-            )
-            import_arguments = {
-                "input": {"source": dict(staged)},
-                "idempotency_key": IMPORT_KEY,
-            }
-            import_driver.call("import_start", import_arguments)
-            progress("import_start_host_ok")
-            # The runtime owns the workspace database exclusively while it is
-            # serving.  Inspect only across a real service shutdown, then use a
-            # fresh service for both host and owner observations of the job.
-            job_id = inspect_settled_import_job(
-                installed, import_context, progress
-            )
-            import_driver.call("job_get", {"job_id": job_id})
-            import_driver.call("job_events", {"job_id": job_id})
-            progress("job_observation_hosts_ok")
-            job = owner_call(
-                installed, import_context, ("job", "get"), {"job_id": job_id}
-            ).get("job")
-            events = owner_call(
-                installed,
-                import_context,
-                ("job", "events"),
-                {"job_id": job_id},
-            ).get("events")
-            if not isinstance(job, dict) or job.get("state") != "succeeded":
-                raise QualificationError(ReasonCode.GATE_FAILED)
-            if not isinstance(events, list) or len(events) < 2:
-                raise QualificationError(ReasonCode.GATE_FAILED)
-            if not import_driver.protocol_clean:
+            progress("import_journey_ok")
+            _ambiguous_response(installed, context, authoring, ledger)
+            progress("ambiguous_response_ok")
+            _revocation(installed, context, host, authoring, principal, imported, ledger)
+            progress("revocation_ok")
+            if not (
+                restricted.protocol_clean
+                and authoring.protocol_clean
+                and imported.driver.protocol_clean
+            ):
                 raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
-            _record_true(ledger, "i5", "staged_import", "job_observed")
+            _record_true(ledger, "i7", "stdout_protocol_only")
+            return ledger
         finally:
-            stop_core(import_context)
-
-        interrupted_arguments = _capture_arguments(
-            INTERRUPTED_SOURCE_ID,
-            INTERRUPTED_KEY,
-            f"interrupted response note {QUALIFICATION_TOKEN}\n",
-        )
-        committed = False
-
-        def observe_commit() -> None:
-            nonlocal committed
-            rows = owner_rows(
-                installed,
-                context,
-                ("evidence", "search"),
-                {"query": INTERRUPTED_SOURCE_ID},
-                "evidence",
-            )
-            if len(rows) != 1:
-                raise QualificationError(ReasonCode.INTERRUPTION_BOUNDARY_UNOBSERVABLE)
-            committed = True
-
-        interrupted = authoring.call(
-            "evidence_capture",
-            interrupted_arguments,
-            interrupt=True,
-            on_withheld=observe_commit,
-        )
-        progress("interruption_host_ok")
-        if not committed or not interrupted.interrupted:
-            raise QualificationError(ReasonCode.INTERRUPTION_BOUNDARY_UNOBSERVABLE)
-        _record_true(
-            ledger,
-            "i6",
-            "commit_observed_before_response",
-            "host_stopped_before_response",
-        )
-        authoring.call("evidence_capture", interrupted_arguments)
-        rows_after_replay = owner_rows(
-            installed,
-            context,
-            ("evidence", "search"),
-            {"query": INTERRUPTED_SOURCE_ID},
-            "evidence",
-        )
-        if len(rows_after_replay) != 1:
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        changed = _capture_arguments(
-            INTERRUPTED_SOURCE_ID,
-            INTERRUPTED_KEY,
-            f"changed interrupted response note {QUALIFICATION_TOKEN}\n",
-        )
-        authoring.call("evidence_capture", changed, expected_error=True)
-        progress("replay_conflict_hosts_ok")
-        _record_true(
-            ledger,
-            "i6",
-            "same_key_replayed",
-            "single_durable_effect",
-            "changed_input_conflict",
-        )
-
-        restart_core(installed, context)
-        progress("core_restarted")
-        authoring.call("evidence_search", {"query": INTERRUPTED_SOURCE_ID})
-        progress("post_restart_host_ok")
-        if len(
-            owner_rows(
-                installed,
-                context,
-                ("evidence", "search"),
-                {"query": INTERRUPTED_SOURCE_ID},
-                "evidence",
-            )
-        ) != 1:
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        _record_true(
-            ledger,
-            "i7",
-            "host_restart_observed",
-            "core_restart_observed",
-        )
-
-        revoked = False
-
-        def revoke_before_call() -> None:
-            nonlocal revoked
-            revoke_authoring(installed, context, host)
-            revoked = True
-
-        authoring.call(
-            "evidence_capture",
-            _capture_arguments(
-                f"{DIRECT_SOURCE_ID}-after-revoke",
-                f"{CAPTURE_KEY}-after-revoke",
-                "must not settle",
-            ),
-            expected_error=True,
-            pause_before=True,
-            on_paused=revoke_before_call,
-        )
-        progress("revocation_host_ok")
-        if not revoked or not core_healthy(installed, context):
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        _record_true(
-            ledger,
-            "i8",
-            "authoring_revoked",
-            "mutation_fail_closed",
-            "core_healthy",
-        )
-        if not restricted.protocol_clean or not authoring.protocol_clean:
-            raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
-        _record_true(ledger, "i7", "stdout_protocol_only")
-        return ledger
+            stop_core(imported.context)
     finally:
         stop_core(context)
 
