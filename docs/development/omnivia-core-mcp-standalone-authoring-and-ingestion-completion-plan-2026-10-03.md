@@ -73,11 +73,12 @@ The completion lane must preserve those guarantees and avoid broad rewrites.
 
 ### 2.2 Execution snapshot — 2026-10-04
 
-The active closeout branch is based on current `origin/main`. Its last pushed
-tip is `72d5a4ff1a84995b35415cf07e6a2184cf8912bb`. The seventeen-step harness,
-focused tests, record schema and PR #108 disposition map are under review in
-the working tree, so that tip is not the final immutable qualification
-candidate.
+The active closeout branch is based on current `origin/main`. Its pushed
+checkpoints include `72d5a4ff` for the documentation/conformance repairs,
+`cf061a09` for the seventeen-step harness, tests and record schema, and
+`960ed703` for the PR #108 disposition map. The combined line still requires
+independent review and candidate freeze, so none of those checkpoints is the
+final immutable qualification candidate.
 
 Completed on the branch:
 
