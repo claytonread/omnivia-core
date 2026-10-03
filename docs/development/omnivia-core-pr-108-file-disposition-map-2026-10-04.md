@@ -1,8 +1,8 @@
 # PR #108 file disposition map
 
-**Date:** 2026-10-04  
-**Repository:** `claytonread/omnivia-core`  
-**Historical PR:** [#108](https://github.com/claytonread/omnivia-core/pull/108), closed, head `a97bdb9141aa4aa498bd899af3d2e50b21b42e3b`  
+**Date:** 2026-10-04
+**Repository:** `claytonread/omnivia-core`
+**Historical PR:** [#108](https://github.com/claytonread/omnivia-core/pull/108), closed, head `a97bdb9141aa4aa498bd899af3d2e50b21b42e3b`
 **Accepted integration path:** PR #107/current `main`, with the reviewed registered-workspace restart/socket-hardening commit `2568c82` already imported as `b78e152`
 
 ## Decision
