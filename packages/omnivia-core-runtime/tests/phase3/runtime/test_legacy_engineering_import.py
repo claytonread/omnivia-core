@@ -685,15 +685,10 @@ def test_plan_queries_name_only_the_requested_legacy_identities(
     assert assembly_by_legacy_id["noise-1"] not in evidence_sql
 
 
-def test_plan_refuses_duplicate_legacy_identity_before_evidence_lookup(
+def test_storage_refuses_duplicate_legacy_identity(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The migration-free guard keeps evidence lookup at most MAX_NOTES rows.
-
-    Migration 0009 permits two assemblies to claim one legacy identity. Until a
-    forward unique index closes that schema gap, the importer refuses duplicates
-    immediately instead of expanding the evidence predicate past the document.
-    """
+    """The authoritative store enforces the identity used for idempotency."""
     env = _Env(tmp_path)
     entry = _entry()
     code, _, _ = env.run(capsys, env.write(env.document(entry)))
@@ -701,37 +696,25 @@ def test_plan_refuses_duplicate_legacy_identity_before_evidence_lookup(
     note = legacy_import._note(1, entry)
 
     runner = env.runner()
-    traced: list[str] = []
     try:
         assert runner.connection is not None
         assert runner.identity is not None
         assert runner.generation is not None
-        with fenced_transaction(
-            runner.connection,
-            runner.identity,
-            workspace_id=env.workspace_id,
-            fencing_generation=runner.generation,
-        ) as fenced:
-            legacy_import._write(
-                fenced, env.workspace_id, "mig-duplicate-lineage", note
-            )
-
-        runner.connection.set_trace_callback(traced.append)
-        try:
-            with pytest.raises(
-                legacy_import.LegacyImportRefused,
-                match="a legacy note identity has ambiguous imported lineage",
-            ):
-                legacy_import._plan(runner.connection, env.workspace_id, (note,))
-        finally:
-            runner.connection.set_trace_callback(None)
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="omnivia_governed_legacy_lineage.workspace_id",
+        ):
+            with fenced_transaction(
+                runner.connection,
+                runner.identity,
+                workspace_id=env.workspace_id,
+                fencing_generation=runner.generation,
+            ) as fenced:
+                legacy_import._write(
+                    fenced, env.workspace_id, "mig-duplicate-lineage", note
+                )
     finally:
         runner.stop()
-
-    assert any("FROM omnivia_governed_legacy_lineage l" in sql for sql in traced)
-    assert not any(
-        "FROM omnivia_governed_version_evidence_links k" in sql for sql in traced
-    )
 
 
 def _raw_document(env: _Env, text: str) -> bytes:

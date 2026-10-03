@@ -92,7 +92,7 @@ from omnivia_core_runtime.service.source_capture import (
 from omnivia_core_runtime.storage import engineering_preview
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.memory import (
-    _ENGINEERING_CONTENT_CAP_BYTES,
+    ENGINEERING_CONTENT_CAP_BYTES,
     random_identifier,
     read_snapshot,
 )
@@ -317,7 +317,7 @@ def _note(ordinal: int, entry: object) -> _Note:
     if "summary" in fields:
         content["summary"] = _text(fields["summary"], 2000)
     content_json = canonicalize(content)
-    if len(content_json.encode("utf-8")) > _ENGINEERING_CONTENT_CAP_BYTES:
+    if len(content_json.encode("utf-8")) > ENGINEERING_CONTENT_CAP_BYTES:
         raise LegacyImportRefused("a note exceeds the engineering content bound")
     return _Note(
         ordinal=ordinal,
