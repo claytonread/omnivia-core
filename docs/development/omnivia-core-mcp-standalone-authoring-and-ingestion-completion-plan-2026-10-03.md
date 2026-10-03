@@ -126,8 +126,8 @@ Remaining before completion:
 | Order | Work package | Status | Exit condition |
 |---|---|---|---|
 | 1 | Stabilize current branch | in progress | Current harness/map diff independently reviewed, checkpointed and pushed |
-| 2 | Close planning evidence | complete in working tree | This plan and the complete 100-path PR #108 file-disposition map are tracked |
-| 3 | Complete harness coverage | complete in working tree | Automated tests prove every section 8 case and reject incomplete evidence |
+| 2 | Close planning evidence | complete and pushed | This plan and the complete 100-path PR #108 file-disposition map are tracked |
+| 3 | Complete harness coverage | complete and pushed | Automated tests prove every section 8 case and reject incomplete evidence |
 | 4 | Freeze candidate | pending | Clean source tip, release wheels, SDK pins, and host versions are immutable |
 | 5 | Run real hosts | blocked on Claude token and frozen tip | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
 | 6 | Reconcile records | pending | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
