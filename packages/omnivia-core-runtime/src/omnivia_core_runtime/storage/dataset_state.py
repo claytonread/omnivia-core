@@ -104,7 +104,9 @@ class DatasetStateObservation:
 
     `coverage` and `source_observation` are evidence documents: keys and strings are
     identifiers, numbers are signed 64-bit integers, and nothing else but booleans,
-    nulls, arrays and objects is accepted.
+    nulls, arrays and objects is accepted. That is a shape, not a judgement: a single
+    sensitive token or integer still fits it, so keeping source values out of evidence
+    is the producer's obligation.
     """
 
     dataset_id: str
@@ -269,7 +271,10 @@ def _evidence_json(document: object) -> str:
 
 
 def _plain_evidence(value: object, *, depth: int) -> Any:
-    """Copy one evidence value into plain JSON: names, counts and digests only."""
+    """Copy one evidence value into plain JSON.
+
+    Every leaf is an identifier, a signed 64-bit integer, a boolean or a null.
+    """
     if depth > _EVIDENCE_MAX_DEPTH:
         raise DatasetStateInvalid("dataset state evidence is nested too deeply")
     if isinstance(value, Mapping):
@@ -314,15 +319,14 @@ def _record(row: tuple[Any, ...]) -> DatasetStateRecord:
 
 def _stored_evidence(text: str, digest: str) -> dict[str, Any]:
     """Decode one stored evidence document, refusing bytes its digest does not name."""
+    # The schema admits deeper nesting than this module writes; what this interpreter
+    # cannot decode is refused as invalid rather than leaking its RecursionError.
     try:
         document = json.loads(text)
-    except ValueError as error:
-        raise DatasetStateInvalid("stored dataset state evidence is not JSON") from error
-    if (
-        not isinstance(document, dict)
-        or to_canonical_json(document) != text
-        or _digest(text) != digest
-    ):
+        canonical = to_canonical_json(document) if isinstance(document, dict) else None
+    except (ValueError, RecursionError) as error:
+        raise DatasetStateInvalid("stored dataset state evidence does not decode") from error
+    if not isinstance(document, dict) or canonical != text or _digest(text) != digest:
         raise DatasetStateInvalid("stored dataset state evidence does not verify")
     return document
 

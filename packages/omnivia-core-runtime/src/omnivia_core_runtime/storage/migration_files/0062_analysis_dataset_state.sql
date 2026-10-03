@@ -30,11 +30,15 @@
 --
 -- Coverage and source-observation evidence are canonical JSON objects of at most
 -- 8192 bytes with their `sha256:` digests beside them. The digests and the canonical
--- form are computed and verified above this layer; the checks here police shape, and
--- the INSERT guard confines every key and string in both documents to a bounded
--- identifier and every number to a signed 64-bit integer. Evidence can name, count
--- and digest; it cannot carry source rows, SQL, endpoints, credentials or business
--- values as text.
+-- form are computed and verified above this layer; the checks here police shape. A
+-- document holds no escape sequence -- canonical evidence never needs one, and
+-- SQLite before 3.45 decodes `\u0000` by cutting the string short -- and the INSERT
+-- guard confines every key and string to a bounded identifier and every number to a
+-- signed 64-bit integer. That keeps whitespace, quotes, slashes, `@`, fractions and
+-- escapes, and with them prose, SQL, URLs and row dumps, out of evidence. A shape
+-- cannot tell a sensitive single token or integer from an innocent one: keeping
+-- source values out of evidence stays the producer's obligation until the
+-- specification fixes each document's schema.
 --
 -- Every write runs inside the caller's `fenced_transaction`. The INSERT guard carries
 -- the complete connection-authority, guard, workspace-state and lease predicate and
@@ -132,6 +136,7 @@ CREATE TABLE IF NOT EXISTS omnivia_analysis_dataset_state_observations (
     CHECK (typeof(coverage_json) = 'text'
            AND length(CAST(coverage_json AS BLOB)) BETWEEN 2 AND 8192
            AND instr(coverage_json, char(0)) = 0
+           AND instr(coverage_json, char(92)) = 0
            AND json_valid(coverage_json) = 1
            AND json_type(coverage_json) = 'object'
            AND json(coverage_json) = coverage_json),
@@ -142,6 +147,7 @@ CREATE TABLE IF NOT EXISTS omnivia_analysis_dataset_state_observations (
     CHECK (typeof(source_observation_json) = 'text'
            AND length(CAST(source_observation_json AS BLOB)) BETWEEN 2 AND 8192
            AND instr(source_observation_json, char(0)) = 0
+           AND instr(source_observation_json, char(92)) = 0
            AND json_valid(source_observation_json) = 1
            AND json_type(source_observation_json) = 'object'
            AND json(source_observation_json) = source_observation_json),

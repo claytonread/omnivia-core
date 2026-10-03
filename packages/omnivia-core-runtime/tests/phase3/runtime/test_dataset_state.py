@@ -612,17 +612,36 @@ MALFORMED: tuple[tuple[str, dict[str, object], str], ...] = (
         PROFILE,
     ),
     (
-        "source observation carrying an endpoint",
+        "source observation carrying a URL",
         {"source_observation_json": '{"endpoint":"https://source.invalid/v1"}'},
         PROFILE,
     ),
-    ("coverage carrying a business amount", {"coverage_json": '{"balance":1234.56}'}, PROFILE),
+    ("coverage carrying a fractional amount", {"coverage_json": '{"balance":1234.56}'}, PROFILE),
     (
         "coverage carrying an oversized integer",
         {"coverage_json": '{"n":99999999999999999999}'},
         PROFILE,
     ),
     ("coverage keyed by free text", {"coverage_json": '{"overdue balance":1}'}, PROFILE),
+    # Which layer refuses an escaped NUL depends on SQLite: 3.45 and later decode it and
+    # the evidence profile refuses; earlier versions cut the string short there, and the
+    # no-escape CHECK refuses. An escape that decodes to an identifier meets the CHECK.
+    (
+        "coverage hiding text behind an escaped NUL",
+        {"coverage_json": '{"q":"x\\u0000SELECT * FROM invoices"}'},
+        f"{PROFILE}|{CHECK}",
+    ),
+    (
+        "source observation key hiding text behind an escaped NUL",
+        {"source_observation_json": '{"x\\u0000https://source.invalid/v1":1}'},
+        f"{PROFILE}|{CHECK}",
+    ),
+    ("coverage spelled with an escape", {"coverage_json": '{"q":"\\u0041BC"}'}, CHECK),
+    (
+        "source observation keyed with an escape",
+        {"source_observation_json": '{"s\\u0041":1}'},
+        CHECK,
+    ),
     ("zero verification instant", {"verified_at_us": 0}, CHECK),
     ("fractional verification instant", {"verified_at_us": 1.5}, CHECK),
     ("textual verification instant", {"verified_at_us": "soon"}, CHECK),
@@ -895,6 +914,30 @@ def test_stored_evidence_that_does_not_verify_is_refused_when_read(owned: m2.Own
             _current(owned.connection, dataset_id)
 
 
+def test_stored_evidence_too_deep_to_decode_is_refused_not_raised(owned: m2.Owned) -> None:
+    """The schema admits nesting this module never writes. Reading it back either
+    decodes exactly or refuses in the module's own terms -- never `RecursionError`."""
+    deep = '{"n":' + "[" * 999 + "]" * 999 + "}"
+    with _fenced(owned) as fenced:
+        _write_raw(fenced, at_us=BASE_US, coverage_json=deep, coverage_digest=content_digest(deep))
+    try:
+        record = _current(owned.connection, "dataset-raw")
+    except dataset_state.DatasetStateInvalid:
+        pass
+    else:
+        assert record.coverage_digest == content_digest(deep)
+
+
+def test_the_evidence_profile_is_a_shape_not_a_judgement_of_content(owned: m2.Owned) -> None:
+    """A single token or an integer fits the profile whatever it means. Pinned so the
+    ceiling is reviewed rather than assumed: keeping source values out of evidence is
+    the producer's obligation until each document has a fixed schema."""
+    token_shaped = {"host_port": "db.internal:5432", "amount_cents": 123456}
+    _observe(owned, _observation(source_observation=token_shaped), at_us=BASE_US)
+    current = _current(owned.connection, "dataset-invoices")
+    assert current.observation.source_observation == token_shaped
+
+
 INVALID_OBSERVATIONS: tuple[tuple[str, dict[str, object]], ...] = (
     ("dataset_id", {"dataset_id": "dataset invoices"}),
     ("dataset_revision", {"dataset_revision": ""}),
@@ -915,10 +958,10 @@ for _ in range(40):
 
 INVALID_EVIDENCE: tuple[tuple[str, object], ...] = (
     ("SQL", {"query": "SELECT * FROM invoices"}),
-    ("an endpoint", {"endpoint": "https://source.invalid/v1"}),
-    ("a credential", {"connection": "user:secret@db.invalid"}),
-    ("a business amount", {"balance": 1234.56}),
-    ("a source row", {"row": {"customer": "Acme Pty Ltd", "amount": 10}}),
+    ("a URL", {"endpoint": "https://source.invalid/v1"}),
+    ("a user:password@host string", {"connection": "user:secret@db.invalid"}),
+    ("a fractional amount", {"balance": 1234.56}),
+    ("a row of free text", {"row": {"customer": "Acme Pty Ltd", "amount": 10}}),
     ("an oversized integer", {"count": 2**63}),
     ("a free-text key", {"overdue balance": 1}),
     ("a non-string key", {1: "x"}),
