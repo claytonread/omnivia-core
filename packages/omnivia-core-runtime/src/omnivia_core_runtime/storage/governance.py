@@ -33,13 +33,18 @@ from omnivia_core_runtime.storage import (
     engineering_preview,
     engineering_source,
 )
+from omnivia_core_runtime.storage.engineering_validation import VALIDATION_RECEIPT_FIELD
 from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
 )
 from omnivia_core_runtime.storage.memory import (
     _ENGINEERING_DOMAIN,
     _ENGINEERING_RECORD_TYPES,
+    _MESSAGE_VALIDATION_RECEIPT_INVALID,
     IdentifierAllocator,
+    _parse_validation_receipt,
+    _plain_content,
+    _verify_validation_receipt,
     resolve_memory_claim_evidence,
 )
 from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
@@ -333,8 +338,8 @@ def apply_governance_transition(
         evidence_ids = tuple(
             str(row[0])
             for row in connection.execute(
-                "SELECT DISTINCT evidence_id FROM omnivia_governed_version_evidence_links "
-                "WHERE workspace_id=? AND assembly_id=? ORDER BY evidence_id",
+                "SELECT evidence_id FROM omnivia_governed_version_evidence_links "
+                "WHERE workspace_id=? AND assembly_id=? ORDER BY link_ordinal",
                 (workspace_id, source.assembly_id),
             ).fetchall()
         )
@@ -347,6 +352,44 @@ def apply_governance_transition(
         evidence_disposition = source.evidence_disposition
         valid_from_us = source.valid_from_us
         valid_to_us = source.valid_to_us
+
+    if (
+        operation in (KNOWLEDGE_PROPOSE_OPERATION, CANDIDATE_APPROVE_OPERATION)
+        and claim.record_type in _ENGINEERING_RECORD_TYPES
+        and claim.domain_scope == _ENGINEERING_DOMAIN
+    ):
+        claim_is_validation = (
+            claim.content.get("kind") == "validation_result"
+            or VALIDATION_RECEIPT_FIELD in claim.content
+        )
+        try:
+            copied_content = json.loads(content_json)
+        except (TypeError, ValueError):
+            copied_content = None
+        source_is_validation = isinstance(copied_content, dict) and (
+            copied_content.get("kind") == "validation_result"
+            or VALIDATION_RECEIPT_FIELD in copied_content
+        )
+        if claim_is_validation or source_is_validation:
+            if (
+                not isinstance(copied_content, dict)
+                or to_canonical_json(copied_content) != content_json
+                or _digest(content_json) != source.content_digest
+                or to_canonical_json(_plain_content(dict(claim.content))) != content_json
+            ):
+                raise OperationError(
+                    ERROR_CODE_INVALID_REQUEST, _MESSAGE_VALIDATION_RECEIPT_INVALID
+                )
+            validation_receipt = _parse_validation_receipt(copied_content)
+            if validation_receipt is not None:
+                _verify_validation_receipt(
+                    connection,
+                    workspace_id=workspace_id,
+                    record_id=source.record_id,
+                    content=copied_content,
+                    evidence_ids=evidence_ids,
+                    receipt=validation_receipt,
+                )
 
     assembly_id = allocate_identifier("asm")
     version_id = allocate_identifier("ver")

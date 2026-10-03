@@ -130,7 +130,11 @@ def _validate_request(source_id: str, media_type: str) -> None:
 
 
 def _read_source(path: Path) -> bytes:
-    """Read one stable, regular, bounded file without following a symlink."""
+    """Read one stable, regular, bounded leaf without following a leaf symlink.
+
+    The trusted caller owns the path and its ancestor-directory trust decision.
+    This plain path reader does not descriptor-walk or reject symlinked ancestors.
+    """
     try:
         before = path.lstat()
     except OSError as error:

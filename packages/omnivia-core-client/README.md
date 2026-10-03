@@ -437,6 +437,22 @@ credential reference or secret appears in any message raised here, and the two
 refusals this module owns are raised outside every handler, so neither
 `__cause__` nor `__context__` survives to carry a transport's own words.
 
+### `continuity` — trusted registration response validation
+
+Trusted adapters register an engineering continuity session with
+`register_continuity_session()`. The workflow builds the catalogue-governed
+request and returns a `ContinuitySessionBinding` only after the response IDs,
+negotiated API version, server-issued principal authority, workspace, repository
+target, active state, positive binding generation, and unexpired lease all agree
+with the request.
+
+A missing, malformed, unsuccessful, redirected, or mismatched response raises a
+fixed, payload-free `ContinuityRegistrationError`. Raw results, application error
+details, transport exceptions, response headers, and redirect locations never
+become diagnostics or returned values. The workflow neither follows a redirect
+nor retries an uncertain mutation, and it does not expose registration through
+MCP.
+
 ### `managed_local` — reaching a service, having one started if there is none
 
 `connect_managed_local(config, deadline=…)` takes the same
@@ -482,8 +498,9 @@ crosses this boundary. An adapter that can say something more useful — that
 ### `errors` — the typed failures
 
 `ClientError` and, under it, `ProtocolError`, `TransportError`,
-`CompatibilityError`, `DeadlineExceededError`, `OperationCancelledError`,
-`ManagedStartError`, and `CredentialError` with its four outcomes above.
+`CompatibilityError`, `ContinuityRegistrationError`, `DeadlineExceededError`,
+`OperationCancelledError`, `ManagedStartError`, and `CredentialError` with its
+four outcomes above.
 
 Diagnostics are built from structural facts only — byte counts, offsets, JSON
 value kinds, version strings, field names — and never from payload content, so
