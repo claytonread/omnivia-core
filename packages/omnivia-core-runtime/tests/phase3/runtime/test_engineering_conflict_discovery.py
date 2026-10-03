@@ -2,8 +2,8 @@
 
 The suite covers atomic enqueue, indexed resumable processing, exact provenance,
 authorization-safe structural and lexical matching, restart/replay, production
-execution and expand visibility. Checkout-proven scope classification remains a
-later AC-050 slice.
+execution and expand visibility. Checkout-proven scope classification (AC-050,
+migration 0062) is covered by the ``test_scope_*`` tests at the end of the file.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
+import test_engineering_captured_source_coverage as captured
 import test_engineering_source_coverage as esc
 from omnivia_core_runtime.ownership.fencing import (
     assert_guards_intact,
@@ -2297,4 +2298,287 @@ def test_assessment_rows_are_append_only(workspace: esc.Workspace) -> None:
     with pytest.raises(sqlite3.DatabaseError), _fenced(workspace):
         workspace.holder.connection.execute(
             "DELETE FROM omnivia_engineering_relation_assessment_results"
+        )
+
+
+# --- AC-050 checkout-proven scope classification (migration 0062) -------------------
+
+
+def _seal_capture(
+    workspace: esc.Workspace,
+    snapshot_id: str,
+    *,
+    checkout_id: str,
+    repository_id: str = "erepo-scope",
+    stream_id: str | None = None,
+    capture_status: str = "complete",
+    base_us: int,
+) -> None:
+    captured._seal(
+        workspace,
+        repository_id=repository_id,
+        stream_id=stream_id or f"estream-{checkout_id}",
+        principal_id="capture-owner",
+        checkout_id=checkout_id,
+        snapshot_id=snapshot_id,
+        files=captured._files(2),
+        capture_status=capture_status,
+        base_us=base_us,
+    )
+
+
+def _scope_candidate(
+    workspace: esc.Workspace,
+    *,
+    snapshot_a: str | None,
+    snapshot_b: str | None,
+    repository_a: str = "erepo-scope",
+    repository_b: str = "erepo-scope",
+) -> tuple[engineering_conflicts.DiscoveryRun, engineering_conflicts.RelationCandidate]:
+    first = workspace.observe(
+        _discovery_observation(
+            "scope first",
+            topic="scope.topic",
+            repository_id=repository_a,
+            snapshot_id=snapshot_a,
+        )
+    )
+    anchor = workspace.observe(
+        _discovery_observation(
+            "scope second",
+            topic="scope.topic",
+            repository_id=repository_b,
+            snapshot_id=snapshot_b,
+        )
+    )
+    run = _run_for(workspace, anchor)
+    with _fenced(workspace):
+        candidate = engineering_conflicts._append_relation_candidate(
+            workspace.holder.connection,
+            workspace_id=WORKSPACE_ID,
+            run=run,
+            other_assembly_id=_assembly(workspace, first),
+            label_grant=_grant(),
+            allocate_identifier=lambda prefix: f"{prefix}-scope",
+        )
+    return run, candidate
+
+
+def test_scope_distinct_trusted_checkouts_of_one_repository_are_a_scoped_difference(
+    workspace: esc.Workspace,
+) -> None:
+    _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+    _seal_capture(workspace, "scope-snap-b", checkout_id="co-scope-b", base_us=20_000)
+    run, candidate = _scope_candidate(
+        workspace, snapshot_a="scope-snap-a", snapshot_b="scope-snap-b"
+    )
+    assert (candidate.scope_classification, candidate.proposed_relation) == (
+        "scoped_difference",
+        "scoped_difference",
+    )
+    stored = workspace.holder.connection.execute(
+        "SELECT scope_classification, proposed_relation, status "
+        "FROM omnivia_engineering_relation_candidates WHERE relation_candidate_id = ?",
+        (candidate.relation_candidate_id,),
+    ).fetchone()
+    assert tuple(stored) == ("scoped_difference", "scoped_difference", "pending")
+
+    # Replay returns the stored row (and never reallocates an identifier), also
+    # across a restart, and the read path returns the same classification.
+    workspace.restart()
+    with _fenced(workspace):
+        replay = engineering_conflicts._append_relation_candidate(
+            workspace.holder.connection,
+            workspace_id=WORKSPACE_ID,
+            run=run,
+            other_assembly_id=(
+                candidate.endpoint_b.assembly_id
+                if run.anchor_assembly_id == candidate.endpoint_a.assembly_id
+                else candidate.endpoint_a.assembly_id
+            ),
+            label_grant=_grant(),
+            allocate_identifier=lambda prefix: pytest.fail("a replay allocated an identifier"),
+        )
+    assert replay == candidate
+    assert _count(workspace, TABLES[2]) == 1
+    visible = engineering_conflicts.read_authorized_relation_candidates(
+        workspace.holder.connection,
+        workspace_id=WORKSPACE_ID,
+        anchor_assembly_id=run.anchor_assembly_id,
+        resolution_instant_us=2**62,
+        view="candidates",
+        label_grant=_grant(),
+    )
+    assert [item.scope_classification for item in visible] == ["scoped_difference"]
+    assert_guards_intact(workspace.holder.connection)
+    assert fingerprint_schema(workspace.holder.connection).matches(
+        canonical_schema_fingerprint()
+    )
+
+
+def test_scope_the_processor_persists_the_proved_classification_end_to_end(
+    workspace: esc.Workspace,
+) -> None:
+    _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+    _seal_capture(workspace, "scope-snap-b", checkout_id="co-scope-b", base_us=20_000)
+    _seal_capture(workspace, "scope-snap-c", checkout_id="co-scope-b", base_us=30_000)
+    first = workspace.observe(
+        _discovery_observation(
+            "scope first", topic="scope.topic", repository_id="erepo-scope",
+            snapshot_id="scope-snap-a",
+        )
+    )
+    same = workspace.observe(
+        _discovery_observation(
+            "scope same checkout", topic="scope.topic", repository_id="erepo-scope",
+            snapshot_id="scope-snap-c",
+        )
+    )
+    anchor = workspace.observe(
+        _discovery_observation(
+            "scope anchor", topic="scope.topic", repository_id="erepo-scope",
+            snapshot_id="scope-snap-b",
+        )
+    )
+    run = _run_for(workspace, anchor)
+    allocate = _identifier_allocator()
+    _finish_before(workspace, run, allocate_identifier=allocate)
+    workspace.restart()
+    _finish_run(workspace, run, allocate_identifier=allocate)
+    rows = {
+        (str(row[0]), str(row[1])): (str(row[2]), str(row[3]))
+        for row in workspace.holder.connection.execute(
+            "SELECT endpoint_a_record_id, endpoint_b_record_id, scope_classification, "
+            "proposed_relation FROM omnivia_engineering_relation_candidates "
+            "WHERE first_discovery_run_id = ?",
+            (run.discovery_run_id,),
+        )
+    }
+    by_other = {
+        other["record_id"]: value
+        for (a, b), value in rows.items()
+        for other in (first, same)
+        if other["record_id"] in (a, b)
+    }
+    assert by_other[first["record_id"]] == ("scoped_difference", "scoped_difference")
+    # snapshot c was captured in the same checkout as the anchor's snapshot.
+    assert by_other[same["record_id"]] == ("unresolved_overlap", "related")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "same_checkout_distinct_snapshots",
+        "same_snapshot",
+        "no_capture_for_either",
+        "no_capture_for_one",
+        "no_snapshot_claim",
+        "incomplete_capture",
+        "label_only_difference",
+        "claimed_repository_disagrees_with_capture",
+        "different_repositories",
+    ],
+)
+def test_scope_missing_incomplete_or_untrusted_proof_stays_unresolved_overlap(
+    workspace: esc.Workspace, case: str
+) -> None:
+    snapshots: tuple[str | None, str | None] = ("scope-snap-a", "scope-snap-b")
+    repositories = ("erepo-scope", "erepo-scope")
+    if case == "same_checkout_distinct_snapshots":
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+        _seal_capture(workspace, "scope-snap-b", checkout_id="co-scope-a", base_us=20_000)
+    elif case == "same_snapshot":
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+        snapshots = ("scope-snap-a", "scope-snap-a")
+    elif case == "no_capture_for_either":
+        pass
+    elif case == "no_capture_for_one":
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+    elif case == "no_snapshot_claim":
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+        snapshots = ("scope-snap-a", None)
+    elif case == "incomplete_capture":
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+        _seal_capture(
+            workspace,
+            "scope-snap-b",
+            checkout_id="co-scope-b",
+            capture_status="incomplete",
+            base_us=20_000,
+        )
+    elif case == "label_only_difference":
+        # Different snapshot labels, repository labels and stream ids, with no
+        # capture header, are not authority.
+        snapshots = ("branch-main", "branch-feature")
+    elif case == "claimed_repository_disagrees_with_capture":
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+        _seal_capture(workspace, "scope-snap-b", checkout_id="co-scope-b", base_us=20_000)
+        repositories = ("erepo-scope", "erepo-forged")
+    else:
+        assert case == "different_repositories"
+        _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+        _seal_capture(
+            workspace,
+            "scope-snap-b",
+            checkout_id="co-scope-b",
+            repository_id="erepo-other",
+            base_us=20_000,
+        )
+        repositories = ("erepo-scope", "erepo-other")
+    _, candidate = _scope_candidate(
+        workspace,
+        snapshot_a=snapshots[0],
+        snapshot_b=snapshots[1],
+        repository_a=repositories[0],
+        repository_b=repositories[1],
+    )
+    assert (candidate.scope_classification, candidate.proposed_relation) == (
+        "unresolved_overlap",
+        "related",
+    )
+
+
+def test_scope_guard_refuses_a_forged_scoped_difference_and_still_accepts_unresolved(
+    workspace: esc.Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+    _seal_capture(workspace, "scope-snap-b", checkout_id="co-scope-a", base_us=20_000)
+    forged = lambda *args, **kwargs: ("scoped_difference", "scoped_difference")  # noqa: E731
+    monkeypatch.setattr(engineering_conflicts, "_classify_scope", forged)
+    # Same checkout: the application claims a scoped difference the database
+    # cannot prove, so the guard refuses the write.
+    with pytest.raises(sqlite3.DatabaseError, match="trusted checkout proof"):
+        _scope_candidate(workspace, snapshot_a="scope-snap-a", snapshot_b="scope-snap-b")
+    assert _count(workspace, TABLES[2]) == 0
+    # A label-only difference and an absent capture are refused the same way.
+    with pytest.raises(sqlite3.DatabaseError, match="trusted checkout proof"):
+        _scope_candidate(workspace, snapshot_a="branch-a", snapshot_b="branch-b")
+    assert _count(workspace, TABLES[2]) == 0
+    # Without the forged claim the same pair persists as an unresolved overlap.
+    monkeypatch.undo()
+    _, candidate = _scope_candidate(
+        workspace, snapshot_a="scope-snap-a", snapshot_b="scope-snap-b"
+    )
+    assert candidate.scope_classification == "unresolved_overlap"
+
+
+def test_scope_guard_refuses_a_scoped_difference_with_a_mismatched_relation(
+    workspace: esc.Workspace,
+) -> None:
+    _seal_capture(workspace, "scope-snap-a", checkout_id="co-scope-a", base_us=10_000)
+    _seal_capture(workspace, "scope-snap-b", checkout_id="co-scope-b", base_us=20_000)
+    _, candidate = _scope_candidate(
+        workspace, snapshot_a="scope-snap-a", snapshot_b="scope-snap-b"
+    )
+    with pytest.raises(sqlite3.DatabaseError), _fenced(workspace):
+        workspace.holder.connection.execute(
+            "INSERT INTO omnivia_engineering_relation_candidates "
+            "SELECT workspace_id, 'erc-mismatch', endpoint_a_assembly_id, "
+            "endpoint_a_record_id, endpoint_a_version, endpoint_a_digest, "
+            "endpoint_b_assembly_id, endpoint_b_record_id, endpoint_b_version, "
+            "endpoint_b_digest, detector_version, 'scoped_difference', "
+            "'related', status, first_discovery_run_id, recorded_at_us "
+            "FROM omnivia_engineering_relation_candidates "
+            "WHERE relation_candidate_id = ?",
+            (candidate.relation_candidate_id,),
         )

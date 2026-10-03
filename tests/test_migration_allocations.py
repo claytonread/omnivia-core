@@ -170,6 +170,12 @@ EXPECTED_ALLOCATION = (
         "candidate",
     ),
     (62, "0062_analysis_dataset_state.sql", "Structured Data", "candidate"),
+    (
+        63,
+        "0063_engineering_scoped_difference.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")

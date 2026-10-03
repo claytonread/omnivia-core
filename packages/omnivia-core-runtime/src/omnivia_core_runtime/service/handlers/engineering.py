@@ -19,8 +19,9 @@ Retrieval security shape, inherited from the knowledge family and the plan:
 1. payloads decode through the contract's own decoder; identity, workspace and
    purpose come from the authorised context, never from the payload;
 2. the authorised frontier is frozen *before* any scoring: the candidate set is
-   the workspace's engineering observations under the requested view, read at
-   one resolution instant, and `rank_previews` sees nothing else — no corpus
+   the engineering observations under the requested view whose records the query
+   narrows to by identity (`narrow_record_ids`, ids only, then authorised), read
+   at one resolution instant, and `rank_previews` sees nothing else — no corpus
    statistics and no restricted document reach the rank (§11.3). The ranker's
    own relevance signal is a stated occurrence count computed from the
    frontier's members and nothing else;
@@ -174,6 +175,7 @@ from omnivia_core_runtime.storage.engineering_preview import (
     PreviewCandidate,
     PreviewProjectionStale,
     PreviewProjectionUnavailable,
+    narrow_record_ids,
     preview_search_text,
     rank_previews,
     read_authorized_previews,
@@ -675,9 +677,14 @@ class EngineeringHandlers:
         *,
         resolution_instant_us: int,
         view: str,
+        query: str | None = None,
     ) -> tuple[tuple[PreviewCandidate, ...], str]:
         """The engineering observations the effective caller's grant admits, as
         bounded previews, or the projection refusal that says why none can be served.
+
+        A ``query`` narrows the frontier by record identity before it is authorized
+        (see `storage.engineering_preview.narrow_record_ids`), so the admitted
+        previews are those of the query's candidate records, not the whole corpus.
 
         The frontier is frozen from identities and evidence links first; only the
         admitted versions' projection rows are then read. A version with no row is
@@ -692,6 +699,7 @@ class EngineeringHandlers:
                 resolution_instant_us=resolution_instant_us,
                 view=view,
                 label_grant=self._label_grant(context),
+                query=query,
             )
         except PreviewProjectionUnavailable:
             refused = ERROR_CODE_PROJECTION_UNAVAILABLE
@@ -976,6 +984,7 @@ class EngineeringHandlers:
                 context,
                 resolution_instant_us=resolved_at_us,
                 view=_GOVERNED_VIEWS[view],
+                query=request.query,
             )
             eligible: list[PreviewCandidate] = []
             evaluated = 0
@@ -2053,15 +2062,32 @@ class EngineeringHandlers:
                 tuple[PreviewCandidate, str, tuple[str, ...]]
             ] = []
             after_record_id: str | None = None
+            # A non-empty query narrows the record-id space by identity before any
+            # page is authorized; None (empty query, or any version without a current
+            # projection row) walks the whole domain exactly as before.
+            narrowed = narrow_record_ids(
+                connection,
+                workspace_id=context.workspace_id,
+                resolution_instant_us=resolved_at_us,
+                query=request.query,
+            )
+            narrowed_position = 0
             while True:
-                record_ids = read_memory_record_id_page(
-                    connection,
-                    workspace_id=context.workspace_id,
-                    resolution_instant_us=resolved_at_us,
-                    domain_scope=OBSERVATION_DOMAIN,
-                    after_record_id=after_record_id,
-                    limit=AUTHORIZED_FRONTIER_PAGE_SIZE,
-                )
+                if narrowed is None:
+                    record_ids = read_memory_record_id_page(
+                        connection,
+                        workspace_id=context.workspace_id,
+                        resolution_instant_us=resolved_at_us,
+                        domain_scope=OBSERVATION_DOMAIN,
+                        after_record_id=after_record_id,
+                        limit=AUTHORIZED_FRONTIER_PAGE_SIZE,
+                    )
+                else:
+                    record_ids = narrowed[
+                        narrowed_position : narrowed_position
+                        + AUTHORIZED_FRONTIER_PAGE_SIZE
+                    ]
+                    narrowed_position += AUTHORIZED_FRONTIER_PAGE_SIZE
                 if not record_ids:
                     break
                 for governed_view in views:
