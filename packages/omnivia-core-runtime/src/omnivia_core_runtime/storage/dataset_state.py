@@ -17,18 +17,26 @@ recording instants -- and no reader turns a clock value into a currentness verdi
 
 A dataset's current state is its highest `state_generation`, read through the
 `omnivia_analysis_dataset_state_current` view, so it is the log's own replay and has
-nothing to rebuild. The checks below refuse early, naming fields but never values;
-the schema's CHECKs and triggers stay the final boundary for every writer.
+nothing to rebuild.
+
+Evidence is a closed shape. `coverage` and `source_observation` each carry exactly
+the fields their shape names (`_COVERAGE_SHAPE`, `_SOURCE_SHAPE`), and every field is
+an identifier, a digest, a bounded integer, an instant, a word from its vocabulary or
+a list of unique identifiers. The writer checks that shape and the cross-bindings
+before it canonicalises; the reader checks the same after the digest, so a stored row
+that does not verify is refused the way a written one is. The checks below refuse
+early, naming fields but never values; the schema's CHECKs and triggers stay the
+final boundary for every writer.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Final
+from typing import Any, Final, TypeAlias
 
 from omnivia_core.contracts.v1 import is_identifier, to_canonical_json
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
@@ -46,14 +54,20 @@ SCHEMA_COMPATIBILITY: Final = frozenset(
 )
 EVIDENCE_AVAILABILITY: Final = frozenset({"available", "limited", "unavailable"})
 CONTENT_OBSERVATION: Final = frozenset({"empty", "nonempty", "unknown"})
+PROOF_KINDS: Final = frozenset(
+    {"complete_enumeration", "consistent_snapshot", "contiguous_log", "bounded_observation", "none"}
+)
+EVIDENCE_KINDS: Final = frozenset(
+    {"snapshot", "stream_caught_up", "cursor_poll", "complete_reconcile", "captured_query", "none"}
+)
 
 #: The schema's byte bound on each canonical evidence document.
 EVIDENCE_MAX_BYTES: Final = 8192
+#: The most identifiers one evidence list holds.
+EVIDENCE_REFS_MAX: Final = 64
 
 _OBSERVATIONS: Final = "omnivia_analysis_dataset_state_observations"
 _CURRENT: Final = "omnivia_analysis_dataset_state_current"
-_EVIDENCE_MAX_DEPTH: Final = 32
-_INT64_MIN: Final = -(2**63)
 _INT64_MAX: Final = 2**63 - 1
 
 #: The columns an observation states as given, by field name.
@@ -102,11 +116,11 @@ class DatasetStateInvalid(ValueError):
 class DatasetStateObservation:
     """One dataset's state as a producer observed it, every dimension independent.
 
-    `coverage` and `source_observation` are evidence documents: keys and strings are
-    identifiers, numbers are signed 64-bit integers, and nothing else but booleans,
-    nulls, arrays and objects is accepted. That is a shape, not a judgement: a single
-    sensitive token or integer still fits it, so keeping source values out of evidence
-    is the producer's obligation.
+    `coverage` and `source_observation` are closed evidence documents: each holds
+    exactly the fields its shape names, and every field is an identifier, a digest, a
+    bounded integer, an instant, a word from its vocabulary or a list of unique
+    identifiers. An identifier is an opaque reference. This module checks its grammar,
+    not what it refers to.
     """
 
     dataset_id: str
@@ -206,6 +220,9 @@ def read_current_state(
     return None if row is None else _record(row)
 
 
+_Check: TypeAlias = Callable[[object], bool]
+
+
 def _validate(observation: DatasetStateObservation) -> None:
     manifest = (
         observation.manifest_id,
@@ -236,10 +253,16 @@ def _validate(observation: DatasetStateObservation) -> None:
         ),
         "observed_authority_epoch": is_identifier(observation.observed_authority_epoch),
         "scope_digest": _is_digest(observation.scope_digest),
-        "verified_at_us": _is_instant(observation.verified_at_us),
-        "freshness_deadline_at_us": deadline is None or _is_instant(deadline),
+        "verified_at_us": _instant(observation.verified_at_us),
+        "freshness_deadline_at_us": deadline is None or _instant(deadline),
     }
     invalid = [field for field, valid in checks.items() if not valid]
+    shape = _shape_findings(
+        "coverage", observation.coverage, _COVERAGE_SHAPE
+    ) + _shape_findings("source_observation", observation.source_observation, _SOURCE_SHAPE)
+    invalid += shape
+    if not shape:
+        invalid += _bindings(observation)
     if invalid:
         raise DatasetStateInvalid(f"invalid dataset state fields: {', '.join(invalid)}")
 
@@ -257,41 +280,123 @@ def _is_digest(value: object) -> bool:
     )
 
 
-def _is_instant(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= _INT64_MAX
+def _integer(value: object, *, least: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and least <= value <= _INT64_MAX
 
 
-def _evidence_json(document: object) -> str:
+def _count(value: object) -> bool:
+    return _integer(value, least=0)
+
+
+def _instant(value: object) -> bool:
+    return _integer(value, least=1)
+
+
+def _nullable(check: _Check) -> _Check:
+    return lambda value: value is None or check(value)
+
+
+def _one_of(vocabulary: frozenset[str]) -> _Check:
+    return lambda value: isinstance(value, str) and value in vocabulary
+
+
+def _identifiers(value: object) -> bool:
+    """A list of at most `EVIDENCE_REFS_MAX` distinct identifiers."""
+    if not isinstance(value, (list, tuple)) or len(value) > EVIDENCE_REFS_MAX:
+        return False
+    return all(is_identifier(item) for item in value) and len(set(value)) == len(value)
+
+
+def _closed(shape: Mapping[str, _Check]) -> _Check:
+    """An object holding exactly the fields `shape` names, each passing its check."""
+
+    def check(value: object) -> bool:
+        return (
+            isinstance(value, Mapping)
+            and set(value) == set(shape)
+            and all(test(value[name]) for name, test in shape.items())
+        )
+
+    return check
+
+
+_INTERVAL: Final = _closed({"start_inclusive_at_us": _instant, "end_exclusive_at_us": _instant})
+
+
+def _ordered_interval(value: object) -> bool:
+    if not (isinstance(value, Mapping) and _INTERVAL(value)):
+        return False
+    return bool(value["start_inclusive_at_us"] < value["end_exclusive_at_us"])
+
+
+#: The coverage document: exactly these fields, each checked by its own rule.
+_COVERAGE_SHAPE: Final[Mapping[str, _Check]] = {
+    "scope_digest": _is_digest,
+    "accepted_rows": _count,
+    "rejected_rows": _count,
+    "conflicting_rows": _count,
+    "deduplicated_rows": _count,
+    "expected_source_rows": _nullable(_count),
+    "proof_kind": _one_of(PROOF_KINDS),
+    "proof_refs": _identifiers,
+}
+
+#: The source observation document: exactly these fields, each checked by its own rule.
+_SOURCE_SHAPE: Final[Mapping[str, _Check]] = {
+    "source_ref": _closed({"id": is_identifier, "revision_id": is_identifier}),
+    "source_incarnation": _nullable(is_identifier),
+    "observation_interval": _ordered_interval,
+    "source_cutoff_at_us": _nullable(_instant),
+    "verification_at_us": _instant,
+    "evidence_kind": _one_of(EVIDENCE_KINDS),
+    "snapshot_token_ref": _nullable(is_identifier),
+    "applied_checkpoint_ref": _nullable(is_identifier),
+    "scope_digest": _is_digest,
+    "evidence_refs": _identifiers,
+}
+
+
+def _shape_findings(label: str, document: object, shape: Mapping[str, _Check]) -> list[str]:
+    """The fields of `document` that break `shape`, named by path and never by value."""
     if not isinstance(document, Mapping):
-        raise DatasetStateInvalid("dataset state evidence must be an object")
-    text = to_canonical_json(_plain_evidence(document, depth=0))
+        return [label]
+    findings = [
+        f"{label}.{name}"
+        for name, test in shape.items()
+        if name not in document or not test(document[name])
+    ]
+    if set(document) != set(shape):
+        findings.append(f"{label}.keys")
+    return findings
+
+
+def _bindings(observation: DatasetStateObservation) -> list[str]:
+    """Cross-document agreement, checked only once both documents hold their shape."""
+    findings: list[str] = []
+    if observation.coverage["scope_digest"] != observation.scope_digest:
+        findings.append("coverage.scope_digest")
+    if observation.source_observation["scope_digest"] != observation.scope_digest:
+        findings.append("source_observation.scope_digest")
+    if observation.source_observation["verification_at_us"] != observation.verified_at_us:
+        findings.append("source_observation.verification_at_us")
+    return findings
+
+
+def _evidence_json(document: Mapping[str, Any]) -> str:
+    """The canonical text of one validated evidence document, within its byte bound."""
+    text = to_canonical_json(_plain(document))
     if len(text.encode("utf-8")) > EVIDENCE_MAX_BYTES:
         raise DatasetStateInvalid("dataset state evidence exceeds its byte bound")
     return text
 
 
-def _plain_evidence(value: object, *, depth: int) -> Any:
-    """Copy one evidence value into plain JSON.
-
-    Every leaf is an identifier, a signed 64-bit integer, a boolean or a null.
-    """
-    if depth > _EVIDENCE_MAX_DEPTH:
-        raise DatasetStateInvalid("dataset state evidence is nested too deeply")
+def _plain(value: object) -> Any:
+    """A plain JSON copy of a validated closed document."""
     if isinstance(value, Mapping):
-        if not all(is_identifier(key) for key in value):
-            raise DatasetStateInvalid("dataset state evidence keys must be identifiers")
-        return {key: _plain_evidence(item, depth=depth + 1) for key, item in value.items()}
+        return {key: _plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_plain_evidence(item, depth=depth + 1) for item in value]
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, int) and _INT64_MIN <= value <= _INT64_MAX:
-        return value
-    if is_identifier(value):
-        return value
-    raise DatasetStateInvalid(
-        "dataset state evidence holds only identifiers, integers, booleans and nulls"
-    )
+        return [_plain(item) for item in value]
+    return value
 
 
 def _digest(document: str) -> str:
@@ -300,16 +405,18 @@ def _digest(document: str) -> str:
 
 def _record(row: tuple[Any, ...]) -> DatasetStateRecord:
     values = dict(zip(_COLUMNS, row, strict=True))
+    observation = DatasetStateObservation(
+        **{column: values[column] for column in _OBSERVATION_COLUMNS},
+        coverage=_stored_evidence(values["coverage_json"], values["coverage_digest"]),
+        source_observation=_stored_evidence(
+            values["source_observation_json"], values["source_observation_digest"]
+        ),
+    )
+    _validate(observation)
     return DatasetStateRecord(
         workspace_id=values["workspace_id"],
         state_generation=values["state_generation"],
-        observation=DatasetStateObservation(
-            **{column: values[column] for column in _OBSERVATION_COLUMNS},
-            coverage=_stored_evidence(values["coverage_json"], values["coverage_digest"]),
-            source_observation=_stored_evidence(
-                values["source_observation_json"], values["source_observation_digest"]
-            ),
-        ),
+        observation=observation,
         coverage_digest=values["coverage_digest"],
         source_observation_digest=values["source_observation_digest"],
         recorded_at_us=values["recorded_at_us"],
@@ -319,8 +426,8 @@ def _record(row: tuple[Any, ...]) -> DatasetStateRecord:
 
 def _stored_evidence(text: str, digest: str) -> dict[str, Any]:
     """Decode one stored evidence document, refusing bytes its digest does not name."""
-    # The schema admits deeper nesting than this module writes; what this interpreter
-    # cannot decode is refused as invalid rather than leaking its RecursionError.
+    # A closed shape is shallow, so nesting this interpreter cannot decode is refused as
+    # invalid rather than leaking its RecursionError.
     try:
         document = json.loads(text)
         canonical = to_canonical_json(document) if isinstance(document, dict) else None
@@ -336,9 +443,12 @@ __all__ = [
     "CONTENT_OBSERVATION",
     "CONTINUITY",
     "EVIDENCE_AVAILABILITY",
+    "EVIDENCE_KINDS",
     "EVIDENCE_MAX_BYTES",
+    "EVIDENCE_REFS_MAX",
     "INITIAL_READINESS",
     "OPERATIONAL_HEALTH",
+    "PROOF_KINDS",
     "SCHEMA_COMPATIBILITY",
     "DatasetStateInvalid",
     "DatasetStateObservation",

@@ -7,6 +7,9 @@ application audit event, then the observation, inside one caller-owned
 on its own. Nothing here wires an operation: `analysis.start` stays the milestone-1
 refusal that `test_analysis_start_refusal.py` pins.
 
+Evidence is a closed shape: every refusal of a document is pinned at the writer and
+at the raw INSERT, and the reader re-checks what it decodes.
+
 Refusal-only cases share one module-scoped workspace. Every refused write rolls its
 whole fence back, and each case asserts that it left nothing behind.
 """
@@ -14,6 +17,7 @@ whole fence back, and each case asserts that it left nothing behind.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -62,6 +66,8 @@ from omnivia_core.contracts.v1 import to_canonical_json
 
 WORKSPACE_ID = m2.WORKSPACE_ID
 BASE_US = m2.BASE_US
+#: The largest instant a closed shape admits: the largest signed 64-bit integer.
+MAX_INSTANT = 2**63 - 1
 
 MIGRATION_VERSION = 62
 MIGRATION_NAME = "0062_analysis_dataset_state.sql"
@@ -86,17 +92,81 @@ VOCABULARIES: dict[str, tuple[str, ...]] = {
     "content_observation": ("empty", "nonempty", "unknown"),
 }
 
+#: The evidence vocabularies, stated the same way.
+EVIDENCE_VOCABULARIES: dict[str, tuple[str, ...]] = {
+    "proof_kind": (
+        "complete_enumeration",
+        "consistent_snapshot",
+        "contiguous_log",
+        "bounded_observation",
+        "none",
+    ),
+    "evidence_kind": (
+        "snapshot",
+        "stream_caught_up",
+        "cursor_poll",
+        "complete_reconcile",
+        "captured_query",
+        "none",
+    ),
+}
+
 SCOPE_DIGEST = "sha256:" + "5" * 64
 MANIFEST_DIGEST = "sha256:" + "6" * 64
-SOURCE_VERSION_DIGEST = "sha256:" + "7" * 64
-COVERAGE_JSON = '{"partitions_covered":12}'
-SOURCE_JSON = '{"source_version_digest":"' + SOURCE_VERSION_DIGEST + '"}'
+
+
+def _coverage(**overrides: Any) -> dict[str, Any]:
+    """A closed coverage document, bound to `SCOPE_DIGEST`."""
+    document: dict[str, Any] = {
+        "scope_digest": SCOPE_DIGEST,
+        "accepted_rows": 12,
+        "rejected_rows": 0,
+        "conflicting_rows": 0,
+        "deduplicated_rows": 0,
+        "expected_source_rows": 12,
+        "proof_kind": "complete_enumeration",
+        "proof_refs": ["listing-2026-10-04"],
+    }
+    document.update(overrides)
+    return document
+
+
+def _source(**overrides: Any) -> dict[str, Any]:
+    """A closed source observation, bound to `SCOPE_DIGEST` and verified at `BASE_US`."""
+    document: dict[str, Any] = {
+        "source_ref": {"id": "source-erp", "revision_id": "source-erp-r4"},
+        "source_incarnation": "source-incarnation-1",
+        "observation_interval": {
+            "start_inclusive_at_us": BASE_US - 60_000_000,
+            "end_exclusive_at_us": BASE_US,
+        },
+        "source_cutoff_at_us": BASE_US,
+        "verification_at_us": BASE_US,
+        "evidence_kind": "snapshot",
+        "snapshot_token_ref": "snapshot-token-1",
+        "applied_checkpoint_ref": None,
+        "scope_digest": SCOPE_DIGEST,
+        "evidence_refs": ["source-evidence-1"],
+    }
+    document.update(overrides)
+    return document
+
+
+COVERAGE_JSON = to_canonical_json(_coverage())
+SOURCE_JSON = to_canonical_json(_source())
 
 CHECK = "CHECK constraint failed"
-PROFILE = "holds only identifiers, integers, booleans and nulls"
 AUDIT = "exact successful audit"
 GENERATION = "advance by exactly one"
 UNGUARDED = f"unguarded INSERT on {TABLE}"
+#: The trigger's own refusals of an evidence document, one static message per statement,
+#: so each refusal names the layer that made it.
+JSON_FORM = "must be valid JSON"
+OBJECT_FORM = "must be a JSON object"
+TOO_DEEP = "nested deeper than 32 levels"
+COVERAGE_SHAPE = "coverage evidence is outside its closed shape"
+SOURCE_SHAPE = "source observation evidence is outside its closed shape"
+BOUND = "is not bound to its row"
 
 
 def _not_null(column: str) -> str:
@@ -193,8 +263,8 @@ def _observation(**overrides: Any) -> dataset_state.DatasetStateObservation:
         "evidence_availability": "available",
         "observed_authority_epoch": "authority-epoch-7",
         "scope_digest": SCOPE_DIGEST,
-        "coverage": {"cutoff_at_us": BASE_US, "partitions_covered": 12},
-        "source_observation": {"source_version_digest": SOURCE_VERSION_DIGEST},
+        "coverage": _coverage(),
+        "source_observation": _source(),
         "verified_at_us": BASE_US,
         "freshness_deadline_at_us": BASE_US + 3_600_000_000,
         "manifest_id": "manifest-invoices",
@@ -297,6 +367,31 @@ def _current(connection: sqlite3.Connection, dataset_id: str) -> Any:
     return dataset_state.read_current_state(
         connection, workspace_id=WORKSPACE_ID, dataset_id=dataset_id
     )
+
+
+def _text(document: object) -> str:
+    """A raw evidence document as a writer spells it: sorted keys, no whitespace."""
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def _unsorted(document: dict[str, Any]) -> str:
+    """The same fields in reverse key order: every field present, none out of place."""
+    return json.dumps(dict(reversed(list(document.items()))), separators=(",", ":"))
+
+
+def _stored(base: str, text: str) -> dict[str, object]:
+    """Column overrides that store `text` under its own digest, as a writer would.
+    `base` is the document's column stem: `coverage` or `source_observation`."""
+    return {f"{base}_json": text, f"{base}_digest": content_digest(text)}
+
+
+def _bare_table() -> sqlite3.Connection:
+    """The observation table alone, with its CHECKs and no guard trigger, so a row written
+    here is stored exactly as given and the reader's own checks are what refuse it."""
+    connection = sqlite3.connect(":memory:")
+    migration = next(item for item in load_migrations() if item.version == MIGRATION_VERSION)
+    connection.execute(split_sql_statements(migration.sql)[0])
+    return connection
 
 
 # --- the migration itself ------------------------------------------------------------
@@ -508,6 +603,48 @@ def test_generation_gaps_and_repeats_are_refused_for_each_dataset(owned: m2.Owne
     ).fetchall() == [("dataset-other", 1), ("dataset-raw", 1), ("dataset-raw", 2)]
 
 
+def test_a_revision_or_incarnation_change_continues_the_dataset_generation_stream(
+    owned: m2.Owned,
+) -> None:
+    """A dataset's generation counts its observations, not its revisions or incarnations:
+    r1/inc1, r2/inc1 and r2/inc2 are generations 1, 2 and 3, and a second dataset starts
+    its own stream at 1."""
+    stated = [
+        ("dataset-invoices-r1", "incarnation-1"),
+        ("dataset-invoices-r2", "incarnation-1"),
+        ("dataset-invoices-r2", "incarnation-2"),
+    ]
+    for position, (revision, incarnation) in enumerate(stated, start=1):
+        observation = _observation(dataset_revision=revision, dataset_incarnation=incarnation)
+        assert _observe(owned, observation, at_us=BASE_US + position) == position
+    current = _current(owned.connection, "dataset-invoices")
+    assert current.state_generation == 3
+    assert (current.observation.dataset_revision, current.observation.dataset_incarnation) == (
+        "dataset-invoices-r2",
+        "incarnation-2",
+    )
+    assert [record.state_generation for record in _history(owned.connection, "dataset-invoices")] == [
+        1,
+        2,
+        3,
+    ]
+
+    assert _observe(owned, _observation(dataset_id="dataset-other"), at_us=BASE_US + 4) == 1
+
+    # A raw attempt to reset the stream, or to repeat one of its generations, is refused.
+    _refused(
+        owned, GENERATION, at_us=BASE_US + 10, dataset_id="dataset-invoices", state_generation=1
+    )
+    _refused(
+        owned, GENERATION, at_us=BASE_US + 11, dataset_id="dataset-invoices", state_generation=3
+    )
+    assert [record.state_generation for record in _history(owned.connection, "dataset-invoices")] == [
+        1,
+        2,
+        3,
+    ]
+
+
 def test_cross_workspace_and_mismatched_audit_references_are_refused(
     refusing: m2.Owned,
 ) -> None:
@@ -584,65 +721,26 @@ MALFORMED: tuple[tuple[str, dict[str, object], str], ...] = (
         CHECK,
     ),
     ("authority epoch with a space", {"observed_authority_epoch": "epoch 7"}, CHECK),
-    ("uppercase scope digest", {"scope_digest": "sha256:" + "A" * 64}, CHECK),
-    ("short scope digest", {"scope_digest": "sha256:" + "a" * 63}, CHECK),
-    ("unprefixed scope digest", {"scope_digest": "a" * 71}, CHECK),
+    # The documents carry the scope digest too, so a malformed row scope disagrees with
+    # them before the column's own CHECK is read.
+    ("uppercase scope digest", {"scope_digest": "sha256:" + "A" * 64}, BOUND),
+    ("short scope digest", {"scope_digest": "sha256:" + "a" * 63}, BOUND),
+    ("unprefixed scope digest", {"scope_digest": "a" * 71}, BOUND),
     ("malformed coverage digest", {"coverage_digest": "sha256:not-hex"}, CHECK),
     (
         "missing source observation digest",
         {"source_observation_digest": None},
         _not_null("source_observation_digest"),
     ),
-    ("coverage that is not JSON", {"coverage_json": "not json"}, "malformed JSON"),
-    ("coverage that is an array", {"coverage_json": "[]"}, CHECK),
-    ("coverage that is not minified", {"coverage_json": '{"partitions_covered": 12}'}, CHECK),
-    (
-        "coverage beyond its byte bound",
-        {"coverage_json": '{"n":[' + ",".join(["1"] * 5000) + "]}"},
-        CHECK,
-    ),
+    ("missing coverage", {"coverage_json": None}, _not_null("coverage_json")),
     (
         "missing source observation",
         {"source_observation_json": None},
         _not_null("source_observation_json"),
     ),
-    (
-        "source observation carrying SQL",
-        {"source_observation_json": '{"query":"SELECT * FROM invoices"}'},
-        PROFILE,
-    ),
-    (
-        "source observation carrying a URL",
-        {"source_observation_json": '{"endpoint":"https://source.invalid/v1"}'},
-        PROFILE,
-    ),
-    ("coverage carrying a fractional amount", {"coverage_json": '{"balance":1234.56}'}, PROFILE),
-    (
-        "coverage carrying an oversized integer",
-        {"coverage_json": '{"n":99999999999999999999}'},
-        PROFILE,
-    ),
-    ("coverage keyed by free text", {"coverage_json": '{"overdue balance":1}'}, PROFILE),
-    # Which layer refuses an escaped NUL depends on SQLite: 3.45 and later decode it and
-    # the evidence profile refuses; earlier versions cut the string short there, and the
-    # no-escape CHECK refuses. An escape that decodes to an identifier meets the CHECK.
-    (
-        "coverage hiding text behind an escaped NUL",
-        {"coverage_json": '{"q":"x\\u0000SELECT * FROM invoices"}'},
-        f"{PROFILE}|{CHECK}",
-    ),
-    (
-        "source observation key hiding text behind an escaped NUL",
-        {"source_observation_json": '{"x\\u0000https://source.invalid/v1":1}'},
-        f"{PROFILE}|{CHECK}",
-    ),
-    ("coverage spelled with an escape", {"coverage_json": '{"q":"\\u0041BC"}'}, CHECK),
-    (
-        "source observation keyed with an escape",
-        {"source_observation_json": '{"s\\u0041":1}'},
-        CHECK,
-    ),
-    ("zero verification instant", {"verified_at_us": 0}, CHECK),
+    # The source observation names the instant the row was verified at, so a zero row
+    # disagrees with it before the column's own CHECK is read.
+    ("zero verification instant", {"verified_at_us": 0}, BOUND),
     ("fractional verification instant", {"verified_at_us": 1.5}, CHECK),
     ("textual verification instant", {"verified_at_us": "soon"}, CHECK),
     ("missing verification instant", {"verified_at_us": None}, _not_null("verified_at_us")),
@@ -656,12 +754,414 @@ MALFORMED: tuple[tuple[str, dict[str, object], str], ...] = (
     ("overrides", "refusal"),
     [pytest.param(overrides, refusal, id=name) for name, overrides, refusal in MALFORMED],
 )
-def test_the_schema_refuses_malformed_identity_digests_evidence_and_instants(
+def test_the_schema_refuses_malformed_identity_digests_and_instants(
     refusing: m2.Owned, overrides: dict[str, object], refusal: str
 ) -> None:
     # The baseline row is admitted, so each refusal is about its overrides alone.
     _admitted_then_undone(refusing)
     _refused(refusing, refusal, **overrides)
+
+
+def _without(document: dict[str, Any], key: str) -> dict[str, Any]:
+    return {name: value for name, value in document.items() if name != key}
+
+
+#: Each way a coverage document can leave its closed shape, as the document it makes.
+COVERAGE_REFUSALS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("missing proof kind", _without(_coverage(), "proof_kind")),
+    ("extra field", _coverage(note="free text")),
+    ("count as text", _coverage(accepted_rows="12")),
+    ("count as boolean", _coverage(rejected_rows=False)),
+    ("count as fraction", _coverage(conflicting_rows=1.5)),
+    ("count past int64", _coverage(accepted_rows=2**63)),
+    ("negative count", _coverage(deduplicated_rows=-1)),
+    ("null count", _coverage(accepted_rows=None)),
+    ("negative expected source rows", _coverage(expected_source_rows=-5)),
+    ("proof kind outside its vocabulary", _coverage(proof_kind="complete")),
+    ("proof kind in another case", _coverage(proof_kind="Complete_Enumeration")),
+    ("proof refs as text", _coverage(proof_refs="listing-2026-10-04")),
+    ("proof refs past 64 entries", _coverage(proof_refs=[f"proof-{index}" for index in range(65)])),
+    ("duplicate proof refs", _coverage(proof_refs=["proof-1", "proof-1"])),
+    ("proof ref with a space", _coverage(proof_refs=["listing 1"])),
+    ("proof ref past 128 characters", _coverage(proof_refs=["p" * 129])),
+    ("proof ref that is an integer", _coverage(proof_refs=[1])),
+    ("scope digest in capitals", _coverage(scope_digest="sha256:" + "A" * 64)),
+    ("scope digest of another algorithm", _coverage(scope_digest="sha512:" + "5" * 64)),
+)
+
+#: Each way a source observation can leave its closed shape, as the document it makes.
+SOURCE_REFUSALS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("missing evidence kind", _without(_source(), "evidence_kind")),
+    ("extra field", _source(note="free text")),
+    ("source reference missing its revision", _source(source_ref={"id": "source-erp"})),
+    (
+        "source reference id as an integer",
+        _source(source_ref={"id": 7, "revision_id": "source-erp-r4"}),
+    ),
+    (
+        "source reference with a space",
+        _source(source_ref={"id": "source erp", "revision_id": "source-erp-r4"}),
+    ),
+    (
+        "interval that runs backward",
+        _source(
+            observation_interval={
+                "start_inclusive_at_us": BASE_US,
+                "end_exclusive_at_us": BASE_US - 1,
+            }
+        ),
+    ),
+    (
+        "interval that is empty",
+        _source(
+            observation_interval={"start_inclusive_at_us": BASE_US, "end_exclusive_at_us": BASE_US}
+        ),
+    ),
+    ("interval as a list", _source(observation_interval=[BASE_US - 1, BASE_US])),
+    (
+        "interval with a third bound",
+        _source(
+            observation_interval={
+                "start_inclusive_at_us": BASE_US - 1,
+                "end_exclusive_at_us": BASE_US,
+                "midpoint_at_us": BASE_US - 1,
+            }
+        ),
+    ),
+    (
+        "zero interval start",
+        _source(observation_interval={"start_inclusive_at_us": 0, "end_exclusive_at_us": BASE_US}),
+    ),
+    ("zero source cutoff", _source(source_cutoff_at_us=0)),
+    ("negative verification instant", _source(verification_at_us=-1)),
+    ("evidence kind outside its vocabulary", _source(evidence_kind="full_scan")),
+    ("snapshot token shaped as a URL", _source(snapshot_token_ref="https://source.invalid/v1")),
+    ("checkpoint as an integer", _source(applied_checkpoint_ref=42)),
+    ("incarnation with a space", _source(source_incarnation="incarnation 1")),
+    ("scope digest in capitals", _source(scope_digest="sha256:" + "A" * 64)),
+    ("evidence refs past 64 entries", _source(evidence_refs=[f"evidence-{index}" for index in range(65)])),
+    ("duplicate evidence refs", _source(evidence_refs=["evidence-1", "evidence-1"])),
+)
+
+#: The payload classes the closed shapes exist to refuse. Each carries something other
+#: than the shape's own fields, so it is refused by its keys before any value is read.
+PROHIBITED_PAYLOADS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    ("an endpoint's host and port", "source_observation", _source(host="db.internal", port=5432)),
+    (
+        "a credential-shaped token",
+        "source_observation",
+        _source(access_token="tok_0123456789abcdef"),
+    ),
+    (
+        "a raw row of identifiers and integers",
+        "coverage",
+        _coverage(row={"customer_id": "cust-1", "amount_cents": 1234}),
+    ),
+    (
+        "a tokenized SQL array",
+        "source_observation",
+        _source(tokens=["SELECT", "*", "FROM", "invoices"]),
+    ),
+    ("a business-value payload", "coverage", _coverage(balance_cents=123456)),
+)
+
+LISTING = '"listing-2026-10-04"'
+#: Sixty-four identifiers of 128 characters: the largest list the grammar admits, which
+#: the byte bound refuses.
+_OVERSIZED_COVERAGE = _text(
+    _coverage(proof_refs=[f"{index:03d}-" + "p" * 124 for index in range(64)])
+)
+
+#: Raw text the shapes do not admit, as (document, label, text, refusal). An escape is
+#: decoded before the shape reads it, so an escape that decodes to a valid value is
+#: refused by the no-escape CHECK. Whether a trailing NUL reaches the JSON parser or the
+#: CHECK first depends on the SQLite build, so that row accepts either refusal.
+RAW_EVIDENCE: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "coverage",
+        "a raw NUL inside a reference",
+        COVERAGE_JSON.replace(LISTING, '"listing\x00-2026"'),
+        JSON_FORM,
+    ),
+    ("coverage", "a raw NUL after the document", COVERAGE_JSON + "\x00", f"{JSON_FORM}|{CHECK}"),
+    (
+        "source_observation",
+        "a raw NUL inside an identifier",
+        SOURCE_JSON.replace('"source-erp"', '"source\x00erp"'),
+        JSON_FORM,
+    ),
+    (
+        "coverage",
+        "a raw Unicode field name",
+        COVERAGE_JSON.replace('"proof_kind"', '"proof_kİnd"'),
+        COVERAGE_SHAPE,
+    ),
+    (
+        "coverage",
+        "a raw Unicode value",
+        COVERAGE_JSON.replace("complete_enumeration", "complete_enumeración"),
+        COVERAGE_SHAPE,
+    ),
+    (
+        "source_observation",
+        "a raw Unicode identifier",
+        SOURCE_JSON.replace('"source-erp"', '"fuente-ñ"'),
+        SOURCE_SHAPE,
+    ),
+    (
+        "coverage",
+        "an escaped field name that decodes to a valid one",
+        COVERAGE_JSON.replace('"proof_kind"', '"\\u0070roof_kind"'),
+        CHECK,
+    ),
+    (
+        "coverage",
+        "an escaped value that decodes to a valid one",
+        COVERAGE_JSON.replace("complete_enumeration", "complete\\u005fenumeration"),
+        CHECK,
+    ),
+    (
+        "coverage",
+        "an escaped field name outside the shape",
+        COVERAGE_JSON.replace('"proof_kind"', '"\\u00e9"'),
+        COVERAGE_SHAPE,
+    ),
+    (
+        "source_observation",
+        "an escaped value outside the vocabulary",
+        SOURCE_JSON.replace('"snapshot"', '"\\u00e9napshot"'),
+        SOURCE_SHAPE,
+    ),
+    (
+        "coverage",
+        "a field repeated under its own name",
+        COVERAGE_JSON.replace('"rejected_rows":0', '"rejected_rows":0,"rejected_rows":0'),
+        COVERAGE_SHAPE,
+    ),
+    (
+        "coverage",
+        "a negative zero",
+        COVERAGE_JSON.replace('"rejected_rows":0', '"rejected_rows":-0'),
+        CHECK,
+    ),
+    ("coverage", "fields out of canonical order", _unsorted(_coverage()), COVERAGE_SHAPE),
+    (
+        "source_observation",
+        "nested fields out of canonical order",
+        SOURCE_JSON.replace(
+            '{"id":"source-erp","revision_id":"source-erp-r4"}',
+            '{"revision_id":"source-erp-r4","id":"source-erp"}',
+        ),
+        SOURCE_SHAPE,
+    ),
+    ("coverage", "a document that is not minified", COVERAGE_JSON.replace(",", ", "), CHECK),
+    (
+        "coverage",
+        "a NaN count",
+        COVERAGE_JSON.replace('"accepted_rows":12', '"accepted_rows":NaN'),
+        JSON_FORM,
+    ),
+    ("coverage", "an array as the document", '["listing-2026-10-04"]', OBJECT_FORM),
+    ("source_observation", "a string as the document", '"source-erp"', OBJECT_FORM),
+    (
+        "coverage",
+        "a payload nested past the ceiling",
+        '{"accepted_rows":' + "[" * 40 + "]" * 40 + "}",
+        TOO_DEEP,
+    ),
+    (
+        "source_observation",
+        "a payload nested past the ceiling",
+        '{"source_ref":' + "[" * 40 + "]" * 40 + "}",
+        TOO_DEEP,
+    ),
+    ("coverage", "a document past the byte bound", _OVERSIZED_COVERAGE, CHECK),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "document"),
+    [pytest.param(label, document, id=label) for label, document in COVERAGE_REFUSALS],
+)
+def test_the_writer_refuses_a_coverage_document_outside_its_shape(
+    refusing: m2.Owned, label: str, document: dict[str, Any]
+) -> None:
+    with pytest.raises(
+        dataset_state.DatasetStateInvalid, match=r"invalid dataset state fields: coverage[.]"
+    ):
+        _observe(refusing, _observation(coverage=document), at_us=BASE_US)
+    assert m2.count(refusing.connection, TABLE) == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "document"),
+    [pytest.param(label, document, id=label) for label, document in COVERAGE_REFUSALS],
+)
+def test_the_schema_refuses_a_coverage_document_outside_its_shape(
+    refusing: m2.Owned, label: str, document: dict[str, Any]
+) -> None:
+    _admitted_then_undone(refusing)
+    _refused(refusing, COVERAGE_SHAPE, coverage_json=_text(document))
+
+
+@pytest.mark.parametrize(
+    ("label", "document"),
+    [pytest.param(label, document, id=label) for label, document in SOURCE_REFUSALS],
+)
+def test_the_writer_refuses_a_source_observation_outside_its_shape(
+    refusing: m2.Owned, label: str, document: dict[str, Any]
+) -> None:
+    with pytest.raises(
+        dataset_state.DatasetStateInvalid,
+        match=r"invalid dataset state fields: source_observation[.]",
+    ):
+        _observe(refusing, _observation(source_observation=document), at_us=BASE_US)
+    assert m2.count(refusing.connection, TABLE) == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "document"),
+    [pytest.param(label, document, id=label) for label, document in SOURCE_REFUSALS],
+)
+def test_the_schema_refuses_a_source_observation_outside_its_shape(
+    refusing: m2.Owned, label: str, document: dict[str, Any]
+) -> None:
+    _admitted_then_undone(refusing)
+    _refused(refusing, SOURCE_SHAPE, source_observation_json=_text(document))
+
+
+@pytest.mark.parametrize(
+    ("label", "field", "document"),
+    [
+        pytest.param(label, field, document, id=label)
+        for label, field, document in PROHIBITED_PAYLOADS
+    ],
+)
+def test_the_storage_boundary_refuses_each_prohibited_payload_class(
+    refusing: m2.Owned, label: str, field: str, document: dict[str, Any]
+) -> None:
+    with pytest.raises(
+        dataset_state.DatasetStateInvalid,
+        match=rf"invalid dataset state fields: {field}[.]keys",
+    ):
+        _observe(refusing, _observation(**{field: document}), at_us=BASE_US)
+    _admitted_then_undone(refusing)
+    refusal = COVERAGE_SHAPE if field == "coverage" else SOURCE_SHAPE
+    _refused(refusing, refusal, **{f"{field}_json": _text(document)})
+    assert m2.count(refusing.connection, TABLE) == 0
+
+
+@pytest.mark.parametrize(
+    ("base", "label", "text", "refusal"),
+    [
+        pytest.param(base, label, text, refusal, id=label)
+        for base, label, text, refusal in RAW_EVIDENCE
+    ],
+)
+def test_the_schema_refuses_raw_evidence_text_the_shapes_do_not_admit(
+    refusing: m2.Owned, base: str, label: str, text: str, refusal: str
+) -> None:
+    _admitted_then_undone(refusing)
+    _refused(refusing, refusal, **{f"{base}_json": text})
+
+
+def test_each_document_is_bound_to_the_row_it_describes(refusing: m2.Owned) -> None:
+    _admitted_then_undone(refusing)
+    other = "sha256:" + "8" * 64
+    _refused(refusing, BOUND, coverage_json=_text(_coverage(scope_digest=other)))
+    _refused(refusing, BOUND, source_observation_json=_text(_source(scope_digest=other)))
+    _refused(
+        refusing,
+        BOUND,
+        source_observation_json=_text(_source(verification_at_us=BASE_US + 1)),
+    )
+    _refused(refusing, BOUND, scope_digest=other)
+    _refused(refusing, BOUND, verified_at_us=BASE_US + 1)
+    for observation, match in (
+        (_observation(coverage=_coverage(scope_digest=other)), r"coverage[.]scope_digest"),
+        (
+            _observation(source_observation=_source(scope_digest=other)),
+            r"source_observation[.]scope_digest",
+        ),
+        (
+            _observation(source_observation=_source(verification_at_us=BASE_US + 1)),
+            r"source_observation[.]verification_at_us",
+        ),
+        (_observation(scope_digest=other), r"coverage[.]scope_digest"),
+    ):
+        with pytest.raises(dataset_state.DatasetStateInvalid, match=match):
+            _observe(refusing, observation, at_us=BASE_US)
+    assert m2.count(refusing.connection, TABLE) == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "field", "document"),
+    [
+        pytest.param(label, field, document, id=label)
+        for field, label, document in (
+            ("coverage", "an array as the document", ["listing-2026-10-04"]),
+            ("coverage", "bytes in a field", _coverage(note=b"raw")),
+            ("coverage", "a count that is not finite", _coverage(accepted_rows=float("nan"))),
+            ("source_observation", "a string as the document", "source-erp"),
+        )
+    ],
+)
+def test_the_writer_refuses_a_document_that_is_not_its_object_or_not_json(
+    refusing: m2.Owned, label: str, field: str, document: object
+) -> None:
+    with pytest.raises(
+        dataset_state.DatasetStateInvalid, match=rf"invalid dataset state fields: {field}"
+    ):
+        _observe(refusing, _observation(**{field: document}), at_us=BASE_US)
+    assert m2.count(refusing.connection, TABLE) == 0
+
+
+def test_the_largest_closed_documents_are_admitted_and_read_back_exactly(
+    owned: m2.Owned,
+) -> None:
+    """Every bound at its edge that still fits the byte bound: 64 entries of 104
+    characters, identifiers at 128, and every instant and count at int64's largest."""
+    coverage = _coverage(
+        accepted_rows=MAX_INSTANT,
+        proof_kind="bounded_observation",
+        expected_source_rows=None,
+        proof_refs=[f"{index:03d}-" + "r" * 100 for index in range(64)],
+    )
+    source = _source(
+        source_ref={"id": "s" * 128, "revision_id": "r" * 128},
+        source_incarnation=None,
+        observation_interval={"start_inclusive_at_us": 1, "end_exclusive_at_us": MAX_INSTANT},
+        source_cutoff_at_us=MAX_INSTANT,
+        verification_at_us=MAX_INSTANT,
+        evidence_kind="none",
+        snapshot_token_ref=None,
+        applied_checkpoint_ref="c" * 128,
+        evidence_refs=[f"{index:03d}-" + "e" * 100 for index in range(64)],
+    )
+    coverage_text = to_canonical_json(coverage)
+    source_text = to_canonical_json(source)
+    assert len(coverage_text.encode("utf-8")) <= dataset_state.EVIDENCE_MAX_BYTES
+    assert len(source_text.encode("utf-8")) <= dataset_state.EVIDENCE_MAX_BYTES
+
+    observation = _observation(
+        coverage=coverage, source_observation=source, verified_at_us=MAX_INSTANT
+    )
+    assert _observe(owned, observation, at_us=MAX_INSTANT) == 1
+    record = _current(owned.connection, "dataset-invoices")
+    assert record.observation == observation
+    assert (record.coverage_digest, record.source_observation_digest) == (
+        content_digest(coverage_text),
+        content_digest(source_text),
+    )
+
+    # The same documents, written raw, are admitted by the schema as well.
+    _admitted_then_undone(
+        owned,
+        at_us=MAX_INSTANT,
+        verified_at_us=MAX_INSTANT,
+        **_stored("coverage", coverage_text),
+        **_stored("source_observation", source_text),
+    )
 
 
 def test_the_module_vocabularies_are_the_accepted_ones() -> None:
@@ -685,6 +1185,42 @@ def test_every_accepted_value_of_every_dimension_is_stored_as_stated(owned: m2.O
             _observe(owned, observation, at_us=at_us)
         history = _history(owned.connection, f"dataset-{dimension}")
         assert tuple(getattr(record.observation, dimension) for record in history) == values
+
+
+def test_the_module_evidence_vocabularies_are_the_accepted_ones() -> None:
+    assert {
+        "proof_kind": dataset_state.PROOF_KINDS,
+        "evidence_kind": dataset_state.EVIDENCE_KINDS,
+    } == {dimension: frozenset(values) for dimension, values in EVIDENCE_VOCABULARIES.items()}
+
+
+def test_every_accepted_proof_kind_and_evidence_kind_is_stored_as_stated(
+    owned: m2.Owned,
+) -> None:
+    at_us = BASE_US
+    for value in EVIDENCE_VOCABULARIES["proof_kind"]:
+        at_us += 1
+        _observe(
+            owned,
+            _observation(dataset_id=f"dataset-proof-{value}", coverage=_coverage(proof_kind=value)),
+            at_us=at_us,
+        )
+    for value in EVIDENCE_VOCABULARIES["evidence_kind"]:
+        at_us += 1
+        _observe(
+            owned,
+            _observation(
+                dataset_id=f"dataset-evidence-{value}",
+                source_observation=_source(evidence_kind=value),
+            ),
+            at_us=at_us,
+        )
+    for value in EVIDENCE_VOCABULARIES["proof_kind"]:
+        record = _current(owned.connection, f"dataset-proof-{value}")
+        assert record.observation.coverage["proof_kind"] == value
+    for value in EVIDENCE_VOCABULARIES["evidence_kind"]:
+        record = _current(owned.connection, f"dataset-evidence-{value}")
+        assert record.observation.source_observation["evidence_kind"] == value
 
 
 @pytest.mark.parametrize("dimension", sorted(VOCABULARIES))
@@ -872,13 +1408,12 @@ def test_the_log_and_its_projection_survive_backup_and_restore(
 
 def test_evidence_is_stored_as_canonical_json_bound_to_its_digest(owned: m2.Owned) -> None:
     observation = _observation(
-        coverage={"partitions": ["2026-09", "2026-10"], "cutoff_at_us": BASE_US, "gaps": []},
-        source_observation={
-            "watermark": {"sequence": 41, "digest": SOURCE_VERSION_DIGEST},
-            "rows_observed": 0,
-            "complete_listing": False,
-            "previous": None,
-        },
+        coverage=_coverage(
+            proof_kind="contiguous_log",
+            expected_source_rows=None,
+            proof_refs=["listing-b", "listing-a"],
+        ),
+        source_observation=_source(evidence_refs=["evidence-2", "evidence-1"]),
     )
     _observe(owned, observation, at_us=BASE_US + 1)
     row = owned.connection.execute(
@@ -895,47 +1430,70 @@ def test_evidence_is_stored_as_canonical_json_bound_to_its_digest(owned: m2.Owne
     assert (record.coverage_digest, record.source_observation_digest) == (row[1], row[3])
 
 
-def test_stored_evidence_that_does_not_verify_is_refused_when_read(owned: m2.Owned) -> None:
-    unordered = '{"b":1,"a":2}'
-    with _fenced(owned) as fenced:
-        mismatched = content_digest('{"partitions_covered":13}')
-        _write_raw(fenced, at_us=BASE_US, coverage_digest=mismatched)
-        _write_raw(
-            fenced,
-            at_us=BASE_US + 1,
-            dataset_id="dataset-unordered",
-            coverage_json=unordered,
-            coverage_digest=content_digest(unordered),
-        )
-    for dataset_id in ("dataset-raw", "dataset-unordered"):
-        with pytest.raises(dataset_state.DatasetStateInvalid, match="does not verify"):
-            _history(owned.connection, dataset_id)
-        with pytest.raises(dataset_state.DatasetStateInvalid, match="does not verify"):
-            _current(owned.connection, dataset_id)
+#: Stored rows the reader must refuse, each written past the writer and the trigger. A row
+#: under its own digest is still refused when its shape or its bindings do not hold.
+STORED_CONTRADICTIONS: tuple[tuple[str, dict[str, object], str], ...] = (
+    ("a digest of other bytes", {"coverage_digest": content_digest('{"x":1}')}, "does not verify"),
+    (
+        "fields out of canonical order under their own digest",
+        _stored("coverage", _unsorted(_coverage())),
+        "does not verify",
+    ),
+    (
+        "a field outside the shape under its own digest",
+        _stored("coverage", _text(_coverage(note="x"))),
+        r"coverage[.]keys",
+    ),
+    (
+        "a count past int64 under its own digest",
+        _stored("coverage", _text(_coverage(accepted_rows=2**63))),
+        r"coverage[.]accepted_rows",
+    ),
+    (
+        "a scope contradicting its row",
+        _stored("coverage", _text(_coverage(scope_digest="sha256:" + "8" * 64))),
+        r"coverage[.]scope_digest",
+    ),
+    (
+        "a verification contradicting its row",
+        _stored("source_observation", _text(_source(verification_at_us=BASE_US + 1))),
+        r"source_observation[.]verification_at_us",
+    ),
+    (
+        "a backward interval under its own digest",
+        _stored(
+            "source_observation",
+            _text(
+                _source(
+                    observation_interval={
+                        "start_inclusive_at_us": BASE_US,
+                        "end_exclusive_at_us": BASE_US - 1,
+                    }
+                )
+            ),
+        ),
+        r"source_observation[.]observation_interval",
+    ),
+)
 
 
-def test_stored_evidence_too_deep_to_decode_is_refused_not_raised(owned: m2.Owned) -> None:
-    """The schema admits nesting this module never writes. Reading it back either
-    decodes exactly or refuses in the module's own terms -- never `RecursionError`."""
-    deep = '{"n":' + "[" * 999 + "]" * 999 + "}"
-    with _fenced(owned) as fenced:
-        _write_raw(fenced, at_us=BASE_US, coverage_json=deep, coverage_digest=content_digest(deep))
+@pytest.mark.parametrize(
+    ("label", "overrides", "refusal"),
+    [
+        pytest.param(label, overrides, refusal, id=label)
+        for label, overrides, refusal in STORED_CONTRADICTIONS
+    ],
+)
+def test_a_stored_row_that_does_not_verify_or_contradicts_itself_is_refused_on_read(
+    label: str, overrides: dict[str, object], refusal: str
+) -> None:
+    connection = _bare_table()
     try:
-        record = _current(owned.connection, "dataset-raw")
-    except dataset_state.DatasetStateInvalid:
-        pass
-    else:
-        assert record.coverage_digest == content_digest(deep)
-
-
-def test_the_evidence_profile_is_a_shape_not_a_judgement_of_content(owned: m2.Owned) -> None:
-    """A single token or an integer fits the profile whatever it means. Pinned so the
-    ceiling is reviewed rather than assumed: keeping source values out of evidence is
-    the producer's obligation until each document has a fixed schema."""
-    token_shaped = {"host_port": "db.internal:5432", "amount_cents": 123456}
-    _observe(owned, _observation(source_observation=token_shaped), at_us=BASE_US)
-    current = _current(owned.connection, "dataset-invoices")
-    assert current.observation.source_observation == token_shaped
+        m2.insert(connection, TABLE, _raw_row(**overrides))
+        with pytest.raises(dataset_state.DatasetStateInvalid, match=refusal):
+            _history(connection, "dataset-raw")
+    finally:
+        connection.close()
 
 
 INVALID_OBSERVATIONS: tuple[tuple[str, dict[str, object]], ...] = (
@@ -952,26 +1510,6 @@ INVALID_OBSERVATIONS: tuple[tuple[str, dict[str, object]], ...] = (
     ("initial_readiness", {"initial_readiness": "initializing"}),
 )
 
-DEEP: dict[str, Any] = {"leaf": 1}
-for _ in range(40):
-    DEEP = {"level": DEEP}
-
-INVALID_EVIDENCE: tuple[tuple[str, object], ...] = (
-    ("SQL", {"query": "SELECT * FROM invoices"}),
-    ("a URL", {"endpoint": "https://source.invalid/v1"}),
-    ("a user:password@host string", {"connection": "user:secret@db.invalid"}),
-    ("a fractional amount", {"balance": 1234.56}),
-    ("a row of free text", {"row": {"customer": "Acme Pty Ltd", "amount": 10}}),
-    ("an oversized integer", {"count": 2**63}),
-    ("a free-text key", {"overdue balance": 1}),
-    ("a non-string key", {1: "x"}),
-    ("bytes", {"payload": b"raw"}),
-    ("excessive nesting", DEEP),
-    ("more than its byte bound", {"partitions": ["p"] * 3000}),
-    ("an array in place of an object", ["partitions"]),
-)
-
-
 @pytest.mark.parametrize(
     ("field", "overrides"),
     [
@@ -984,17 +1522,4 @@ def test_the_writer_refuses_a_malformed_observation_and_writes_nothing(
 ) -> None:
     with pytest.raises(dataset_state.DatasetStateInvalid, match=field):
         _observe(refusing, _observation(**overrides), at_us=BASE_US)
-    assert m2.count(refusing.connection, TABLE) == 0
-
-
-@pytest.mark.parametrize(
-    "evidence",
-    [pytest.param(evidence, id=name) for name, evidence in INVALID_EVIDENCE],
-)
-@pytest.mark.parametrize("document", ["coverage", "source_observation"])
-def test_the_writer_refuses_evidence_that_is_more_than_names_counts_and_digests(
-    refusing: m2.Owned, document: str, evidence: object
-) -> None:
-    with pytest.raises(dataset_state.DatasetStateInvalid, match="evidence"):
-        _observe(refusing, _observation(**{document: evidence}), at_us=BASE_US)
     assert m2.count(refusing.connection, TABLE) == 0
