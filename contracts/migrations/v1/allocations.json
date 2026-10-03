@@ -491,6 +491,17 @@
       "sha256": "c6e2c0509ad979e57113715284e6f8133a391ab43fd75a189261ea946e350405",
       "introduced_commit": "70b473729995396c9cea39934fe23023dfbcdcd6",
       "accepted_commit": null
+    },
+    {
+      "number": 62,
+      "filename": "0062_analysis_dataset_state.sql",
+      "owner": "Structured Data",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 61,
+      "sha256": "d55260e24b489a30879d492a20b81ac3211f19e8ecb061b7212864498acc837c",
+      "introduced_commit": "4c0e97980e334a6862d60a981bce7c0c57794afc",
+      "accepted_commit": null
     }
   ]
 }
