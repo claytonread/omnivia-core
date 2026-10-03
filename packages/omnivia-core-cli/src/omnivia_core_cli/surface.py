@@ -258,6 +258,26 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ),
     ApplicationCommand(("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
     ApplicationCommand(("trigger", "health"), "trigger.health", "trigger_observation"),
+    # Managed Skills (C17). Each purpose is the service's own for the operation it names:
+    # authoring, publication, installation and resolution are four separate authorities.
+    ApplicationCommand(
+        ("skills", "draft-create"), "skills.draft.create", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "draft-update"), "skills.draft.update", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "propose"), "skills.proposal.submit", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "publish"), "skills.version.publish", "skill_publication"
+    ),
+    ApplicationCommand(
+        ("skills", "deprecate"), "skills.version.deprecate", "skill_publication"
+    ),
+    ApplicationCommand(("skills", "install"), "skills.install", "skill_installation"),
+    ApplicationCommand(("skills", "remove"), "skills.remove", "skill_installation"),
+    ApplicationCommand(("skills", "resolve"), "skills.resolve", "skill_resolution"),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

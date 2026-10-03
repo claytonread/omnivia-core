@@ -2,7 +2,7 @@
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
 holds sixty-one operations. This module names fourteen of them in the
-``restricted`` profile and twenty-two in the ``authoring`` profile. A newly
+``restricted`` profile and twenty-five in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -20,14 +20,17 @@ Engineering Memory reads, the four decision tools, and the trigger health read.
 ``decision.evaluate`` is the one side-effecting operation in this profile; it is
 admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring twenty-two** are those fourteen plus exactly six mutations --
-``memory.create``, ``evidence.capture``, ``import.start``, and the three trigger
-mutations ``trigger.declare``, ``trigger.lifecycle`` and ``trigger.ingest`` --
-and the two job observations, ``job.get`` and ``job.events``, that make an
-asynchronous import followable. Those six, with ``decision.evaluate``, are the
-*only* side-effecting operations this module can admit, and they are named as a
-literal set: another mutation cannot arrive through a contract or audit-category
-change.
+**The authoring twenty-five** are those fourteen plus exactly nine mutations --
+``memory.create``, ``evidence.capture``, ``import.start``, the three trigger
+mutations ``trigger.declare``, ``trigger.lifecycle`` and ``trigger.ingest``, and
+the three skill authoring mutations ``skills.draft.create``,
+``skills.draft.update`` and ``skills.proposal.submit`` -- and the two job
+observations, ``job.get`` and ``job.events``, that make an asynchronous import
+followable. Those nine, with ``decision.evaluate``, are the *only*
+side-effecting operations this module can admit, and they are named as a literal
+set: another mutation cannot arrive through a contract or audit-category change.
+Publishing, deprecating, installing and removing a skill are not here: they need
+the publisher and workspace operator roles, which this profile never holds.
 
 **Which profile a server advertises is decided once, at startup, by
 :mod:`omnivia_core_mcp.configuration`** -- never by a prompt or by a tool call's
@@ -99,8 +102,9 @@ __all__ = [
 #: until an ordinary MCP connection can select a previously shared session
 #: without accepting caller-owned binding identity; ``2.4`` adds the trigger
 #: operations -- ``trigger_health`` to the restricted profile, and the three
-#: trigger mutations to the authoring profile.
-MANIFEST_VERSION: Final = "2.4"
+#: trigger mutations to the authoring profile; ``2.5`` adds the three skill
+#: authoring mutations to the authoring profile.
+MANIFEST_VERSION: Final = "2.5"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -129,6 +133,9 @@ ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
         "trigger.declare",
         "trigger.lifecycle",
         "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
     }
 )
 
@@ -462,10 +469,41 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
             "Read-only, and not a transport stream."
         ),
     ),
+    ExposedOperation(
+        tool_name="skills_draft_create",
+        operation="skills.draft.create",
+        purpose="skill_authoring",
+        title="Open a skill draft",
+        description=(
+            "Open one draft of a skill at revision 1 from one manifest. The manifest is "
+            "inert data: a member that would state a permission, tool or path is refused. "
+            "The draft publishes nothing and installs nothing."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="skills_draft_update",
+        operation="skills.draft.update",
+        purpose="skill_authoring",
+        title="Revise a skill draft",
+        description=(
+            "Append one revision to a draft, made against the revision last read. A stale "
+            "revision is a conflict, and a submitted draft is closed to revision."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="skills_proposal_submit",
+        operation="skills.proposal.submit",
+        purpose="skill_authoring",
+        title="Submit a skill draft for publication",
+        description=(
+            "Send a draft's latest revision to the publisher queue, once, with the evidence "
+            "cited. Submitting grants no publication."
+        ),
+    ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then eight
-#: additions (22 tools total).
+#: The `authoring` profile: the restricted surface, in its order, then eleven
+#: additions (25 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
@@ -617,7 +655,7 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the twenty-two deletes anything: the mutations create or
+            # None of the twenty-five deletes anything: the mutations create or
             # move a subscription's state, and supersession and cancellation are
             # not exposed at all.
             destructive_hint=False,

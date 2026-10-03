@@ -189,7 +189,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
     assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
-def test_authoring_policy_is_the_read_surface_plus_exactly_eight() -> None:
+def test_authoring_policy_is_the_read_surface_plus_exactly_eleven() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
     # R004 section 9.1's "workspace contributor authority sufficient for
@@ -208,8 +208,12 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_eight() -> None:
         "trigger.declare",
         "trigger.lifecycle",
         "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
     }
     assert kinds(added, McpGrantKind.SCOPE) == {
+        "skill:author",
         "memory:write",
         "job:read",
         "trigger:configure",
@@ -221,6 +225,7 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_eight() -> None:
         "job_observation",
         "trigger_configuration",
         "trigger_ingestion",
+        "skill_authoring",
     }
     assert {
         (grant.value, grant.version)
@@ -233,6 +238,7 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_eight() -> None:
         ("job.read", "1.0"),
         ("trigger.configure", "1.0"),
         ("trigger.invoke", "1.0"),
+        ("skill.author", "1.0"),
     }
 
 

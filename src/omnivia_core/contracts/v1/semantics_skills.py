@@ -42,6 +42,7 @@ from typing import Any, Final
 from omnivia_core.contracts.v1.canonical_json import canonical_bytes, canonicalize
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.generated import is_content_checksum, is_identifier
+from omnivia_core.contracts.v1.semantics_runtime import SKILL_SELECTION_KINDS
 
 #: The members a manifest has, and the only ones.
 SKILL_MANIFEST_FIELDS: Final[tuple[str, ...]] = (
@@ -128,11 +129,7 @@ _HOSTILE: Final = re.compile(
 SKILL_SELECTION_EXPLICIT: Final = "explicit"
 SKILL_SELECTION_HIGHEST_COMPATIBLE: Final = "highest_compatible"
 SKILL_SELECTION_DEPENDENCY: Final = "dependency"
-SKILL_SELECTIONS: Final[tuple[str, ...]] = (
-    SKILL_SELECTION_EXPLICIT,
-    SKILL_SELECTION_HIGHEST_COMPATIBLE,
-    SKILL_SELECTION_DEPENDENCY,
-)
+SKILL_SELECTIONS: Final[tuple[str, ...]] = SKILL_SELECTION_KINDS
 
 CODE_AUTHORITY_FIELD: Final = "authority_field_refused"
 CODE_MALFORMED: Final = "manifest_malformed"

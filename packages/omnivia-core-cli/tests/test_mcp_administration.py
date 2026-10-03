@@ -491,6 +491,7 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
             "job_observation",
             "knowledge_retrieval",
             "memory_authoring",
+            "skill_authoring",
             "trigger_configuration",
             "trigger_ingestion",
             "trigger_observation",

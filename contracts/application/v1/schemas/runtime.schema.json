@@ -1518,7 +1518,7 @@
     },
     "WorkflowStartInput": {
       "title": "WorkflowStartInput",
-      "description": "Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier. There is no definition, plan, binding or logical-key member. A caller that could state the material it runs against could state material nobody released, so the plan is sealed and the binding is resolved server-side from the exact release this names; and a Run's logical identity is the request's own `idempotency_key`, which migration 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.",
+      "description": "Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier. There is no definition, plan, binding or logical-key member. A caller that could state the material it runs against could state material nobody released, so the plan is sealed and the binding is resolved server-side from the exact release this names; and a Run's logical identity is the request's own `idempotency_key`, which migration 0018 requires them to be equal to, so stating it twice could only introduce a disagreement. Its one optional member, `skill_selections`, names the skills each role selects; Core resolves them to exact manifest ids in the same admission, and no caller states a binding.",
       "type": "object",
       "properties": {
         "workflow_id": {
@@ -1528,6 +1528,13 @@
         "workflow_version": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
           "description": "The released version of it to run."
+        },
+        "skill_selections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRoleSelection"},
+          "description": "The skills each Run role selects, when the Run needs any. Absent, the Run binds no skill. Each selection is resolved to exact manifest ids and a bounded closure in the admission transaction, so a selection that cannot be resolved refuses the whole start."
         }
       },
       "required": [
@@ -2345,6 +2352,705 @@
         "duplicate",
         "dead_lettered",
         "uncertain"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillManifestId": {
+      "title": "SkillManifestId",
+      "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+      "type": "string",
+      "minLength": 70,
+      "maxLength": 70
+    },
+    "SkillVersion": {
+      "title": "SkillVersion",
+      "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 20
+    },
+    "SkillSelectionKind": {
+      "title": "SkillSelectionKind",
+      "description": "How one manifest entered a resolved closure: named explicitly, chosen as the highest compatible installed version, or pulled in as a pinned dependency. Closed, so a value outside it is refused.",
+      "type": "string",
+      "enum": [
+        "explicit",
+        "highest_compatible",
+        "dependency"
+      ]
+    },
+    "SkillInstallState": {
+      "title": "SkillInstallState",
+      "description": "Whether one published skill version is installed in this workspace. Removal is a recorded state and never a deletion of the version, its history or any Run that bound it.",
+      "type": "string",
+      "enum": [
+        "installed",
+        "removed"
+      ]
+    },
+    "SkillReference": {
+      "title": "SkillReference",
+      "description": "A named content digest of material a skill refers to. The digest is recorded and never dereferenced.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The name the skill uses for the referenced material."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The SHA-256 digest the referenced material or evidence must carry."
+        }
+      },
+      "required": [
+        "name",
+        "content_digest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillDependency": {
+      "title": "SkillDependency",
+      "description": "A dependency on one exact published manifest of another skill. Resolution walks dependencies over these pinned ids, so a published skill never follows a moving dependency.",
+      "type": "object",
+      "properties": {
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this one depends on."
+        },
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The exact published manifest this one depends on."
+        }
+      },
+      "required": [
+        "skill_name",
+        "manifest_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillManifest": {
+      "title": "SkillManifest",
+      "description": "A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is compatible with and the capabilities it requires to be present. It grants nothing. Its field set is closed, and a member that would state a permission, tool, budget, path, network right, credential, escalation or sandbox setting is refused, never ignored.",
+      "type": "object",
+      "properties": {
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this names."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "What the skill is for, as inert text."
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384,
+          "description": "The skill's instruction text, carried as data and never executed."
+        },
+        "references": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillReference"
+          },
+          "description": "Named digests of material the skill refers to."
+        },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDependency"
+          },
+          "description": "Other skills this one needs, each pinned to one exact published manifest."
+        },
+        "compatible_roles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "description": "The roles this skill may be selected for."
+        },
+        "required_capabilities": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "description": "Capabilities that must be present before execution. A requirement, never a grant."
+        }
+      },
+      "required": [
+        "skill_name",
+        "version",
+        "description",
+        "instructions",
+        "references",
+        "dependencies",
+        "compatible_roles",
+        "required_capabilities"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillEvidenceRef": {
+      "title": "SkillEvidenceRef",
+      "description": "A reference to reviewing evidence: its identifier and the content digest it must carry. Recorded for audit and never dereferenced here.",
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The identifier of the reviewing evidence."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The SHA-256 digest the referenced material or evidence must carry."
+        }
+      },
+      "required": [
+        "evidence_id",
+        "content_digest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillSelection": {
+      "title": "SkillSelection",
+      "description": "One skill a role asks for. Without a manifest id, the highest installed, non-deprecated version compatible with the role is chosen. With one, exactly that published manifest is chosen, and only if it is installed, not deprecated and compatible with the role: naming a manifest never widens what the role may use.",
+      "type": "object",
+      "properties": {
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill selected."
+        },
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The exact manifest to select, when the caller names one."
+        }
+      },
+      "required": [
+        "skill_name"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillRoleSelection": {
+      "title": "SkillRoleSelection",
+      "description": "The skills one Run role selects, in the caller's order. Core resolves each to exact manifest ids and a bounded closure, and the Run binds all of them in its admission.",
+      "type": "object",
+      "properties": {
+        "role_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Run role that selects these skills."
+        },
+        "selections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelection"
+          },
+          "description": "The skills the role asks for, in the caller's order."
+        }
+      },
+      "required": [
+        "role_id",
+        "selections"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillResolvedEntry": {
+      "title": "SkillResolvedEntry",
+      "description": "One manifest in a resolved closure, with how it was selected.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The manifest in the closure."
+        },
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this names."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "selection": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelectionKind",
+          "description": "How this manifest entered the closure."
+        }
+      },
+      "required": [
+        "manifest_id",
+        "skill_name",
+        "version",
+        "selection"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillDraftCreateInput": {
+      "title": "SkillDraftCreateInput",
+      "description": "Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from reviewed work or fresh. The skill name is fixed for the draft's life. It publishes nothing and installs nothing: authorship never grants either.",
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifest",
+          "description": "The first revision of the draft's manifest."
+        },
+        "source_work_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The reviewed work this draft came from, when there is one."
+        }
+      },
+      "required": [
+        "manifest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillDraftCreateResult": {
+      "title": "SkillDraftCreateResult",
+      "description": "Result of `skills.draft.create`: the draft as recorded at its first revision. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The draft this names."
+        },
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this names."
+        },
+        "draft_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The revision a draft stands at, numbered from 1."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the draft."
+        }
+      },
+      "required": [
+        "draft_id",
+        "skill_name",
+        "draft_revision",
+        "version",
+        "manifest_id",
+        "created_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillDraftUpdateInput": {
+      "title": "SkillDraftUpdateInput",
+      "description": "Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the revision the caller last read. A stale `expected_revision` is a conflict, so two authors never overwrite each other. A submitted draft is closed to revision.",
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The draft this names."
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The draft revision the caller last read. A different current revision is a conflict."
+        },
+        "manifest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifest",
+          "description": "The manifest, as inert data."
+        }
+      },
+      "required": [
+        "draft_id",
+        "expected_revision",
+        "manifest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillDraftUpdateResult": {
+      "title": "SkillDraftUpdateResult",
+      "description": "Result of `skills.draft.update`: the revision the draft now stands at. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The draft this names."
+        },
+        "draft_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The revision a draft stands at, numbered from 1."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "updated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the revision."
+        }
+      },
+      "required": [
+        "draft_id",
+        "draft_revision",
+        "version",
+        "manifest_id",
+        "updated_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillProposalSubmitInput": {
+      "title": "SkillProposalSubmitInput",
+      "description": "Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher queue, once, with the evidence the author cites. Submitting grants no publication.",
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The draft this names."
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The draft revision the caller last read. A different current revision is a conflict."
+        },
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillEvidenceRef"
+          },
+          "description": "The evidence the author cites for the proposal."
+        }
+      },
+      "required": [
+        "draft_id",
+        "expected_revision",
+        "evidence_refs"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillProposalSubmitResult": {
+      "title": "SkillProposalSubmitResult",
+      "description": "Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "proposal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The proposal this names."
+        },
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The draft this names."
+        },
+        "draft_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The revision a draft stands at, numbered from 1."
+        },
+        "submitted_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the proposal."
+        }
+      },
+      "required": [
+        "proposal_id",
+        "draft_id",
+        "draft_revision",
+        "submitted_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillVersionPublishInput": {
+      "title": "SkillVersionPublishInput",
+      "description": "Input for `skills.version.publish`. Mints the immutable version a proposal submitted, naming the reviewing evidence and the publisher. It needs the publisher role, which authorship never implies. A version is published once per skill and version: changed content takes a new version.",
+      "type": "object",
+      "properties": {
+        "proposal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The proposal this names."
+        },
+        "review_evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillEvidenceRef"
+          },
+          "description": "The reviewing evidence the publisher relies on."
+        }
+      },
+      "required": [
+        "proposal_id",
+        "review_evidence_refs"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillVersionPublishResult": {
+      "title": "SkillVersionPublishResult",
+      "description": "Result of `skills.version.publish`: the immutable version as published. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this names."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "proposal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The proposal this names."
+        },
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The draft this names."
+        },
+        "draft_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The revision a draft stands at, numbered from 1."
+        },
+        "published_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the publication."
+        }
+      },
+      "required": [
+        "manifest_id",
+        "skill_name",
+        "version",
+        "proposal_id",
+        "draft_id",
+        "draft_revision",
+        "published_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillVersionDeprecateInput": {
+      "title": "SkillVersionDeprecateInput",
+      "description": "Input for `skills.version.deprecate`. Marks one published version deprecated, once. Deprecation is append-only: the version is never deleted, and a deprecated version is never newly selected or installed. It needs the publisher role.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "An open code naming why the version is deprecated."
+        }
+      },
+      "required": [
+        "manifest_id",
+        "reason"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillVersionDeprecateResult": {
+      "title": "SkillVersionDeprecateResult",
+      "description": "Result of `skills.version.deprecate`: the deprecation as recorded. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "An open code naming why the version is deprecated."
+        },
+        "deprecated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the deprecation."
+        }
+      },
+      "required": [
+        "manifest_id",
+        "reason",
+        "deprecated_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillInstallInput": {
+      "title": "SkillInstallInput",
+      "description": "Input for `skills.install`. Binds one published version into this workspace's usable set. Installing is idempotent per workspace and manifest, and never executes content. It needs the workspace operator role.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        }
+      },
+      "required": [
+        "manifest_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillInstallResult": {
+      "title": "SkillInstallResult",
+      "description": "Result of `skills.install`: the installation state the version now holds. Installing an installed version returns its current state and records nothing new.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this names."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "install_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallState",
+          "description": "Whether the version is installed in this workspace."
+        },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The number the recorded event took in the version's history."
+        },
+        "recorded_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded this state."
+        }
+      },
+      "required": [
+        "manifest_id",
+        "skill_name",
+        "version",
+        "install_state",
+        "event_sequence",
+        "recorded_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillRemoveInput": {
+      "title": "SkillRemoveInput",
+      "description": "Input for `skills.remove`. Unbinds one installed version from this workspace's usable set. Removal prevents new selection and touches nothing else: published versions, history and every Run already bound to the version stay exactly as they were. It needs the workspace operator role.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        }
+      },
+      "required": [
+        "manifest_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillRemoveResult": {
+      "title": "SkillRemoveResult",
+      "description": "Result of `skills.remove`: the installation state the version now holds. Removing a version that is not installed returns its current state and records nothing new.",
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId",
+          "description": "The immutable identity of one published skill version."
+        },
+        "skill_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The skill this names."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion",
+          "description": "The version of that skill."
+        },
+        "install_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallState",
+          "description": "Whether the version is installed in this workspace."
+        },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The number the recorded event took in the version's history."
+        },
+        "recorded_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded this state."
+        }
+      },
+      "required": [
+        "manifest_id",
+        "skill_name",
+        "version",
+        "install_state",
+        "event_sequence",
+        "recorded_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillResolveInput": {
+      "title": "SkillResolveInput",
+      "description": "Input for `skills.resolve`. Resolves one role's skill selections to exact manifest ids and their bounded dependency closure, using the registry's precedence. It is a read: it binds nothing and changes nothing.",
+      "type": "object",
+      "properties": {
+        "role_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Run role this names."
+        },
+        "selections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelection"
+          },
+          "description": "The skills the role asks for, in the caller's order."
+        }
+      },
+      "required": [
+        "role_id",
+        "selections"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SkillResolveResult": {
+      "title": "SkillResolveResult",
+      "description": "Result of `skills.resolve`: the closure the role would be bound to, dependencies first. Bounded, and deterministic for the same registry state.",
+      "type": "object",
+      "properties": {
+        "role_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Run role this names."
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolvedEntry"
+          },
+          "description": "The resolved closure, dependencies first."
+        }
+      },
+      "required": [
+        "role_id",
+        "entries"
       ],
       "unevaluatedProperties": false
     }

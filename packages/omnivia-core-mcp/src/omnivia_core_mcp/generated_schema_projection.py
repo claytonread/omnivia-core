@@ -9402,6 +9402,601 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftCreateInput",
+        "description": "Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from reviewed work or fresh. The skill name is fixed for the draft's life. It publishes nothing and installs nothing: authorship never grants either.",
+        "type": "object",
+        "properties": {
+            "manifest": {
+                "$ref": "#/$defs/runtime__SkillManifest",
+                "description": "The first revision of the draft's manifest.",
+            },
+            "source_work_ref": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The reviewed work this draft came from, when there is one.",
+            },
+        },
+        "required": [
+            "manifest",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__SkillDependency": {
+                "title": "SkillDependency",
+                "description": "A dependency on one exact published manifest of another skill. Resolution walks dependencies over these pinned ids, so a published skill never follows a moving dependency.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this one depends on.",
+                    },
+                    "manifest_id": {
+                        "$ref": "#/$defs/runtime__SkillManifestId",
+                        "description": "The exact published manifest this one depends on.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "manifest_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifest": {
+                "title": "SkillManifest",
+                "description": "A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is compatible with and the capabilities it requires to be present. It grants nothing. Its field set is closed, and a member that would state a permission, tool, budget, path, network right, credential, escalation or sandbox setting is refused, never ignored.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this names.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/runtime__SkillVersion",
+                        "description": "The version of that skill.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "What the skill is for, as inert text.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384,
+                        "description": "The skill's instruction text, carried as data and never executed.",
+                    },
+                    "references": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillReference",
+                        },
+                        "description": "Named digests of material the skill refers to.",
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillDependency",
+                        },
+                        "description": "Other skills this one needs, each pinned to one exact published manifest.",
+                    },
+                    "compatible_roles": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "The roles this skill may be selected for.",
+                    },
+                    "required_capabilities": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "Capabilities that must be present before execution. A requirement, never a grant.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "version",
+                    "description",
+                    "instructions",
+                    "references",
+                    "dependencies",
+                    "compatible_roles",
+                    "required_capabilities",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillReference": {
+                "title": "SkillReference",
+                "description": "A named content digest of material a skill refers to. The digest is recorded and never dereferenced.",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The name the skill uses for the referenced material.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The SHA-256 digest the referenced material or evidence must carry.",
+                    },
+                },
+                "required": [
+                    "name",
+                    "content_digest",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftCreateResult",
+        "description": "Result of `skills.draft.create`: the draft as recorded at its first revision. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "skill_name": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The skill this names.",
+            },
+            "draft_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The revision a draft stands at, numbered from 1.",
+            },
+            "version": {
+                "$ref": "#/$defs/runtime__SkillVersion",
+                "description": "The version of that skill.",
+            },
+            "manifest_id": {
+                "$ref": "#/$defs/runtime__SkillManifestId",
+                "description": "The immutable identity of one published skill version.",
+            },
+            "created_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the draft.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "skill_name",
+            "draft_revision",
+            "version",
+            "manifest_id",
+            "created_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftUpdateInput",
+        "description": "Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the revision the caller last read. A stale `expected_revision` is a conflict, so two authors never overwrite each other. A submitted draft is closed to revision.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "expected_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The draft revision the caller last read. A different current revision is a conflict.",
+            },
+            "manifest": {
+                "$ref": "#/$defs/runtime__SkillManifest",
+                "description": "The manifest, as inert data.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "expected_revision",
+            "manifest",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__SkillDependency": {
+                "title": "SkillDependency",
+                "description": "A dependency on one exact published manifest of another skill. Resolution walks dependencies over these pinned ids, so a published skill never follows a moving dependency.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this one depends on.",
+                    },
+                    "manifest_id": {
+                        "$ref": "#/$defs/runtime__SkillManifestId",
+                        "description": "The exact published manifest this one depends on.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "manifest_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifest": {
+                "title": "SkillManifest",
+                "description": "A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is compatible with and the capabilities it requires to be present. It grants nothing. Its field set is closed, and a member that would state a permission, tool, budget, path, network right, credential, escalation or sandbox setting is refused, never ignored.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this names.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/runtime__SkillVersion",
+                        "description": "The version of that skill.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "What the skill is for, as inert text.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384,
+                        "description": "The skill's instruction text, carried as data and never executed.",
+                    },
+                    "references": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillReference",
+                        },
+                        "description": "Named digests of material the skill refers to.",
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillDependency",
+                        },
+                        "description": "Other skills this one needs, each pinned to one exact published manifest.",
+                    },
+                    "compatible_roles": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "The roles this skill may be selected for.",
+                    },
+                    "required_capabilities": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "Capabilities that must be present before execution. A requirement, never a grant.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "version",
+                    "description",
+                    "instructions",
+                    "references",
+                    "dependencies",
+                    "compatible_roles",
+                    "required_capabilities",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillReference": {
+                "title": "SkillReference",
+                "description": "A named content digest of material a skill refers to. The digest is recorded and never dereferenced.",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The name the skill uses for the referenced material.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The SHA-256 digest the referenced material or evidence must carry.",
+                    },
+                },
+                "required": [
+                    "name",
+                    "content_digest",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftUpdateResult",
+        "description": "Result of `skills.draft.update`: the revision the draft now stands at. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "draft_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The revision a draft stands at, numbered from 1.",
+            },
+            "version": {
+                "$ref": "#/$defs/runtime__SkillVersion",
+                "description": "The version of that skill.",
+            },
+            "manifest_id": {
+                "$ref": "#/$defs/runtime__SkillManifestId",
+                "description": "The immutable identity of one published skill version.",
+            },
+            "updated_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the revision.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "draft_revision",
+            "version",
+            "manifest_id",
+            "updated_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillProposalSubmitInput",
+        "description": "Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher queue, once, with the evidence the author cites. Submitting grants no publication.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "expected_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The draft revision the caller last read. A different current revision is a conflict.",
+            },
+            "evidence_refs": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                    "$ref": "#/$defs/runtime__SkillEvidenceRef",
+                },
+                "description": "The evidence the author cites for the proposal.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "expected_revision",
+            "evidence_refs",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__SkillEvidenceRef": {
+                "title": "SkillEvidenceRef",
+                "description": "A reference to reviewing evidence: its identifier and the content digest it must carry. Recorded for audit and never dereferenced here.",
+                "type": "object",
+                "properties": {
+                    "evidence_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The identifier of the reviewing evidence.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The SHA-256 digest the referenced material or evidence must carry.",
+                    },
+                },
+                "required": [
+                    "evidence_id",
+                    "content_digest",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillProposalSubmitResult",
+        "description": "Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "proposal_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The proposal this names.",
+            },
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "draft_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The revision a draft stands at, numbered from 1.",
+            },
+            "submitted_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the proposal.",
+            },
+        },
+        "required": [
+            "proposal_id",
+            "draft_id",
+            "draft_revision",
+            "submitted_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "TriggerDeclareInput",

@@ -132,6 +132,12 @@ TRIGGER_CONFIGURATION_PURPOSE: Final = "trigger_configuration"
 #: Delivering one stimulus to a declared trigger. Its own purpose, so a grant to configure
 #: triggers never carries the authority to deliver a stimulus to one.
 TRIGGER_INGESTION_PURPOSE: Final = "trigger_ingestion"
+#: Managed Skills (C17). Authoring and submitting a draft are one contributor act; publishing and
+#: deprecating a version are the publisher's; installing and removing are the workspace operator's.
+#: Three purposes, so a grant for one never carries the others.
+SKILL_AUTHORING_PURPOSE: Final = "skill_authoring"
+SKILL_PUBLICATION_PURPOSE: Final = "skill_publication"
+SKILL_INSTALLATION_PURPOSE: Final = "skill_installation"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -171,6 +177,13 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "trigger.declare": TRIGGER_CONFIGURATION_PURPOSE,
         "trigger.lifecycle": TRIGGER_CONFIGURATION_PURPOSE,
         "trigger.ingest": TRIGGER_INGESTION_PURPOSE,
+        "skills.draft.create": SKILL_AUTHORING_PURPOSE,
+        "skills.draft.update": SKILL_AUTHORING_PURPOSE,
+        "skills.proposal.submit": SKILL_AUTHORING_PURPOSE,
+        "skills.version.publish": SKILL_PUBLICATION_PURPOSE,
+        "skills.version.deprecate": SKILL_PUBLICATION_PURPOSE,
+        "skills.install": SKILL_INSTALLATION_PURPOSE,
+        "skills.remove": SKILL_INSTALLATION_PURPOSE,
     }
 )
 
@@ -185,6 +198,10 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 INSTALLATION_ADMINISTRATOR_ROLE: Final = "installation_administrator"
 WORKSPACE_CONTRIBUTOR_ROLE: Final = "workspace_contributor"
 KNOWLEDGE_REVIEWER_ROLE: Final = "knowledge_reviewer"
+#: Publishing and deprecating a skill version is a publisher's act, which authorship never implies.
+SKILL_PUBLISHER_ROLE: Final = "skill_publisher"
+#: Installing and removing a published skill version in one workspace is an operator's act.
+WORKSPACE_OPERATOR_ROLE: Final = "workspace_operator"
 
 MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -239,6 +256,16 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "trigger.declare": WORKSPACE_CONTRIBUTOR_ROLE,
         "trigger.lifecycle": WORKSPACE_CONTRIBUTOR_ROLE,
         "trigger.ingest": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Authoring and submitting a draft is contributor work: it publishes nothing and installs
+        # nothing. Publication and installation each need their own role, which a contributor
+        # never holds, so authorship never implies either.
+        "skills.draft.create": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.draft.update": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.proposal.submit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.version.publish": SKILL_PUBLISHER_ROLE,
+        "skills.version.deprecate": SKILL_PUBLISHER_ROLE,
+        "skills.install": WORKSPACE_OPERATOR_ROLE,
+        "skills.remove": WORKSPACE_OPERATOR_ROLE,
     }
 )
 
@@ -1270,8 +1297,13 @@ __all__ = [
     "MUTATING_OPERATIONS",
     "MUTATION_PURPOSES",
     "MUTATION_ROLES",
+    "SKILL_AUTHORING_PURPOSE",
+    "SKILL_INSTALLATION_PURPOSE",
+    "SKILL_PUBLICATION_PURPOSE",
+    "SKILL_PUBLISHER_ROLE",
     "WORKSPACE_ADMINISTRATION_PURPOSE",
     "WORKSPACE_CONTRIBUTOR_ROLE",
+    "WORKSPACE_OPERATOR_ROLE",
     "DomainMutation",
     "MutationDenied",
     "MutationGrant",

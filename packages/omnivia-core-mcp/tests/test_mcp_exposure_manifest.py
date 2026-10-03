@@ -17,7 +17,8 @@ continuity handoff, and checkpoint append. `2.2` withdrew checkpoint append;
 the restricted thirteen and the authoring eighteen, adding exactly five: three
 mutations and two job-observation reads. `2.4` adds the trigger operations: the
 restricted fourteen, with the `trigger_health` read, and the authoring
-twenty-two, with three trigger mutations.
+twenty-two, with three trigger mutations. `2.5` adds the three skill authoring
+mutations: the authoring twenty-five.
 Everything below that reads as new coverage rather than as a rewrite is the
 difference between those facts.
 """
@@ -75,6 +76,9 @@ EXPECTED_AUTHORING = EXPECTED_RESTRICTED + (
     ("trigger_ingest", "trigger.ingest", "trigger_ingestion"),
     ("job_get", "job.get", "job_observation"),
     ("job_events", "job.events", "job_observation"),
+    ("skills_draft_create", "skills.draft.create", "skill_authoring"),
+    ("skills_draft_update", "skills.draft.update", "skill_authoring"),
+    ("skills_proposal_submit", "skills.proposal.submit", "skill_authoring"),
 )
 
 EXPECTED_SURFACES = {
@@ -82,7 +86,7 @@ EXPECTED_SURFACES = {
     "authoring": EXPECTED_AUTHORING,
 }
 
-# The seven mutations the profiles admit, and the only side-effecting operations
+# The ten mutations the profiles admit, and the only side-effecting operations
 # any profile may name.
 EXPECTED_MUTATIONS = frozenset(
     {
@@ -93,6 +97,9 @@ EXPECTED_MUTATIONS = frozenset(
         "trigger.declare",
         "trigger.lifecycle",
         "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
     }
 )
 
@@ -176,16 +183,16 @@ def test_the_exposed_surface_is_exactly_the_reviewed_inventory_in_order(
     )
 
 
-def test_the_two_profiles_are_exactly_fourteen_and_twenty_two_tools() -> None:
+def test_the_two_profiles_are_exactly_fourteen_and_twenty_five_tools() -> None:
     """The counts the requirements fix, asserted as counts as well as names: a
     listing that gained a tool and lost one would satisfy neither line."""
     assert len(manifest.exposure_manifest("restricted")) == 14
-    assert len(manifest.exposure_manifest("authoring")) == 22
+    assert len(manifest.exposure_manifest("authoring")) == 25
     assert len(manifest.tools("restricted")) == 14
-    assert len(manifest.tools("authoring")) == 22
+    assert len(manifest.tools("authoring")) == 25
 
 
-def test_the_authoring_profile_is_the_restricted_fourteen_plus_eight() -> None:
+def test_the_authoring_profile_is_the_restricted_fourteen_plus_eleven() -> None:
     """Concatenation, not a second listing of the shared fourteen: the profiles cannot
     drift in a tool name, a title or a description they both advertise."""
     restricted = manifest.exposure_manifest("restricted")
@@ -196,6 +203,7 @@ def test_the_authoring_profile_is_the_restricted_fourteen_plus_eight() -> None:
         "memory_create", "evidence_capture", "import_start",
         "trigger_declare", "trigger_lifecycle", "trigger_ingest",
         "job_get", "job_events",
+        "skills_draft_create", "skills_draft_update", "skills_proposal_submit",
     ]
 
 
@@ -203,7 +211,7 @@ def test_restricted_is_the_safe_default_for_a_caller_that_names_no_profile() -> 
     """`EXPOSURE_MANIFEST`, `tools()` and `exposed_by_tool_name()` all answer with
     the read-only surface when nobody says otherwise. A caller written before
     profiles existed -- the server's `tools/list` handler among them -- advertises
-    fourteen tools rather than twenty-two, which is the failure mode this default
+    fourteen tools rather than twenty-five, which is the failure mode this default
     should have."""
     assert manifest.EXPOSURE_MANIFEST == manifest.exposure_manifest("restricted")
     assert manifest.tools() is manifest.tools("restricted")
@@ -268,7 +276,7 @@ def test_the_manifest_version_names_this_surface() -> None:
     minor one: a cached `1.1` listing is not a subset of what this advertises,
     it is the whole of one of two answers.
     """
-    assert manifest.MANIFEST_VERSION == "2.4"
+    assert manifest.MANIFEST_VERSION == "2.5"
 
 
 def test_captured_source_commit_is_explicitly_omitted_from_model_facing_mcp() -> None:
@@ -285,7 +293,7 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
     """The purpose is a claim the request states and the service checks against
     its own grant, so the claim has to be the one the grant allows -- a purpose
     invented here would be refused at the first call rather than caught by
-    review. Fourteen purposes across twenty-two tools, not one per operation."""
+    review. Fifteen purposes across twenty-five tools, not one per operation."""
     purposes = {
         entry.operation: entry.purpose
         for entry in manifest.exposure_manifest("authoring")
@@ -313,6 +321,9 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
         "trigger.ingest": "trigger_ingestion",
         "job.get": "job_observation",
         "job.events": "job_observation",
+        "skills.draft.create": "skill_authoring",
+        "skills.draft.update": "skill_authoring",
+        "skills.proposal.submit": "skill_authoring",
     }
 
 
@@ -334,13 +345,13 @@ def test_the_restricted_profile_admits_only_reads_and_the_decision_mutation() ->
             assert catalogue.audit.audit_category == "read", entry.operation
 
 
-def test_the_authoring_profile_has_exactly_seven_mutations_and_fifteen_reads() -> None:
+def test_the_authoring_profile_has_exactly_ten_mutations_and_fifteen_reads() -> None:
     """The exit criterion, read off the catalogue rather than off the tool names.
 
-    Fifteen of the twenty-two declare no side effect and audit as reads; the other
-    seven are exactly the named mutations, each of which the catalogue agrees is
-    audited as a `mutation` (`decision.evaluate` and `trigger.lifecycle` update,
-    the rest create).
+    Fifteen of the twenty-five declare no side effect and audit as reads; the other
+    ten are exactly the named mutations, each of which the catalogue agrees is
+    audited as a `mutation` (`decision.evaluate`, `trigger.lifecycle` and
+    `skills.draft.update` update, the rest create).
     """
     mutations, reads = set(), set()
     for entry in manifest.exposure_manifest("authoring"):
@@ -417,7 +428,7 @@ def test_an_operation_outside_the_catalogue_cannot_be_admitted() -> None:
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
 def test_the_never_exposed_operations_are_absent(profile: str, operation: str) -> None:
     """Absent from both inventories and unreachable by tool name in either: the
-    widest profile is still a curated twenty-two, not "everything but the worst"."""
+    widest profile is still a curated twenty-five, not "everything but the worst"."""
     exposed = manifest.exposure_manifest(profile)
     assert operation not in {entry.operation for entry in exposed}
     assert manifest.exposed_by_tool_name(operation.replace(".", "_"), profile) is None
@@ -798,10 +809,10 @@ def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
     """Every hint derived, none asserted.
 
     `readOnlyHint` is the catalogue's `side_effect == "none"` rather than a
-    constant, so the seven mutations say so. `destructiveHint` is false for all
-    twenty-two, and truthfully: nothing exposed deletes, and supersession and
+    constant, so the ten mutations say so. `destructiveHint` is false for all
+    twenty-five, and truthfully: nothing exposed deletes, and supersession and
     cancellation are not exposed at all. `idempotentHint` is the catalogue's
-    proven `safe_to_retry` -- true for the fifteen reads, false for the seven
+    proven `safe_to_retry` -- true for the fifteen reads, false for the ten
     mutations, whose repeat is settled by the idempotency key rather than by the
     call being idempotent. The world is closed because this server is attached to
     exactly one local workspace it cannot be told to leave.
@@ -820,7 +831,7 @@ def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
 
 def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
     """The same facts as literals, because "derived from the catalogue" is only
-    reassuring if the values it derives are the reviewed ones: seven mutations
+    reassuring if the values it derives are the reviewed ones: ten mutations
     marked not read-only and not idempotent, fifteen reads marked read-only and
     idempotent, and nothing marked destructive."""
     hints = {
@@ -832,11 +843,12 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         for tool in manifest.tools("authoring")
         if tool.annotations is not None
     }
-    assert len(hints) == 22
+    assert len(hints) == 25
     mutations = {
         "memory_create", "evidence_capture", "import_start",
         "decision_evaluate", "trigger_declare", "trigger_lifecycle",
-        "trigger_ingest",
+        "trigger_ingest", "skills_draft_create", "skills_draft_update",
+        "skills_proposal_submit",
     }
     for mutation in mutations:
         assert hints[mutation] == (False, False, False), mutation
@@ -887,7 +899,7 @@ def test_the_generator_projects_the_wrapper_key_the_manifest_names() -> None:
 
 
 def test_the_generated_projection_covers_every_advertised_reference() -> None:
-    """Nothing the twenty-two tools advertise is missing from the committed module,
+    """Nothing the twenty-five tools advertise is missing from the committed module,
     and nothing in it is advertised by no tool: a stale entry is as much a
     review problem as an absent one."""
     advertised = {manifest.IDEMPOTENCY_KEY_SCHEMA_REF}

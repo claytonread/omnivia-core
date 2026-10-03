@@ -1233,10 +1233,12 @@ _JOB_EVENTS: tuple[str, ...] = tuple(
 )
 #: Deliberately includes ``not_found``, which ``CREATE_MUT`` does not: starting a
 #: Workflow Run names an exact released Workflow version, and a release authority that
-#: serves no such version is a ``not_found`` about the thing the caller named. Every
-#: other ``CREATE_MUT`` operation creates a record from the request alone and has no
-#: prior thing to fail to find.
-_WORKFLOW_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: serves no such version is a ``not_found`` about the thing the caller named. A
+#: skill selection the installed state cannot satisfy, or a binding the registry
+#: refuses, is a ``conflict`` that rolls the whole start back. Every other
+#: ``CREATE_MUT`` operation creates a record from the request alone and has no prior
+#: thing to fail to find.
+_WORKFLOW_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 #: Deliberately includes ``conflict``, which ``JOB_CONTROL`` excludes. The reason
 #: ``job.cancel`` and ``job.retry`` exclude it holds for this operation's ``cancel``
 #: too -- a finished Run settles as ``cancellation_ignored_already_terminal``, an
@@ -1318,6 +1320,10 @@ _TRIGGER_CONFIGURE: tuple[str, ...] = tuple(
 #: Ingestion names the declared trigger it delivers to, so it can fail to find it. A
 #: stimulus the trigger does not admit is recorded as dead-lettered, not refused.
 _TRIGGER_INGEST: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: Managed Skills (C17). A draft, proposal, version, deprecation or installed skill that the
+#: registry does not hold is `not_found`; a stale draft revision, a closed or already-published
+#: draft, a version already published or a state the registry refuses is a `conflict`.
+_SKILL_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1361,6 +1367,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
     "TRIGGER_CONFIGURE": _TRIGGER_CONFIGURE,
     "TRIGGER_INGEST": _TRIGGER_INGEST,
+    "SKILL_MUT": _SKILL_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1395,7 +1402,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 61 application operations, in the frozen insertion order. Runtime
+#: The exact 69 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1664,6 +1671,40 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "trigger.health": FrozenOperation(
         "workspace", ("trigger:read",), "none", "trigger.read",
         "runtime", "TriggerHealth", "POINT_READ", True, max_page_size=50,
+    ),
+    # Managed Skills (C17). Authoring, publication, installation and resolution are four
+    # grants: authorship never implies publication or installation, and resolution is a read.
+    "skills.draft.create": FrozenOperation(
+        "workspace", ("skill:author",), "create", "skill.author",
+        "runtime", "SkillDraftCreate", "CREATE_MUT", False,
+    ),
+    "skills.draft.update": FrozenOperation(
+        "workspace", ("skill:author",), "update", "skill.author",
+        "runtime", "SkillDraftUpdate", "SKILL_MUT", False,
+    ),
+    "skills.proposal.submit": FrozenOperation(
+        "workspace", ("skill:author",), "create", "skill.author",
+        "runtime", "SkillProposalSubmit", "SKILL_MUT", False,
+    ),
+    "skills.version.publish": FrozenOperation(
+        "workspace", ("skill:publish",), "create", "skill.publish",
+        "runtime", "SkillVersionPublish", "SKILL_MUT", False,
+    ),
+    "skills.version.deprecate": FrozenOperation(
+        "workspace", ("skill:publish",), "update", "skill.publish",
+        "runtime", "SkillVersionDeprecate", "SKILL_MUT", False,
+    ),
+    "skills.install": FrozenOperation(
+        "workspace", ("skill:install",), "update", "skill.install",
+        "runtime", "SkillInstall", "SKILL_MUT", False,
+    ),
+    "skills.remove": FrozenOperation(
+        "workspace", ("skill:install",), "update", "skill.install",
+        "runtime", "SkillRemove", "SKILL_MUT", False,
+    ),
+    "skills.resolve": FrozenOperation(
+        "workspace", ("skill:resolve",), "none", "skill.resolve",
+        "runtime", "SkillResolve", "POINT_READ", False,
     ),
 }
 

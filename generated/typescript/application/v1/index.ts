@@ -2939,6 +2939,73 @@ export interface TriggerDeliveryCounts {
 }
 
 /**
+ * The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its
+ * canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical
+ * content has one identity; changed content has another.
+ */
+export type SkillManifestId = string;
+
+/**
+ * The version of one skill: three dot-separated integers with no leading zeros. Versions of one
+ * skill order as those integers, so two of them never tie.
+ */
+export type SkillVersion = string;
+
+/**
+ * How one manifest entered a resolved closure: named explicitly, chosen as the highest
+ * compatible installed version, or pulled in as a pinned dependency. Closed, so a value outside
+ * it is refused.
+ */
+export type SkillSelectionKind = string;
+
+/**
+ * The closed `SkillSelectionKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const SKILL_SELECTION_KIND_VALUES = [
+  "explicit",
+  "highest_compatible",
+  "dependency",
+] as const;
+
+/**
+ * Return whether a value is a declared `SkillSelectionKind`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isSkillSelectionKind(value: unknown): value is SkillSelectionKind {
+  return (
+    typeof value === "string" &&
+    (SKILL_SELECTION_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Whether one published skill version is installed in this workspace. Removal is a recorded
+ * state and never a deletion of the version, its history or any Run that bound it.
+ */
+export type SkillInstallState = string;
+
+/**
+ * The closed `SkillInstallState` vocabulary, emitted from the schema's `enum`.
+ */
+export const SKILL_INSTALL_STATE_VALUES = [
+  "installed",
+  "removed",
+] as const;
+
+/**
+ * Return whether a value is a declared `SkillInstallState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isSkillInstallState(value: unknown): value is SkillInstallState {
+  return (
+    typeof value === "string" &&
+    (SKILL_INSTALL_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -6155,26 +6222,6 @@ export interface WorkflowJournalEntry {
 }
 
 /**
- * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
- * through the request envelope's selected workspace, so this payload never carries a second,
- * independent workspace identifier. There is no definition, plan, binding or logical-key member.
- * A caller that could state the material it runs against could state material nobody released,
- * so the plan is sealed and the binding is resolved server-side from the exact release this
- * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
- * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
- */
-export interface WorkflowStartInput {
-  /**
-   * The Workflow to run.
-   */
-  readonly workflow_id: Identifier;
-  /**
-   * The released version of it to run.
-   */
-  readonly workflow_version: ReleaseVersion;
-}
-
-/**
  * Input for `workflow.inspect`. Names one Workflow Run. Workspace-scoped through the request
  * envelope's selected workspace, so a Run of another workspace is invisible rather than merely
  * unlikely to be asked for.
@@ -6577,6 +6624,328 @@ export interface TriggerFailure {
    * Why it failed.
    */
   readonly reason: OpenCode;
+}
+
+/**
+ * A named content digest of material a skill refers to. The digest is recorded and never
+ * dereferenced.
+ */
+export interface SkillReference {
+  /**
+   * The name the skill uses for the referenced material.
+   */
+  readonly name: Identifier;
+  /**
+   * The SHA-256 digest the referenced material or evidence must carry.
+   */
+  readonly content_digest: ContentChecksum;
+}
+
+/**
+ * A dependency on one exact published manifest of another skill. Resolution walks dependencies
+ * over these pinned ids, so a published skill never follows a moving dependency.
+ */
+export interface SkillDependency {
+  /**
+   * The skill this one depends on.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The exact published manifest this one depends on.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * A reference to reviewing evidence: its identifier and the content digest it must carry.
+ * Recorded for audit and never dereferenced here.
+ */
+export interface SkillEvidenceRef {
+  /**
+   * The identifier of the reviewing evidence.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * The SHA-256 digest the referenced material or evidence must carry.
+   */
+  readonly content_digest: ContentChecksum;
+}
+
+/**
+ * One skill a role asks for. Without a manifest id, the highest installed, non-deprecated
+ * version compatible with the role is chosen. With one, exactly that published manifest is
+ * chosen, and only if it is installed, not deprecated and compatible with the role: naming a
+ * manifest never widens what the role may use.
+ */
+export interface SkillSelection {
+  /**
+   * The skill selected.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The exact manifest to select, when the caller names one.
+   */
+  readonly manifest_id?: SkillManifestId;
+}
+
+/**
+ * One manifest in a resolved closure, with how it was selected.
+ */
+export interface SkillResolvedEntry {
+  /**
+   * The manifest in the closure.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * How this manifest entered the closure.
+   */
+  readonly selection: SkillSelectionKind;
+}
+
+/**
+ * Result of `skills.draft.create`: the draft as recorded at its first revision. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface SkillDraftCreateResult {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * When Core recorded the draft.
+   */
+  readonly created_at: Timestamp;
+}
+
+/**
+ * Result of `skills.draft.update`: the revision the draft now stands at. A replay under the same
+ * idempotency key returns this result without a second write.
+ */
+export interface SkillDraftUpdateResult {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * When Core recorded the revision.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay
+ * under the same idempotency key returns this result without a second write.
+ */
+export interface SkillProposalSubmitResult {
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * When Core recorded the proposal.
+   */
+  readonly submitted_at: Timestamp;
+}
+
+/**
+ * Result of `skills.version.publish`: the immutable version as published. A replay under the
+ * same idempotency key returns this result without a second write.
+ */
+export interface SkillVersionPublishResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * When Core recorded the publication.
+   */
+  readonly published_at: Timestamp;
+}
+
+/**
+ * Input for `skills.version.deprecate`. Marks one published version deprecated, once.
+ * Deprecation is append-only: the version is never deleted, and a deprecated version is never
+ * newly selected or installed. It needs the publisher role.
+ */
+export interface SkillVersionDeprecateInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * An open code naming why the version is deprecated.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * Result of `skills.version.deprecate`: the deprecation as recorded. A replay under the same
+ * idempotency key returns this result without a second write.
+ */
+export interface SkillVersionDeprecateResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * An open code naming why the version is deprecated.
+   */
+  readonly reason: OpenCode;
+  /**
+   * When Core recorded the deprecation.
+   */
+  readonly deprecated_at: Timestamp;
+}
+
+/**
+ * Input for `skills.install`. Binds one published version into this workspace's usable set.
+ * Installing is idempotent per workspace and manifest, and never executes content. It needs the
+ * workspace operator role.
+ */
+export interface SkillInstallInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * Result of `skills.install`: the installation state the version now holds. Installing an
+ * installed version returns its current state and records nothing new.
+ */
+export interface SkillInstallResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * Whether the version is installed in this workspace.
+   */
+  readonly install_state: SkillInstallState;
+  /**
+   * The number the recorded event took in the version's history.
+   */
+  readonly event_sequence: number;
+  /**
+   * When Core recorded this state.
+   */
+  readonly recorded_at: Timestamp;
+}
+
+/**
+ * Input for `skills.remove`. Unbinds one installed version from this workspace's usable set.
+ * Removal prevents new selection and touches nothing else: published versions, history and every
+ * Run already bound to the version stay exactly as they were. It needs the workspace operator
+ * role.
+ */
+export interface SkillRemoveInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * Result of `skills.remove`: the installation state the version now holds. Removing a version
+ * that is not installed returns its current state and records nothing new.
+ */
+export interface SkillRemoveResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * Whether the version is installed in this workspace.
+   */
+  readonly install_state: SkillInstallState;
+  /**
+   * The number the recorded event took in the version's history.
+   */
+  readonly event_sequence: number;
+  /**
+   * When Core recorded this state.
+   */
+  readonly recorded_at: Timestamp;
 }
 
 /**
@@ -8879,6 +9248,129 @@ export interface TriggerHealth {
 }
 
 /**
+ * A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is
+ * compatible with and the capabilities it requires to be present. It grants nothing. Its field
+ * set is closed, and a member that would state a permission, tool, budget, path, network right,
+ * credential, escalation or sandbox setting is refused, never ignored.
+ */
+export interface SkillManifest {
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * What the skill is for, as inert text.
+   */
+  readonly description: string;
+  /**
+   * The skill's instruction text, carried as data and never executed.
+   */
+  readonly instructions: string;
+  /**
+   * Named digests of material the skill refers to.
+   */
+  readonly references: readonly SkillReference[];
+  /**
+   * Other skills this one needs, each pinned to one exact published manifest.
+   */
+  readonly dependencies: readonly SkillDependency[];
+  /**
+   * The roles this skill may be selected for.
+   */
+  readonly compatible_roles: readonly Identifier[];
+  /**
+   * Capabilities that must be present before execution. A requirement, never a grant.
+   */
+  readonly required_capabilities: readonly Identifier[];
+}
+
+/**
+ * The skills one Run role selects, in the caller's order. Core resolves each to exact manifest
+ * ids and a bounded closure, and the Run binds all of them in its admission.
+ */
+export interface SkillRoleSelection {
+  /**
+   * The Run role that selects these skills.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The skills the role asks for, in the caller's order.
+   */
+  readonly selections: readonly SkillSelection[];
+}
+
+/**
+ * Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher queue,
+ * once, with the evidence the author cites. Submitting grants no publication.
+ */
+export interface SkillProposalSubmitInput {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The draft revision the caller last read. A different current revision is a conflict.
+   */
+  readonly expected_revision: number;
+  /**
+   * The evidence the author cites for the proposal.
+   */
+  readonly evidence_refs: readonly SkillEvidenceRef[];
+}
+
+/**
+ * Input for `skills.version.publish`. Mints the immutable version a proposal submitted, naming
+ * the reviewing evidence and the publisher. It needs the publisher role, which authorship never
+ * implies. A version is published once per skill and version: changed content takes a new
+ * version.
+ */
+export interface SkillVersionPublishInput {
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The reviewing evidence the publisher relies on.
+   */
+  readonly review_evidence_refs: readonly SkillEvidenceRef[];
+}
+
+/**
+ * Input for `skills.resolve`. Resolves one role's skill selections to exact manifest ids and
+ * their bounded dependency closure, using the registry's precedence. It is a read: it binds
+ * nothing and changes nothing.
+ */
+export interface SkillResolveInput {
+  /**
+   * The Run role this names.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The skills the role asks for, in the caller's order.
+   */
+  readonly selections: readonly SkillSelection[];
+}
+
+/**
+ * Result of `skills.resolve`: the closure the role would be bound to, dependencies first.
+ * Bounded, and deterministic for the same registry state.
+ */
+export interface SkillResolveResult {
+  /**
+   * The Run role this names.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The resolved closure, dependencies first.
+   */
+  readonly entries: readonly SkillResolvedEntry[];
+}
+
+/**
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
@@ -9946,6 +10438,34 @@ export interface RunStep {
 }
 
 /**
+ * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
+ * through the request envelope's selected workspace, so this payload never carries a second,
+ * independent workspace identifier. There is no definition, plan, binding or logical-key member.
+ * A caller that could state the material it runs against could state material nobody released,
+ * so the plan is sealed and the binding is resolved server-side from the exact release this
+ * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
+ * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
+ * Its one optional member, `skill_selections`, names the skills each role selects; Core resolves
+ * them to exact manifest ids in the same admission, and no caller states a binding.
+ */
+export interface WorkflowStartInput {
+  /**
+   * The Workflow to run.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The released version of it to run.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * The skills each Run role selects, when the Run needs any. Absent, the Run binds no skill.
+   * Each selection is resolved to exact manifest ids and a bounded closure in the admission
+   * transaction, so a selection that cannot be resolved refuses the whole start.
+   */
+  readonly skill_selections?: readonly SkillRoleSelection[];
+}
+
+/**
  * Result of `workflow.start`: the Run as it now stands durably. There is no admitted-versus-
  * replayed member, because an honest replay is answered from the stored bytes of the first call
  * and so could not carry a different one; the Run this names is the caller's Run either way.
@@ -10058,6 +10578,42 @@ export interface TriggerHealthResult {
    * means the read is exhausted.
    */
   readonly page: PageMetadata;
+}
+
+/**
+ * Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from reviewed
+ * work or fresh. The skill name is fixed for the draft's life. It publishes nothing and installs
+ * nothing: authorship never grants either.
+ */
+export interface SkillDraftCreateInput {
+  /**
+   * The first revision of the draft's manifest.
+   */
+  readonly manifest: SkillManifest;
+  /**
+   * The reviewed work this draft came from, when there is one.
+   */
+  readonly source_work_ref?: Identifier;
+}
+
+/**
+ * Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the
+ * revision the caller last read. A stale `expected_revision` is a conflict, so two authors never
+ * overwrite each other. A submitted draft is closed to revision.
+ */
+export interface SkillDraftUpdateInput {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The draft revision the caller last read. A different current revision is a conflict.
+   */
+  readonly expected_revision: number;
+  /**
+   * The manifest, as inert data.
+   */
+  readonly manifest: SkillManifest;
 }
 
 /**
@@ -12355,6 +12911,7 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "authorization_denied",
       "cancelled",
       "capability_not_granted",
+      "conflict",
       "deadline_exceeded",
       "dependency_unavailable",
       "idempotency_conflict",
@@ -13606,6 +14163,272 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     required_capability: { id: "trigger.read", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: true, max_page_size: 50 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.draft.create",
+    scope: { required_scopes: ["skill:author"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.draft.update",
+    scope: { required_scopes: ["skill:author"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.proposal.submit",
+    scope: { required_scopes: ["skill:author"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.version.publish",
+    scope: { required_scopes: ["skill:publish"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishResult",
+    required_capability: { id: "skill.publish", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.version.deprecate",
+    scope: { required_scopes: ["skill:publish"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateResult",
+    required_capability: { id: "skill.publish", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.install",
+    scope: { required_scopes: ["skill:install"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallResult",
+    required_capability: { id: "skill.install", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.remove",
+    scope: { required_scopes: ["skill:install"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveResult",
+    required_capability: { id: "skill.install", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.resolve",
+    scope: { required_scopes: ["skill:resolve"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult",
+    required_capability: { id: "skill.resolve", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
     idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
     precondition: { supports_mutation_precondition: false, required: false },
     audit: { audited: true, audit_category: "read" },

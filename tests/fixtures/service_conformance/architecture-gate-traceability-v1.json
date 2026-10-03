@@ -220,7 +220,15 @@
         "trigger.declare",
         "trigger.lifecycle",
         "trigger.ingest",
-        "trigger.health"
+        "trigger.health",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "skills.version.publish",
+        "skills.version.deprecate",
+        "skills.install",
+        "skills.remove",
+        "skills.resolve"
       ]
     },
     {
@@ -352,7 +360,14 @@
         "engineering.repository.register",
         "trigger.declare",
         "trigger.lifecycle",
-        "trigger.ingest"
+        "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "skills.version.publish",
+        "skills.version.deprecate",
+        "skills.install",
+        "skills.remove"
       ]
     },
     {
@@ -393,7 +408,14 @@
         "engineering.repository.register",
         "trigger.declare",
         "trigger.lifecycle",
-        "trigger.ingest"
+        "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "skills.version.publish",
+        "skills.version.deprecate",
+        "skills.install",
+        "skills.remove"
       ]
     },
     {
@@ -490,7 +512,15 @@
         "trigger.declare",
         "trigger.lifecycle",
         "trigger.ingest",
-        "trigger.health"
+        "trigger.health",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "skills.version.publish",
+        "skills.version.deprecate",
+        "skills.install",
+        "skills.remove",
+        "skills.resolve"
       ]
     },
     {
@@ -560,7 +590,15 @@
         "trigger.declare",
         "trigger.lifecycle",
         "trigger.ingest",
-        "trigger.health"
+        "trigger.health",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "skills.version.publish",
+        "skills.version.deprecate",
+        "skills.install",
+        "skills.remove",
+        "skills.resolve"
       ]
     },
     {

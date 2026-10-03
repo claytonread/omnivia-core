@@ -493,6 +493,33 @@ __all__ = [
     "ServiceProbeRequest",
     "ServiceProbeResult",
     "ServiceProcessEvidence",
+    "SkillDependency",
+    "SkillDraftCreateInput",
+    "SkillDraftCreateResult",
+    "SkillDraftUpdateInput",
+    "SkillDraftUpdateResult",
+    "SkillEvidenceRef",
+    "SkillInstallInput",
+    "SkillInstallResult",
+    "SkillInstallState",
+    "SkillManifest",
+    "SkillManifestId",
+    "SkillProposalSubmitInput",
+    "SkillProposalSubmitResult",
+    "SkillReference",
+    "SkillRemoveInput",
+    "SkillRemoveResult",
+    "SkillResolveInput",
+    "SkillResolveResult",
+    "SkillResolvedEntry",
+    "SkillRoleSelection",
+    "SkillSelection",
+    "SkillSelectionKind",
+    "SkillVersion",
+    "SkillVersionDeprecateInput",
+    "SkillVersionDeprecateResult",
+    "SkillVersionPublishInput",
+    "SkillVersionPublishResult",
     "SourceKind",
     "SourceReference",
     "SourceSpan",
@@ -4173,6 +4200,27 @@ class TriggerDeliveryCounts:
             uncertain=field_uncertain,
         )
 
+
+SkillManifestId: TypeAlias = str
+"""The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its
+canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content
+has one identity; changed content has another.
+"""
+
+SkillVersion: TypeAlias = str
+"""The version of one skill: three dot-separated integers with no leading zeros. Versions of one
+skill order as those integers, so two of them never tie.
+"""
+
+SkillSelectionKind: TypeAlias = str
+"""How one manifest entered a resolved closure: named explicitly, chosen as the highest compatible
+installed version, or pulled in as a pinned dependency. Closed, so a value outside it is refused.
+"""
+
+SkillInstallState: TypeAlias = str
+"""Whether one published skill version is installed in this workspace. Removal is a recorded state
+and never a deletion of the version, its history or any Run that bound it.
+"""
 
 ProbeKind: TypeAlias = str
 """Open, dot-namespaced code naming which runtime probe is being requested or answered. The frozen,
@@ -10794,54 +10842,6 @@ class WorkflowJournalEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkflowStartInput:
-    """Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
-    through the request envelope's selected workspace, so this payload never carries a
-    second, independent workspace identifier. There is no definition, plan, binding or
-    logical-key member. A caller that could state the material it runs against could state
-    material nobody released, so the plan is sealed and the binding is resolved server-side
-    from the exact release this names; and a Run's logical identity is the request's own
-    `idempotency_key`, which migration 0018 requires them to be equal to, so stating it twice
-    could only introduce a disagreement.
-    """
-
-    workflow_id: Identifier
-    workflow_version: ReleaseVersion
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["workflow_id"] = self.workflow_id
-        wire["workflow_version"] = self.workflow_version
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "WorkflowStartInput") -> WorkflowStartInput:
-        """Decode a wire payload into a WorkflowStartInput.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_workflow_id = _decode_str(
-            _require_field(mapping, "workflow_id", path),
-            f"{path}.workflow_id",
-        )
-        field_workflow_version = _decode_str(
-            _require_field(mapping, "workflow_version", path),
-            f"{path}.workflow_version",
-        )
-        return cls(
-            workflow_id=field_workflow_id,
-            workflow_version=field_workflow_version,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class WorkflowInspectInput:
     """Input for `workflow.inspect`. Names one Workflow Run. Workspace-scoped through the
     request envelope's selected workspace, so a Run of another workspace is invisible rather
@@ -11787,6 +11787,780 @@ class TriggerFailure:
             trigger_observation_id=field_trigger_observation_id,
             source=field_source,
             reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillReference:
+    """A named content digest of material a skill refers to. The digest is recorded and never
+    dereferenced.
+    """
+
+    name: Identifier
+    content_digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["name"] = self.name
+        wire["content_digest"] = self.content_digest
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillReference") -> SkillReference:
+        """Decode a wire payload into a SkillReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_name = _decode_str(_require_field(mapping, "name", path), f"{path}.name")
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        return cls(
+            name=field_name,
+            content_digest=field_content_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDependency:
+    """A dependency on one exact published manifest of another skill. Resolution walks
+    dependencies over these pinned ids, so a published skill never follows a moving
+    dependency.
+    """
+
+    skill_name: Identifier
+    manifest_id: SkillManifestId
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["skill_name"] = self.skill_name
+        wire["manifest_id"] = self.manifest_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillDependency") -> SkillDependency:
+        """Decode a wire payload into a SkillDependency.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        return cls(
+            skill_name=field_skill_name,
+            manifest_id=field_manifest_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillEvidenceRef:
+    """A reference to reviewing evidence: its identifier and the content digest it must carry.
+    Recorded for audit and never dereferenced here.
+    """
+
+    evidence_id: Identifier
+    content_digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["content_digest"] = self.content_digest
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillEvidenceRef") -> SkillEvidenceRef:
+        """Decode a wire payload into a SkillEvidenceRef.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+            content_digest=field_content_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillSelection:
+    """One skill a role asks for. Without a manifest id, the highest installed, non-deprecated
+    version compatible with the role is chosen. With one, exactly that published manifest is
+    chosen, and only if it is installed, not deprecated and compatible with the role: naming
+    a manifest never widens what the role may use.
+    """
+
+    skill_name: Identifier
+    manifest_id: SkillManifestId | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["skill_name"] = self.skill_name
+        if self.manifest_id is not None:
+            wire["manifest_id"] = self.manifest_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillSelection") -> SkillSelection:
+        """Decode a wire payload into a SkillSelection.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_manifest_id: SkillManifestId | None = None
+        if "manifest_id" in mapping:
+            raw_manifest_id = mapping["manifest_id"]
+            if raw_manifest_id is None:
+                raise ContractDecodeError(
+                    f"{path}.manifest_id: null is not a valid value"
+                )
+            field_manifest_id = _decode_str(raw_manifest_id, f"{path}.manifest_id")
+        return cls(
+            skill_name=field_skill_name,
+            manifest_id=field_manifest_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillResolvedEntry:
+    """One manifest in a resolved closure, with how it was selected."""
+
+    manifest_id: SkillManifestId
+    skill_name: Identifier
+    version: SkillVersion
+    selection: SkillSelectionKind
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        wire["skill_name"] = self.skill_name
+        wire["version"] = self.version
+        wire["selection"] = self.selection
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillResolvedEntry") -> SkillResolvedEntry:
+        """Decode a wire payload into a SkillResolvedEntry.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_selection = _decode_str(
+            _require_field(mapping, "selection", path),
+            f"{path}.selection",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+            skill_name=field_skill_name,
+            version=field_version,
+            selection=field_selection,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDraftCreateResult:
+    """Result of `skills.draft.create`: the draft as recorded at its first revision. A replay
+    under the same idempotency key returns this result without a second write.
+    """
+
+    draft_id: Identifier
+    skill_name: Identifier
+    draft_revision: int
+    version: SkillVersion
+    manifest_id: SkillManifestId
+    created_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["draft_id"] = self.draft_id
+        wire["skill_name"] = self.skill_name
+        wire["draft_revision"] = self.draft_revision
+        wire["version"] = self.version
+        wire["manifest_id"] = self.manifest_id
+        wire["created_at"] = self.created_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillDraftCreateResult"
+    ) -> SkillDraftCreateResult:
+        """Decode a wire payload into a SkillDraftCreateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_draft_revision = _decode_int(
+            _require_field(mapping, "draft_revision", path),
+            f"{path}.draft_revision",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        return cls(
+            draft_id=field_draft_id,
+            skill_name=field_skill_name,
+            draft_revision=field_draft_revision,
+            version=field_version,
+            manifest_id=field_manifest_id,
+            created_at=field_created_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDraftUpdateResult:
+    """Result of `skills.draft.update`: the revision the draft now stands at. A replay under the
+    same idempotency key returns this result without a second write.
+    """
+
+    draft_id: Identifier
+    draft_revision: int
+    version: SkillVersion
+    manifest_id: SkillManifestId
+    updated_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["draft_id"] = self.draft_id
+        wire["draft_revision"] = self.draft_revision
+        wire["version"] = self.version
+        wire["manifest_id"] = self.manifest_id
+        wire["updated_at"] = self.updated_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillDraftUpdateResult"
+    ) -> SkillDraftUpdateResult:
+        """Decode a wire payload into a SkillDraftUpdateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_draft_revision = _decode_int(
+            _require_field(mapping, "draft_revision", path),
+            f"{path}.draft_revision",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_updated_at = _decode_str(
+            _require_field(mapping, "updated_at", path),
+            f"{path}.updated_at",
+        )
+        return cls(
+            draft_id=field_draft_id,
+            draft_revision=field_draft_revision,
+            version=field_version,
+            manifest_id=field_manifest_id,
+            updated_at=field_updated_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillProposalSubmitResult:
+    """Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay
+    under the same idempotency key returns this result without a second write.
+    """
+
+    proposal_id: Identifier
+    draft_id: Identifier
+    draft_revision: int
+    submitted_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["proposal_id"] = self.proposal_id
+        wire["draft_id"] = self.draft_id
+        wire["draft_revision"] = self.draft_revision
+        wire["submitted_at"] = self.submitted_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillProposalSubmitResult"
+    ) -> SkillProposalSubmitResult:
+        """Decode a wire payload into a SkillProposalSubmitResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_proposal_id = _decode_str(
+            _require_field(mapping, "proposal_id", path),
+            f"{path}.proposal_id",
+        )
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_draft_revision = _decode_int(
+            _require_field(mapping, "draft_revision", path),
+            f"{path}.draft_revision",
+        )
+        field_submitted_at = _decode_str(
+            _require_field(mapping, "submitted_at", path),
+            f"{path}.submitted_at",
+        )
+        return cls(
+            proposal_id=field_proposal_id,
+            draft_id=field_draft_id,
+            draft_revision=field_draft_revision,
+            submitted_at=field_submitted_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillVersionPublishResult:
+    """Result of `skills.version.publish`: the immutable version as published. A replay under
+    the same idempotency key returns this result without a second write.
+    """
+
+    manifest_id: SkillManifestId
+    skill_name: Identifier
+    version: SkillVersion
+    proposal_id: Identifier
+    draft_id: Identifier
+    draft_revision: int
+    published_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        wire["skill_name"] = self.skill_name
+        wire["version"] = self.version
+        wire["proposal_id"] = self.proposal_id
+        wire["draft_id"] = self.draft_id
+        wire["draft_revision"] = self.draft_revision
+        wire["published_at"] = self.published_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillVersionPublishResult"
+    ) -> SkillVersionPublishResult:
+        """Decode a wire payload into a SkillVersionPublishResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_proposal_id = _decode_str(
+            _require_field(mapping, "proposal_id", path),
+            f"{path}.proposal_id",
+        )
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_draft_revision = _decode_int(
+            _require_field(mapping, "draft_revision", path),
+            f"{path}.draft_revision",
+        )
+        field_published_at = _decode_str(
+            _require_field(mapping, "published_at", path),
+            f"{path}.published_at",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+            skill_name=field_skill_name,
+            version=field_version,
+            proposal_id=field_proposal_id,
+            draft_id=field_draft_id,
+            draft_revision=field_draft_revision,
+            published_at=field_published_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillVersionDeprecateInput:
+    """Input for `skills.version.deprecate`. Marks one published version deprecated, once.
+    Deprecation is append-only: the version is never deleted, and a deprecated version is
+    never newly selected or installed. It needs the publisher role.
+    """
+
+    manifest_id: SkillManifestId
+    reason: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        wire["reason"] = self.reason
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillVersionDeprecateInput"
+    ) -> SkillVersionDeprecateInput:
+        """Decode a wire payload into a SkillVersionDeprecateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        return cls(
+            manifest_id=field_manifest_id,
+            reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillVersionDeprecateResult:
+    """Result of `skills.version.deprecate`: the deprecation as recorded. A replay under the
+    same idempotency key returns this result without a second write.
+    """
+
+    manifest_id: SkillManifestId
+    reason: OpenCode
+    deprecated_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        wire["reason"] = self.reason
+        wire["deprecated_at"] = self.deprecated_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillVersionDeprecateResult"
+    ) -> SkillVersionDeprecateResult:
+        """Decode a wire payload into a SkillVersionDeprecateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        field_deprecated_at = _decode_str(
+            _require_field(mapping, "deprecated_at", path),
+            f"{path}.deprecated_at",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+            reason=field_reason,
+            deprecated_at=field_deprecated_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillInstallInput:
+    """Input for `skills.install`. Binds one published version into this workspace's usable set.
+    Installing is idempotent per workspace and manifest, and never executes content. It needs
+    the workspace operator role.
+    """
+
+    manifest_id: SkillManifestId
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillInstallInput") -> SkillInstallInput:
+        """Decode a wire payload into a SkillInstallInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillInstallResult:
+    """Result of `skills.install`: the installation state the version now holds. Installing an
+    installed version returns its current state and records nothing new.
+    """
+
+    manifest_id: SkillManifestId
+    skill_name: Identifier
+    version: SkillVersion
+    install_state: SkillInstallState
+    event_sequence: int
+    recorded_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        wire["skill_name"] = self.skill_name
+        wire["version"] = self.version
+        wire["install_state"] = self.install_state
+        wire["event_sequence"] = self.event_sequence
+        wire["recorded_at"] = self.recorded_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillInstallResult") -> SkillInstallResult:
+        """Decode a wire payload into a SkillInstallResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_install_state = _decode_str(
+            _require_field(mapping, "install_state", path),
+            f"{path}.install_state",
+        )
+        field_event_sequence = _decode_int(
+            _require_field(mapping, "event_sequence", path),
+            f"{path}.event_sequence",
+        )
+        field_recorded_at = _decode_str(
+            _require_field(mapping, "recorded_at", path),
+            f"{path}.recorded_at",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+            skill_name=field_skill_name,
+            version=field_version,
+            install_state=field_install_state,
+            event_sequence=field_event_sequence,
+            recorded_at=field_recorded_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillRemoveInput:
+    """Input for `skills.remove`. Unbinds one installed version from this workspace's usable
+    set. Removal prevents new selection and touches nothing else: published versions, history
+    and every Run already bound to the version stay exactly as they were. It needs the
+    workspace operator role.
+    """
+
+    manifest_id: SkillManifestId
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillRemoveInput") -> SkillRemoveInput:
+        """Decode a wire payload into a SkillRemoveInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillRemoveResult:
+    """Result of `skills.remove`: the installation state the version now holds. Removing a
+    version that is not installed returns its current state and records nothing new.
+    """
+
+    manifest_id: SkillManifestId
+    skill_name: Identifier
+    version: SkillVersion
+    install_state: SkillInstallState
+    event_sequence: int
+    recorded_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest_id"] = self.manifest_id
+        wire["skill_name"] = self.skill_name
+        wire["version"] = self.version
+        wire["install_state"] = self.install_state
+        wire["event_sequence"] = self.event_sequence
+        wire["recorded_at"] = self.recorded_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillRemoveResult") -> SkillRemoveResult:
+        """Decode a wire payload into a SkillRemoveResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest_id = _decode_str(
+            _require_field(mapping, "manifest_id", path),
+            f"{path}.manifest_id",
+        )
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_install_state = _decode_str(
+            _require_field(mapping, "install_state", path),
+            f"{path}.install_state",
+        )
+        field_event_sequence = _decode_int(
+            _require_field(mapping, "event_sequence", path),
+            f"{path}.event_sequence",
+        )
+        field_recorded_at = _decode_str(
+            _require_field(mapping, "recorded_at", path),
+            f"{path}.recorded_at",
+        )
+        return cls(
+            manifest_id=field_manifest_id,
+            skill_name=field_skill_name,
+            version=field_version,
+            install_state=field_install_state,
+            event_sequence=field_event_sequence,
+            recorded_at=field_recorded_at,
         )
 
 
@@ -17321,6 +18095,337 @@ class TriggerHealth:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillManifest:
+    """A managed Skills manifest: inert data naming a skill, its version, its text, the roles it
+    is compatible with and the capabilities it requires to be present. It grants nothing. Its
+    field set is closed, and a member that would state a permission, tool, budget, path,
+    network right, credential, escalation or sandbox setting is refused, never ignored.
+    """
+
+    skill_name: Identifier
+    version: SkillVersion
+    description: str
+    instructions: str
+    references: tuple[SkillReference, ...]
+    dependencies: tuple[SkillDependency, ...]
+    compatible_roles: tuple[Identifier, ...]
+    required_capabilities: tuple[Identifier, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["skill_name"] = self.skill_name
+        wire["version"] = self.version
+        wire["description"] = self.description
+        wire["instructions"] = self.instructions
+        wire["references"] = [item.to_wire() for item in self.references]
+        wire["dependencies"] = [item.to_wire() for item in self.dependencies]
+        wire["compatible_roles"] = list(self.compatible_roles)
+        wire["required_capabilities"] = list(self.required_capabilities)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillManifest") -> SkillManifest:
+        """Decode a wire payload into a SkillManifest.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_skill_name = _decode_str(
+            _require_field(mapping, "skill_name", path),
+            f"{path}.skill_name",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_description = _decode_str(
+            _require_field(mapping, "description", path),
+            f"{path}.description",
+        )
+        field_instructions = _decode_str(
+            _require_field(mapping, "instructions", path),
+            f"{path}.instructions",
+        )
+        field_references_items = _decode_sequence(
+            _require_field(mapping, "references", path),
+            f"{path}.references",
+        )
+        field_references = tuple(
+            SkillReference.from_wire(item, f"{path}.references[{index}]")
+            for index, item in enumerate(field_references_items)
+        )
+        field_dependencies_items = _decode_sequence(
+            _require_field(mapping, "dependencies", path),
+            f"{path}.dependencies",
+        )
+        field_dependencies = tuple(
+            SkillDependency.from_wire(item, f"{path}.dependencies[{index}]")
+            for index, item in enumerate(field_dependencies_items)
+        )
+        field_compatible_roles_items = _decode_sequence(
+            _require_field(mapping, "compatible_roles", path),
+            f"{path}.compatible_roles",
+        )
+        field_compatible_roles = tuple(
+            _decode_str(item, f"{path}.compatible_roles[{index}]")
+            for index, item in enumerate(field_compatible_roles_items)
+        )
+        field_required_capabilities_items = _decode_sequence(
+            _require_field(mapping, "required_capabilities", path),
+            f"{path}.required_capabilities",
+        )
+        field_required_capabilities = tuple(
+            _decode_str(item, f"{path}.required_capabilities[{index}]")
+            for index, item in enumerate(field_required_capabilities_items)
+        )
+        return cls(
+            skill_name=field_skill_name,
+            version=field_version,
+            description=field_description,
+            instructions=field_instructions,
+            references=field_references,
+            dependencies=field_dependencies,
+            compatible_roles=field_compatible_roles,
+            required_capabilities=field_required_capabilities,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillRoleSelection:
+    """The skills one Run role selects, in the caller's order. Core resolves each to exact
+    manifest ids and a bounded closure, and the Run binds all of them in its admission.
+    """
+
+    role_id: Identifier
+    selections: tuple[SkillSelection, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["role_id"] = self.role_id
+        wire["selections"] = [item.to_wire() for item in self.selections]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillRoleSelection") -> SkillRoleSelection:
+        """Decode a wire payload into a SkillRoleSelection.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_role_id = _decode_str(_require_field(mapping, "role_id", path), f"{path}.role_id")
+        field_selections_items = _decode_sequence(
+            _require_field(mapping, "selections", path),
+            f"{path}.selections",
+        )
+        field_selections = tuple(
+            SkillSelection.from_wire(item, f"{path}.selections[{index}]")
+            for index, item in enumerate(field_selections_items)
+        )
+        return cls(
+            role_id=field_role_id,
+            selections=field_selections,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillProposalSubmitInput:
+    """Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher
+    queue, once, with the evidence the author cites. Submitting grants no publication.
+    """
+
+    draft_id: Identifier
+    expected_revision: int
+    evidence_refs: tuple[SkillEvidenceRef, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["draft_id"] = self.draft_id
+        wire["expected_revision"] = self.expected_revision
+        wire["evidence_refs"] = [item.to_wire() for item in self.evidence_refs]
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillProposalSubmitInput"
+    ) -> SkillProposalSubmitInput:
+        """Decode a wire payload into a SkillProposalSubmitInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_expected_revision = _decode_int(
+            _require_field(mapping, "expected_revision", path),
+            f"{path}.expected_revision",
+        )
+        field_evidence_refs_items = _decode_sequence(
+            _require_field(mapping, "evidence_refs", path),
+            f"{path}.evidence_refs",
+        )
+        field_evidence_refs = tuple(
+            SkillEvidenceRef.from_wire(item, f"{path}.evidence_refs[{index}]")
+            for index, item in enumerate(field_evidence_refs_items)
+        )
+        return cls(
+            draft_id=field_draft_id,
+            expected_revision=field_expected_revision,
+            evidence_refs=field_evidence_refs,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillVersionPublishInput:
+    """Input for `skills.version.publish`. Mints the immutable version a proposal submitted,
+    naming the reviewing evidence and the publisher. It needs the publisher role, which
+    authorship never implies. A version is published once per skill and version: changed
+    content takes a new version.
+    """
+
+    proposal_id: Identifier
+    review_evidence_refs: tuple[SkillEvidenceRef, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["proposal_id"] = self.proposal_id
+        wire["review_evidence_refs"] = [item.to_wire() for item in self.review_evidence_refs]
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillVersionPublishInput"
+    ) -> SkillVersionPublishInput:
+        """Decode a wire payload into a SkillVersionPublishInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_proposal_id = _decode_str(
+            _require_field(mapping, "proposal_id", path),
+            f"{path}.proposal_id",
+        )
+        field_review_evidence_refs_items = _decode_sequence(
+            _require_field(mapping, "review_evidence_refs", path),
+            f"{path}.review_evidence_refs",
+        )
+        field_review_evidence_refs = tuple(
+            SkillEvidenceRef.from_wire(item, f"{path}.review_evidence_refs[{index}]")
+            for index, item in enumerate(field_review_evidence_refs_items)
+        )
+        return cls(
+            proposal_id=field_proposal_id,
+            review_evidence_refs=field_review_evidence_refs,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillResolveInput:
+    """Input for `skills.resolve`. Resolves one role's skill selections to exact manifest ids
+    and their bounded dependency closure, using the registry's precedence. It is a read: it
+    binds nothing and changes nothing.
+    """
+
+    role_id: Identifier
+    selections: tuple[SkillSelection, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["role_id"] = self.role_id
+        wire["selections"] = [item.to_wire() for item in self.selections]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillResolveInput") -> SkillResolveInput:
+        """Decode a wire payload into a SkillResolveInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_role_id = _decode_str(_require_field(mapping, "role_id", path), f"{path}.role_id")
+        field_selections_items = _decode_sequence(
+            _require_field(mapping, "selections", path),
+            f"{path}.selections",
+        )
+        field_selections = tuple(
+            SkillSelection.from_wire(item, f"{path}.selections[{index}]")
+            for index, item in enumerate(field_selections_items)
+        )
+        return cls(
+            role_id=field_role_id,
+            selections=field_selections,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillResolveResult:
+    """Result of `skills.resolve`: the closure the role would be bound to, dependencies first.
+    Bounded, and deterministic for the same registry state.
+    """
+
+    role_id: Identifier
+    entries: tuple[SkillResolvedEntry, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["role_id"] = self.role_id
+        wire["entries"] = [item.to_wire() for item in self.entries]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SkillResolveResult") -> SkillResolveResult:
+        """Decode a wire payload into a SkillResolveResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_role_id = _decode_str(_require_field(mapping, "role_id", path), f"{path}.role_id")
+        field_entries_items = _decode_sequence(
+            _require_field(mapping, "entries", path),
+            f"{path}.entries",
+        )
+        field_entries = tuple(
+            SkillResolvedEntry.from_wire(item, f"{path}.entries[{index}]")
+            for index, item in enumerate(field_entries_items)
+        )
+        return cls(
+            role_id=field_role_id,
+            entries=field_entries,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceEndpointDescriptor:
     """The published coordination facts a client needs to find one running service instance and
     decide whether it can talk to it, before any request is sent. Coordination data only: a
@@ -19370,6 +20475,75 @@ class RunStep:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowStartInput:
+    """Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
+    through the request envelope's selected workspace, so this payload never carries a
+    second, independent workspace identifier. There is no definition, plan, binding or
+    logical-key member. A caller that could state the material it runs against could state
+    material nobody released, so the plan is sealed and the binding is resolved server-side
+    from the exact release this names; and a Run's logical identity is the request's own
+    `idempotency_key`, which migration 0018 requires them to be equal to, so stating it twice
+    could only introduce a disagreement. Its one optional member, `skill_selections`, names
+    the skills each role selects; Core resolves them to exact manifest ids in the same
+    admission, and no caller states a binding.
+    """
+
+    workflow_id: Identifier
+    workflow_version: ReleaseVersion
+    skill_selections: tuple[SkillRoleSelection, ...] | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workflow_id"] = self.workflow_id
+        wire["workflow_version"] = self.workflow_version
+        if self.skill_selections is not None:
+            wire["skill_selections"] = [item.to_wire() for item in self.skill_selections]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowStartInput") -> WorkflowStartInput:
+        """Decode a wire payload into a WorkflowStartInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workflow_id = _decode_str(
+            _require_field(mapping, "workflow_id", path),
+            f"{path}.workflow_id",
+        )
+        field_workflow_version = _decode_str(
+            _require_field(mapping, "workflow_version", path),
+            f"{path}.workflow_version",
+        )
+        field_skill_selections: tuple[SkillRoleSelection, ...] | None = None
+        if "skill_selections" in mapping:
+            raw_skill_selections = mapping["skill_selections"]
+            if raw_skill_selections is None:
+                raise ContractDecodeError(
+                    f"{path}.skill_selections: null is not a valid value"
+                )
+            field_skill_selections_items = _decode_sequence(
+                raw_skill_selections,
+                f"{path}.skill_selections",
+            )
+            field_skill_selections = tuple(
+                SkillRoleSelection.from_wire(item, f"{path}.skill_selections[{index}]")
+                for index, item in enumerate(field_skill_selections_items)
+            )
+        return cls(
+            workflow_id=field_workflow_id,
+            workflow_version=field_workflow_version,
+            skill_selections=field_skill_selections,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowStartResult:
     """Result of `workflow.start`: the Run as it now stands durably. There is no admitted-
     versus-replayed member, because an honest replay is answered from the stored bytes of the
@@ -19668,6 +20842,105 @@ class TriggerHealthResult:
         return cls(
             items=field_items,
             page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDraftCreateInput:
+    """Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from
+    reviewed work or fresh. The skill name is fixed for the draft's life. It publishes
+    nothing and installs nothing: authorship never grants either.
+    """
+
+    manifest: SkillManifest
+    source_work_ref: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["manifest"] = self.manifest.to_wire()
+        if self.source_work_ref is not None:
+            wire["source_work_ref"] = self.source_work_ref
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillDraftCreateInput"
+    ) -> SkillDraftCreateInput:
+        """Decode a wire payload into a SkillDraftCreateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_manifest = SkillManifest.from_wire(
+            _require_field(mapping, "manifest", path),
+            f"{path}.manifest",
+        )
+        field_source_work_ref: Identifier | None = None
+        if "source_work_ref" in mapping:
+            raw_source_work_ref = mapping["source_work_ref"]
+            if raw_source_work_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.source_work_ref: null is not a valid value"
+                )
+            field_source_work_ref = _decode_str(raw_source_work_ref, f"{path}.source_work_ref")
+        return cls(
+            manifest=field_manifest,
+            source_work_ref=field_source_work_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDraftUpdateInput:
+    """Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the
+    revision the caller last read. A stale `expected_revision` is a conflict, so two authors
+    never overwrite each other. A submitted draft is closed to revision.
+    """
+
+    draft_id: Identifier
+    expected_revision: int
+    manifest: SkillManifest
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["draft_id"] = self.draft_id
+        wire["expected_revision"] = self.expected_revision
+        wire["manifest"] = self.manifest.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "SkillDraftUpdateInput"
+    ) -> SkillDraftUpdateInput:
+        """Decode a wire payload into a SkillDraftUpdateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_expected_revision = _decode_int(
+            _require_field(mapping, "expected_revision", path),
+            f"{path}.expected_revision",
+        )
+        field_manifest = SkillManifest.from_wire(
+            _require_field(mapping, "manifest", path),
+            f"{path}.manifest",
+        )
+        return cls(
+            draft_id=field_draft_id,
+            expected_revision=field_expected_revision,
+            manifest=field_manifest,
         )
 
 
@@ -23755,6 +25028,7 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "authorization_denied",
             "cancelled",
             "capability_not_granted",
+            "conflict",
             "deadline_exceeded",
             "dependency_unavailable",
             "idempotency_conflict",
@@ -25692,6 +26966,440 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         ),
         job=OperationJobMetadata(completion_mode="synchronous"),
         pagination=OperationPaginationMetadata(paginated=True, max_page_size=50),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.draft.create",
+        scope=OperationScope(
+            required_scopes=("skill:author",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillDraftCreateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillDraftCreateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.author",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.draft.update",
+        scope=OperationScope(
+            required_scopes=("skill:author",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillDraftUpdateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillDraftUpdateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.author",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.proposal.submit",
+        scope=OperationScope(
+            required_scopes=("skill:author",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillProposalSubmitInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillProposalSubmitResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.author",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.version.publish",
+        scope=OperationScope(
+            required_scopes=("skill:publish",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillVersionPublishInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillVersionPublishResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.publish",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.version.deprecate",
+        scope=OperationScope(
+            required_scopes=("skill:publish",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillVersionDeprecateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillVersionDeprecateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.publish",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.install",
+        scope=OperationScope(
+            required_scopes=("skill:install",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillInstallInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillInstallResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.install",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.remove",
+        scope=OperationScope(
+            required_scopes=("skill:install",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillRemoveInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillRemoveResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.install",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="skills.resolve",
+        scope=OperationScope(
+            required_scopes=("skill:resolve",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillResolveInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/SkillResolveResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="skill.resolve",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
         idempotency=OperationIdempotencyMetadata(
             supports_idempotency_key=False,
             required=False,

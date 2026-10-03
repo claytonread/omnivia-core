@@ -100,7 +100,7 @@ same durable rows produce the same projection.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
@@ -153,6 +153,10 @@ from omnivia_core_runtime.service.authorization import (
     AuthorizedApplicationContext,
     ServiceBinding,
 )
+from omnivia_core_runtime.service.handlers.skills import (
+    resolve_run_skills,
+    skill_selections_input,
+)
 from omnivia_core_runtime.service.mutation import (
     MutationGrant,
     MutationSettlementContext,
@@ -181,6 +185,10 @@ from omnivia_core_runtime.storage.agent_runtime import (
     transaction_local_writer,
 )
 from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.managed_skills import (
+    RoleClosure,
+    transaction_local_skills_writer,
+)
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 from omnivia_core_runtime.storage.runtime_stop import (
     STOP_OUTCOME_ACCEPTED,
@@ -477,6 +485,14 @@ class WorkflowHandlers:
             fenced: Any, settlement: MutationSettlementContext
         ) -> Mapping[str, Any]:
             release = self._release(request)
+            # Resolved inside the same fenced transaction the Run is admitted in, so the closures
+            # bind exactly the installed state the admission sees, and a refusal here rolls the
+            # whole start back: no Run, no sealed plan, no claim.
+            skills = resolve_run_skills(
+                fenced,
+                workspace_id=context.workspace_id,
+                raw=skill_selections_input(context.request.input),
+            )
             admitted = _start_workflow_run(
                 fenced,
                 settlement,
@@ -487,6 +503,7 @@ class WorkflowHandlers:
                 originating_operation=context.request.operation,
                 fencing_generation=guard.fencing_generation,
                 allocate_identifier=self.allocate_identifier,
+                skills=skills,
             )
             view = read_workflow_run(
                 fenced, workspace_id=context.workspace_id, run_id=admitted
@@ -1420,8 +1437,14 @@ def _start_workflow_run(
     originating_operation: str,
     fencing_generation: int,
     allocate_identifier: IdentifierAllocator,
+    skills: Sequence[RoleClosure] = (),
 ) -> str:
     """Seal one plan, admit one canonical Run, bind them and open its steps, in the caller's transaction.
+
+    `skills` are the role closures already resolved against the installed state in this same
+    transaction. They are bound as the Run's first skill generation, after its admission row exists
+    and under its admission audit event, so a Run never reads as bound to skills it was not admitted
+    with.
 
     Every statement is issued on the fenced connection the mutation seam opened, so a
     plan sealed without its Run, a Run admitted without its binding, a binding naming
@@ -1496,6 +1519,20 @@ def _start_workflow_run(
         )
     )
     writer.admit_run(admission)
+    if skills:
+        # The first generation of the Run's skill bindings: written under the admission's own audit
+        # event and instant, which 0064 requires, and sealed as one set. A refusal here is a
+        # conflict, and it rolls back the admission with everything else.
+        try:
+            transaction_local_skills_writer(connection, workspace_id=workspace_id).bind_run(
+                run_id=run_id,
+                roles=skills,
+                bound_at_us=settlement.settled_at_us,
+                audit_ref=settlement.audit_ref,
+                allocate_binding_id=lambda: allocate_identifier("sbind"),
+            )
+        except StorageError as error:
+            raise application_refusal(ERROR_CODE_CONFLICT, str(error)) from error
     # The Run's canonical steps, derived from the plan just sealed, in this same
     # transaction. A Run admitted without them would be durable, inspectable and
     # permanently unexecutable: RT-106 claims a runnable *step*, so a Run with none is a

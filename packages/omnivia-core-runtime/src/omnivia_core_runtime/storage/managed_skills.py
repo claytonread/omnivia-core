@@ -125,6 +125,10 @@ MAX_BINDING_GENERATIONS: Final = 32
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _PRINCIPAL = re.compile(r"[^\x00]{1,128}")
 
+#: The operation refusals a registry write maps to. Each names what the caller can do about it.
+REFUSAL_NOT_FOUND: Final = "not_found"
+REFUSAL_CONFLICT: Final = "conflict"
+
 #: Refusal codes of a resolution, beside the closure's own.
 CODE_NOT_FOUND: Final = "skill_not_found"
 CODE_NOT_INSTALLED: Final = "skill_not_installed"
@@ -148,6 +152,15 @@ class SkillResolutionError(StorageError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class SkillRegistryRefusal(StorageError):
+    """A registry write refused for one stated reason. `code` is the operation refusal it maps to."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 
 # --- records -------------------------------------------------------------------------
@@ -482,15 +495,16 @@ class ManagedSkillsWriter:
             self.connection, workspace_id=self.workspace_id, draft_id=draft_id
         )
         if head is None:
-            raise StorageError(f"draft {draft_id!r} is not recorded in this workspace")
+            raise SkillRegistryRefusal(REFUSAL_NOT_FOUND, f"draft {draft_id!r} is not recorded in this workspace")
         if head.proposal is not None:
-            raise StorageError(
-                f"draft {draft_id!r} was submitted and is closed to revision"
+            raise SkillRegistryRefusal(
+                REFUSAL_CONFLICT, f"draft {draft_id!r} was submitted and is closed to revision"
             )
         if head.latest.draft_revision != expected_revision:
-            raise StorageError(
+            raise SkillRegistryRefusal(
+                REFUSAL_CONFLICT,
                 f"draft {draft_id!r} is at revision {head.latest.draft_revision}, "
-                f"not the revision {expected_revision} this update was made against"
+                f"not the revision {expected_revision} this update was made against",
             )
         if valid["skill_name"] != head.draft.skill_name:
             raise StorageError("a draft keeps the skill name it was created with")
@@ -557,13 +571,14 @@ class ManagedSkillsWriter:
             self.connection, workspace_id=self.workspace_id, draft_id=draft_id
         )
         if head is None:
-            raise StorageError(f"draft {draft_id!r} is not recorded in this workspace")
+            raise SkillRegistryRefusal(REFUSAL_NOT_FOUND, f"draft {draft_id!r} is not recorded in this workspace")
         if head.proposal is not None:
-            raise StorageError(f"draft {draft_id!r} was already submitted")
+            raise SkillRegistryRefusal(REFUSAL_CONFLICT, f"draft {draft_id!r} was already submitted")
         if head.latest.draft_revision != expected_revision:
-            raise StorageError(
+            raise SkillRegistryRefusal(
+                REFUSAL_CONFLICT,
                 f"draft {draft_id!r} is at revision {head.latest.draft_revision}, "
-                f"not the revision {expected_revision} this submission was made against"
+                f"not the revision {expected_revision} this submission was made against",
             )
         proposal = SkillProposal(
             proposal_id=_text(proposal_id, _ID, "proposal_id"),
@@ -602,15 +617,15 @@ class ManagedSkillsWriter:
             self.connection, workspace_id=self.workspace_id, proposal_id=proposal_id
         )
         if proposal is None:
-            raise StorageError(
-                f"proposal {proposal_id!r} is not recorded in this workspace"
+            raise SkillRegistryRefusal(
+                REFUSAL_NOT_FOUND, f"proposal {proposal_id!r} is not recorded in this workspace"
             )
         already = self.connection.execute(
             f"SELECT manifest_id FROM {_VERSIONS} WHERE workspace_id = ? AND proposal_id = ?",
             (self.workspace_id, proposal_id),
         ).fetchone()
         if already is not None:
-            raise StorageError(f"proposal {proposal_id!r} was already published")
+            raise SkillRegistryRefusal(REFUSAL_CONFLICT, f"proposal {proposal_id!r} was already published")
         revision = _revision(
             self.connection,
             self.workspace_id,
@@ -699,11 +714,11 @@ class ManagedSkillsWriter:
             self.connection, workspace_id=self.workspace_id, manifest_id=manifest_id
         )
         if found is None:
-            raise StorageError(
-                f"manifest {manifest_id!r} is not published in this workspace"
+            raise SkillRegistryRefusal(
+                REFUSAL_NOT_FOUND, f"manifest {manifest_id!r} is not published in this workspace"
             )
         if found.deprecation is not None:
-            raise StorageError(f"manifest {manifest_id!r} is already deprecated")
+            raise SkillRegistryRefusal(REFUSAL_CONFLICT, f"manifest {manifest_id!r} is already deprecated")
         deprecation = SkillDeprecation(
             deprecation_id=_text(deprecation_id, _ID, "deprecation_id"),
             manifest_id=manifest_id,
@@ -737,13 +752,14 @@ class ManagedSkillsWriter:
             self.connection, workspace_id=self.workspace_id, manifest_id=manifest_id
         )
         if found is None:
-            raise StorageError(
-                f"manifest {manifest_id!r} is not published in this workspace"
+            raise SkillRegistryRefusal(
+                REFUSAL_NOT_FOUND, f"manifest {manifest_id!r} is not published in this workspace"
             )
         if event_kind == "install":
             if found.deprecation is not None:
-                raise StorageError(
-                    f"manifest {manifest_id!r} is deprecated and cannot be installed"
+                raise SkillRegistryRefusal(
+                    REFUSAL_CONFLICT,
+                    f"manifest {manifest_id!r} is deprecated and cannot be installed",
                 )
             installed = _installed_manifest_ids(
                 self.connection,
@@ -752,9 +768,10 @@ class ManagedSkillsWriter:
                 MAX_INSTALLED_PER_SKILL + 1,
             )
             if len(installed) >= MAX_INSTALLED_PER_SKILL:
-                raise StorageError(
+                raise SkillRegistryRefusal(
+                    REFUSAL_CONFLICT,
                     f"skill {found.skill_name!r} already has {MAX_INSTALLED_PER_SKILL} "
-                    "installed versions; remove one first"
+                    "installed versions; remove one first",
                 )
         previous = self.connection.execute(
             f"SELECT COALESCE(MAX(event_sequence), 0) FROM {_INSTALLS} "
@@ -803,6 +820,17 @@ class ManagedSkillsWriter:
         )
 
 
+def _check_roles(roles: Sequence[RoleClosure]) -> None:
+    """Refuse a closure set the bindings could not hold, before anything is written."""
+    if not 1 <= len(roles) <= MAX_RUN_ROLES:
+        raise StorageError(f"a Run binds between 1 and {MAX_RUN_ROLES} roles")
+    if len({role.role_id for role in roles}) != len(roles):
+        raise StorageError("a role is bound once per Run")
+    for role in roles:
+        if not is_identifier(role.role_id) or not role.entries:
+            raise StorageError("a bound role needs an identifier and a closure")
+
+
 def _bind_generation(
     connection: sqlite3.Connection,
     *,
@@ -821,14 +849,9 @@ def _bind_generation(
     generation's admission or amendment. The caller has validated `run_id`, `audit_ref` and
     `bound_at_us`.
     """
-    if not 1 <= len(roles) <= MAX_RUN_ROLES:
-        raise StorageError(f"a Run binds between 1 and {MAX_RUN_ROLES} roles")
-    if len({role.role_id for role in roles}) != len(roles):
-        raise StorageError("a role is bound once per Run")
+    _check_roles(roles)
     bindings: list[SkillRunBinding] = []
     for role in roles:
-        if not is_identifier(role.role_id) or not role.entries:
-            raise StorageError("a bound role needs an identifier and a closure")
         for entry in role.entries:
             position = len(bindings) + 1
             bindings.append(
@@ -922,7 +945,14 @@ def append_run_binding_generation(
         raise StorageError(
             f"run {run_id!r} already holds {MAX_BINDING_GENERATIONS} binding generations"
         )
+    _check_roles(roles)
     _require_audit(connection, workspace_id, audit_ref)
+    spent = connection.execute(
+        f"SELECT 1 FROM {_AMENDMENTS} WHERE workspace_id = ? AND audit_ref = ?",
+        (workspace_id, audit_ref),
+    ).fetchone()
+    if spent is not None:
+        raise StorageError(f"audit_ref {audit_ref!r} already accepted an amendment")
     _insert(
         connection,
         _AMENDMENTS,

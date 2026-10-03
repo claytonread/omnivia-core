@@ -238,6 +238,7 @@ AUTHORING_PURPOSES = (
     "trigger_configuration",
     "trigger_ingestion",
     "job_observation",
+    "skill_authoring",
 )
 
 
@@ -495,7 +496,7 @@ def test_every_advertised_tool_is_read_only_and_closed(
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.4"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.5"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -906,8 +907,21 @@ CAPTURE_KEY = "mcp-authoring-capture-001"
 CAPTURED_SOURCE = "mcp-authoring-note-1"
 
 
+#: A minimal managed Skills manifest: inert data, naming nothing it may not.
+SKILL_MANIFEST: dict[str, Any] = {
+    "skill_name": "triage",
+    "version": "1.0.0",
+    "description": "triage skill",
+    "instructions": "Review the change and report what you find.",
+    "references": [],
+    "dependencies": [],
+    "compatible_roles": ["reviewer"],
+    "required_capabilities": ["repo.read"],
+}
+
+
 def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """The eight additions' calls, bound to the dedicated principal the installation issued.
+    """The eleven additions' calls, bound to the dedicated principal the installation issued.
 
     A function rather than a constant because one of them names an actor, and the
     only actor an installed session may name is the principal its bearer resolves
@@ -1025,6 +1039,40 @@ def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
         ),
         ("job_get", {"job_id": "job-not-in-this-workspace"}),
         ("job_events", {"job_id": "job-not-in-this-workspace"}),
+        (
+            "skills_draft_create",
+            {
+                "input": {"manifest": SKILL_MANIFEST},
+                "idempotency_key": "mcp-authoring-skill-create-001",
+            },
+        ),
+        (
+            "skills_draft_update",
+            {
+                "input": {
+                    "draft_id": "skdraft-not-in-this-workspace",
+                    "expected_revision": 1,
+                    "manifest": SKILL_MANIFEST,
+                },
+                "idempotency_key": "mcp-authoring-skill-update-001",
+            },
+        ),
+        (
+            "skills_proposal_submit",
+            {
+                "input": {
+                    "draft_id": "skdraft-not-in-this-workspace",
+                    "expected_revision": 1,
+                    "evidence_refs": [
+                        {
+                            "evidence_id": "evidence-not-in-this-workspace",
+                            "content_digest": "sha256:" + "e" * 64,
+                        }
+                    ],
+                },
+                "idempotency_key": "mcp-authoring-skill-submit-001",
+            },
+        ),
     ]
 
 
@@ -1097,7 +1145,7 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
-def test_an_admitted_authoring_session_lists_twenty_two_and_calls_every_new_tool(
+def test_an_admitted_authoring_session_lists_twenty_five_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
@@ -1112,7 +1160,7 @@ def test_an_admitted_authoring_session_lists_twenty_two_and_calls_every_new_tool
 
     What each call proves, in one session:
 
-    * the listing is the twenty-two, in manifest order, and the six authoring
+    * the listing is the twenty-five, in manifest order, and the ten authoring
       mutations advertise the closed wrapper with the read hints inverted;
     * `evidence_capture` writes -- the content travels in the call, with no path,
       URL or credential anywhere in it -- and the artifact is then findable
@@ -1153,6 +1201,9 @@ def test_an_admitted_authoring_session_lists_twenty_two_and_calls_every_new_tool
         "trigger_declare",
         "trigger_lifecycle",
         "trigger_ingest",
+        "skills_draft_create",
+        "skills_draft_update",
+        "skills_proposal_submit",
     ):
         advertised = next(tool for tool in observed["tools"] if tool["name"] == name)
         assert set(advertised["input_schema"]["properties"]) == {

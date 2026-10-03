@@ -153,6 +153,8 @@ _VOCABULARY_CONSTANTS = {
     "TriggerDeliveryStatus": "TRIGGER_DELIVERY_STATUSES",
     "TriggerProcessingStatus": "TRIGGER_PROCESSING_STATUSES",
     "TriggerFailureSource": "TRIGGER_FAILURE_SOURCES",
+    "SkillSelectionKind": "SKILL_SELECTION_KINDS",
+    "SkillInstallState": "SKILL_INSTALL_STATES",
 }
 
 
@@ -190,7 +192,7 @@ def test_resolve_wait_is_not_a_job_control_and_publishes_no_operation() -> None:
     assert set(JobControl.__dataclass_fields__) == {"cancellation", "recovery"}
     assert not any("job" in field for field in ResolveWait.__dataclass_fields__)
     operations = {entry.name for entry in OPERATION_CATALOGUE}
-    assert len(operations) == 61
+    assert len(operations) == 69
     assert "job.retry" in operations
     assert "job.resume" not in operations
     assert not any(name.startswith("runtime.") for name in operations)

@@ -155,6 +155,9 @@ _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("trigger.declare", "trigger_configuration"),
     ("trigger.lifecycle", "trigger_configuration"),
     ("trigger.ingest", "trigger_ingestion"),
+    ("skills.draft.create", "skill_authoring"),
+    ("skills.draft.update", "skill_authoring"),
+    ("skills.proposal.submit", "skill_authoring"),
 )
 
 
@@ -219,8 +222,9 @@ RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
 )
 
-#: The authoring grant: the restricted rights, exactly the eight additions, and
-#: the one role both profiles' mutations need.
+#: The authoring grant: the restricted rights, exactly the eleven additions, and
+#: the one role both profiles' mutations need. Publication and installation are not
+#: additions: they need the publisher and operator roles, which no profile here grants.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(
         set(_derive_policy(_RESTRICTED_OPERATIONS + _AUTHORING_ADDITIONS))

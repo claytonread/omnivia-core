@@ -130,6 +130,18 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.skills import (
+    SKILL_DRAFT_CREATE_OPERATION,
+    SKILL_DRAFT_UPDATE_OPERATION,
+    SKILL_INSTALL_OPERATION,
+    SKILL_MUTATION_OPERATIONS,
+    SKILL_PROPOSAL_SUBMIT_OPERATION,
+    SKILL_REMOVE_OPERATION,
+    SKILL_RESOLVE_OPERATION,
+    SKILL_VERSION_DEPRECATE_OPERATION,
+    SKILL_VERSION_PUBLISH_OPERATION,
+    SkillHandlers,
+)
 from omnivia_core_runtime.service.handlers.trigger import (
     TRIGGER_DECLARE_OPERATION,
     TRIGGER_FAMILY_OPERATIONS,
@@ -162,9 +174,11 @@ from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
     KNOWLEDGE_REVIEWER_ROLE,
     MUTATION_PURPOSES,
+    SKILL_PUBLISHER_ROLE,
     TRIGGER_CONFIGURATION_PURPOSE,
     TRIGGER_INGESTION_PURPOSE,
     WORKSPACE_CONTRIBUTOR_ROLE,
+    WORKSPACE_OPERATOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
@@ -340,6 +354,20 @@ TRIGGER_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         TRIGGER_INGEST_OPERATION: TRIGGER_INGESTION_PURPOSE,
         TRIGGER_HEALTH_OPERATION: TRIGGER_OBSERVATION_PURPOSE,
     }
+)
+#: The C17 Managed Skills families. The seven mutations are served under the purpose and role
+#: `MUTATION_PURPOSES` and `MUTATION_ROLES` declare for each, so the one skill family holds three
+#: roles and no grant it does not need. Resolution is the one restricted read: it holds no role,
+#: binds nothing, and carries its own purpose, so no mutation grant can reach it.
+SKILL_RESOLUTION_PURPOSE: Final = "skill_resolution"
+SKILL_FAMILY_ROLES: Final[frozenset[str]] = frozenset(
+    {WORKSPACE_CONTRIBUTOR_ROLE, SKILL_PUBLISHER_ROLE, WORKSPACE_OPERATOR_ROLE}
+)
+SKILL_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {name: MUTATION_PURPOSES[name] for name in sorted(SKILL_MUTATION_OPERATIONS)}
+)
+SKILL_RESOLUTION_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {SKILL_RESOLVE_OPERATION: SKILL_RESOLUTION_PURPOSE}
 )
 WORKFLOW_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -956,6 +984,107 @@ def build_trigger_application_dispatcher(
     )
 
 
+def _skill_dispatcher(
+    *,
+    service: Any,
+    session: AuthenticatedSession,
+    binding: ServiceBinding,
+    registry: ApplicationOperationRegistry,
+    fallback: ApplicationFallback,
+    record: ApplicationCallSink | None,
+    transport: str,
+) -> ApplicationDispatcher:
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_skill_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    roles: frozenset[str] = SKILL_FAMILY_ROLES,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the seven skill mutations: authoring, publication, installation and removal.
+
+    `roles` is the set the grant holds. The local owner holds all of them; any other principal
+    is given only the roles its operations need, and a mutation it lacks a role for is refused.
+    """
+    session = skill_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+        roles=roles,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = SkillHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    return _skill_dispatcher(
+        service=service,
+        session=session,
+        binding=binding,
+        registry=build_skill_registry(handlers),
+        fallback=fallback,
+        record=record,
+        transport=transport,
+    )
+
+
+def build_skill_resolution_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the restricted read `skills.resolve`: a read-only grant that binds nothing."""
+    session = skill_resolution_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = SkillHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=random_identifier,
+    )
+    return _skill_dispatcher(
+        service=service,
+        session=session,
+        binding=binding,
+        registry=build_skill_resolution_registry(handlers),
+        fallback=fallback,
+        record=record,
+        transport=transport,
+    )
+
+
 def build_decision_application_dispatcher(
     *,
     service: Any,
@@ -1270,12 +1399,13 @@ def _contributor_family_session(
     principal_id: str,
     installation_id: str,
     workspace_id: str,
+    roles: frozenset[str] = frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
 ) -> AuthenticatedSession:
-    """A contributor grant over one family's catalogue entries, each at its own minimum."""
+    """A grant over one family's catalogue entries, each at its own minimum, holding `roles`."""
     entries = tuple(get_operation_metadata(name) for name in sorted(operations))
     return AuthenticatedSession(
         principal_id=principal_id,
-        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        roles=roles,
         installations=frozenset({installation_id}),
         workspaces=frozenset({workspace_id}),
         operations=operations,
@@ -1326,6 +1456,66 @@ def trigger_family_session(
         installation_id=installation_id,
         workspace_id=workspace_id,
     )
+
+
+def skill_family_session(
+    *,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    roles: frozenset[str] = SKILL_FAMILY_ROLES,
+) -> AuthenticatedSession:
+    """The grant for one workspace's skill mutations, holding exactly the `roles` it is given.
+
+    Authoring, publication and installation are separate authorities. A session without
+    `skill_publisher` is refused publication and one without `workspace_operator` is refused
+    installation, whatever scopes it holds: the grant checks the role each mutation names.
+    """
+    return _contributor_family_session(
+        operations=SKILL_MUTATION_OPERATIONS,
+        purposes=SKILL_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+        roles=roles,
+    )
+
+
+def skill_resolution_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The restricted read grant for `skills.resolve`: no role, no mutation, its own purpose."""
+    return _contributor_family_session(
+        operations=frozenset({SKILL_RESOLVE_OPERATION}),
+        purposes=SKILL_RESOLUTION_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+        roles=frozenset(),
+    )
+
+
+def build_skill_registry(handlers: SkillHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    for operation, handler in (
+        (SKILL_DRAFT_CREATE_OPERATION, handlers.skills_draft_create),
+        (SKILL_DRAFT_UPDATE_OPERATION, handlers.skills_draft_update),
+        (SKILL_PROPOSAL_SUBMIT_OPERATION, handlers.skills_proposal_submit),
+        (SKILL_VERSION_PUBLISH_OPERATION, handlers.skills_version_publish),
+        (SKILL_VERSION_DEPRECATE_OPERATION, handlers.skills_version_deprecate),
+        (SKILL_INSTALL_OPERATION, handlers.skills_install),
+        (SKILL_REMOVE_OPERATION, handlers.skills_remove),
+    ):
+        registry.register(operation, cast(OperationHandler, handler))
+    return registry
+
+
+def build_skill_resolution_registry(handlers: SkillHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        SKILL_RESOLVE_OPERATION, cast(OperationHandler, handlers.skills_resolve)
+    )
+    return registry
 
 
 def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationRegistry:
@@ -1522,7 +1712,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 61/61 complete.
+    is anything other than 69/69 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1541,9 +1731,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 10:
+        if len(distinct_routes) != 12:
             raise ValueError(
-                "the production surface requires exactly ten authority families"
+                "the production surface requires exactly twelve authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -1609,6 +1799,8 @@ def compose_production_application_surface(
     workflow: ApplicationDispatcher,
     trigger: ApplicationDispatcher,
     decision: ApplicationDispatcher,
+    skill: ApplicationDispatcher,
+    skill_resolution: ApplicationDispatcher,
     engineering: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
@@ -1624,6 +1816,8 @@ def compose_production_application_surface(
         workflow,
         trigger,
         decision,
+        skill,
+        skill_resolution,
         engineering,
     )
     registry = ApplicationOperationRegistry()
@@ -2325,6 +2519,8 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "SKILL_FAMILY_ROLES",
+    "SKILL_RESOLUTION_PURPOSE",
     "TRIGGER_FAMILY_PURPOSES",
     "TRIGGER_OBSERVATION_PURPOSE",
     "WORKSPACE_INSPECTION_PURPOSE",
@@ -2346,6 +2542,8 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_skill_application_dispatcher",
+    "build_skill_resolution_application_dispatcher",
     "build_trigger_application_dispatcher",
     "build_trigger_registry",
     "build_workflow_application_dispatcher",

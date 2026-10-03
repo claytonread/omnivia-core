@@ -897,3 +897,53 @@ def test_the_seam_refuses_an_amendment_audit_the_workspace_never_recorded(
             audit_ref="aud-never-recorded",
             allocate_binding_id=lambda: "binding-x",
         )
+
+
+def test_the_seam_refuses_an_invalid_closure_before_it_records_an_amendment(
+    registry: Registry,
+) -> None:
+    published = registry.publish(manifest())
+    registry.install(published.manifest_id)
+    closure = registry.resolve(("triage", None))
+    bind(registry, [closure])
+    with registry.writer() as w:
+        m27.audit(registry.holder, "aud-amendment-empty")
+        # The refusal is caught inside the transaction, so anything the seam wrote first would commit.
+        with pytest.raises(StorageError, match="binds between"):
+            store.append_run_binding_generation(
+                w,
+                run_id=m27.RUN_ID,
+                accepted_amendment_id="amendment-empty",
+                roles=[],
+                rebound_at_us=m27.BASE_US + 30,
+                audit_ref="aud-amendment-empty",
+                allocate_binding_id=lambda: "amendment-empty-binding-1",
+            )
+        amendments = w.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_skill_binding_amendments"
+        ).fetchone()[0]
+    assert amendments == 0
+    assert store.read_run_skill_binding_generations(
+        registry.holder.connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID
+    ) == (1,)
+
+
+def test_an_accepted_amendment_audit_opens_one_generation_only(registry: Registry) -> None:
+    published = registry.publish(manifest())
+    registry.install(published.manifest_id)
+    closure = registry.resolve(("triage", None))
+    bind(registry, [closure])
+    amend(registry, [closure], amendment_id="amendment-1")
+    with pytest.raises(StorageError, match="already accepted an amendment"), registry.writer() as w:
+        store.append_run_binding_generation(
+            w,
+            run_id=m27.RUN_ID,
+            accepted_amendment_id="amendment-2",
+            roles=[closure],
+            rebound_at_us=m27.BASE_US + 40,
+            audit_ref="aud-amendment-1",
+            allocate_binding_id=lambda: "amendment-2-binding-1",
+        )
+    assert store.read_run_skill_binding_generations(
+        registry.holder.connection, workspace_id=WORKSPACE_ID, run_id=m27.RUN_ID
+    ) == (1, 2)

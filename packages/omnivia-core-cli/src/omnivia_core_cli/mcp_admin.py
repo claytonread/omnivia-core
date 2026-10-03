@@ -172,6 +172,7 @@ PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
                 "content_ingestion",
                 "job_observation",
                 "memory_authoring",
+                "skill_authoring",
                 "trigger_configuration",
                 "trigger_ingestion",
             )

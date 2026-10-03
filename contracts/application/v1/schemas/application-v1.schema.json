@@ -1226,6 +1226,87 @@
     },
     "TriggerDeliveryCounts": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeliveryCounts"
+    },
+    "SkillManifestId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId"
+    },
+    "SkillVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion"
+    },
+    "SkillSelectionKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelectionKind"
+    },
+    "SkillInstallState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallState"
+    },
+    "SkillReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillReference"
+    },
+    "SkillDependency": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDependency"
+    },
+    "SkillManifest": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifest"
+    },
+    "SkillEvidenceRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillEvidenceRef"
+    },
+    "SkillSelection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelection"
+    },
+    "SkillRoleSelection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRoleSelection"
+    },
+    "SkillResolvedEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolvedEntry"
+    },
+    "SkillDraftCreateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput"
+    },
+    "SkillDraftCreateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult"
+    },
+    "SkillDraftUpdateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput"
+    },
+    "SkillDraftUpdateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult"
+    },
+    "SkillProposalSubmitInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput"
+    },
+    "SkillProposalSubmitResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult"
+    },
+    "SkillVersionPublishInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishInput"
+    },
+    "SkillVersionPublishResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishResult"
+    },
+    "SkillVersionDeprecateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateInput"
+    },
+    "SkillVersionDeprecateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateResult"
+    },
+    "SkillInstallInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallInput"
+    },
+    "SkillInstallResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallResult"
+    },
+    "SkillRemoveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveInput"
+    },
+    "SkillRemoveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveResult"
+    },
+    "SkillResolveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveInput"
+    },
+    "SkillResolveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult"
     }
   }
 }

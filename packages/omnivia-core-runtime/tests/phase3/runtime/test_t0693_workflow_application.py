@@ -1202,6 +1202,7 @@ REACHABLE_REFUSERS: dict[str, tuple[str, ...]] = {
         "_decode",
         "_grant",
         "_release",
+        "_start_workflow_run",
         "workflow_start",
     ),
     WORKFLOW_INSPECT_OPERATION: (

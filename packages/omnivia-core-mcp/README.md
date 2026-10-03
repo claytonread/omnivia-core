@@ -106,7 +106,7 @@ command line — drives it with the official SDK's `stdio_client` and
 a host would use. The peer must identify itself as `omnivia-core` at this
 package's version; the advertised inventory must be exactly one profile's own
 tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — fourteen or
-twenty-two; and the document's `allowed_purposes` must be exactly that profile's
+twenty-five; and the document's `allowed_purposes` must be exactly that profile's
 manifest purposes. Which profile is in force is read off the inventory the child
 advertised, never assumed from the document, so a `mutation_enabled: true`
 configuration the protected authority declines to admit is refused here.
@@ -136,7 +136,7 @@ instruction to run `omnivia init` and **creates nothing**.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-Manifest version `2.4` advertises fourteen tools under the `restricted` profile,
+Manifest version `2.5` advertises fourteen tools under the `restricted` profile,
 in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
@@ -156,7 +156,7 @@ in this order:
 | `decision_status` | `decision.status` | `decision_status` | `decision:read` | `decision.read` ≥ 1.0 |
 | `trigger_health` | `trigger.health` | `trigger_observation` | `trigger:read` | `trigger.read` ≥ 1.0 |
 
-The `authoring` profile advertises those fourteen, then these eight, in this order:
+The `authoring` profile advertises those fourteen, then these eleven, in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -168,12 +168,16 @@ The `authoring` profile advertises those fourteen, then these eight, in this ord
 | `trigger_ingest` | `trigger.ingest` | `trigger_ingestion` | `trigger:invoke` | `trigger.invoke` ≥ 1.0 |
 | `job_get` | `job.get` | `job_observation` | `job:read` | `job.read` ≥ 1.0 |
 | `job_events` | `job.events` | `job_observation` | `job:read` | `job.read` ≥ 1.0 |
+| `skills_draft_create` | `skills.draft.create` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
+| `skills_draft_update` | `skills.draft.update` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
+| `skills_proposal_submit` | `skills.proposal.submit` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
 
 Every read declares `side_effect: none` and `audit_category: read` in the operation
-catalogue. Seven operations are side-effecting -- `decision.evaluate`,
-`memory.create`, `evidence.capture`, `import.start` and the three trigger
-mutations -- and the manifest admits exactly those by name rather than by catalogue
-metadata, refusing at import any other entry that is not a read.
+catalogue. Ten operations are side-effecting -- `decision.evaluate`,
+`memory.create`, `evidence.capture`, `import.start`, the three trigger
+mutations and the three skill authoring mutations -- and the manifest admits
+exactly those by name rather than by catalogue metadata, refusing at import any
+other entry that is not a read.
 Scopes, the capability identifier and its minimum version, and the idempotency
 hint are read off the catalogue entry rather than restated here — a model can
 neither supply nor override the principal, the workspace, the scopes, the
@@ -221,7 +225,7 @@ operation absent from it is not callable.
 
 Read-first is enforced at import: an entry whose catalogue metadata is not
 `side_effect="none"` and `audit_category="read"` makes the package fail to load,
-unless it is one of the seven named mutations.
+unless it is one of the ten named mutations.
 
 ## Lifecycle
 

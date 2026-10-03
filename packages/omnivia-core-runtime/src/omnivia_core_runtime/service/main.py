@@ -47,6 +47,8 @@ from omnivia_core_runtime.service.application import (
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
+    build_skill_application_dispatcher,
+    build_skill_resolution_application_dispatcher,
     build_trigger_application_dispatcher,
     build_workflow_application_dispatcher,
     compose_production_application_surface,
@@ -407,12 +409,30 @@ def _build_production_application_surface(
         fallback=trigger,
         clock=started.clock,
     )
-    engineering = build_engineering_application_dispatcher(
+    # The Managed Skills families sit beside the decision family. The mutations hold the three
+    # skill roles; the restricted resolution read holds none and sits in front of them.
+    skill = build_skill_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=decision,
+        clock=started.clock,
+    )
+    skill_resolution = build_skill_resolution_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=skill,
+        clock=started.clock,
+    )
+    engineering = build_engineering_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=skill_resolution,
         local_continuity_association=TrustedContinuityAssociation(
             association_id="core-local-application",
             principal_id=LOCAL_PRINCIPAL,
@@ -430,6 +450,8 @@ def _build_production_application_surface(
         workflow=workflow,
         trigger=trigger,
         decision=decision,
+        skill=skill,
+        skill_resolution=skill_resolution,
         engineering=engineering,
         probe=probe,
     )

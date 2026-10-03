@@ -111,6 +111,7 @@ AUTHORING_PURPOSES = [
     "trigger_configuration",
     "trigger_ingestion",
     "job_observation",
+    "skill_authoring",
 ]
 
 #: The smallest call each tool the authoring profile adds actually accepts.
@@ -124,6 +125,18 @@ AUTHORING_PURPOSES = [
 #: table cannot quietly drift into being shape-only again -- and the values stay
 #: as small and as obviously synthetic as that allows, because what the tests
 #: below read is the envelope, not the content.
+#: A minimal managed Skills manifest: inert data, naming nothing it may not.
+SKILL_MANIFEST: dict[str, Any] = {
+    "skill_name": "triage",
+    "version": "1.0.0",
+    "description": "triage skill",
+    "instructions": "Review the change and report what you find.",
+    "references": [],
+    "dependencies": [],
+    "compatible_roles": ["reviewer"],
+    "required_capabilities": ["repo.read"],
+}
+
 AUTHORING_CALLS: dict[str, dict[str, Any]] = {
     "memory_create": {
         "input": {
@@ -224,6 +237,28 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
         "idempotency_key": "k-7",
     },
     "trigger_health": {"project_id": "project-1", "workflow_id": "workflow-1", "limit": 1},
+    "skills_draft_create": {
+        "input": {"manifest": SKILL_MANIFEST},
+        "idempotency_key": "k-8",
+    },
+    "skills_draft_update": {
+        "input": {
+            "draft_id": "skdraft-1",
+            "expected_revision": 1,
+            "manifest": SKILL_MANIFEST,
+        },
+        "idempotency_key": "k-9",
+    },
+    "skills_proposal_submit": {
+        "input": {
+            "draft_id": "skdraft-1",
+            "expected_revision": 2,
+            "evidence_refs": [
+                {"evidence_id": "evidence-1", "content_digest": "sha256:" + "e" * 64}
+            ],
+        },
+        "idempotency_key": "k-10",
+    },
 }
 
 
@@ -882,16 +917,16 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_two() -> None:
+def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_five() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
-    does not merely omit the eight authoring tools: it cannot resolve their names
+    does not merely omit the eleven authoring tools: it cannot resolve their names
     at all, which is what makes the refusal below a policy rather than a message.
     """
     restricted, authoring = session(), authoring_session()
     assert len(listed(restricted)) == 14
-    assert len(listed(authoring)) == 22
+    assert len(listed(authoring)) == 25
     assert listed(authoring)[:14] == listed(restricted)
     assert listed(authoring)[14:] == [
         "memory_create",
@@ -902,6 +937,9 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_two() -> None:
         "trigger_ingest",
         "job_get",
         "job_events",
+        "skills_draft_create",
+        "skills_draft_update",
+        "skills_proposal_submit",
     ]
 
 
@@ -916,6 +954,9 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_two() -> None:
         "trigger_ingest",
         "job_get",
         "job_events",
+        "skills_draft_create",
+        "skills_draft_update",
+        "skills_proposal_submit",
     ],
 )
 def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) -> None:
@@ -1020,11 +1061,11 @@ def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability()
     None
 ):
     """Read off the frozen catalogue entry and the manifest, never transcribed --
-    for the eight wider tools as much as for the fourteen shared tools.
+    for the eleven wider tools as much as for the fourteen shared tools.
 
     The purposes are the service's own (`memory_authoring`, `content_ingestion`,
-    `trigger_configuration`, `trigger_ingestion`, `job_observation`, and the
-    shared `trigger_observation`), so a request states the claim the grant is checked
+    `trigger_configuration`, `trigger_ingestion`, `job_observation`,
+    `skill_authoring`, and the shared `trigger_observation`), so a request states the claim the grant is checked
     against rather than one this package invented.
     """
     from omnivia_core.contracts.v1 import get_operation_metadata
