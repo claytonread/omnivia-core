@@ -68,10 +68,7 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # this entry from reserved to candidate, with its content hash and introducing commit
 # recorded here.
 # 0043 is the Workflow Runtime trigger-telemetry candidate (C21-A, founder Decision 4A),
-# advanced from reserved to candidate with its content hash. Its introducing commit
-# cannot be known before the commit exists: until a follow-up change records it in the
-# authority and adds 43 to CANDIDATE_INTRODUCED_COMMITS, the allocation guard reports the
-# missing 40-character pin for 0043 and nothing else.
+# advanced from reserved to candidate with its content hash and introducing commit.
 # 0044-0046 are the Decision Runtime candidates (ADR-042, plan PR-3): settings,
 # immutable definition versions/qualifications, and the evaluation/attempt/
 # result/outcome/subscription/outbox record families, advanced from reservation
@@ -221,6 +218,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
     42: "0373e229d2ded9b4c48fdba48fc8e760054f58a6",
+    43: "0416e85053c7adc5c0c80f79e231a845493acc56",
     # 0044-0046 were introduced by 72b84cf6 and repinned to the whitespace
     # repair b16217f6, which is where their current content lives.
     44: "b16217f679b304e80daf2af9566e26057d4a9049",
