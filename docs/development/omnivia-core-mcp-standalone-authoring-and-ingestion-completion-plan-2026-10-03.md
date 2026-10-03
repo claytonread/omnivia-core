@@ -74,9 +74,10 @@ The completion lane must preserve those guarantees and avoid broad rewrites.
 ### 2.2 Execution snapshot — 2026-10-04
 
 The active closeout branch is based on current `origin/main`. Its last pushed
-tip is `d88602b5f0f74ee1ea90a7cfd5fc71b73926116f`; documentation and conformance
-repairs are currently under review in the working tree, so that tip is not the
-final immutable qualification candidate.
+tip is `72d5a4ff1a84995b35415cf07e6a2184cf8912bb`. The seventeen-step harness,
+focused tests, record schema and PR #108 disposition map are under review in
+the working tree, so that tip is not the final immutable qualification
+candidate.
 
 Completed on the branch:
 
@@ -92,41 +93,45 @@ Completed on the branch:
 - local transport shutdown/restart defects found by qualification were fixed
   and stress-tested;
 - active MCP, CLI, installation, service-lifetime, staged-import, Apple
-  permission, and host-interoperability documentation is being reconciled with
-  the implemented behavior.
+  permission, and host-interoperability documentation has been reconciled with
+  the implemented behavior;
+- the real-host harness and closed record schema now represent every step in
+  the section 8 journey, including excluded-tool refusal, replay/conflict,
+  stable event paging, revocation and post-host Core health; 315 focused tests
+  and a 1,711-test MCP/CLI/traceability integration gate pass;
+- the 100 paths changed by historical PR #108 are classified in
+  `omnivia-core-pr-108-file-disposition-map-2026-10-04.md`: 2 already ported,
+  11 rewritten for the current architecture, 77 already superseded and 10
+  rejected.
 
 Remaining before completion:
 
-1. finish review and checkpoint the current documentation/conformance changes;
-2. add the required file-level PR #108 disposition map;
-3. extend the real-host harness from its current I-1 through I-8 summary gates
-   to prove every step in the seventeen-step journey in section 8, including:
-   excluded-tool dispatch refusal; capture, memory, and import replay/conflict;
-   stable paginated job events; imported-evidence retrieval; fail-closed replay
-   after revoke; and owner observation of the committed import after revoke;
-4. freeze a new candidate and run both real hosts against that exact tip;
-5. obtain a token-only Claude credential outside the repository from
+1. complete independent review of the current harness/map diff, checkpoint it,
+   and freeze the resulting clean source tip;
+2. build and verify release-form artifacts from that exact tip;
+3. run both real hosts against the frozen artifacts;
+4. obtain a token-only Claude credential outside the repository from
    `claude setup-token`; the token must never be pasted into the repository or
    retained evidence;
-6. update traceability and completion status only from the new exact-tip host
+5. update traceability and completion status only from the new exact-tip host
    records;
-7. complete independent review, focused checks, full preflight, and all hosted
+6. complete exact-tip full preflight and all hosted
    checks at the same pushed tip;
-8. merge only with explicit user authorization, record the release decision,
+7. merge only with explicit user authorization, record the release decision,
    and archive temporary worktrees only after separate cleanup authorization.
 
 ### 2.3 Critical path
 
-| Order | Work package | Exit condition |
-|---|---|---|
-| 1 | Stabilize current branch | Current working-tree changes reviewed, focused tests green, and checkpoint pushed |
-| 2 | Close planning evidence | This plan and a complete PR #108 file-disposition map are tracked |
-| 3 | Complete harness coverage | Automated tests prove every section 8 case and reject incomplete evidence |
-| 4 | Freeze candidate | Clean source tip, release wheels, SDK pins, and host versions are immutable |
-| 5 | Run real hosts | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
-| 6 | Reconcile records | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
-| 7 | Accept exact tip | Independent review, focused suites, full preflight, and hosted checks are green |
-| 8 | Integrate and retire | Authorized merge, explicit release decision, and separately authorized cleanup are complete |
+| Order | Work package | Status | Exit condition |
+|---|---|---|---|
+| 1 | Stabilize current branch | in progress | Current harness/map diff independently reviewed, checkpointed and pushed |
+| 2 | Close planning evidence | complete in working tree | This plan and the complete 100-path PR #108 file-disposition map are tracked |
+| 3 | Complete harness coverage | complete in working tree | Automated tests prove every section 8 case and reject incomplete evidence |
+| 4 | Freeze candidate | pending | Clean source tip, release wheels, SDK pins, and host versions are immutable |
+| 5 | Run real hosts | blocked on Claude token and frozen tip | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
+| 6 | Reconcile records | pending | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
+| 7 | Accept exact tip | pending | Independent review, focused suites, full preflight, and hosted checks are green |
+| 8 | Integrate and retire | authorization required | Authorized merge, explicit release decision, and separately authorized cleanup are complete |
 
 ---
 

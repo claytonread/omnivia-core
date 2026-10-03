@@ -265,8 +265,12 @@ persisted or recorded, and the MCP server process explicitly receives an empty
 value for that variable. For `--host codex-cli`, `--auth-file` remains an
 owner-only copy of `auth.json`. The interoperability guide states these
 host-specific semantics.
-The focused real-host harness and schema suite now contains 219 tests, up from
-194.
+The focused real-host harness and schema suite now contains 315 tests, up from
+219. It exercises the complete seventeen-step journey, including a real-host
+attempt to dispatch an excluded sentinel, stable canonical replay and conflict
+classification for all three mutations, stable paginated events, imported
+evidence retrieval, revocation fail-closed behavior, owner observation after
+revocation and Core health after every host exit.
 
 No Claude real-host record exists yet, so Claude Code has not passed I-1
 through I-8, and no I row is green. WP3 remains open for the final Claude record
@@ -286,8 +290,10 @@ Both hosts must be rerun at the new frozen tip.
 - full `PYTHON=.venv/bin/python ./scripts/preflight`: pass, including 28,296
   Python tests, 23 benchmark tests, Ruff, strict mypy, all five wheel builds and
   isolated installs, and 59 Swift tests.
-- real-host harness/schema focused suite: 219 focused tests (earlier checkpoint:
-  194 passed, with targeted Ruff and strict mypy passing);
+- real-host harness/schema focused suite: 315 focused tests, with targeted Ruff,
+  strict mypy, schema validation and diff hygiene passing;
+- combined MCP, CLI, authoring traceability and real-host harness gate: 1,711
+  passed;
 - Codex CLI real-host journey at clean `4ec9fa17`: pass; historical after the
   later documentation commit, so not final exact-tip acceptance;
 - Claude Code isolated authentication preflight: correctly fails closed as
