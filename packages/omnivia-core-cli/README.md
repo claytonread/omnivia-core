@@ -55,6 +55,11 @@ The administrative commands are explicitly namespaced and do not change the
   requests graceful shutdown, then waits for both descriptor withdrawal and
   process exit. It never removes the descriptor itself.
 
+A service started by `service start` keeps running after the command exits; only
+`service stop` ends it. Workspace ownership, service lifetime and macOS
+permissions are described in
+[Shared Core installation](../../docs/distribution/shared-core-installation.md#headless-service-operation).
+
 Each accepts `--json` and emits one version-2 lifecycle adapter document. The
 optional `safe_status` is encoded as `CoreSafeStatusV1`; it carries no endpoint,
 pid, path, service-instance identity, credential, exception, or launcher output.

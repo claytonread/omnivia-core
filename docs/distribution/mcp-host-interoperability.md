@@ -154,6 +154,25 @@ identifier, credential, grant, submitted content, prompt, transcript, endpoint,
 process identifier, stdout/stderr or model response because its schema contains
 no field for one.
 
+## Operating the MCP server
+
+- The host starts one MCP process per configuration. The process reads its
+  `--config` document once, before it opens stdio. A changed configuration
+  therefore takes effect when the host starts the next process.
+- The bearer is not held. The server reads it from the protected store on every
+  call, so revocation or rotation applies to the next call, including a replay,
+  without a restart.
+- The MCP process neither owns the workspace lease nor stops a service it
+  started. The service outlives the host session. Service start, stop and
+  recovery are described in [Shared Core installation](shared-core-installation.md#headless-service-operation).
+- `import.start` takes only a server-issued `staged_source_ref`. No MCP tool
+  accepts a filesystem path or URL, so a model cannot choose what Core reads or
+  fetches. The staging boundary and the reason for it are in the same section.
+- The MCP server needs no Apple privacy entitlement and no protected-folder
+  permission for its own state. A protected-folder grant that the host
+  application holds for its own file access does not add a path input to any
+  tool.
+
 ## Real-host qualification
 
 Real-host qualification must run actual installed Claude Code and Codex CLI

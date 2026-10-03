@@ -493,7 +493,8 @@ The launcher's `reason`, its `failure` class, the descriptor it reports, the
 child's output, the executable and installation paths, the endpoint and every
 caught exception's text are all untrusted diagnostic material, and none of them
 crosses this boundary. An adapter that can say something more useful — that
-`omnivia init` is the command to create a workspace — adds that itself.
+`omnivia-core-service --init` is the maintenance mode that creates a
+workspace — adds that itself.
 
 ### `errors` — the typed failures
 

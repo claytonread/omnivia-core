@@ -132,7 +132,13 @@ into `connect`; the resulting credential is origin-bound, cached only by the
 shared client cache, and cleared on failed startup and session shutdown.
 
 If the workspace has not been initialised, the server refuses with an
-instruction to run `omnivia init` and **creates nothing**.
+instruction, and **creates nothing**. The owner chooses an absolute workspace
+root and runs the installed `omnivia-core-service --init` maintenance mode with
+explicit `--workspace` and this installation's `--installation-state`. Then the
+owner runs the installed `omnivia --installation-state ... mcp configure` with
+the registered workspace id and profile, and restarts the host. The MCP
+configuration carries the workspace id and installation state, not a workspace
+path, so the server cannot supply the `--workspace` value itself.
 
 ## The exposed surface
 
@@ -225,7 +231,12 @@ operation absent from it is not callable.
 - The MCP process does **not** own the workspace lease.
 - The MCP process does **not stop** a service it started when the session ends.
   A service started here is an independent Core service, stopped only by
-  `omnivia stop` or an authorised platform lifecycle action.
+  `omnivia service stop` or an authorised platform lifecycle action.
+- The configuration document is read once, at process start. A changed
+  configuration takes effect in the next process the host starts. The bearer is
+  read per call, so revocation or rotation applies without a restart.
+- Service ownership, the staged-only import boundary and macOS permissions are
+  described in [Shared Core installation](../../docs/distribution/shared-core-installation.md#headless-service-operation).
 - **stdout is protocol-only.** Diagnostics and child-process output go to stderr.
   A startup failure writes not one byte of protocol and exits non-zero.
 

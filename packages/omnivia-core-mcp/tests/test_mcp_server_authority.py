@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1476,6 +1477,37 @@ def test_a_shared_managed_start_failure_becomes_a_fixed_startup_refusal(
         server.connect(configuration())
     assert ENDPOINT not in str(refusal.value)
     assert str(STATE) not in str(refusal.value)
+
+
+def test_the_startup_guidance_names_the_real_bootstrap_and_no_nonexistent_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`omnivia init` is not a command. The guidance names the service's `--init`.
+
+    The refusal is read back from the real path, and the package's own sources and
+    README are scanned so the nonexistent command cannot return in any active text.
+    """
+
+    def fail(_config: Any, **_kwargs: Any) -> Any:
+        raise ManagedStartError("refused")
+
+    monkeypatch.setattr(server, "connect_managed_local", fail)
+    with pytest.raises(server.StartupError) as refusal:
+        server.connect(configuration())
+    message = str(refusal.value)
+    assert "omnivia-core-service --init" in message
+    assert "--workspace" in message
+    assert "--installation-state" in message
+    assert "omnivia --installation-state" in message
+    assert "mcp configure --host" in message
+    assert "restart the host" in message
+    # The MCP configuration carries a workspace id and installation state, never a
+    # workspace path, so the guidance must not tell the owner to reuse one.
+    assert "same explicit" not in message
+    assert "this configuration uses" not in message
+    package = Path(server.__file__).parents[2]
+    for active in (Path(server.__file__), package / "README.md"):
+        assert not re.search(r"\bomnivia init\b", active.read_text(encoding="utf-8"))
 
 
 def install(monkeypatch: pytest.MonkeyPatch, recorder: ConnectRecorder) -> None:

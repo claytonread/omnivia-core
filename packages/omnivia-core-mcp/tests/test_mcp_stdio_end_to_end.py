@@ -1615,7 +1615,8 @@ def test_the_server_refuses_a_missing_workspace_and_creates_nothing(
     installation is real, the dedicated principal's bearer resolves, and the
     workspace named is simply one this installation does not have. Nothing is
     published for it, so `--managed-start` is invoked once and the launcher's own
-    refusal comes back: run `omnivia init`. `main()` writes it to stderr and not
+    refusal comes back: create the workspace with `omnivia-core-service --init`
+    and configure with `omnivia mcp configure`. `main()` writes it to stderr and not
     one byte to stdout, which is what makes the failure protocol-safe.
 
     Nothing is created, and that is checked where it could now happen: under the
@@ -1634,8 +1635,15 @@ def test_the_server_refuses_a_missing_workspace_and_creates_nothing(
 
     assert completed.returncode == 1
     assert completed.stdout == "", "a failed start must write no protocol"
-    assert "omnivia init" in completed.stderr
+    assert "omnivia-core-service --init" in completed.stderr
+    assert "--workspace" in completed.stderr
+    assert "--installation-state" in completed.stderr
+    assert "omnivia --installation-state" in completed.stderr
+    assert "mcp configure" in completed.stderr
+    assert "restart the host" in completed.stderr
+    assert "omnivia init" not in completed.stderr
     assert "creates none" in completed.stderr
+    assert "same explicit" not in completed.stderr, "config carries no workspace path"
     assert set(live_service.installation_state.rglob("*")) == before, (
         "a refused start created state"
     )
