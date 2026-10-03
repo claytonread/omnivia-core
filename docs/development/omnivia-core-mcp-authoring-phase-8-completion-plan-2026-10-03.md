@@ -7,9 +7,13 @@
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
 **Reviewed predecessor checkpoint:** `9022e2aa` (the independent-review hardening
 of the harness, checkpointed on the working branch)
-**Final candidate:** not frozen. The repair round in section 10 creates a later
-candidate that is not yet checkpointed. No commit is the final qualification
-candidate, and no exact-tip acceptance is claimed.
+**Final candidate:** not frozen. The reviewed PID-reuse teardown repair is pushed
+at `84b1510b2e5e8803803cec30ae625d3731510eb4`, and Gate A is complete at that
+checkpoint. A behavior-neutral review closeout adds one race regression, an
+invariant comment and current status prose; it must be committed and pushed
+before Gate C builds a new Standard candidate from the resulting clean tip.
+`ffa1b36c` and its candidate are historical and superseded. No commit is the
+final qualification candidate, and no exact-tip acceptance is claimed.
 
 ## 1. Objective
 
@@ -231,8 +235,8 @@ out of the Phase 8 closeout diff unless it blocks the required Windows gate.
 #### Repair round after independent review of `9022e2aa`
 
 The final independent review of `9022e2aa` returned eleven actionable findings.
-The repair, which is uncommitted until the user or Codex checkpoints it, makes
-these changes, all in the existing closed, redacted schema:
+The repair was later checkpointed and pushed; it makes these changes, all in the
+existing closed, redacted schema:
 
 1. `decision.evaluate` is a real restricted-profile check: the host must be
    refused `capability_not_granted`, and the owner must observe a disabled
@@ -407,11 +411,11 @@ against the later frozen tip rather than any historical candidate.
 Counts from before the repair round are historical. The post-repair counts are
 given in the next block.
 
-Current working tree (`ffa1b36c` plus the reviewed PID-reuse teardown
-correction): the three named focused files pass with 561 tests. The Gate A
+Current review-closeout diff over `84b1510b`, the pushed reviewed PID-reuse
+teardown repair: the three named focused files pass with 562 tests. The Gate A
 review baseline was 515, the completed review repair added 31 regressions (546),
 the final-review repair added seven more (553), and the teardown correction adds
-eight regressions proving that a reaped child's reused numeric PID is never
+nine regressions proving that a reaped child's reused numeric PID is never
 signalled without complete identity proof while an absent PID still permits
 known-group cleanup. Ruff, strict mypy on both qualification scripts and
 `git diff --check` are clean. The complete Phase 2 suite passes after the
@@ -419,7 +423,7 @@ teardown correction with 596 tests and four expected platform-specific skips,
 including the shared-launcher ownership regression.
 A live installed authoring journey passed before the final local corrections in
 this round; it must be rerun from the frozen candidate. The broader MCP, CLI,
-package-qualification and service-conformance gate now passes 2,667 tests after
+package-qualification and service-conformance gate now passes 2,668 tests after
 the teardown correction. The 1,902-test result covered only the MCP package, the
 CLI package and the three focused files and was not that four-directory gate;
 the earlier 2,659, 2,652, 2,645 and 1,796 results are historical.

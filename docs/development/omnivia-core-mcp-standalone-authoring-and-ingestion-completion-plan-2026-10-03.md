@@ -518,18 +518,19 @@ Current local status at the time of this plan update:
 |---|---|---|
 | Pushed reviewed checkpoint | complete | PR #167 points to `ffa1b36c336b9e540e3b869710dc67d041a0e4f8`; that exact tip passed the 553-test focused gate, the 2,659-test four-directory gate, strict mypy, Ruff, `git diff --check`, and Phase 2 with 596 passing and four expected skips |
 | Standard candidate for `ffa1b36c` | built and verified, now superseded for closeout | `/private/tmp/omnivia-core-standard-ffa1b36c` was built cleanly without `--allow-dirty`; its key is `73eca52dbd69b41fdbffa78369009f736ea4e5b82bc8ef42f7ff425dadc8d0ef`, but the later teardown correction changes harness behavior and therefore requires a new Gate C candidate before real-host qualification |
-| Final PID-reuse teardown correction | implemented, reviewed and locally verified; uncommitted | Four code/test files contain the fail-closed same-PID-after-reap correction and eight regressions. Codex independently reviewed the recovered Claude diff: an unproved live reused PID receives no signal and retains cleanup, a completely proved live PID is stopped once through the non-child path, and an absent original PID still permits known-group cleanup. The three-file focused gate passes 561 tests, the four-directory gate passes 2,667 tests, strict mypy, Ruff and `git diff --check` pass, and Phase 2 passes 596 tests with four expected skips |
+| Final PID-reuse teardown correction | runtime repair pushed as checkpoint `84b1510b2e5e8803803cec30ae625d3731510eb4`; Gate A behavior accepted | Four code/test files contain the fail-closed same-PID-after-reap correction and nine regressions. Codex independently reviewed the recovered Claude diff: an unproved live reused PID receives no signal and retains cleanup, a completely proved live PID is stopped once through the non-child path, and an absent original PID still permits known-group cleanup. The review-closeout diff adds the ninth race regression and explanatory comment. The three-file focused gate passes 562 tests, the four-directory gate passes 2,668 tests, strict mypy, Ruff and `git diff --check` pass, and Phase 2 passes 596 tests with four expected skips |
 | Hosted checks for `ffa1b36c` | in progress, not final acceptance evidence | Evidence-search jobs are green on Linux, macOS and Windows; Core acceptance and the three Phase 2 jobs are still running. These checks qualify only the superseded checkpoint and must run again on the evidence-closeout head |
-| Qualified runtime commit and final candidate | not frozen | Accept or repair the uncommitted teardown diff, rerun all affected gates, commit and push, then rebuild the candidate from that clean exact tip |
+| Qualified runtime behavior and final candidate | behavior frozen at `84b1510b`; review-closeout checkpoint not yet pushed | Commit and push the behavior-neutral final comment, regression and plan correction, then build a new Standard candidate from that clean exact tip |
 | Real-host records | not current | Historical Codex records are diagnostic only; both hosts must run against the same new candidate |
 | Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
 
 The remaining critical path is therefore:
 
-1. commit and push the independently reviewed PID-reuse teardown repair whose
-   measured status/count prose and local gates are now current;
-2. build and verify a new clean Standard candidate from that exact pushed tip;
+1. done: the independently reviewed PID-reuse teardown repair is pushed as
+   `84b1510b2e5e8803803cec30ae625d3731510eb4`, and Gate A is complete there;
+2. commit and push the behavior-neutral review closeout, then run Gate C: build
+   and verify a new clean Standard candidate from that exact pushed tip;
 3. after explicit external-data authorization, run Codex CLI and Claude Code
    against the same candidate and retain only redacted schema-valid records;
 4. land an evidence-only closeout commit, run full preflight and require every
@@ -539,16 +540,20 @@ The remaining critical path is therefore:
 
 #### Gate A — accept or repair the final teardown response
 
-1. Review the four-file uncommitted diff against `ffa1b36c`, with particular
+Status: runtime behavior complete at the pushed reviewed checkpoint `84b1510b`.
+The behavior-neutral review closeout adds the final race regression and must be
+committed before Gate C. The steps below record the acceptance criteria.
+
+1. Review the four-file teardown diff against `ffa1b36c`, with particular
    attention to the distinction between a still-running original child and a
    reaped child whose numeric PID may have been reused.
 2. Prove that a live descriptor-named same PID is signalled only after complete
    pid/start-time/boot-id identity proof, that an unproved live PID fails
    cleanup closed without being signalled, and that an absent PID is harmless.
-3. The three focused qualification/traceability files pass 561 tests on the
+3. The three focused qualification/traceability files pass 562 tests on the
    current diff; 553 is the historical `ffa1b36c` checkpoint result.
 4. Ruff, strict mypy for both qualification scripts and `git diff --check` pass.
-5. The broader four-directory gate passes 2,667 tests. The 1,902-test figure
+5. The broader four-directory gate passes 2,668 tests. The 1,902-test figure
    covered only the MCP package, CLI package and three focused files and was not
    this gate; the earlier 2,659, 2,652, 2,645 and 1,796 results are historical
    and superseded.
@@ -559,10 +564,11 @@ The remaining critical path is therefore:
    termination before classifying a reaped child's live reused PID; the follow-up
    repair now classifies first, and all affected checks were repeated.
 8. Update only measured status/count prose, then commit and push one reviewed
-   repair checkpoint after Gates A.1-A.7 pass.
+   repair checkpoint after Gates A.1-A.7 pass. Done: pushed as `84b1510b`.
 
 Exit condition: the working tree is clean, the repair is independently accepted,
-and the pushed checkpoint has reproducible local results.
+and the pushed checkpoint has reproducible local results. The behavior was met
+at `84b1510b`; the review-closeout commit makes the tree clean for Gate C.
 
 #### Gate B — confirm the hosted-platform correction remains green
 
@@ -657,8 +663,8 @@ recorded; no implicit release or worktree deletion has occurred.
 |---|---|---|
 | Claude Code qualification credential | blocked; token file absent | Operator runs `claude setup-token` and supplies a token-only owner-protected file outside the repository |
 | Real-host external data flow | blocked; no specific approval recorded | Obtain explicit user approval to send fixed qualification prompts and bounded service-derived results through the Codex and Claude providers |
-| Final teardown diff | implemented but not accepted or committed | Complete Codex review, local gates and independent review; update measured counts, then commit and push |
-| Final Standard candidate | previous `ffa1b36c` candidate is superseded for closeout | Rebuild from the clean accepted teardown tip without `--allow-dirty` and rerun installed journeys |
+| Final teardown behavior | accepted and pushed as `84b1510b`; behavior-neutral review closeout pending push | Commit and push the final comment, regression and plan correction, then run Gate B hosted checks on that pushed tip |
+| Final Standard candidate | previous `ffa1b36c` candidate is superseded for closeout | Gate C: rebuild from the clean pushed review-closeout tip without `--allow-dirty` and rerun installed journeys |
 | PR #167 hosted checks | checkpoint checks are in progress, but are not the final evidence-head checks | Obtain fresh exact-head checks after the teardown commit and again after the evidence-only closeout commit |
 | Merge | not authorized | Request explicit authorization only after Gate F |
 | Release publication | not authorized and out of scope | Record publication as deferred unless separately authorized |

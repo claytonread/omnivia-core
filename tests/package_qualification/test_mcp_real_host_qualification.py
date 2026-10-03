@@ -4203,6 +4203,32 @@ def test_a_reaped_child_pid_live_without_descriptor_evidence_is_never_signalled(
     assert context.retained is True
 
 
+def test_a_reaped_pid_observed_live_then_absent_during_identity_proof_signals_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = 2_000_000_001
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.process = cast(Any, _Reaped(pid))
+    _publish(context, _evidence(pid, "start-1"))
+    alive = [True]
+
+    def identity_probe(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        # The reused process exits while the identity probe is running.
+        alive[0] = False
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: alive[0])
+    monkeypatch.setattr(q.subprocess, "run", identity_probe)
+    monkeypatch.setattr(q, "_terminate_core_group", lambda p, process=None: calls.append((p, process is not None)) or True)
+    monkeypatch.setattr(q.os, "killpg", lambda *_: pytest.fail("signalled a group"))
+    monkeypatch.setattr(q.os, "kill", lambda *_: pytest.fail("signalled a pid"))
+    q.stop_core(context)
+    assert calls == []
+    assert context.retained is False
+
+
 def test_a_reaped_child_pid_proved_still_live_is_signalled_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

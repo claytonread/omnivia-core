@@ -2435,6 +2435,9 @@ def stop_core(context: CoreContext) -> None:
             continue
         identity = _process_identity_matches(evidence)
         if identity is False:
+            # Absent by proof, not by assumption. A reaped child's PID that was live
+            # and then gone during the probe was reused, so its original group had
+            # already ceased (POSIX does not reuse a PID while that group exists).
             continue
         if identity is None:
             context.retained = True
