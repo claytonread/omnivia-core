@@ -1,7 +1,7 @@
 # Engineering Memory acceptance evidence
 
-Date: 2026-10-03  
-Specification: `SPEC-CORE-ENGMEM-001` v1.0, AC-001–AC-064  
+Date: 2026-10-03
+Specification: `SPEC-CORE-ENGMEM-001` v1.0, AC-001–AC-064
 Implementation branch: `codex/engineering-memory-register-completion`
 
 This register maps every recovered acceptance criterion to production-path test evidence.
