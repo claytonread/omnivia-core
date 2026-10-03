@@ -650,6 +650,33 @@ def listed(connected: server.ConnectedSession) -> list[str]:
     return anyio.run(ask)
 
 
+def test_initialize_describes_each_profile_as_the_bounded_surface_it_is() -> None:
+    """Restricted carries `decision.evaluate`, so no description calls it read-only.
+
+    Read back over the official client, as a host receives it at initialize, and
+    from the console entry point's own help text.
+    """
+
+    def instructions(connected: server.ConnectedSession) -> str:
+        async def ask() -> str:
+            async with Client(server.build_server(session=connected)) as attached:
+                return str(attached.instructions)
+
+        return anyio.run(ask)
+
+    restricted = instructions(session())
+    assert "Bounded non-authoring access" in restricted
+    assert "one advisory decision evaluation" in restricted
+    assert "changes no business record" in restricted
+    authoring = instructions(authoring_session())
+    assert "one advisory decision evaluation" in authoring
+    assert "proposed-only memory creation" in authoring
+    assert "Each mutation takes the operation input under `input`" in authoring
+    for text in (restricted, authoring, str(server.build_parser().description)):
+        assert "read-only" not in text.lower()
+        assert "every mutation are" not in text
+
+
 def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
     """R004-06 determinism: one package version, one listing, whatever is granted.
 
@@ -1486,6 +1513,8 @@ def test_the_startup_guidance_names_the_real_bootstrap_and_no_nonexistent_comman
 
     The refusal is read back from the real path, and the package's own sources and
     README are scanned so the nonexistent command cannot return in any active text.
+    The adapter names no service program and claims no process: the runtime's
+    architecture guard forbids the program name in adapter source.
     """
 
     def fail(_config: Any, **_kwargs: Any) -> Any:
@@ -1495,7 +1524,10 @@ def test_the_startup_guidance_names_the_real_bootstrap_and_no_nonexistent_comman
     with pytest.raises(server.StartupError) as refusal:
         server.connect(configuration())
     message = str(refusal.value)
-    assert "omnivia-core-service --init" in message
+    assert "Core service's own `--init` maintenance mode" in message
+    assert "omnivia-core-service" not in message
+    assert "--managed-start" not in message
+    assert "this server starts" not in message.lower()
     assert "--workspace" in message
     assert "--installation-state" in message
     assert "omnivia --installation-state" in message

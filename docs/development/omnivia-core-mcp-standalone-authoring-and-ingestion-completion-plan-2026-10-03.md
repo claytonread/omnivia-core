@@ -83,19 +83,27 @@ that checkpoint corrected the full 121-path map, deterministic excluded-tool
 dispatch proof, same-session revocation, structured-result validation and
 related coverage. A final focused review then required the revocation gate to
 distinguish the exact installed-credential-missing outcome from a generic
-client failure. That two-file hardening and this evidence update are locally
-green but not yet checkpointed, so no existing commit is the final immutable
-qualification candidate.
+client failure; that hardening is checkpointed at `9022e2aa`. A final
+independent review of `9022e2aa` then returned eleven actionable findings. The
+repair round for them (recorded in section 10 of the Phase 8 completion plan)
+is not yet checkpointed. It creates a later candidate, so no commit is the final
+immutable qualification candidate, and no exact-tip acceptance is claimed. The
+historical Codex CLI run at `4ec9fa17` is diagnostic only and unauditable under
+the current closed record schema; it closes no current I row and cannot satisfy
+I-1 through I-8 at this or any later tip.
 
 Completed on the branch:
 
 - a v1.4 addendum accepts and classifies the current thirteen-tool restricted
   and eighteen-tool authoring inventories;
 - installed-wheel restricted and authoring journeys, a closed redacted record
-  schema, and deterministic conformance tests exist;
-- the real-host harness installs release-form artifacts in isolation, checks
-  exact inventories, and has exercised I-1 through I-8 successfully with
-  Codex CLI at historical clean tip `4ec9fa17`;
+  schema, and deterministic conformance tests exist locally. The retained-record
+  gate is not current frozen-candidate evidence, so B-12 and H-5 through H-7
+  stay partial;
+- the real-host harness installs release-form artifacts in isolation and checks
+  exact inventories. A historical Codex CLI run at clean tip `4ec9fa17` is
+  diagnostic only: its record is unauditable under the current closed schema,
+  it closes no current I row, and it is not acceptance evidence for any tip;
 - Claude Code portable-token support exists without reading or changing the
   operator's normal host configuration;
 - local transport shutdown/restart defects found by qualification were fixed
@@ -103,10 +111,14 @@ Completed on the branch:
 - active MCP, CLI, installation, service-lifetime, staged-import, Apple
   permission, and host-interoperability documentation has been reconciled with
   the implemented behavior;
-- the real-host harness and closed record schema now represent every step in
+- the real-host harness and closed record schema represent every step in
   the section 8 journey, including excluded-tool refusal, replay/conflict,
-  stable event paging, revocation and post-host Core health; 358 focused tests
-  and a 1,754-test MCP/CLI/traceability integration gate pass;
+  stable event paging, revocation and post-host Core health. Before the review
+  repairs, 358 focused tests and a 1,754-test MCP/CLI/traceability integration
+  gate passed. The first repair checkpoint reached 454 focused tests and a
+  1,796-test integration gate. Both sets are historical and superseded; the
+  current focused counts are recorded in the Phase 8 plan and the integration
+  gate is pending a rerun after the latest corrections;
 - the 121 paths changed by historical PR #108 are classified in
   `omnivia-core-pr-108-file-disposition-map-2026-10-04.md`: 2 already ported,
   12 rewritten for the current architecture, 96 already superseded and 11
@@ -492,6 +504,156 @@ Then confirm:
 ---
 
 ## 11. Phase 6 — integration and closeout
+
+### 11.1 Current execution runbook — 2026-10-04
+
+The earlier phases describe the required outcome and controls. From the current
+branch state, complete the work in the following order. Do not skip ahead from a
+failed gate, and do not treat a reported Claude check as Codex-accepted evidence
+until Codex has rerun it.
+
+Current local status at the time of this plan update:
+
+| Area | State | Evidence or next action |
+|---|---|---|
+| Eleven-finding repair round | implemented, uncommitted | Complete diff remains to receive one final independent read-only review |
+| Relay fail-closed/deadlock repair | implemented and locally verified | Three new real-proxy regressions are included in the 546-test focused gate |
+| Focused qualification/traceability gate | passing | 546 tests pass (515 at the Gate A review baseline, plus 31 completed-review regressions); strict mypy for both qualification scripts, Ruff and `git diff --check` pass |
+| Phase 2 shared-launcher failure | corrected and locally verified | The complete local Phase 2 suite passes with 596 tests and four expected platform-specific skips; require fresh Linux, macOS and Windows results after push |
+| Broader integration gate | passing | 1,902 MCP, CLI, package-qualification and service-conformance tests pass after the completed review repair; the previous 1,796-test result is historical |
+| Qualified runtime commit and candidate | not frozen | Freeze only after the final independent read-only review, reviewed checkpoint commit and push |
+| Real-host records | not current | Historical Codex records are diagnostic only; both hosts must run against the same new candidate |
+| Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
+| Merge and cleanup | not authorized | Request each authorization only at Gate G |
+
+#### Gate A — accept or repair the uncommitted review response
+
+1. Review the complete uncommitted repair against `9022e2aa`, with
+   particular attention to:
+   - the complete excluded-operation set and its v1.4 addendum basis;
+   - `decision.evaluate` refusal and owner-observation semantics;
+   - wheel closure, hashes and source-isolation guarantees;
+   - MCP protocol negotiation, pagination and frame bounds;
+   - digest canonicalization, cleanup and child-process reaping;
+   - exact revocation classification and truthful evidence booleans.
+2. Rerun the three focused qualification/traceability files and record the
+   actual count from the current diff; the current local result is 546 passing
+   tests (515 at the Gate A review baseline, before the completed review's 31
+   regressions), and historical counts must not be carried forward.
+3. Run Ruff, strict mypy for both qualification scripts and `git diff --check`.
+4. Run the broader MCP, CLI, traceability and qualification gate. The current
+   post-repair result is 1,902 passing tests; the earlier 1,796-test result is
+   historical and superseded.
+5. Obtain a fresh independent read-only correctness/security review of the
+   entire current diff. Resolve every actionable finding and repeat the affected
+   checks.
+6. Commit and push one reviewed repair checkpoint only after Gates A.1-A.5 pass.
+
+Exit condition: the working tree is clean, the repair is independently accepted,
+and the pushed checkpoint has reproducible local results.
+
+#### Gate B — clear the known hosted-platform failure
+
+The current pushed PR tip `9022e2aa` is blocked on all three Phase 2 platform
+jobs. The shared-launcher ownership test found the literal
+`omnivia-core-service` in `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py`.
+The smallest architecture-correct correction is now present in the uncommitted
+repair and its targeted ownership regression passes. Do not weaken the test.
+The complete local Phase 2 suite now passes with 596 tests and four expected
+platform-specific skips. Include the correction in the reviewed candidate and
+require fresh Linux, macOS and Windows results after the next push.
+
+Exit condition: the local Phase 2 suite passes and the correction has been
+reviewed together with the qualification changes.
+
+#### Gate C — freeze and build the runtime candidate
+
+1. Freeze a clean commit, called the **qualified runtime commit**, containing all
+   production, harness, schema, test and substantive documentation changes.
+2. Build the Standard candidate from that clean commit without `--allow-dirty`.
+3. Verify the candidate manifest, every first- and third-party wheel digest,
+   the reviewed SDK pins, installed import origins and offline installation.
+4. Run the installed restricted, authoring and lifecycle journeys from that
+   candidate.
+
+Exit condition: one immutable candidate directory and one qualified runtime
+commit are named; no code or harness change is permitted without discarding the
+candidate and restarting Gate C.
+
+#### Gate D — qualify both real hosts
+
+1. Before either run, obtain explicit user authorization for the external data
+   flow. Each real host sends fixed qualification prompts and bounded,
+   service-derived results through its selected provider. Authorization to
+   implement the harness, a local login, or a supplied credential file does not
+   authorize that transfer.
+2. Run Codex CLI first against the frozen candidate in an isolated profile.
+3. Run Claude Code against the same candidate and schema. This remains blocked
+   until the operator creates the token-only, owner-protected file outside the
+   repository using `claude setup-token`. The token must not be pasted into chat,
+   committed or retained in evidence.
+4. Validate both records against the closed schema and confirm every I-1 through
+   I-8 case and the restricted decision cases pass.
+5. Confirm temporary profiles, credentials, processes, roots and workspaces were
+   removed. A cleanup failure is a failed qualification.
+
+Exit condition: two schema-valid passing records identify the same qualified
+runtime commit, candidate digest set, SDK pins and accepted host versions.
+
+#### Gate E — land evidence without changing the qualified runtime
+
+1. Commit only the two redacted records and the resulting traceability/status
+   updates in an **evidence closeout commit**.
+2. Review the diff from the qualified runtime commit to the evidence closeout
+   commit and prove that it contains no production, harness, schema, manifest,
+   configuration or test-behavior change.
+3. If any such behavior changes, discard the host records, return to Gate C and
+   requalify both hosts. Evidence-only prose corrections may proceed only when
+   they do not change the qualified behavior or acceptance rules.
+
+Exit condition: the PR head truthfully cites the qualified runtime commit while
+the executable behavior remains identical to the frozen candidate.
+
+#### Gate F — exact-head acceptance
+
+1. Run `./scripts/preflight` on the clean evidence closeout commit.
+2. Confirm regeneration is clean and no credential, temporary profile,
+   workspace, process or unredacted evidence remains.
+3. Push the exact reviewed head and require every hosted check on that SHA,
+   including `Core acceptance` and all three required Phase 2 platform jobs.
+4. Perform one final independent review of the PR diff and the two retained
+   records. Do not change the head after the green/check-reviewed state without
+   rerunning the affected gates.
+
+Exit condition: PR #167 is merge-ready on one exact green head with no unresolved
+review finding.
+
+#### Gate G — authorized integration and retirement
+
+1. Ask for explicit merge authorization. Do not merge merely because Gate F is
+   green.
+2. After authorization, merge PR #167 and verify the merge on `origin/main`.
+3. Record the PR, reviewed head, qualified runtime commit, evidence closeout
+   commit and merge commit. Record the release decision as either published by
+   a separately authorized release plan or `release-ready, publication deferred`.
+4. Ask separately for cleanup authorization before archiving this worktree or
+   the historical MCP completion worktree.
+
+Exit condition: merge, release disposition and any authorized cleanup are
+recorded; no implicit release or worktree deletion has occurred.
+
+### 11.2 Remaining external decisions and blockers
+
+| Item | Current state | Required action |
+|---|---|---|
+| Claude Code qualification credential | blocked; token file absent | Operator runs `claude setup-token` and supplies a token-only owner-protected file outside the repository |
+| Real-host external data flow | blocked; no specific approval recorded | Obtain explicit user approval to send fixed qualification prompts and bounded service-derived results through the Codex and Claude providers |
+| PR #167 hosted checks | pushed tip is blocked; local launcher correction awaits full Phase 2 verification | Pass the full local Phase 2 suite, push the reviewed candidate, and obtain fresh exact-head checks |
+| Merge | not authorized | Request explicit authorization only after Gate F |
+| Release publication | not authorized and out of scope | Record publication as deferred unless separately authorized |
+| Worktree cleanup | not authorized | Preserve both completion worktrees until separately authorized |
+
+### 11.3 Normative integration sequence
 
 1. Push the reviewed exact tip and open one focused completion PR.
 2. Attach the PR to the active Codex task.

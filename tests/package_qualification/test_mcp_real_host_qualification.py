@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import hashlib
 import importlib.util
 import inspect
+import io
 import json
 import os
 import platform
+import signal
 import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import tomllib
+import zipfile
 from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta, timezone
@@ -70,6 +75,21 @@ def _code(error: pytest.ExceptionInfo[Any]) -> Any:
 # --- candidate fixtures ----------------------------------------------------
 
 
+def _wheel_entry(
+    root: Path, name: str, filename: str, content: bytes, version: str, first_party: bool
+) -> dict[str, Any]:
+    """Write one wheel file and return its manifest entry, sized and digested as the builder records."""
+    (root / "wheels" / filename).write_bytes(content)
+    return {
+        "name": name,
+        "first_party": first_party,
+        "path": f"wheels/{filename}",
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "bytes": len(content),
+        "version": version,
+    }
+
+
 def _write_candidate(
     root: Path,
     *,
@@ -83,27 +103,10 @@ def _write_candidate(
     wheels: list[dict[str, Any]] = []
     for name in q.FIRST_PARTY:
         filename = f"{name.replace('-', '_')}-0.1.0-py3-none-any.whl"
-        content = f"wheel bytes for {name}".encode()
-        (root / "wheels" / filename).write_bytes(content)
-        wheels.append(
-            {
-                "name": name,
-                "first_party": True,
-                "path": f"wheels/{filename}",
-                "sha256": hashlib.sha256(content).hexdigest(),
-                "version": "0.1.0",
-            }
-        )
+        wheels.append(_wheel_entry(root, name, filename, f"wheel bytes for {name}".encode(), "0.1.0", True))
     for name, version in (("mcp", sdk[0]), ("mcp-types", sdk[1]), ("anyio", "4.14.2")):
-        wheels.append(
-            {
-                "name": name,
-                "first_party": False,
-                "path": f"wheels/{name.replace('-', '_')}-{version}-py3-none-any.whl",
-                "sha256": "0" * 64,
-                "version": version,
-            }
-        )
+        filename = f"{name.replace('-', '_')}-{version}-py3-none-any.whl"
+        wheels.append(_wheel_entry(root, name, filename, f"third-party bytes for {name}".encode(), version, False))
     (root / "metadata" / "release-manifest.json").write_text(
         json.dumps(
             {
@@ -154,8 +157,19 @@ def test_a_clean_exact_candidate_is_accepted(candidate: Path) -> None:
     loaded = q.load_candidate(candidate)
     assert loaded.revision == REVISION
     assert list(loaded.wheels) == list(q.FIRST_PARTY)
+    assert loaded.closure_count == 8
+    assert loaded.harness_sha256 == hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
     for digest in loaded.wheels.values():
         assert len(digest) == 64
+
+
+def test_closure_binding_is_deterministic_and_covers_the_full_manifest(candidate: Path) -> None:
+    first = q.load_candidate(candidate)
+    _edit_json(_manifest(candidate), lambda document: document["wheels"].reverse())
+    second = q.load_candidate(candidate)
+    assert second.closure_count == first.closure_count == 8
+    assert second.closure_sha256 == first.closure_sha256
+    assert second.closure_sha256 not in first.wheels.values()
 
 
 def test_a_dirty_candidate_is_refused(tmp_path: Path) -> None:
@@ -299,6 +313,28 @@ def test_only_darwin_arm64_is_supported(tmp_path: Path) -> None:
     with pytest.raises(q.QualificationError) as built:
         q.load_candidate(_write_candidate(tmp_path / "c", system="linux"))
     assert _code(built) is Reason.PLATFORM_UNSUPPORTED
+
+
+def test_os_identity_requires_the_frozen_version_and_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+
+    def runner(build: str) -> Any:
+        return lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, build + "\n", "")
+
+    identity = q.os_identity(
+        mac_version=lambda: (q.SUPPORTED_OS_VERSION, (0, 0, 0), ""),
+        run=runner(q.SUPPORTED_OS_BUILD),
+    )
+    assert identity == q.OsIdentity(q.SUPPORTED_OS_VERSION, q.SUPPORTED_OS_BUILD, "arm64")
+    for version, build in (("27.0.1", q.SUPPORTED_OS_BUILD), (q.SUPPORTED_OS_VERSION, "26A429")):
+        with pytest.raises(q.QualificationError) as error:
+            q.os_identity(
+                mac_version=lambda version=version: (version, (0, 0, 0), ""),
+                run=runner(build),
+            )
+        assert _code(error) is Reason.PLATFORM_UNSUPPORTED
 
 
 def test_unreadable_candidate_documents_are_refused(tmp_path: Path) -> None:
@@ -647,6 +683,7 @@ def test_record_construction_accepts_no_model_text() -> None:
     parameters = set(inspect.signature(q.build_record).parameters)
     assert parameters == {
         "candidate",
+        "schema_sha256",
         "os_identity",
         "host",
         "ledger",
@@ -661,7 +698,14 @@ def test_record_construction_accepts_no_model_text() -> None:
 
 def _inputs(ledger: Any = None, host_version: str = "2.1.288", host: str = "claude-code") -> dict[str, Any]:
     return {
-        "candidate": q.Candidate(REVISION, {name: f"{n:064x}" for n, name in enumerate(q.FIRST_PARTY, 1)}),
+        "candidate": q.Candidate(
+            REVISION,
+            {name: f"{n:064x}" for n, name in enumerate(q.FIRST_PARTY, 1)},
+            8,
+            "a" * 64,
+            "b" * 64,
+        ),
+        "schema_sha256": "c" * 64,
         "os_identity": q.OsIdentity("27.0", "26A428", "arm64"),
         "host": q.HostIdentity(host, host_version),
         "ledger": ledger if ledger is not None else _passed_ledger(),
@@ -694,6 +738,12 @@ def test_a_passing_record_is_built_and_validates(host: str, version: str) -> Non
     assert record["profiles"]["authoring"]["tool_count"] == 18
     assert record["profiles"]["authoring"]["tools"] == list(q.AUTHORING_TOOLS)
     assert record["sdk_versions"] == {"mcp": "2.0.0", "mcp-types": "2.0.0"}
+    assert record["bindings"] == {
+        "wheel_closure_count": 8,
+        "wheel_closure_sha256": "a" * 64,
+        "harness_sha256": "b" * 64,
+        "schema_sha256": "c" * 64,
+    }
     assert record["started_at"] == "2026-10-03T09:00:00Z"
     assert record["finished_at"] == "2026-10-03T09:05:00Z"
     assert list(record["wheels"]) == list(q.FIRST_PARTY)
@@ -854,6 +904,10 @@ FALSE_CLAIMS = {
     "short_revision": lambda r: r["source"].update(revision=REVISION[:12]),
     "upper_digest": lambda r: r["wheels"].update({"omnivia-core": "A" * 64}),
     "extra_wheel": lambda r: r["wheels"].update({"anyio": "0" * 64}),
+    "zero_closure": lambda r: r["bindings"].update(wheel_closure_count=0),
+    "short_closure_digest": lambda r: r["bindings"].update(wheel_closure_sha256="0" * 63),
+    "upper_harness_digest": lambda r: r["bindings"].update(harness_sha256="A" * 64),
+    "path_schema_digest": lambda r: r["bindings"].update(schema_sha256="/tmp/schema"),
     "wrong_os": lambda r: r["os"].update(product="Windows"),
     "x86": lambda r: r["os"].update(architecture="x86_64"),
     "bad_build": lambda r: r["os"].update(build="/Users/me"),
@@ -953,6 +1007,73 @@ def test_schema_loading_is_closed_to_bad_input(tmp_path: Path) -> None:
 # --- installed-candidate bootstrap ----------------------------------------
 
 
+def _minimal_wheel(directory: Path) -> Path:
+    """Create a valid local pure-Python wheel without build tools or a network."""
+    directory.mkdir(parents=True)
+    wheel = directory / "offline_probe-1.0.0-py3-none-any.whl"
+    dist_info = "offline_probe-1.0.0.dist-info"
+    files = {
+        "offline_probe/__init__.py": "VALUE = 1\n",
+        f"{dist_info}/METADATA": (
+            "Metadata-Version: 2.1\nName: offline-probe\nVersion: 1.0.0\n"
+        ),
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\nGenerator: omnivia-test\n"
+            "Root-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+    }
+    record = "".join(f"{name},,\n" for name in files)
+    record += f"{dist_info}/RECORD,,\n"
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+        archive.writestr(f"{dist_info}/RECORD", record)
+    return wheel
+
+
+def test_real_pip_installs_hashed_local_wheel_offline_from_a_path_with_spaces(
+    tmp_path: Path,
+) -> None:
+    wheel = _minimal_wheel(tmp_path / "wheel house with spaces")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+    def install(requirement_digest: str, target: Path, requirements: Path) -> Any:
+        requirements.write_text(
+            f"{wheel.resolve().as_uri()} --hash=sha256:{requirement_digest}\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "pip",
+                "install",
+                "--isolated",
+                "--no-index",
+                "--only-binary=:all:",
+                "--require-hashes",
+                "--no-deps",
+                "--no-input",
+                "--target",
+                str(target),
+                "--requirement",
+                str(requirements),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+
+    accepted = install(digest, tmp_path / "accepted target", tmp_path / "accepted req.txt")
+    assert accepted.returncode == 0
+    assert (tmp_path / "accepted target" / "offline_probe" / "__init__.py").is_file()
+    refused = install("0" * 64, tmp_path / "refused target", tmp_path / "refused req.txt")
+    assert refused.returncode != 0
+    assert not (tmp_path / "refused target" / "offline_probe" / "__init__.py").exists()
+
+
 def _fake_candidate_venv(path: Path) -> None:
     scripts = path / "bin"
     scripts.mkdir(parents=True)
@@ -993,21 +1114,48 @@ def test_candidate_bootstrap_is_offline_exact_and_non_editable(
         str(installed.python), "-I", "-m", "p" + "ip", "in" + "stall"
     ]
     assert install[5:7] == ["--isolated", "--no-index"]
-    assert {"--isolated", "--no-index", "--only-binary=:all:", "--no-input"} <= set(
-        install
-    )
-    assert [Path(value).name for value in install if value.endswith(".whl")] == [
-        q._verified_wheels(json.loads(_manifest(candidate).read_text())["wheels"], candidate)[
-            name
-        ][0].name
-        for name in q.FIRST_PARTY
-    ]
+    assert {
+        "--isolated",
+        "--no-index",
+        "--only-binary=:all:",
+        "--require-hashes",
+        "--no-input",
+    } <= set(install)
+    # No index and no find-links: the only installable inputs are the hashed closure lines.
+    assert "--find-links" not in install and "--index-url" not in install
+    requirements = Path(install[install.index("--requirement") + 1]).read_text(encoding="utf-8")
+    lines = requirements.splitlines()
+    manifest_wheels = json.loads(_manifest(candidate).read_text())["wheels"]
+    assert len(lines) == len(manifest_wheels)
+    assert {line.rsplit("sha256:", 1)[1] for line in lines} == {
+        entry["sha256"] for entry in manifest_wheels
+    }
+    assert all(line.startswith("file://") for line in lines)
     assert calls[0][1] == {
         "PATH": q.SYSTEM_PATH,
         "HOME": str(tmp_path / "runtime" / "bootstrap-home"),
         "PYTHONNOUSERSITE": "1",
     }
     assert calls[1][0][1:4] == ["-I", "-c", q._PROBE]
+
+
+def test_bootstrap_refuses_manifest_closure_drift_after_candidate_loading(
+    candidate: Path, tmp_path: Path
+) -> None:
+    loaded = q.load_candidate(candidate)
+    _edit_json(
+        _manifest(candidate),
+        lambda document: document["wheels"][-1].update(version="4.14.3"),
+    )
+    with pytest.raises(q.QualificationError) as error:
+        q.bootstrap_candidate(
+            candidate,
+            loaded,
+            tmp_path / "runtime",
+            run=lambda *_args, **_kwargs: pytest.fail("pip ran after closure drift"),
+            create_venv=lambda _path: None,
+        )
+    assert _code(error) is Reason.WHEEL_DIGEST_MISMATCH
 
 
 @pytest.mark.parametrize(
@@ -1140,7 +1288,9 @@ def test_relay_observes_exact_inventory_success_error_and_withholding(tmp_path: 
     observer = q._Observer(path)
     relay = q._Relay(observer, q.Interruption("evidence_search", digest))
     relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
-    assert not relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "x"}}))
+    assert not relay.response(
+        _frame({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": q.MCP_PROTOCOL_VERSION}})
+    )
     relay.request(_frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
     assert not relay.response(
         _frame(
@@ -1184,15 +1334,83 @@ def test_relay_observes_exact_inventory_success_error_and_withholding(tmp_path: 
             }
         )
     )
+    withheld = {"evidence": [{"text": "withheld-secret"}], "page": {"continuation_token": "t"}}
     assert relay.response(
-        _frame({"jsonrpc": "2.0", "id": 4, "result": {"isError": False, "content": []}})
+        _frame(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {"isError": False, "content": [], "structuredContent": withheld},
+            }
+        )
     )
+    with pytest.raises(q._Violation) as after_withheld:
+        relay.response(
+            _frame(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 99,
+                    "result": {"isError": False, "structuredContent": {"late": True}},
+                }
+            )
+        )
+    assert after_withheld.value.kind == "frame_after_withheld"
     observer.close()
     summary = q.summarize_observation(q.read_observation(path))
     assert summary.initialized and summary.listed and summary.withheld and not summary.violation
     assert summary.listed_tools == ("workspace_inspect", "evidence_search")
     assert summary.called == ("workspace_inspect", "evidence_search")
     assert summary.responded == ("workspace_inspect",)
+    assert summary.withheld_digest == q.canonical_result_digest(withheld)
+    assert "withheld-secret" not in path.read_text(encoding="ascii")
+
+
+def _withhold(directory: Path, result: dict[str, Any]) -> tuple[Any, list[dict[str, Any]]]:
+    """Relay one targeted call and its answer; return the summary and the raw events."""
+    directory.mkdir()
+    path = directory / "events.jsonl"
+    observer = q._Observer(path)
+    relay = q._Relay(observer, q.Interruption("evidence_capture", q.arguments_digest({})))
+    relay.request(
+        _frame(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "evidence_capture", "arguments": {}},
+            }
+        )
+    )
+    try:
+        assert relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": result}))
+    finally:
+        observer.close()
+    events = q.read_observation(path)
+    return q.summarize_observation(events), events
+
+
+def test_the_withheld_answer_is_kept_as_its_canonical_digest_alone(tmp_path: Path) -> None:
+    structured = {"evidence_id": "evd-secret", "source": {"source_id": "private-source"}}
+    summary, events = _withhold(
+        tmp_path / "success",
+        {"isError": False, "content": [{"type": "text", "text": "raw"}], "structuredContent": structured},
+    )
+    (withheld,) = [event for event in events if event["event"] == "response_withheld"]
+    assert set(withheld) == {"event", "seq", "tool", "tool_error", "result_digest"}
+    assert summary.withheld_digest == q.canonical_result_digest(structured)
+    text = (tmp_path / "success" / "events.jsonl").read_text(encoding="ascii")
+    for retained in ("evd-secret", "private-source", "raw"):
+        assert retained not in text
+    # A refusal is withheld too, but there is no successful answer to bind a replay to.
+    refused, _ = _withhold(
+        tmp_path / "refused", {"isError": True, "content": [{"type": "text", "text": "no"}]}
+    )
+    assert refused.withheld and refused.withheld_digest is None
+    with pytest.raises(q._Violation) as error:
+        _withhold(tmp_path / "malformed", {"isError": False, "content": []})
+    assert error.value.kind == "invalid_tool_result"
+    with pytest.raises(q.QualificationError):
+        q.validate_event({**withheld, "result": structured})
 
 
 @pytest.mark.parametrize(
@@ -1304,7 +1522,191 @@ def test_proxy_relays_exact_frames_and_withholds_only_the_target(tmp_path: Path)
     )
     assert interrupted.returncode == q.PROXY_WITHHELD_EXIT
     assert interrupted.stdout == b"" and interrupted.stderr == b""
-    assert q.summarize_observation(q.read_observation(target)).withheld
+    withheld = q.summarize_observation(q.read_observation(target))
+    assert withheld.withheld
+    assert withheld.withheld_digest == q.canonical_result_digest({"workspace": {}})
+
+
+@posix_only
+def test_proxy_never_forwards_a_child_frame_queued_after_the_withheld_answer(
+    tmp_path: Path,
+) -> None:
+    child = (
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " m=json.loads(line)\n"
+        " first={'jsonrpc':'2.0','id':m['id'],'result':{'isError':False,'content':[],"
+        "'structuredContent':{'workspace':{}}}}\n"
+        " late={'jsonrpc':'2.0','id':999,'result':{'isError':False,'content':[],"
+        "'structuredContent':{'late':True}}}\n"
+        " print(json.dumps(first,separators=(',',':')),flush=True)\n"
+        " print(json.dumps(late,separators=(',',':')),flush=True)\n"
+    )
+    observation = tmp_path / "events"
+    spec = tmp_path / "spec"
+    q.write_proxy_spec(
+        spec,
+        child=[sys.executable, "-u", "-c", child],
+        observation=observation,
+        interruption=q.Interruption("workspace_inspect", q.arguments_digest({})),
+    )
+    payload = _frame(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "workspace_inspect", "arguments": {}},
+        }
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=payload,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert completed.returncode == q.PROXY_WITHHELD_EXIT
+    assert completed.stdout == b"" and completed.stderr == b""
+    summary = q.summarize_observation(q.read_observation(observation))
+    assert summary.withheld and not summary.violation
+
+
+_LOGGING_CHILD = (
+    "import json,sys\n"
+    "log=open(sys.argv[1],'a',buffering=1)\n"
+    "for line in sys.stdin:\n"
+    " m=json.loads(line); log.write(m['method']+'\\n')\n"
+    " print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':{'isError':False,'content':[],"
+    "'structuredContent':{'workspace':{}}}},separators=(',',':')),flush=True)\n"
+)
+
+# A child that stops reading stdin: the host's flood fills the pipe and the proxy's
+# write to the child blocks, while the child's own answer still has to get through.
+_STALLED_INIT_CHILD = (
+    "import json,sys,time\n"
+    "m=json.loads(sys.stdin.readline())\n"
+    "time.sleep(1)\n"
+    "print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':{'protocolVersion':'1999-01-01',"
+    "'capabilities':{},'serverInfo':{'name':'test','version':'1'}}},separators=(',',':')),flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+_STALLED_WITHHELD_CHILD = (
+    "import json,sys,time\n"
+    "m=json.loads(sys.stdin.readline())\n"
+    "time.sleep(1)\n"
+    "print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':{'isError':False,'content':[],"
+    "'structuredContent':{'workspace':{}}}},separators=(',',':')),flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+
+def _flood() -> bytes:
+    """Frames large enough that a child which stopped reading blocks the proxy's write."""
+    notification = {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"pad": "x" * 900_000}}
+    return b"".join(_frame(notification) for _ in range(4))
+
+
+def _await_observed(path: Path, needle: str) -> None:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if path.exists() and needle in path.read_text(encoding="ascii"):
+            return
+        time.sleep(0.01)
+    pytest.fail(f"{needle} was never observed")
+
+
+@posix_only
+def test_a_host_frame_sent_after_the_withheld_answer_never_reaches_the_child(tmp_path: Path) -> None:
+    observation = tmp_path / "events"
+    spec = tmp_path / "spec"
+    received = tmp_path / "received"
+    q.write_proxy_spec(
+        spec,
+        child=[sys.executable, "-u", "-c", _LOGGING_CHILD, str(received)],
+        observation=observation,
+        interruption=q.Interruption("workspace_inspect", q.arguments_digest({})),
+    )
+    target = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "workspace_inspect", "arguments": {}},
+    }
+    late = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    proxy = subprocess.Popen(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert proxy.stdin is not None
+        proxy.stdin.write(_frame(target))
+        proxy.stdin.flush()
+        # Only once the withheld answer is observed is the late frame sent.
+        _await_observed(observation, '"event":"response_withheld"')
+        with contextlib.suppress(BrokenPipeError):
+            proxy.stdin.write(_frame(late))
+            proxy.stdin.flush()
+        stdout, _ = proxy.communicate(timeout=20)
+    finally:
+        if proxy.poll() is None:
+            proxy.kill()
+            proxy.wait()
+    assert proxy.returncode == q.PROXY_VIOLATION_EXIT
+    assert stdout == b""
+    assert received.read_text(encoding="ascii") == "tools/call\n"
+
+
+@posix_only
+def test_a_child_that_stops_reading_cannot_block_a_bad_initialize(tmp_path: Path) -> None:
+    observation = tmp_path / "events"
+    spec = tmp_path / "spec"
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _STALLED_INIT_CHILD], observation=observation
+    )
+    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    # A deadlock here times out instead of exiting: the test fails rather than hangs.
+    completed = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=_frame(initialize) + _flood(),
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    assert completed.returncode == q.PROXY_VIOLATION_EXIT
+    assert completed.stdout == b""
+    kinds = [e.get("kind") for e in q.read_observation(observation) if e["event"] == "protocol_violation"]
+    assert kinds == ["invalid_initialize"]
+
+
+@posix_only
+def test_a_withheld_seal_whose_write_cannot_drain_fails_closed_and_bounded(tmp_path: Path) -> None:
+    observation = tmp_path / "events"
+    spec = tmp_path / "spec"
+    q.write_proxy_spec(
+        spec,
+        child=[sys.executable, "-u", "-c", _STALLED_WITHHELD_CHILD],
+        observation=observation,
+        interruption=q.Interruption("workspace_inspect", q.arguments_digest({})),
+    )
+    target = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "workspace_inspect", "arguments": {}},
+    }
+    completed = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=_frame(target) + _flood(),
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == q.PROXY_FAILED_EXIT
+    assert completed.stdout == b""
+    assert q.summarize_observation(q.read_observation(observation)).withheld
 
 
 def test_cleanup_never_signals_an_already_exited_process(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1315,8 +1717,57 @@ def test_cleanup_never_signals_an_already_exited_process(monkeypatch: pytest.Mon
         def poll() -> int:
             return 0
 
-    monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("signalled an exited group"))
-    q._kill_group(Exited())
+    monkeypatch.setattr(q, "_group_running", lambda _group: False)
+    monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("signalled an absent group"))
+    assert q._kill_group(Exited())
+
+
+def test_host_group_shutdown_escalates_and_proves_the_whole_group_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Running:
+        pid = 4321
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @staticmethod
+        def wait(timeout: float) -> None:
+            raise subprocess.TimeoutExpired("host", timeout)
+
+    signals: list[tuple[int, signal.Signals]] = []
+    waits = iter([False, True])
+    monkeypatch.setattr(q, "_group_running", lambda _group: True)
+    monkeypatch.setattr(q, "_wait_group_absent", lambda _group: next(waits))
+    monkeypatch.setattr(q.os, "killpg", lambda group, sig: signals.append((group, sig)))
+    assert q._kill_group(Running())
+    assert signals == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+
+
+def test_host_run_refuses_to_pass_when_process_group_cleanup_is_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Exited:
+        pid = 4321
+        returncode = 0
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+    monkeypatch.setattr(q.subprocess, "Popen", lambda *_args, **_kwargs: Exited())
+    monkeypatch.setattr(q, "_kill_group", lambda _process: False)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(
+            ["host"],
+            env={},
+            cwd=tmp_path,
+            observation=tmp_path / "observation",
+            marker="MARKER",
+            timeout=1,
+        )
+    assert _code(error) is Reason.CLEANUP_INCOMPLETE
 
 
 def test_host_version_accepts_only_one_pinned_native_identity(tmp_path: Path) -> None:
@@ -1751,65 +2202,64 @@ def test_host_driver_refuses_an_unexpected_mutation(
     assert _code(error) is Reason.GATE_FAILED
 
 
-def test_host_driver_proves_an_excluded_tool_is_neither_listed_nor_dispatched(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    probed: list[str] = []
-    monkeypatch.setattr(
-        q,
-        "run_host_session",
-        lambda **_kwargs: _host_result(called=(), requests=()),
-    )
-    monkeypatch.setattr(
-        q,
-        "probe_excluded_tool",
-        lambda _installed, _config, _root, _host, _tools, tool: probed.append(tool),
-    )
-    driver = q.HostDriver(
-        "codex-cli",
-        tmp_path / "codex",
-        tmp_path / "auth",
-        object(),
-        tmp_path / "core.json",
-        tmp_path / "sessions",
-        q.AUTHORING_TOOLS,
-    )
-    driver.prove_absent("job_cancel")
-    assert probed == ["job_cancel"]
+def _probe_observer(specification: Path, tools: tuple[str, ...], excluded: tuple[str, ...], refusal: str) -> None:
+    """Write the observation a real proxy would write for one excluded-name probe."""
+    observer = q._Observer(Path(json.loads(specification.read_text(encoding="utf-8"))["observation"]))
+    observer.emit("proxy_started")
+    observer.emit("initialize_request")
+    observer.emit("initialize_response", ok=True)
+    observer.emit("tools_list_request")
+    observer.emit("tools_list_response", ok=True, tool_count=len(tools), tool_names=list(tools))
+    for name in excluded:
+        observer.emit("tool_call_request", tool=name, arguments_digest=q.arguments_digest({}))
+    for name in excluded:
+        observer.emit(
+            "tool_call_response",
+            tool=name,
+            ok=True,
+            tool_error=True,
+            result_digest=q.canonical_result_digest(None),
+            refusal=refusal,
+        )
+    observer.close()
 
 
-def test_host_driver_refuses_an_excluded_tool_dispatch_attempt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tool = "job_cancel"
-    digest = q.arguments_digest({})
-    monkeypatch.setattr(
-        q,
-        "run_host_session",
-        lambda **_kwargs: _host_result(
-            called=(tool,),
-            requests=((tool, digest),),
-            errors=(tool,),
-        ),
-    )
-    driver = q.HostDriver(
-        "codex-cli",
-        tmp_path / "codex",
-        tmp_path / "auth",
-        object(),
-        tmp_path / "core.json",
-        tmp_path / "sessions",
-        q.AUTHORING_TOOLS,
-    )
-    with pytest.raises(q.QualificationError) as error:
-        driver.prove_absent(tool)
-    assert _code(error) is Reason.GATE_FAILED
+@pytest.mark.parametrize(
+    ("profile", "tools"), [("restricted", q.RESTRICTED_TOOLS), ("authoring", q.AUTHORING_TOOLS)]
+)
+def test_the_excluded_sets_are_the_complete_normative_remainder(profile: str, tools: tuple[str, ...]) -> None:
+    excluded = q.EXCLUDED_TOOLS[profile]
+    assert len(set(excluded)) == len(excluded)
+    assert set(excluded).isdisjoint(tools)
+    # The restricted profile additionally excludes the five authoring-only tools.
+    authoring_only = set(q.AUTHORING_TOOLS) - set(q.RESTRICTED_TOOLS)
+    assert (authoring_only <= set(excluded)) is (profile == "restricted")
+    # Every catalogue operation outside the manifest, and every section 7 category, is probed.
+    assert len(q.UNEXPOSED_TOOLS) == 57 - q.AUTHORING_TOOL_COUNT
+    assert set(q.UNEXPOSED_TOOLS) <= set(excluded)
+    assert set(q.SECTION7_TOOLS) <= set(excluded)
+    assert set(q.SECTION7_SENTINELS) == {
+        "service_lifecycle_discovery",
+        "bootstrap_workspace_selection",
+        "grants",
+        "filesystem_path_selection",
+        "urls",
+        "credentials",
+        "connector_configuration",
+        "administration_configuration",
+        "connector_mutation",
+    }
+    assert len(q.SECTION7_TOOLS) == 18
+    assert len(excluded) == (62 if profile == "restricted" else 57)
+    assert "job_cancel" in excluded and "job_retry" in excluded
 
 
+@pytest.mark.parametrize(("profile", "tools"), [("restricted", q.RESTRICTED_TOOLS), ("authoring", q.AUTHORING_TOOLS)])
 @pytest.mark.parametrize(("refusal", "accepted"), [("not_exposed", True), ("other", False)])
 def test_the_deterministic_excluded_probe_requires_the_servers_allow_list_refusal(
-    tmp_path: Path, refusal: str, accepted: bool
+    tmp_path: Path, profile: str, tools: tuple[str, ...], refusal: str, accepted: bool
 ) -> None:
+    excluded = q.EXCLUDED_TOOLS[profile]
     installed = q.InstalledCandidate(
         tmp_path / "venv",
         tmp_path / "venv/bin/python",
@@ -1819,51 +2269,61 @@ def test_the_deterministic_excluded_probe_requires_the_servers_allow_list_refusa
     )
 
     def run(argv: Any, payload: bytes, _env: Any, _cwd: Path, _timeout: float) -> Any:
-        assert b'"name":"job_cancel"' in payload
-        specification = json.loads(Path(argv[-1]).read_text(encoding="utf-8"))
-        observer = q._Observer(Path(specification["observation"]))
-        observer.emit("proxy_started")
-        observer.emit("initialize_request")
-        observer.emit("initialize_response", ok=True)
-        observer.emit("tools_list_request")
-        observer.emit(
-            "tools_list_response",
-            ok=True,
-            tool_count=len(q.AUTHORING_TOOLS),
-            tool_names=list(q.AUTHORING_TOOLS),
-        )
-        observer.emit(
-            "tool_call_request",
-            tool="job_cancel",
-            arguments_digest=q.arguments_digest({}),
-        )
-        observer.emit(
-            "tool_call_response",
-            tool="job_cancel",
-            ok=True,
-            tool_error=True,
-            result_digest=q.canonical_result_digest(None),
-            refusal=refusal,
-        )
-        observer.close()
+        sent = [json.loads(line) for line in payload.splitlines()]
+        assert [message["params"]["name"] for message in sent if message["method"] == "tools/call"] == list(excluded)
+        _probe_observer(Path(argv[-1]), tools, excluded, refusal)
         return subprocess.CompletedProcess(argv, 0, b'{"jsonrpc":"2.0"}\n', b"")
 
     def call() -> None:
-        q.probe_excluded_tool(
+        q.probe_excluded_tools(
             installed,
             tmp_path / "core.json",
             tmp_path / "probe",
             "codex-cli",
-            q.AUTHORING_TOOLS,
-            "job_cancel",
+            tools,
+            excluded,
             run=run,
         )
+
     if accepted:
         call()
     else:
         with pytest.raises(q.QualificationError) as error:
             call()
         assert _code(error) is Reason.GATE_FAILED
+
+
+def test_an_excluded_name_that_is_listed_or_answered_with_data_fails_the_probe(tmp_path: Path) -> None:
+    excluded = q.EXCLUDED_TOOLS["authoring"]
+    installed = q.InstalledCandidate(
+        tmp_path / "venv",
+        tmp_path / "venv/bin/python",
+        tmp_path / "venv/bin/service",
+        tmp_path / "venv/bin/omnivia",
+        tmp_path / "venv/bin/mcp",
+    )
+
+    def listed_run(argv: Any, payload: bytes, _env: Any, _cwd: Path, _timeout: float) -> Any:
+        _probe_observer(Path(argv[-1]), (*q.AUTHORING_TOOLS, excluded[0]), excluded, "not_exposed")
+        return subprocess.CompletedProcess(argv, 0, b'{"jsonrpc":"2.0"}\n', b"")
+
+    with pytest.raises(q.QualificationError) as error:
+        q.probe_excluded_tools(
+            installed, tmp_path / "core.json", tmp_path / "probe-listed", "codex-cli",
+            q.AUTHORING_TOOLS, excluded, run=listed_run,
+        )
+    assert _code(error) is Reason.GATE_FAILED
+
+    def missing_run(argv: Any, payload: bytes, _env: Any, _cwd: Path, _timeout: float) -> Any:
+        _probe_observer(Path(argv[-1]), q.AUTHORING_TOOLS, excluded[:-1], "not_exposed")
+        return subprocess.CompletedProcess(argv, 0, b'{"jsonrpc":"2.0"}\n', b"")
+
+    with pytest.raises(q.QualificationError) as missing:
+        q.probe_excluded_tools(
+            installed, tmp_path / "core.json", tmp_path / "probe-missing", "codex-cli",
+            q.AUTHORING_TOOLS, excluded, run=missing_run,
+        )
+    assert _code(missing) is Reason.GATE_FAILED
 
 
 def test_host_driver_releases_the_same_paused_request_after_revocation(
@@ -1911,7 +2371,7 @@ def test_durable_import_inspection_stops_then_restarts_core(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     installed = object()
-    context = object()
+    context = q.CoreContext(tmp_path, tmp_path / "workspace", tmp_path / "installation", "ws")
     events: list[str] = []
     monkeypatch.setattr(q, "stop_core", lambda actual: events.append(f"stop:{actual is context}"))
     monkeypatch.setattr(q, "imported_job", lambda actual: "job-1" if actual is context else "")
@@ -1932,6 +2392,21 @@ def test_durable_import_inspection_stops_then_restarts_core(
     ]
 
 
+def test_durable_import_inspection_refuses_a_core_that_could_not_be_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = q.CoreContext(tmp_path, tmp_path / "workspace", tmp_path / "installation", "ws")
+
+    def retain(actual: q.CoreContext) -> None:
+        actual.retained = True
+
+    monkeypatch.setattr(q, "stop_core", retain)
+    monkeypatch.setattr(q, "imported_job", lambda _context: pytest.fail("inspected a live writer"))
+    with pytest.raises(q.QualificationError) as error:
+        q.inspect_settled_import_job(object(), context)  # type: ignore[arg-type]
+    assert _code(error) is Reason.CLEANUP_INCOMPLETE
+
+
 def test_import_job_database_connection_is_closed_after_inspection(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1950,6 +2425,65 @@ def test_import_job_database_connection_is_closed_after_inspection(tmp_path: Pat
     with sqlite3.connect(database, timeout=0) as connection:
         connection.execute("BEGIN EXCLUSIVE")
         connection.rollback()
+
+
+def _wal_database(directory: Path) -> Path:
+    """A WAL database closed cleanly, as a stopped Core leaves it: no side file remains."""
+    directory.mkdir(parents=True)
+    database = directory / "workspace.sqlite"
+    with contextlib.closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE TABLE t (v TEXT)")
+        connection.execute("INSERT INTO t VALUES ('kept')")
+        connection.commit()
+    return database
+
+
+def test_inspection_opens_the_database_read_only_and_creates_nothing(tmp_path: Path) -> None:
+    database = _wal_database(tmp_path / "workspace with space")
+    assert [path.name for path in database.parent.iterdir()] == ["workspace.sqlite"]
+    with contextlib.closing(q.read_only_database(database)) as connection:
+        assert connection.execute("SELECT v FROM t").fetchall() == [("kept",)]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("INSERT INTO t VALUES ('written')")
+    # A plain `mode=ro` open of a WAL database would have left -wal and -shm here.
+    assert [path.name for path in database.parent.iterdir()] == ["workspace.sqlite"]
+    absent = tmp_path / "absent" / "workspace.sqlite"
+    with pytest.raises(sqlite3.OperationalError):
+        q.read_only_database(absent)
+    assert not absent.parent.exists()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
+def test_inspection_refuses_a_database_its_writer_left_open(tmp_path: Path, suffix: str) -> None:
+    database = _wal_database(tmp_path / "workspace")
+    Path(f"{database}{suffix}").write_bytes(b"")
+    with pytest.raises(q.QualificationError) as error:
+        q.read_only_database(database)
+    assert _code(error) is Reason.GATE_FAILED
+
+
+def _sqlite_connect_owners(path: Path) -> list[str]:
+    """The function enclosing each ``sqlite3.connect`` call in ``path``."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    owners = {
+        id(node): function.name
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef)
+        for node in ast.walk(function)
+    }
+    return [
+        owners.get(id(node), "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "sqlite3.connect"
+    ]
+
+
+def test_every_harness_database_open_is_the_read_only_one() -> None:
+    assert _sqlite_connect_owners(SCRIPT) == ["read_only_database"]
+    assert _sqlite_connect_owners(AUTHORING_SCRIPT) == ["_read_only"]
+    for script in (SCRIPT, AUTHORING_SCRIPT):
+        assert "?mode=ro&immutable=1" in script.read_text(encoding="utf-8")
 
 
 # --- command line ----------------------------------------------------------
@@ -1995,6 +2529,18 @@ def run(
     return invoke
 
 
+def _owned_runtime(monkeypatch: pytest.MonkeyPatch, parent: Path, receipt: object = None) -> Path:
+    """A runtime root as the bootstrap leaves it: owner-only, directly under the
+    harness parent, holding an owner-only receipt."""
+    parent.mkdir(exist_ok=True)
+    monkeypatch.setattr(q, "RUNTIME_PARENT", parent)
+    root = parent / "ovmcp-real-test0001"
+    (root / "candidate-venv" / "bin").mkdir(parents=True)
+    root.chmod(0o700)
+    q._write_private(root / q.RUNTIME_RECEIPT, json.dumps({} if receipt is None else receipt))
+    return root
+
+
 @posix_only
 def test_qualification_bootstraps_then_reexecutes_under_the_candidate(
     run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -2011,6 +2557,8 @@ def test_qualification_bootstraps_then_reexecutes_under_the_candidate(
 
     def reexec(candidate_install: Any, argv: list[str], *, environ: Any) -> None:
         observed.update(installed=candidate_install, argv=argv, environ=environ)
+        q.require_owned_runtime(Path(argv[-1]))  # the root the child is handed proves ownership
+        observed["owned"] = True
         raise q.QualificationError(Reason.ENTRYPOINT_UNRESOLVED)
 
     monkeypatch.setattr(q, "reexec_under_candidate", reexec)
@@ -2018,6 +2566,9 @@ def test_qualification_bootstraps_then_reexecutes_under_the_candidate(
     assert (status, out, err) == (1, "", "reason_code=entrypoint_unresolved\n")
     assert observed["installed"] is installed
     assert observed["argv"][-2] == "--runtime-root"
+    assert observed["owned"] is True
+    assert Path(observed["argv"][-1]).parent == q.RUNTIME_PARENT
+    assert not os.path.lexists(observed["argv"][-1])  # the parent's failure removed it
     assert observed["environ"]["PATH"] == q.SYSTEM_PATH
     assert set(observed["environ"]) == {"PATH", "LANG", "TMPDIR"}
     record = json.loads(run.output.read_text(encoding="utf-8"))
@@ -2025,6 +2576,26 @@ def test_qualification_bootstraps_then_reexecutes_under_the_candidate(
         "fail",
         "entrypoint_unresolved",
     )
+
+
+@posix_only
+def test_bootstrap_permission_failure_removes_the_runtime_root(
+    run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+    monkeypatch.setattr(q, "RUNTIME_PARENT", parent)
+    chmod = Path.chmod
+
+    def refuse_runtime_mode(path: Path, mode: int, *args: Any, **kwargs: Any) -> None:
+        if path.parent == parent and path.name.startswith(q.RUNTIME_PREFIX):
+            raise PermissionError("mode refused")
+        chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", refuse_runtime_mode)
+    status, out, err = run()
+    assert (status, out, err) == (1, "", "reason_code=entrypoint_unresolved\n")
+    assert list(parent.iterdir()) == []
 
 
 @posix_only
@@ -2037,13 +2608,11 @@ def test_candidate_runtime_executes_the_live_runner_and_writes_one_pass_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = tmp_path / f"runtime-{host}"
-    prefix = runtime / "candidate-venv"
-    (prefix / "bin").mkdir(parents=True)
-    receipt = {"revision": REVISION, "wheels": q.load_candidate(candidate).wheels}
-    (runtime / "bootstrap-receipt.json").write_text(
-        json.dumps(receipt), encoding="utf-8"
+    receipt = q.candidate_receipt(
+        q.load_candidate(candidate), hashlib.sha256(SCHEMA.read_bytes()).hexdigest()
     )
+    runtime = _owned_runtime(monkeypatch, tmp_path / f"parent-{host}", receipt)
+    prefix = runtime / "candidate-venv"
     installed = q.InstalledCandidate(
         prefix,
         prefix / "bin" / "python",
@@ -2067,6 +2636,145 @@ def test_candidate_runtime_executes_the_live_runner_and_writes_one_pass_record(
     assert record["host"] == {"name": host, "version": version}
     assert record["source"] == {"revision": REVISION, "clean": True}
     assert not runtime.exists()
+
+
+@posix_only
+def test_early_candidate_receipt_failure_still_removes_the_runtime(
+    run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _owned_runtime(monkeypatch, tmp_path / "parent", {"revision": REVISION})
+    prefix = runtime / "candidate-venv"
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(q, "in_candidate_runtime", lambda *_: True)
+    status, out, err = run(**{"--runtime-root": runtime})
+    assert (status, out, err) == (1, "", "reason_code=entrypoint_unresolved\n")
+    assert not runtime.exists()
+
+
+def _disown(root: Path, how: str, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Break one thing an owned runtime root proves; return the root then supplied."""
+    receipt = root / q.RUNTIME_RECEIPT
+    if how == "arbitrary_directory":
+        receipt.unlink()
+        return root.rename(root.with_name("project"))
+    if how == "unprefixed_name":
+        return root.rename(root.with_name("runtime-test0001"))
+    if how == "nested_root":
+        (root.parent / "nested").mkdir()
+        return root.rename(root.parent / "nested" / root.name)
+    if how == "working_directory":
+        monkeypatch.chdir(root)
+        return Path(".")
+    if how == "missing_receipt":
+        receipt.unlink()
+    elif how == "readable_receipt":
+        receipt.chmod(0o644)
+    elif how == "shared_root":
+        root.chmod(0o755)
+    elif how == "symlinked_receipt":
+        receipt.rename(root.with_name("receipt"))
+        receipt.symlink_to(root.with_name("receipt"))
+    elif how == "symlinked_root":
+        root.symlink_to(root.rename(root.with_name("target")), target_is_directory=True)
+    return root
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "how",
+    [
+        "arbitrary_directory",
+        "unprefixed_name",
+        "nested_root",
+        "working_directory",
+        "missing_receipt",
+        "readable_receipt",
+        "shared_root",
+        "symlinked_receipt",
+        "symlinked_root",
+    ],
+)
+def test_a_runtime_root_the_harness_did_not_create_is_refused_and_never_deleted(
+    run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
+) -> None:
+    """A direct `--runtime-root` reaches no cleanup until it proves the bootstrap made it."""
+    parent = tmp_path / "parent"
+    root = _owned_runtime(monkeypatch, parent)
+    (root / "keep.txt").write_text("keep", encoding="utf-8")
+    supplied = _disown(root, how, monkeypatch)
+    before = sorted(str(path.relative_to(parent)) for path in parent.rglob("*"))
+    status, out, err = run(**{"--runtime-root": supplied})
+    assert (status, out, err) == (1, "", "reason_code=entrypoint_unresolved\n")
+    assert sorted(str(path.relative_to(parent)) for path in parent.rglob("*")) == before
+    assert json.loads(run.output.read_text(encoding="utf-8"))["reason_code"] == "entrypoint_unresolved"
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        ("auth_file_changed", "authentication_unavailable"),
+        ("candidate_changed", "wheel_digest_mismatch"),
+        ("candidate_reload", "candidate_invalid"),
+        ("schema_unreadable", "record_invalid"),
+        ("not_the_candidate_runtime", "entrypoint_unresolved"),
+    ],
+)
+def test_an_owned_runtime_root_is_removed_on_every_child_side_failure(
+    run: Any,
+    candidate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+    code: str,
+) -> None:
+    """Preflight, the candidate reload and the schema digest are inside the cleanup boundary."""
+    root = _owned_runtime(monkeypatch, tmp_path / "parent")
+    overrides: dict[str, Any] = {"--runtime-root": root}
+    if failure == "auth_file_changed":
+        overrides["--auth-file"] = tmp_path / "absent-auth"
+    elif failure == "candidate_changed":
+        next(candidate.joinpath("wheels").glob("omnivia_core-*")).write_bytes(b"tampered")
+    elif failure == "candidate_reload":
+        loads: list[Path] = []
+        load = q.load_candidate
+
+        def reload(path: Path) -> Any:
+            loads.append(path)
+            if len(loads) > 1:
+                raise q.QualificationError(Reason.CANDIDATE_INVALID)
+            return load(path)
+
+        monkeypatch.setattr(q, "load_candidate", reload)
+    elif failure == "schema_unreadable":
+        digest = q._file_digest
+
+        def unreadable(path: Path) -> str:
+            if path == SCHEMA:
+                raise OSError("unreadable")
+            return str(digest(path))
+
+        monkeypatch.setattr(q, "_file_digest", unreadable)
+    status, out, err = run(**overrides)
+    assert (status, out, err) == (1, "", f"reason_code={code}\n")
+    assert not os.path.lexists(root)
+
+
+@posix_only
+def test_a_child_side_failure_keeps_its_reason_when_the_owned_root_cannot_be_removed(
+    run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _owned_runtime(monkeypatch, tmp_path / "parent")
+
+    def refuse(_path: Path) -> None:
+        raise OSError("busy")
+
+    monkeypatch.setattr(q.shutil, "rmtree", refuse)
+    status, out, err = run(**{"--runtime-root": root, "--auth-file": tmp_path / "absent-auth"})
+    assert (status, out) == (1, "")
+    assert err == "reason_code=cleanup_incomplete\nreason_code=authentication_unavailable\n"
+    record = json.loads(run.output.read_text(encoding="utf-8"))
+    assert record["reason_code"] == "authentication_unavailable"
 
 
 @posix_only
@@ -2225,7 +2933,7 @@ def test_relay_keeps_result_digests_and_closed_refusal_classes_only(tmp_path: Pa
 
     summary = q.summarize_observation(q.read_observation(path))
     assert summary.outcomes == (
-        ("evidence_capture", "none", q.canonical_result_digest({"evidence": [1]})),
+        ("evidence_capture", "none", q.canonical_result_digest({"evidence": [1], "page": {}})),
         ("memory_create", "idempotency_conflict", q.canonical_result_digest(None)),
         ("evidence_search", "not_callable", q.canonical_result_digest(None)),
         ("job_get", "other", q.canonical_result_digest(None)),
@@ -2394,13 +3102,49 @@ def test_an_excluded_tool_refusal_has_its_own_closed_class() -> None:
     assert q.refusal_class(result) == "not_exposed"
 
 
-def test_a_page_position_never_changes_the_result_digest() -> None:
+def test_only_the_continuation_token_is_outside_the_result_digest() -> None:
     page = {"events": [{"sequence": 0}], "job_id": "job-1", "snapshot_event_count": 2}
-    paged = {**page, "page": {"continuation_token": "token-for-one-principal"}}
-    exhausted = {**page, "page": {}}
-    assert q.canonical_result_digest(paged) == q.canonical_result_digest(exhausted)
-    assert q.canonical_result_digest(page) == q.canonical_result_digest(exhausted)
-    assert q.canonical_result_digest(page) != q.canonical_result_digest({**page, "events": []})
+    one_principal = {**page, "page": {"continuation_token": "token-for-one-principal"}}
+    other_principal = {**page, "page": {"continuation_token": "token-for-the-owner"}}
+    assert q.canonical_result_digest(one_principal) == q.canonical_result_digest(other_principal)
+    # Every other page field, and every other result field, stays in the digest.
+    assert q.canonical_result_digest(one_principal) != q.canonical_result_digest(
+        {**page, "page": {"continuation_token": "t", "total": 3}}
+    )
+    assert q.canonical_result_digest({**page, "page": {"total": 3}}) != q.canonical_result_digest(
+        {**page, "page": {"total": 4}}
+    )
+    assert q.canonical_result_digest({**page, "page": {}}) != q.canonical_result_digest(
+        {**page, "page": {"total": 3}}
+    )
+    assert q.canonical_result_digest(page) != q.canonical_result_digest({**page, "page": {}})
+    assert q.canonical_result_digest(one_principal) != q.canonical_result_digest(
+        {**one_principal, "events": []}
+    )
+    assert q.canonical_result_digest(one_principal) != q.canonical_result_digest(
+        {**one_principal, "page": "a-string-page"}
+    )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        lambda d: {**d, "page": {**d["page"], "snapshot": 9}},
+        lambda d: {**d, "events": [{**d["events"][0], "state": "failed"}]},
+        lambda d: {**d, "snapshot_event_count": 3},
+        lambda d: {k: v for k, v in d.items() if k != "page"},
+    ],
+)
+def test_any_drift_outside_the_token_changes_the_digest(drift: Any) -> None:
+    base = {
+        "events": [{"sequence": 0, "state": "running"}],
+        "job_id": "job-1",
+        "snapshot_event_count": 2,
+        "page": {"continuation_token": "owner-token", "total": 2},
+    }
+    other_token = {**base, "page": {**base["page"], "continuation_token": "host-token"}}
+    assert q.canonical_result_digest(base) == q.canonical_result_digest(other_token)
+    assert q.canonical_result_digest(drift(base)) != q.canonical_result_digest(base)
 
 
 def test_refusal_classes_are_a_closed_vocabulary() -> None:
@@ -2493,29 +3237,20 @@ def test_core_health_is_read_after_each_host_exit_before_its_result_is_used(
     assert order == ["host-exit", "healthy-read"]
 
 
-@pytest.mark.parametrize("journey", ["absence", "traversal"])
-def test_core_health_is_checked_after_absence_and_traversal_hosts_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, journey: str
+def test_core_health_is_checked_after_a_traversal_host_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if journey == "absence":
-        result = _host_result(called=(), requests=())
-        monkeypatch.setattr(q, "probe_excluded_tool", lambda *_args, **_kwargs: None)
-    else:
-        tool = "job_events"
-        arguments = {"job_id": "job-1", "limit": 1}
-        requests = ((tool, q.arguments_digest(arguments)),) * 2
-        outcomes = (
-            (tool, "none", q.canonical_result_digest({"events": [0]})),
-            (tool, "none", q.canonical_result_digest({"events": [1]})),
-        )
-        result = _outcome_result(requests, outcomes)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: result)
+    tool = "job_events"
+    arguments = {"job_id": "job-1", "limit": 1}
+    requests = ((tool, q.arguments_digest(arguments)),) * 2
+    outcomes = (
+        (tool, "none", q.canonical_result_digest({"events": [0]})),
+        (tool, "none", q.canonical_result_digest({"events": [1]})),
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _outcome_result(requests, outcomes))
     driver = _driver(tmp_path, healthy=lambda: False)
     with pytest.raises(q.QualificationError) as error:
-        if journey == "absence":
-            driver.prove_absent("job_cancel")
-        else:
-            driver.traverse("job_events", {"job_id": "job-1", "limit": 1}, pages=2)
+        driver.traverse("job_events", arguments, pages=2)
     assert _code(error) is Reason.GATE_FAILED
 
 
@@ -2589,31 +3324,67 @@ MUTATIONS = frozenset({"evidence_capture", "memory_create", "import_start"})
 
 
 class FakeCore:
-    """The Core behaviour the journey depends on: keyed writes, replays, revocation and pages."""
+    """The Core behaviour the journey depends on: keyed writes, replays, revocation and pages.
+
+    Evidence rows are (searchable text, artifact).  The trusted staging capture and
+    the import's own artifact are separate rows: both carry the staged bytes' kind,
+    checksum and media type, and only the import's is bound to its run, under an
+    identity of its own rather than the staged source id.
+    """
 
     def __init__(self, tamper: str | None) -> None:
         self.tamper = tamper
         self.revoked = False
         self.keyed: dict[str, tuple[Any, dict[str, Any]]] = {}
-        self.evidence: list[dict[str, Any]] = []
+        self.evidence: list[tuple[str, dict[str, Any]]] = []
         self.memories: list[dict[str, Any]] = []
         self.jobs: list[str] = []
+        #: The process evidence the descriptor publishes for the Core now serving.
+        self.serving: dict[str, Any] | None = None
+        self.generation = 0
+
+    def replace(self) -> dict[str, Any]:
+        """A new Core serves the workspace and publishes its own process evidence."""
+        self.generation += 1
+        self.serving = {"pid": 1000 + self.generation, "start_time": f"s{self.generation}", "boot_id": "b"}
+        return dict(self.serving)
 
     def single_job(self) -> str:
         if len(self.jobs) != 1:
             raise q.QualificationError(Reason.GATE_FAILED)
         return self.jobs[0]
 
+    def stage(self, staged: dict[str, Any]) -> dict[str, Any]:
+        """The trusted staging capture, which is itself evidence of the staged bytes."""
+        self._staged_artifact(staged, q.STAGED_SOURCE_ID)
+        return staged
+
+    def _staged_artifact(self, staged: dict[str, Any], source_id: str, **binding: str) -> None:
+        kind = staged["source_kind"]
+        artifact = {
+            "source": {"kind": kind, "source_id": source_id},
+            "content_checksum": staged["content_checksum"],
+            "media_type": staged["media_type"],
+            **binding,
+        }
+        self.evidence.append((f"{kind} {source_id} staged import {q.QUALIFICATION_TOKEN}", artifact))
+
     def _create(self, tool: str, payload: Any) -> dict[str, Any]:
         if tool == "evidence_capture":
-            self.evidence.append({"source_native_id": payload["source_native_id"], "text": payload["text"]})
-            return {"evidence": {"source_native_id": payload["source_native_id"]}}
+            native = payload["source_native_id"]
+            artifact = {"source": {"kind": "direct_submission", "source_id": native}}
+            self.evidence.append((f"{native} {payload['text']}", artifact))
+            return {"evidence": {"source_native_id": native}}
         if tool == "memory_create":
             self.memories.append({"fact": payload["content"]["fact"]})
             return {"record": {"fact": payload["content"]["fact"]}}
         job = f"job-{len(self.jobs) + 1}"
         self.jobs.append(job)
-        self.evidence.append({"source_native_id": q.STAGED_SOURCE_ID, "text": f"staged import {q.QUALIFICATION_TOKEN}"})
+        source = dict(payload["source"])
+        if self.tamper == "imported_evidence_other_bytes":
+            source["content_checksum"] = "sha256:" + "d" * 64
+        if self.tamper != "import_without_evidence":
+            self._staged_artifact(source, f"imp-{job}", import_run_id=job)
         return {"job": {"job_id": job, "state": "succeeded"}}
 
     def mutate(self, tool: str, arguments: dict[str, Any]) -> tuple[str, Any]:
@@ -2635,14 +3406,8 @@ class FakeCore:
 
     def read(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if tool == "evidence_search":
-            query = arguments["query"]
-            return {
-                "evidence": [
-                    row
-                    for row in self.evidence
-                    if query in row["source_native_id"] or query in row["text"]
-                ]
-            }
+            matched = [artifact for text, artifact in self.evidence if arguments["query"] in text]
+            return {"evidence": matched[: arguments.get("limit", 1000)], "page": {}}
         if tool == "memory_search":
             return {"records": list(self.memories) if arguments.get("view") == "candidates" else []}
         if tool == "job_get":
@@ -2663,6 +3428,9 @@ class FakeCore:
         return {}
 
     def serve(self, tool: str, arguments: dict[str, Any]) -> tuple[str, Any]:
+        if tool == "decision_evaluate":
+            # No decision capability is granted: refused before any record is written.
+            return "capability_not_granted", None
         if tool in MUTATIONS:
             return self.mutate(tool, arguments)
         if self.revoked and self.tamper != "revocation_ignored" and tool != "workspace_inspect":
@@ -2706,6 +3474,7 @@ def _journey(
     root: Path,
     tamper: str | None = None,
     log: list[str] | None = None,
+    ledger: q.GateLedger | None = None,
 ) -> tuple[q.GateLedger, list[str]]:
     cores: dict[Path, FakeCore] = {}
     log = [] if log is None else log
@@ -2716,6 +3485,7 @@ def _journey(
 
     def start(_installed: Any, context: Any) -> int:
         log.append(f"start:{context.root.name}")
+        context.expected = cores[context.root].replace()
         return 1
 
     def stop(context: Any) -> None:
@@ -2723,6 +3493,7 @@ def _journey(
 
     def restart(_installed: Any, context: Any) -> None:
         log.append(f"restart:{context.root.name}")
+        context.expected = cores[context.root].replace()
 
     def revoke(_installed: Any, context: Any, _host: str) -> None:
         cores[context.root].revoked = True
@@ -2736,6 +3507,10 @@ def _journey(
                 else "pass"
             )
             return {"status": status}
+        if path == ("decisions", "status"):
+            return {"enabled": False}
+        if path == ("decisions", "records"):
+            return {"records": []}
         names = {
             ("evidence", "search"): "evidence_search",
             ("memory", "search"): "memory_search",
@@ -2745,8 +3520,7 @@ def _journey(
         return cores[context.root].read(names[path], dict(payload or {}))
 
     def run(self: Any, calls: Any, arguments: Any = None, *, pages: int = 1, interrupt: bool = False,
-            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None,
-            absent: bool = False) -> Any:
+            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None) -> Any:
         # The pre-repair driver passed one (tool, arguments) pair; the repaired one passes steps.
         steps = [(calls, arguments)] if isinstance(calls, str) else list(calls)
         tool, first = steps[0]
@@ -2757,35 +3531,23 @@ def _journey(
             # Launch authority is gone: a process started now cannot initialize (the live failure).
             self.progress("host_initialize_missing")
             raise q.QualificationError(Reason.GATE_FAILED)
-        if absent:
-            if core.tamper == "excluded_dispatched":
-                return q.HostRunResult(
-                    q.ObservationSummary(
-                        initialized=True, listed=True, listed_tools=self.tools,
-                        called=(tool,), requests=((tool, digest),), responded=(tool,), succeeded=(),
-                        tool_errors=(tool,), paused=False, withheld=False, violation=False,
-                    ),
-                    marker_seen=True, exited_cleanly=True, interrupted=False, paused=False,
-                )
-            return q.HostRunResult(
-                q.ObservationSummary(
-                    initialized=True, listed=True, listed_tools=self.tools,
-                    called=(), requests=(), responded=(), succeeded=(), tool_errors=(),
-                    paused=False, withheld=False, violation=False,
-                ),
-                marker_seen=True, exited_cleanly=True, interrupted=False, paused=False,
-            )
         if pause_before:
             on_paused()
         if interrupt:
-            core.mutate(tool, first)  # committed; the response is then withheld
+            refusal, committed = core.mutate(tool, first)  # committed; the response is then withheld
             on_withheld()
             log.append(f"exit:{tool}")
+            withheld = q.canonical_result_digest(committed) if refusal == "none" else None
+            if core.tamper == "replay_differs_from_withheld":
+                withheld = q.canonical_result_digest({**committed, "withheld": True})
+            elif core.tamper == "withheld_answer_refused":
+                withheld = None
             return q.HostRunResult(
                 q.ObservationSummary(
                     initialized=True, listed=True, listed_tools=self.tools,
                     called=(tool,), requests=((tool, digest),), responded=(), succeeded=(),
                     tool_errors=(), paused=False, withheld=True, violation=False,
+                    withheld_digest=withheld,
                 ),
                 marker_seen=False, exited_cleanly=False, interrupted=True, paused=False,
             )
@@ -2812,6 +3574,8 @@ def _journey(
                 if index == 1 and core.tamper == "wrong_post_revoke_refusal" and refusal == "credential_missing":
                     refusal = "idempotency_conflict"
                 outcomes.append((name, refusal, q.canonical_result_digest(structured)))
+        if core.tamper == "core_replaced_unexpectedly" and tool == "evidence_capture":
+            core.replace()  # Core exited mid-session; a managed-local client replaced it
         if not self.healthy():
             raise q.QualificationError(Reason.GATE_FAILED)
         # Only the repaired summary carries this field; the pre-repair one does not.
@@ -2837,18 +3601,28 @@ def _journey(
     monkeypatch.setattr(q, "start_core", start)
     monkeypatch.setattr(q, "stop_core", stop)
     monkeypatch.setattr(q, "restart_core", restart)
+    # The descriptor check of the real `core_healthy`; its health probe is `owner` below.
+    monkeypatch.setattr(q, "core_alive", lambda context: cores[context.root].serving == context.expected)
     monkeypatch.setattr(q, "revoke_authoring", revoke)
     monkeypatch.setattr(q, "verify_revoked", lambda *_args: None)
-    monkeypatch.setattr(q, "probe_excluded_tool", lambda *_args, **_kwargs: None)
+
+    def probe(*_args: Any) -> None:
+        # A dispatched excluded name is refused by the deterministic probe, not by a model run.
+        if tamper == "excluded_dispatched":
+            raise q.QualificationError(Reason.GATE_FAILED)
+
+    monkeypatch.setattr(q, "probe_excluded_tools", probe)
     monkeypatch.setattr(q, "owner_call", owner)
-    monkeypatch.setattr(q, "stage_source", lambda _installed, _context: dict(JOURNEY_STAGED))
+    monkeypatch.setattr(
+        q, "stage_source", lambda _installed, context: cores[context.root].stage(dict(JOURNEY_STAGED))
+    )
     monkeypatch.setattr(
         q, "configure_profile", lambda _installed, context, _host, profile: context.root / f"{profile}.json"
     )
     monkeypatch.setattr(q, "configuration_principal", lambda config: f"principal:{config.stem}")
     monkeypatch.setattr(q, "imported_job", lambda context: cores[context.root].single_job())
     monkeypatch.setattr(q.HostDriver, "_run", run)
-    ledger = q.GateLedger()
+    ledger = q.GateLedger() if ledger is None else ledger
     q.qualify_host(
         host="codex-cli",
         binary=root / "codex",
@@ -2912,6 +3686,12 @@ def test_the_journey_proves_every_gate_in_the_pinned_order(
         "host_page_differs",
         "revocation_ignored",
         "excluded_dispatched",
+        # Only the trusted staging capture exists: it must not pass as imported evidence.
+        "import_without_evidence",
+        "imported_evidence_other_bytes",
+        # The same-key replay must answer exactly what the withheld response said.
+        "replay_differs_from_withheld",
+        "withheld_answer_refused",
     ],
 )
 def test_a_journey_that_violates_one_observation_is_refused(
@@ -2964,8 +3744,777 @@ def test_owner_observation_and_post_host_health_cannot_drift(
     assert _code(error) is Reason.GATE_FAILED
 
 
+def test_staging_evidence_alone_never_proves_an_imported_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The staging capture shares the staged bytes' kind, checksum and media type."""
+    ledger = q.GateLedger()
+    with pytest.raises(q.QualificationError) as error:
+        _journey(monkeypatch, tmp_path, "import_without_evidence", ledger=ledger)
+    assert _code(error) is Reason.GATE_FAILED
+    assert ledger.status("i5", "job_events_match_owner") is q.GateStatus.PASSED
+    assert ledger.status("i5", "imported_evidence_retrieved") is q.GateStatus.PENDING
+
+
+def test_only_one_artifact_bound_to_the_run_is_imported_evidence() -> None:
+    staged = dict(JOURNEY_STAGED)
+    staging = {
+        "source": {"kind": staged["source_kind"], "source_id": q.STAGED_SOURCE_ID},
+        "content_checksum": staged["content_checksum"],
+        "media_type": staged["media_type"],
+    }
+    imported = {
+        **staging,
+        "source": {"kind": staged["source_kind"], "source_id": "imp-1"},
+        "import_run_id": "job-1",
+    }
+
+    def page(*artifacts: dict[str, Any], **position: str) -> dict[str, Any]:
+        return {"evidence": list(artifacts), "page": position}
+
+    assert q.holds_imported_artifact(page(staging, imported), "job-1", staged)
+    assert not q.holds_imported_artifact(page(staging), "job-1", staged)
+    assert not q.holds_imported_artifact(page(staging, imported), "job-2", staged)
+    assert not q.holds_imported_artifact(page(imported, imported), "job-1", staged)
+    assert not q.holds_imported_artifact(
+        page(staging, imported, continuation_token="more"), "job-1", staged
+    )
+    for field, value in (
+        ("content_checksum", "sha256:" + "d" * 64),
+        ("media_type", "text/html"),
+        ("source", {"kind": "document", "source_id": "imp-1"}),
+    ):
+        assert not q.holds_imported_artifact(page(staging, {**imported, field: value}), "job-1", staged)
+
+
 @pytest.mark.parametrize(("gate", "check"), ALL_CHECKS)
 def test_a_pass_record_needs_every_observation_true(gate: str, check: str) -> None:
     record = _pass_record()
     record["gates"][gate][check] = False
     assert not jsonschema.Draft202012Validator(_schema()).is_valid(record)
+
+
+# --- protocol negotiation, pagination and refusal classes ------------------
+
+
+def _relay_initialize(result: Any, directory: Path) -> tuple[Any, bool]:
+    directory.mkdir(parents=True)
+    observer = q._Observer(directory / "events.jsonl")
+    relay = q._Relay(observer, None)
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    try:
+        withheld = relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": result}))
+    finally:
+        observer.close()
+    return q.summarize_observation(q.read_observation(directory / "events.jsonl")), withheld
+
+
+def test_initialize_requires_the_expected_protocol_version(tmp_path: Path) -> None:
+    summary, _ = _relay_initialize({"protocolVersion": q.MCP_PROTOCOL_VERSION}, tmp_path / "ok")
+    assert summary.initialized
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1999-01-01"}},
+        {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "no"}},
+    ],
+)
+def test_initialize_mismatch_or_error_is_a_protocol_violation(
+    tmp_path: Path, message: dict[str, Any]
+) -> None:
+    observer = q._Observer(tmp_path / "events.jsonl")
+    relay = q._Relay(observer, None)
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    with pytest.raises(q._Violation) as error:
+        relay.response(_frame(message))
+    observer.close()
+    assert error.value.kind == "invalid_initialize"
+
+
+@pytest.mark.parametrize("result", [{}, {"protocolVersion": 2025}, {"protocolVersion": None}])
+def test_a_malformed_initialize_result_is_a_protocol_violation(tmp_path: Path, result: Any) -> None:
+    observer = q._Observer(tmp_path / "events.jsonl")
+    relay = q._Relay(observer, None)
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    with pytest.raises(q._Violation) as error:
+        relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": result}))
+    observer.close()
+    assert error.value.kind == "invalid_initialize"
+
+
+def test_a_paginated_tool_inventory_is_refused(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events.jsonl")
+    relay = q._Relay(observer, None)
+    relay.request(_frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
+    with pytest.raises(q._Violation) as error:
+        relay.response(
+            _frame(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"tools": [{"name": "workspace_inspect"}], "nextCursor": "more"},
+                }
+            )
+        )
+    observer.close()
+    assert error.value.kind == "invalid_tool_inventory"
+
+
+def test_a_capability_refusal_is_its_own_closed_class() -> None:
+    refused = _refused(
+        '{"error":{"code":"capability_not_granted","message":"not enabled"},"metadata":{}}'
+    )
+    assert q.refusal_class(refused) == "capability_not_granted"
+    assert "capability_not_granted" in q.REFUSALS
+    assert q.refusal_class(_refused('{"error":{"code":"capability_not_granted_extra"}}')) == "other"
+
+
+# --- wheel closure: the whole closure is integrity-checked -----------------
+
+
+def _third_party(candidate: Path, name: str) -> Path:
+    return next(candidate.joinpath("wheels").glob(f"{name.replace('-', '_')}-*.whl"))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda path: path.write_bytes(path.read_bytes()[:-1] + b"Z"),  # same size, other bytes
+        lambda path: path.write_bytes(path.read_bytes() + b"x"),  # longer than recorded
+    ],
+)
+def test_a_tampered_third_party_wheel_is_a_digest_mismatch(candidate: Path, tamper: Any) -> None:
+    tamper(_third_party(candidate, "anyio"))
+    with pytest.raises(q.QualificationError) as error:
+        q.load_candidate(candidate)
+    assert _code(error) is Reason.WHEEL_DIGEST_MISMATCH
+
+
+def test_the_recorded_size_of_each_dependency_is_enforced(candidate: Path) -> None:
+    # Indices 0-4 are the five first-party wheels; 5-7 are the third-party closure.
+    _edit_json(_manifest(candidate), lambda d: d["wheels"][5].update(bytes=1))
+    with pytest.raises(q.QualificationError) as error:
+        q.load_candidate(candidate)
+    assert _code(error) is Reason.WHEEL_DIGEST_MISMATCH
+
+
+def test_a_stray_wheel_outside_the_closure_is_refused(candidate: Path) -> None:
+    (candidate / "wheels" / "stray-0.0.1-py3-none-any.whl").write_bytes(b"not in the manifest")
+    with pytest.raises(q.QualificationError) as error:
+        q.load_candidate(candidate)
+    assert _code(error) is Reason.CANDIDATE_INVALID
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        (lambda d: d["wheels"][5].update(path="wheels/../mcp.whl"), Reason.CANDIDATE_INVALID),
+        (lambda d: d["wheels"][5].pop("bytes"), Reason.CANDIDATE_INVALID),
+        (lambda d: d["wheels"][5].update(bytes="12"), Reason.CANDIDATE_INVALID),
+        # A second mcp entry is an SDK pin ambiguity, refused before the closure is read.
+        (lambda d: d["wheels"].append(deepcopy(d["wheels"][5])), Reason.SDK_PIN_MISMATCH),
+        (lambda d: d["wheels"][5].update(first_party=True), Reason.CANDIDATE_INVALID),
+    ],
+)
+def test_a_malformed_dependency_entry_is_refused(candidate: Path, edit: Any, reason: Any) -> None:
+    _edit_json(_manifest(candidate), edit)
+    with pytest.raises(q.QualificationError) as error:
+        q.load_candidate(candidate)
+    assert _code(error) is reason
+
+
+def test_a_symlinked_dependency_is_refused(candidate: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("symbolic links")
+    wheel = _third_party(candidate, "mcp-types")
+    target = candidate / "elsewhere.whl"
+    target.write_bytes(wheel.read_bytes())
+    wheel.unlink()
+    wheel.symlink_to(target)
+    with pytest.raises(q.QualificationError) as error:
+        q.load_candidate(candidate)
+    assert _code(error) is Reason.CANDIDATE_INVALID
+
+
+def test_the_hashed_requirements_name_every_wheel_by_file_url_and_digest(candidate: Path) -> None:
+    verified = q._verified_wheels(json.loads(_manifest(candidate).read_text())["wheels"], candidate)
+    lines = q.hashed_requirements(verified).splitlines()
+    assert len(lines) == len(verified) == 8  # five first-party and three third-party wheels
+    for line in lines:
+        url, _, hash_flag = line.partition(" --hash=sha256:")
+        assert url.startswith("file://") and len(hash_flag) == 64
+
+
+def test_a_space_in_the_candidate_path_is_carried_safely(tmp_path: Path) -> None:
+    spaced = _write_candidate(tmp_path / "candidate with space")
+    verified = q._verified_wheels(json.loads(_manifest(spaced).read_text())["wheels"], spaced)
+    assert all(" " not in line.split(" --hash")[0] for line in q.hashed_requirements(verified).splitlines())
+
+
+# --- the proxy: bounded frames, fail-closed observation, reaped children ----
+
+
+def test_an_oversized_inbound_frame_is_refused_before_it_is_forwarded(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    oversized = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"x":"' + b"a" * q.MAX_FRAME_BYTES + b'"}}\n'
+    completed = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=oversized,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert completed.returncode == q.PROXY_VIOLATION_EXIT
+    assert completed.stdout == b""
+    kinds = [event.get("kind") for event in q.read_observation(observation) if event["event"] == "protocol_violation"]
+    assert kinds == ["oversized_frame"]
+
+
+def test_an_oversized_outbound_frame_is_never_forwarded(tmp_path: Path) -> None:
+    child = (
+        "import sys\n"
+        "sys.stdin.readline()\n"
+        f"sys.stdout.write('{{' + 'a' * {q.MAX_FRAME_BYTES} + '}}\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", child], observation=observation)
+    completed = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert completed.returncode == q.PROXY_VIOLATION_EXIT
+    assert completed.stdout == b""
+
+
+def test_a_frame_within_the_bound_is_read_whole() -> None:
+    frame = b"x" * (q.MAX_FRAME_BYTES - 1) + b"\n"
+    assert q._read_frame(io.BytesIO(frame)) == frame
+    with pytest.raises(q._Violation) as error:
+        q._read_frame(io.BytesIO(b"x" * (q.MAX_FRAME_BYTES + 1) + b"\n"))
+    assert error.value.kind == "oversized_frame"
+
+
+_PROXY_WRAPPER: str = """
+import json, sys
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("rh", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["rh"] = module
+spec.loader.exec_module(module)
+mode = sys.argv[2]
+spec_path = Path(sys.argv[3])
+original_stop = module._stop
+def recording_stop(child):
+    original_stop(child)
+    sys.stderr.write("reaped=%s\\n" % (child.returncode is not None))
+module._stop = recording_stop
+if mode == "observer":
+    original_emit = module._Observer.emit
+    def failing_emit(self, event, **fields):
+        if event == "initialize_response":
+            raise OSError("observation sink failed")
+        return original_emit(self, event, **fields)
+    module._Observer.emit = failing_emit
+if mode == "qualification":
+    def failing_response(self, frame):
+        raise module.QualificationError(module.ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+    module._Relay.response = failing_response
+raise SystemExit(module.run_proxy(spec_path))
+"""
+
+
+@pytest.mark.parametrize("mode", ["observer", "qualification"])
+@posix_only
+def test_a_failed_observation_stops_and_reaps_the_child(tmp_path: Path, mode: str) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", _PROXY_WRAPPER, str(SCRIPT), mode, str(spec)],
+        input=_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert completed.returncode == q.PROXY_FAILED_EXIT
+    assert completed.stdout == b""
+    assert b"reaped=True" in completed.stderr
+
+
+# --- cleanup: verified removal, deterministic failure reporting -------------
+
+
+def test_removing_the_runtime_proves_it_is_gone(tmp_path: Path) -> None:
+    root = tmp_path / "runtime"
+    (root / "nested").mkdir(parents=True)
+    (root / "nested" / "credential").write_text("x", encoding="utf-8")
+    q.remove_runtime(root)
+    assert not os.path.lexists(root)
+    q.remove_runtime(root)  # already gone is still gone
+
+
+def test_a_runtime_that_cannot_be_removed_is_cleanup_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runtime"
+    root.mkdir()
+
+    def refuse(_path: Path) -> None:
+        raise PermissionError("no")
+
+    monkeypatch.setattr(q.shutil, "rmtree", refuse)
+    with pytest.raises(q.QualificationError) as error:
+        q.remove_runtime(root)
+    assert _code(error) is Reason.CLEANUP_INCOMPLETE
+
+
+def test_a_failed_discard_on_a_failure_path_reports_but_keeps_its_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def refuse(_path: Path) -> None:
+        raise OSError("busy")
+
+    monkeypatch.setattr(q.shutil, "rmtree", refuse)
+    (tmp_path / "runtime").mkdir()
+    q.discard_runtime(tmp_path / "runtime")
+    assert capsys.readouterr().err == "reason_code=cleanup_incomplete\n"
+
+
+def test_a_core_process_that_survives_its_stop_is_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.replacement_pid = 2_000_000_000
+    context.expected = _evidence(context.replacement_pid)
+    monkeypatch.setattr(q, "_process_identity_matches", lambda _evidence: True)
+    monkeypatch.setattr(q, "_terminate_core_group", lambda *_args: False)
+    q.stop_core(context)
+    assert context.retained is True
+
+
+def test_a_core_process_that_is_absent_is_not_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.replacement_pid = 2_000_000_000
+    context.expected = _evidence(context.replacement_pid)
+    monkeypatch.setattr(q, "_process_identity_matches", lambda _evidence: False)
+    monkeypatch.setattr(
+        q, "_terminate_core_group", lambda *_args: pytest.fail("signalled an absent process")
+    )
+    q.stop_core(context)
+    assert context.retained is False
+
+
+@posix_only
+def test_core_group_shutdown_escalates_and_proves_the_whole_group_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, signal.Signals]] = []
+    waits = iter([False, True])
+    monkeypatch.setattr(q, "_process_group", lambda _pid: 4321)
+    monkeypatch.setattr(q, "_wait_group_absent", lambda _group: next(waits))
+    monkeypatch.setattr(q.os, "killpg", lambda group, sig: signals.append((group, sig)))
+    assert q._terminate_core_group(1234)
+    assert signals == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+
+
+@posix_only
+def test_core_group_shutdown_uses_the_known_group_after_its_leader_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ExitedLeader:
+        pid = 4321
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+        @staticmethod
+        def wait(timeout: float) -> int:
+            return 0
+
+    signals: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr(q, "_wait_group_absent", lambda _group: True)
+    monkeypatch.setattr(q.os, "killpg", lambda group, sig: signals.append((group, sig)))
+    context = q.CoreContext(
+        tmp_path,
+        tmp_path / "workspace",
+        tmp_path / "installation",
+        "workspace-1",
+        process=ExitedLeader(),
+    )
+    q.stop_core(context)
+    assert signals == [(4321, signal.SIGTERM)]
+    assert context.retained is False
+
+
+def test_permission_denied_process_probe_is_present_and_fails_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def denied(_pid: int, _signal: int) -> None:
+        raise PermissionError("not ours")
+
+    monkeypatch.setattr(q.os, "kill", denied)
+    assert q._pid_running(2_000_000_000) is True
+
+
+def test_qualify_host_stops_a_core_when_startup_fails_after_spawning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = q.CoreContext(
+        tmp_path / "core",
+        tmp_path / "workspace",
+        tmp_path / "installation",
+        "workspace-1",
+    )
+    process = object()
+    stopped: list[q.CoreContext] = []
+    monkeypatch.setattr(q, "initialize_core", lambda *_args: context)
+
+    def fail_start(_installed: object, actual: q.CoreContext) -> None:
+        actual.process = process
+        raise q.QualificationError(Reason.GATE_FAILED)
+
+    monkeypatch.setattr(q, "start_core", fail_start)
+    monkeypatch.setattr(q, "stop_core", stopped.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.qualify_host(
+            host="codex-cli",
+            binary=tmp_path / "codex",
+            auth_file=tmp_path / "auth",
+            installed=object(),  # type: ignore[arg-type]
+            run_root=tmp_path,
+        )
+    assert _code(error) is Reason.GATE_FAILED
+    assert context.process is process
+    assert stopped == [context]
+
+
+def test_a_core_exit_hidden_by_a_managed_local_replacement_fails_the_journey(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Health passes after the host exits, but another Core now serves: never a pass."""
+    log: list[str] = []
+    with pytest.raises(q.QualificationError) as error:
+        _journey(monkeypatch, tmp_path, "core_replaced_unexpectedly", log)
+    assert _code(error) is Reason.GATE_FAILED
+    assert "capture_search_host_ok" not in log
+    assert "restart:core" not in log
+
+
+def _publish(context: Any, process: dict[str, Any], *, ready: bool = True) -> None:
+    context.descriptor.parent.mkdir(parents=True, exist_ok=True)
+    context.descriptor.write_text(json.dumps({"ready": ready, "process": process}), encoding="utf-8")
+
+
+def _evidence(pid: int, start_time: str = "start-1") -> dict[str, Any]:
+    return {"pid": pid, "start_time": start_time, "boot_id": "boot-1"}
+
+
+def test_non_child_identity_requires_successful_process_and_boot_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout="start-1\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="boot-1\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q.subprocess, "run", lambda *_args, **_kwargs: next(probes))
+    assert q._process_identity_matches(_evidence(4242)) is True
+
+
+def test_non_child_identity_fails_closed_when_process_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        q.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="start-1\n", stderr="probe failed"
+        ),
+    )
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: True)
+    assert q._process_identity_matches(_evidence(4242)) is None
+
+
+def test_non_child_identity_treats_an_absent_failed_process_probe_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        q.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: False)
+    assert q._process_identity_matches(_evidence(4242)) is False
+
+
+def test_non_child_identity_fails_closed_when_boot_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout="start-1\n", stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="boot-1\n", stderr="probe failed"),
+        ]
+    )
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q.subprocess, "run", lambda *_args, **_kwargs: next(probes))
+    assert q._process_identity_matches(_evidence(4242)) is None
+
+
+def _sleeper(**options: Any) -> subprocess.Popen[str]:
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], text=True, **options)
+
+
+@posix_only
+def test_core_alive_requires_the_expected_running_core_named_by_the_descriptor(
+    tmp_path: Path,
+) -> None:
+    child = _sleeper()
+    try:
+        context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws", process=child)
+        context.expected = _evidence(child.pid)
+        _publish(context, _evidence(child.pid))
+        assert q.core_alive(context)
+        _publish(context, _evidence(child.pid), ready=False)
+        assert not q.core_alive(context)
+        _publish(context, _evidence(child.pid, "reused-pid"))
+        assert not q.core_alive(context)
+        _publish(context, _evidence(child.pid))
+        child.kill()
+        child.wait()
+        assert not q.core_alive(context)  # exited; the descriptor still names it
+        # A managed-local replacement now serves, and is healthy: still not the expected Core.
+        _publish(context, _evidence(os.getpid(), "start-2"))
+        assert not q.core_alive(context)
+        # Only once the run itself moves the expected Core is the replacement accepted.
+        context.expected = _evidence(os.getpid(), "start-2")
+        assert q.core_alive(context)
+    finally:
+        child.kill()
+        child.wait()
+
+
+@posix_only
+def test_health_is_never_read_from_a_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.expected = _evidence(os.getpid())
+    _publish(context, _evidence(os.getpid()))
+    probes: list[str] = []
+
+    def health(_installed: Any, _context: Any, path: Any, payload: Any = None) -> dict[str, str]:
+        assert path == ("service", "health")
+        probes.append("health")
+        return {"status": "pass"}
+
+    monkeypatch.setattr(q, "owner_call", health)
+    assert q.core_healthy(object(), context)
+
+    def replacing(_installed: Any, _context: Any, path: Any, payload: Any = None) -> dict[str, str]:
+        probes.append("replacing")  # this probe found Core gone and started another
+        _publish(context, _evidence(os.getppid(), "start-2"))
+        return {"status": "pass"}
+
+    monkeypatch.setattr(q, "owner_call", replacing)
+    assert not q.core_healthy(object(), context)
+    probes.clear()
+    assert not q.core_healthy(object(), context)
+    assert probes == [], "health was probed after the expected Core was already gone"
+
+
+@posix_only
+def test_only_the_deliberate_restart_moves_the_expected_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = _sleeper(start_new_session=True)
+    try:
+        context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws", process=child)
+        context.expected = _evidence(child.pid)
+        _publish(context, _evidence(child.pid))
+
+        def managed_restart(_installed: Any, _context: Any, path: Any, payload: Any = None) -> Any:
+            _publish(context, _evidence(os.getpid(), "start-2"))
+            return {"status": "pass"}
+
+        sent: list[int] = []
+        killpg = os.killpg
+
+        def record(group: int, sig: int) -> None:
+            if sig:  # signal 0 is only the group-absence probe
+                sent.append(sig)
+            killpg(group, sig)
+
+        monkeypatch.setattr(q.os, "killpg", record)
+        monkeypatch.setattr(q, "owner_call", managed_restart)
+        q.restart_core(object(), context)  # type: ignore[arg-type]
+        # A crash, not a shutdown: SIGKILL to the whole group, no TERM first.
+        assert sent == [signal.SIGKILL]
+        assert child.poll() == -signal.SIGKILL
+        assert context.retained is False
+        assert context.expected == _evidence(os.getpid(), "start-2")
+        assert context.replacement_pid == os.getpid()
+        assert q.core_alive(context)
+    finally:
+        child.kill()
+        child.wait()
+
+
+@posix_only
+def test_a_restart_never_hides_a_core_that_already_exited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = _sleeper(start_new_session=True)
+    child.kill()
+    child.wait()
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws", process=child)
+    context.expected = _evidence(child.pid)
+    _publish(context, _evidence(child.pid))
+    monkeypatch.setattr(q, "owner_call", lambda *_args, **_kwargs: pytest.fail("probed health"))
+    with pytest.raises(q.QualificationError) as error:
+        q.restart_core(object(), context)  # type: ignore[arg-type]
+    assert _code(error) is Reason.GATE_FAILED
+    assert context.expected == _evidence(child.pid)
+
+
+class _CrashedCore:
+    """A started Core whose crash the test decides: it dies of ``exit_code`` or survives."""
+
+    pid = 2_000_000_003
+
+    def __init__(self, exit_code: int | None) -> None:
+        self.exit_code = exit_code
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.exit_code is None:
+            raise subprocess.TimeoutExpired("core", timeout or 0)
+        self.returncode = self.exit_code
+        return self.exit_code
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("exit_code", "group_absent", "retained"),
+    [
+        pytest.param(None, False, True, id="group-survives-sigkill"),
+        pytest.param(0, True, False, id="exited-not-crashed"),
+    ],
+)
+def test_a_restart_fails_closed_unless_the_sigkill_crash_is_proved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int | None,
+    group_absent: bool,
+    retained: bool,
+) -> None:
+    core = _CrashedCore(exit_code)
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws", process=core)
+    context.expected = _evidence(core.pid)
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(q, "core_alive", lambda _context: True)
+    monkeypatch.setattr(q, "_process_group", lambda _pid: 4321)
+    monkeypatch.setattr(q.os, "killpg", lambda group, sig: sent.append((group, sig)))
+    monkeypatch.setattr(q, "_wait_group_absent", lambda _group: group_absent)
+    monkeypatch.setattr(q, "owner_call", lambda *_args, **_kwargs: pytest.fail("probed health"))
+    with pytest.raises(q.QualificationError) as error:
+        q.restart_core(object(), context)  # type: ignore[arg-type]
+    assert _code(error) is Reason.GATE_FAILED
+    assert sent == [(4321, signal.SIGKILL)]
+    assert context.retained is retained
+    assert context.expected == _evidence(core.pid)
+
+
+@posix_only
+def test_teardown_stops_an_unplanned_replacement_the_descriptor_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stray = 2_000_000_001
+    stopped: list[int] = []
+    monkeypatch.setattr(q, "_pid_running", lambda pid: pid == stray)
+    monkeypatch.setattr(q, "_process_identity_matches", lambda _evidence: True)
+    monkeypatch.setattr(
+        q,
+        "_terminate_core_group",
+        lambda pid, _process=None: not stopped.append(pid),
+    )
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    _publish(context, _evidence(stray, "start-unplanned"))
+    q.stop_core(context)
+    assert stopped == [stray]
+    assert context.retained is False
+
+
+def test_a_pass_is_never_published_over_retained_runtime(
+    run: Any, candidate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _owned_runtime(
+        monkeypatch,
+        tmp_path / "parent",
+        q.candidate_receipt(
+            q.load_candidate(candidate), hashlib.sha256(SCHEMA.read_bytes()).hexdigest()
+        ),
+    )
+    prefix = runtime / "candidate-venv"
+    installed = q.InstalledCandidate(
+        prefix,
+        prefix / "bin" / "python",
+        prefix / "bin" / "omnivia-core-service",
+        prefix / "bin" / "omnivia",
+        prefix / "bin" / "omnivia-core-mcp",
+    )
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(q, "in_candidate_runtime", lambda *_: True)
+    monkeypatch.setattr(q, "installed_from_prefix", lambda *_: installed)
+    monkeypatch.setattr(q, "require_host_version", lambda *_, **__: "2.1.288")
+    monkeypatch.setattr(q, "require_host_authentication", lambda *_, **__: None)
+    monkeypatch.setattr(q, "qualify_host", lambda **_: _passed_ledger())
+    monkeypatch.setattr(q, "os_identity", lambda: q.OsIdentity("27.0", "26A428", "arm64"))
+
+    def refuse(_root: Path) -> None:
+        raise q.QualificationError(Reason.CLEANUP_INCOMPLETE)
+
+    monkeypatch.setattr(q, "remove_runtime", refuse)
+    status, out, err = run(**{"--runtime-root": runtime})
+    assert (status, out) == (1, "")
+    assert err.endswith("reason_code=cleanup_incomplete\n")
+    record = json.loads(run.output.read_text(encoding="utf-8"))
+    assert (record["verdict"], record["reason_code"]) == ("fail", "cleanup_incomplete")
+
+
+def test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest() -> None:
+    # The harness keeps its probe list as a literal so it runs from an installed candidate;
+    # this conformance test is what stops that list drifting from the catalogue and manifest.
+    from omnivia_core_mcp import manifest
+
+    entries = json.loads(
+        (REPO_ROOT / "contracts" / "application" / "v1" / "schemas" / "operations.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )["x-omnivia-operation-catalogue"]
+    catalogue = [entry["name"] for entry in entries]
+    exposed = {entry.operation for entry in manifest.AUTHORING_MANIFEST}
+    outside = sorted(set(catalogue) - exposed)
+    assert len(catalogue) == 57 and len(outside) == 39
+    assert sorted(name.replace(".", "_") for name in outside) == sorted(q.UNEXPOSED_TOOLS)
+    assert {entry.tool_name for entry in manifest.AUTHORING_MANIFEST} == set(q.AUTHORING_TOOLS)

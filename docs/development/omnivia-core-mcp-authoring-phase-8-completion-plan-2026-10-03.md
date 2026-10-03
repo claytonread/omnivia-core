@@ -5,9 +5,11 @@
 **Owner:** Codex (orchestration, review, acceptance); Claude Code (bounded implementation)
 **Target repository:** `omnivia-core`
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
-**Reviewed predecessor checkpoint:** `36fa677f9fb57ca37661d33d998d1f326a7db874`
-**Final candidate:** not frozen; the last harness hardening and this evidence
-update must be committed together before release-form qualification begins.
+**Reviewed predecessor checkpoint:** `9022e2aa` (the independent-review hardening
+of the harness, checkpointed on the working branch)
+**Final candidate:** not frozen. The repair round in section 10 creates a later
+candidate that is not yet checkpointed. No commit is the final qualification
+candidate, and no exact-tip acceptance is claimed.
 
 ## 1. Objective
 
@@ -38,9 +40,10 @@ principal and protected authoring grant.
 
 PR #107 proved the reviewed wheel closure at its exact head, including
 `mcp==2.0.0`, `mcp-types==2.0.0`, all five distribution builds, and the full
-preflight. That historical evidence closes H-5 and H-7 for that accepted
-revision, but the current release candidate must still be retested at one exact
-commit because the repository has changed since the merge.
+preflight. That evidence is historical: it covered H-5 and H-7 at that accepted
+revision only and closes no current row. H-5 through H-7 and B-12 stay partial
+until the current release candidate is retested at one exact frozen commit,
+because the repository has changed since the merge.
 
 The remaining functional and release gates are:
 
@@ -225,9 +228,95 @@ out of the Phase 8 closeout diff unless it blocks the required Windows gate.
 
 ### Completion Notes
 
+#### Repair round after independent review of `9022e2aa`
+
+The final independent review of `9022e2aa` returned eleven actionable findings.
+The repair, which is uncommitted until the user or Codex checkpoints it, makes
+these changes, all in the existing closed, redacted schema:
+
+1. `decision.evaluate` is a real restricted-profile check: the host must be
+   refused `capability_not_granted`, and the owner must observe a disabled
+   decision surface with no record (gates `i3`:
+   `decision_evaluate_refused`, `decision_owner_observed`).
+2. Every excluded name is dispatched by the harness itself through the proxy,
+   with no model in the loop: 62 names for `restricted` and 57 for `authoring`.
+   The authoring set is the 39 catalogue operations outside the manifest plus
+   eighteen qualification sentinels spanning all nine section-7 administrative
+   capability categories; restricted adds the five authoring-only tools. The
+   sentinels are not catalogue operations. A conformance test ties the unexposed
+   catalogue list to the catalogue and manifest. Each profile records its own
+   absence and undispatchability booleans, and each probe runs while that
+   profile's configuration is current because `configure` rewrites the host's
+   one MCP configuration.
+3. Capture and search, and default and candidate visibility, pass only when the
+   host's canonical result digest equals the owner's digest of the same search.
+   Only digests are retained.
+4. The authoring revocation accepts only the installed credential store's exact
+   sanitized message. Record booleans are set only by checks that completed.
+   The real-host revocation classifier was already exact.
+5. This section and the traceability and interoperability records are corrected
+   to match. The `4ec9fa17` Codex CLI result is diagnostic and unauditable
+   under the current schema, and cannot satisfy I-1 through I-8 at any later tip.
+6. The whole third-party closure is checked: each manifest entry's path, size
+   and SHA-256 must match, and the directory may hold no other wheel. Install
+   uses `pip --require-hashes` from a generated file-URL requirements file, with
+   no index and no find-links. A portable test invokes real pip against a
+   locally generated wheel in a path containing spaces: the correct hash
+   installs and a wrong hash is refused. The retained record binds the full
+   normalized closure by count and digest and binds the exact harness and
+   closed-schema bytes by SHA-256 through the bootstrap receipt.
+7. `initialize` must negotiate `2025-06-18`. An initialize error, missing or
+   malformed version, or version mismatch is a protocol violation.
+8. A paginated `tools/list` (`nextCursor` present) is refused.
+9. The canonical digest removes only `page.continuation_token`. Every other
+   field, including the other `page` fields, stays in the digest, with drift
+   tests.
+10. Runtime cleanup is verified, not silent. A root that cannot be removed
+    fails the run as `cleanup_incomplete` before any pass record is written.
+    A supplied `--runtime-root` must first prove the harness created it: an
+    owner-only `ovmcp-real-` directory directly under `/tmp`, not a symlink,
+    holding the owner-only bootstrap receipt. A root that cannot is refused as
+    `entrypoint_unresolved` and never deleted. After that proof, preflight, the
+    candidate reload, the schema digest, and the candidate-runtime and receipt
+    validation are all inside the same guaranteed cleanup boundary. Teardown
+    gives managed and replacement Core process groups bounded TERM then KILL
+    escalation, and the complete group must disappear. The deliberate I-6/I-7
+    restart is a crash instead: SIGKILL goes to the whole group with no TERM,
+    the child must die of that signal, and a group that survives fails closed
+    and is retained. The installed authoring journey signals a descriptor-named
+    Core only after its pid, start time and boot id match the system's evidence.
+    A failure path keeps its original reason and reports a cleanup failure on
+    stderr. A SIGKILL of the harness itself cannot run any of this: the runtime
+    root and any Core process it started then survive until removed by hand.
+    That limit is documented, not worked around.
+11. The proxy bounds every inbound and outbound frame to 1 MiB before it parses
+    or forwards it. It stops and reaps the child on every failure path, and an
+    observation failure exits `5`, with no frame forwarded. The proxy also
+    keeps the child's input open until pending requests are answered, because
+    an MCP server that reads end-of-input can exit before it writes an answer.
+    After the configured interruption response is withheld, a synchronized
+    terminal seal prevents any later host request or queued child response from
+    being forwarded. Without the input drain, the excluded-name probe lost
+    responses.
+
+The qualification record and validator now also enforce the exact frozen
+macOS baseline (27.0 build 26A428, arm64), rather than accepting any
+well-formed macOS version/build string.
+
+Live checks run against the installed console scripts in this worktree (not
+host-driven): the authoring journey passes end to end, and the restricted probe
+(62 names), the authoring probe (57 names) and the restricted decision refusal
+with its owner observation all behave as the harness now requires. These live
+checks predate the final corrections and are not frozen-candidate evidence. The
+live authoring run reports `mcp` 2.3.0 in this development venv, not the reviewed
+`2.0.0` pin. Real-host records for Claude Code and Codex CLI are not produced
+here: no exact-tip host run has happened, so no I row is green.
+
 WP1 and WP2 are implemented. The candidate builder now runs both the restricted
 installed-wheel journey and a separate eighteen-tool authoring journey, retains
-the authoring result, and validates it against a closed redaction schema. The
+the authoring result, and validates it against a closed redaction schema. That
+retained-record gate is implemented locally only. No current frozen-candidate
+record exists, so B-12 and H-5 through H-7 stay partial. The
 package README, interoperability guide, manifest commentary, and Phase 7
 traceability record now distinguish installed-wheel evidence from real-host
 evidence and describe the thirteen-tool restricted and eighteen-tool authoring
@@ -241,12 +330,11 @@ focused lifecycle suite and 100 independent repetitions of the partial-client
 case pass after the repair.
 
 WP3's executable harness and closed record schema are implemented and covered
-by deterministic tests. Against the clean
-`4ec9fa17c447c81e58056d99e703b587fcf0afa3` candidate,
-Codex CLI 0.146.0 completed I-1 through I-8: both inventories, authoring,
-import observation, response interruption and replay, restart, protocol-only
-stdout, and live revocation all passed. This is diagnostic evidence for the
-harness and that revision, not final exact-tip acceptance at the later tip.
+by deterministic tests. A historical Codex CLI 0.146.0 diagnostic run against
+the clean `4ec9fa17c447c81e58056d99e703b587fcf0afa3` candidate reported I-1
+through I-8 as passing under the record schema of that time. That record is
+unauditable under the current closed schema, so the run closes no current I
+row. It is diagnostic history, not acceptance at that or any later tip.
 
 Claude Code 2.1.288 is installed and the operator session is authenticated, but
 that subscription login is keychain-bound: copying `.credentials.json` into an
@@ -267,8 +355,8 @@ persisted or recorded, and the MCP server process explicitly receives an empty
 value for that variable. For `--host codex-cli`, `--auth-file` remains an
 owner-only copy of `auth.json`. The interoperability guide states these
 host-specific semantics.
-The focused real-host harness and schema suite now contains 358 tests, up from
-219. It exercises the complete seventeen-step journey, including a real-host
+The historical pre-review real-host harness and schema suite contained 358
+tests, up from 219. It exercises the complete seventeen-step journey, including a real-host
 attempt to dispatch an excluded sentinel, stable canonical replay and conflict
 classification for all three mutations, stable paginated events, imported
 evidence retrieval, revocation fail-closed behavior, owner observation after
@@ -299,29 +387,63 @@ exact-tip independent review is still required before candidate freeze.
 No exact-tip Claude or Codex real-host record exists yet, so no I row is green.
 WP3 remains open for both final host records. Claude qualification still
 requires the owner-only token file produced outside the repository by
-`claude setup-token`.
+`claude setup-token`. Both host runs also require explicit user authorization
+for the external data flow: fixed qualification prompts and bounded,
+service-derived results are sent through the selected host/provider. The
+implementation request, a local login, or the token file does not imply that
+authorization. The execution-policy reviewer rejected the attempted host-side
+diagnostic on that basis; it must not be retried or routed around without the
+specific approval.
 The real-host part of WP5 and final WP6 closeout therefore remain open. This
 documentation edit creates a new candidate commit, so both hosts must be run
 against the later frozen tip rather than any historical candidate.
 
 ### Checks
 
-- installed candidate build including restricted, authoring, and lifecycle
-  journeys: pass;
+Counts from before the repair round are historical. The post-repair counts are
+given in the next block.
+
+Current uncommitted repair (`9022e2aa` plus all review corrections, including
+the Gate A repair): the three named focused files pass with 546 tests. The Gate
+A review baseline was 515, and the completed review repair added 31 regressions
+for runtime-root ownership, the SIGKILL crash restart, identity-proved authoring
+teardown, permission-denied process probes, exited-leader group cleanup,
+bootstrap failure cleanup, async session cleanup and non-vacuous completion
+claims. Ruff, strict mypy on both qualification scripts and
+`git diff --check` are clean. The complete Phase 2 suite passes with 596 tests
+and four expected platform-specific skips, including the shared-launcher
+ownership regression.
+A live installed authoring journey passed before the final local corrections in
+this round; it must be rerun from the frozen candidate. The broader MCP, CLI,
+package-qualification and service-conformance gate now passes 1,902 tests after
+the completed review repair. Its earlier 1,796-test result remains historical.
+
+Earlier results follow. They are historical and none is current candidate
+evidence:
+
+- historical, superseded: an earlier installed candidate build including
+  restricted, authoring, and lifecycle journeys passed; it predates the current
+  corrections, and the frozen candidate must rebuild and rerun it;
 - authoring record positive and negative schema tests: pass;
-- focused Phase 8 package/traceability tests: 120 passed;
+- historical, superseded: focused Phase 8 package/traceability tests: 120
+  passed;
 - local transport lifecycle suite: 36 passed;
 - partial-client shutdown stress: 100/100 passed;
-- historical full `PYTHON=.venv/bin/python ./scripts/preflight`: pass, including 28,296
-  Python tests, 23 benchmark tests, Ruff, strict mypy, all five wheel builds and
-  isolated installs, and 59 Swift tests; final-tip rerun pending;
-- real-host harness/schema focused suite: 358 focused tests, with targeted Ruff,
-  strict mypy, schema validation and diff hygiene passing;
-- combined MCP, CLI, authoring traceability and real-host harness gate: 1,754
-  passed;
-- Codex CLI real-host journey at clean `4ec9fa17`: pass; the repaired same-session
-  journey also passed diagnostically against historical candidate `960ed703`;
-  neither is final exact-tip acceptance;
+- historical, superseded: full `PYTHON=.venv/bin/python ./scripts/preflight`:
+  pass, including 28,296 Python tests, 23 benchmark tests, Ruff, strict mypy,
+  all five wheel builds and isolated installs, and 59 Swift tests; final-tip
+  rerun pending;
+- historical, superseded: real-host harness/schema focused suite: 358 focused
+  tests, with targeted Ruff, strict mypy, schema validation and diff hygiene
+  passing;
+- historical, superseded: combined MCP, CLI, authoring traceability and
+  real-host harness gate: 1,796 passed at the preceding uncommitted checkpoint;
+  the current post-repair gate passes 1,902 tests;
+- historical, diagnostic only: the Codex CLI real-host journey at clean
+  `4ec9fa17` reported a pass, but its record is unauditable under the current
+  closed schema and closes no current I row. The repaired same-session journey
+  was also reported as passing against historical candidate `960ed703`. Neither
+  is exact-tip acceptance;
 - Claude Code isolated authentication preflight: correctly fails closed as
   `authentication_unavailable`.
 
@@ -359,8 +481,10 @@ writer.
 
 ### Next Step
 
-Commit and push the reviewed hardening, freeze that exact tip, build one clean
-candidate, and rerun the installed restricted, authoring and lifecycle journeys.
+Review and checkpoint the section 10 repair round, freeze that exact tip, build
+one clean candidate, and rerun the installed restricted, authoring and lifecycle
+journeys. Then rerun the real-host harness for both hosts at that tip. The
+repair's live checks cannot stand in for those host records.
 Then run full preflight, update PR #167 and obtain fresh hosted checks. Real-host
 acceptance additionally requires an owner-only Claude token file generated
 outside the repository with `claude setup-token`. Retain only the closed

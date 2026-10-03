@@ -191,6 +191,61 @@ candidate digest and prove:
 6. protocol-only stdout, host restart and Core restart;
 7. authoring revocation and fail-closed mutation behavior.
 
+The harness also proves the following, from its own observation rather than the
+model's report:
+
+- **Restricted `decision.evaluate`:** the host's one restricted mutation is
+  refused `capability_not_granted`, and the owner observes a disabled decision
+  surface and no decision record.
+- **Excluded names:** the harness dispatches every name a profile does not expose
+  through the proxy itself, so no model choice is involved. The restricted profile
+  has 62 such names and the authoring profile 57. Those sets comprise the 39
+  catalogue operations outside the authoring manifest, eighteen deterministic
+  qualification sentinels spanning all nine section-7 administrative capability
+  categories, and (for restricted only) the five authoring additions. Sentinels
+  are probe names, not catalogue operations. Each name must be answered
+  `not_exposed`, and none may appear in the host's listed inventory. Restricted
+  and authoring absence/dispatch results are retained as four separate booleans.
+- **Wheel closure:** every wheel in the candidate manifest is checked for path,
+  size and SHA-256, and no other wheel may sit in the directory. Installation
+  uses `pip --require-hashes` from a generated file-URL list, with no index. The
+  record binds the normalized full closure by count and digest, and separately
+  binds the exact harness and record-schema bytes by SHA-256.
+- **Protocol:** initialize must negotiate `2025-06-18`; an initialize error,
+  missing or malformed version, version mismatch, or paginated tool listing is
+  a protocol violation. Once the interruption response is withheld, the relay
+  is sealed and cannot forward another host or child frame.
+- **Platform:** a passing record is limited to macOS 27.0 build 26A428 on arm64,
+  rather than any syntactically valid macOS version/build.
+- **Cleanup:** the runtime root is removed and verified before a pass is written.
+  Before recursive removal, a supplied root must prove that the harness created
+  it: it is a non-symlinked, owner-only `ovmcp-real-*` directory directly under
+  `/tmp` with an owner-only bootstrap receipt. An unproved root is refused and
+  never deleted. Ordinary teardown terminates managed Core process groups with
+  bounded TERM-then-KILL escalation and proves the whole group absent. The
+  deliberate I-6/I-7 Core restart is instead a proved crash: the whole group is
+  sent SIGKILL without TERM first, and the child must report that signal as its
+  exit. A descriptor-named replacement is signalled only when its pid, start time
+  and boot id still match current system evidence. An uncertain identity is not
+  signalled and cleanup fails closed. A Core process/group or runtime root that
+  survives is reported as `cleanup_incomplete`. A SIGKILL of the harness itself
+  cannot run any of this, so it leaves the runtime root and any Core process for
+  manual removal.
+
+Normal native host configuration points directly at the installed
+`omnivia-core-mcp --config <core-generated-config>` entry. The qualification
+harness additionally places an ephemeral observer proxy in its isolated temporary
+host configuration so it can independently measure protocol traffic and withhold
+one response. That proxy is qualification instrumentation only: it is not written
+to the operator's normal Claude Code or Codex settings and is not the production
+connection contract.
+
+Real-host qualification sends fixed qualification prompts and bounded,
+service-derived results through the selected host/provider. Obtain explicit user
+authorization for that external data flow before either host run. Authorization
+to implement the harness, possession of a local login, or provision of a token
+file does not by itself authorize sending those data externally.
+
 Model text is not acceptance evidence. A harness must independently verify Core
 state and validate the closed redacted record. Prompts and model responses are
 ephemeral and are not retained.

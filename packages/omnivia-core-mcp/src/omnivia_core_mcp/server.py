@@ -333,18 +333,21 @@ _WORKSPACE_MISMATCH: Final = (
 #: workspace, no service program, a launcher that would not answer or answered
 #: with something unreadable, a start that never became reachable -- into one
 #: payload-free refusal, and this is that refusal in this server's vocabulary
-#: plus the instruction only an adapter can give: the installed service program's
-#: own `--init` maintenance mode creates the workspace, then the owner path
-#: configures this server. Those are fixed names, not paths. Naming which of the
-#: causes it was would mean reporting a path, a launcher field or a child's output.
+#: plus the instruction only an adapter can give: the owner creates the
+#: workspace with the Core service's own `--init` maintenance mode, then the
+#: owner path configures this server. Those are fixed names, not paths. Naming
+#: which of the causes it was would mean reporting a path, a launcher field or a
+#: child's output. It names no service program and claims no process: starting
+#: one is the shared client's decision, never this adapter's.
 _MANAGED_START_UNREACHABLE: Final = (
     "the managed service could not be started for this configuration. If this "
-    "installation has no workspace yet, choose an absolute workspace root and run "
-    "the installed `omnivia-core-service --init` with it as `--workspace` and this "
-    "installation's `--installation-state`. Then run the installed `omnivia "
+    "installation has no workspace yet, the owner creates one first with the "
+    "installed Core service's own `--init` maintenance mode, giving an absolute "
+    "workspace root as `--workspace` and this installation's "
+    "`--installation-state`. Then run the installed `omnivia "
     "--installation-state <installation-state> mcp configure --host <host> "
     "--workspace <workspace-id> --profile <profile>` and restart the host. This "
-    "server starts an existing workspace and creates none"
+    "server creates no workspace"
 )
 _NO_CREDENTIAL_RESOLVER: Final = (
     "remote service mode requires an injected trusted credential resolver"
@@ -961,15 +964,21 @@ def build_server(*, session: ConnectedSession) -> Server[object]:
         version=__version__,
         title="OmniVia Core",
         instructions=(
-            "Read and authoring access to a local OmniVia Core workspace. Every "
-            "tool is explicitly allow-listed; service lifecycle, workspace "
-            "creation, governance decisions and every other mutation are "
-            "deliberately absent and cannot be called. A writing tool takes the "
-            "operation input under `input` and a caller-chosen `idempotency_key`."
+            "Bounded read and authoring access to a local OmniVia Core workspace. "
+            "Every tool is explicitly allow-listed: reads, one advisory decision "
+            "evaluation, evidence capture, import start and proposed-only memory "
+            "creation. Service lifecycle, workspace creation, governance decisions "
+            "and every other mutation are deliberately absent and cannot be "
+            "called. Each mutation takes the operation input under `input` and a "
+            "caller-chosen `idempotency_key`."
             if session.profile == AUTHORING_PROFILE
-            else "Read-only access to a local OmniVia Core workspace. Every tool "
-            "is explicitly allow-listed; service lifecycle, workspace creation "
-            "and every mutation are deliberately absent and cannot be called."
+            else "Bounded non-authoring access to a local OmniVia Core workspace. "
+            "Every tool is explicitly allow-listed: reads and one advisory "
+            "decision evaluation, which records its evaluation and changes no "
+            "business record. Authoring, service lifecycle, workspace creation, "
+            "governance decisions and every other mutation are deliberately "
+            "absent and cannot be called. The decision evaluation takes the "
+            "operation input under `input` and a caller-chosen `idempotency_key`."
         ),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
@@ -1629,8 +1638,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omnivia-core-mcp",
         description=(
-            "Serve one OmniVia Core workspace to an MCP host over stdio. "
-            "Read-only, and never creates a workspace."
+            "Serve one OmniVia Core workspace to an MCP host over stdio, exposing "
+            "only the configured profile's allow-listed tools. Never creates a "
+            "workspace."
         ),
     )
     parser.add_argument(

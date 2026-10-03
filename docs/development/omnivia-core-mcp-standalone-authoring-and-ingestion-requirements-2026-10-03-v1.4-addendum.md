@@ -2,6 +2,7 @@
 
 **Revision:** 1.4 addendum
 **Date:** 2026-10-03
+**Amended:** 2026-10-04. Section 12 supersedes two evidence statements in sections 10 and 11; no gate status changes.
 **Status:** normative completion baseline for Phase 8. It records a reconciliation.
 It does not change the product, any inventory, any host record, or any gate status.
 Feature status remains in progress; see section 11.
@@ -182,7 +183,7 @@ record validated the real-host lane at that revision, but this addendum creates
 a later tip, so the result is historical diagnostic evidence rather than final
 exact-tip acceptance. Second, no Claude Code real-host record exists. Its
 isolated authentication requires a portable token-only file, which is an
-external input.
+external input. Section 12 supersedes the first point.
 
 Real-host acceptance requires the exact frozen tip, with schema-validated records retained outside the source tree and attached to acceptance evidence. The record must name the source commit and wheel digests.
 
@@ -191,6 +192,15 @@ Real-host acceptance requires the exact frozen tip, with schema-validated record
 This addendum does not mark any gate green. Specifically:
 
 - I-1 through I-8 remain `pending-phase-8` for both hosts (section 10).
-- The real-host part of B-12 remains pending. The installed-wheel retained-record row is green in the traceability record, and that is the only B-12 evidence this addendum relies on.
+- The real-host part of B-12 remains pending. The installed-wheel retained-record row is green in the traceability record, and that is the only B-12 evidence this addendum relies on. Section 12 supersedes this bullet.
 - H-1 through H-7 keep the statuses recorded in the traceability record.
 - Feature status remains in progress. It may change only after every gate in the completion plan's definition of done holds at one tip, with direct evidence recorded in the traceability record.
+
+## 12. Supersession note, 2026-10-04
+
+This note supersedes two statements in sections 10 and 11. Their text stays as the record of what this addendum said on 2026-10-03. No gate status changes.
+
+1. Section 10 says Codex CLI 0.146.0 "passed I-1 through I-8" against `4ec9fa17c447c81e58056d99e703b587fcf0afa3`, and that the record "validated the real-host lane". Superseded: that run is a historical diagnostic. Its record is unauditable under the current closed record schema, `docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json`, so it closes no current I row at that or any later tip. Every I-1 through I-8 cell in section 10 stays `pending-phase-8` for both hosts.
+2. Section 11 says the installed-wheel retained-record row "is green in the traceability record". Superseded: the traceability record holds B-12 and H-5 through H-7 as `partial`. The installed-wheel retained-record gate is implemented locally, but it is not current frozen-candidate evidence, because the only retained record predates the current candidate. This addendum relies on no B-12 evidence until the frozen candidate produces its own record.
+
+Section 11's rule is unchanged: this addendum does not mark any gate green.

@@ -88,6 +88,7 @@ TOP_LEVEL_DIRECTORIES = frozenset(
 #: one of them except under a negation, so "no real-host record" passes and
 #: "real-host qualification passed" does not.
 COMPLETION_WORDS = (
+    "pass",
     "complete",
     "completed",
     "passes",
@@ -95,17 +96,30 @@ COMPLETION_WORDS = (
     "passing",
     "qualifies",
     "qualified",
+    "accepted",
+    "closed",
     "verified",
     "satisfied",
     "green",
     "done",
 )
 NEGATIONS = frozenset(
-    {"no", "not", "never", "cannot", "without", "neither", "nor", "yet", "un"}
+    {
+        "no",
+        "not",
+        "never",
+        "cannot",
+        "without",
+        "neither",
+        "nor",
+        "yet",
+        "un",
+    }
 )
 
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 _FENCED_BLOCK = re.compile(r"^```[a-z]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
+_FAIL_CLOSED = re.compile(r"\bfail(?:s|ed|ing)?(?:\s+|-)closed\b")
 _TRAILING_PUNCTUATION = '.,;:)"\''
 
 
@@ -300,7 +314,12 @@ def _completion_claims(row: str) -> list[str]:
     denial while "real-host qualification passed" is a claim.
     """
     claims = []
-    for clause in re.split(r"[.,;|]", row.lower()):
+    prose = _INLINE_CODE.sub("", row.lower())
+    # "Fail closed" describes a refusal invariant, not completion.  Remove only
+    # that phrase; a generic "fails" must not suppress a later completion claim
+    # in the same clause (for example, "the run fails but the gate passed").
+    prose = _FAIL_CLOSED.sub("", prose)
+    for clause in re.split(r"[.,;|]", prose):
         words = re.findall(r"[a-z0-9-]+", clause)
         if NEGATIONS.isdisjoint(words):
             claims += [word for word in words if word in COMPLETION_WORDS]
@@ -310,10 +329,16 @@ def _completion_claims(row: str) -> list[str]:
 def test_the_completion_word_detector_sees_a_claim_and_allows_a_denial() -> None:
     """Anti-vacuous: the rule below is only worth as much as this detector."""
     assert _completion_claims("real-host qualification passed | pending-phase-8")
+    assert _completion_claims("real-host qualification pass | pending-phase-8")
+    assert _completion_claims("the host gate is accepted")
+    assert _completion_claims("the evidence row is closed")
     assert _completion_claims("the packaging gate is complete")
     assert _completion_claims("no host ran it | the wheelhouse gate passed")
+    assert _completion_claims("the run fails but the gate passed")
     assert not _completion_claims("no real-host run has passed | pending-phase-8")
     assert not _completion_claims("not yet qualified against the pinned wheelhouse")
+    assert not _completion_claims("the mutation must fail closed")
+    assert not _completion_claims("the mutation failed closed")
     assert not _completion_claims("staged import observed through job_events")
 
 
@@ -494,6 +519,58 @@ def test_restricted_is_bounded_non_authoring_and_not_read_only() -> None:
     assert "read-only allow-list" not in MANIFEST_SOURCE
 
 
+MCP_PACKAGE = REPO_ROOT / "packages" / "omnivia-core-mcp"
+MCP_MODULES = sorted((MCP_PACKAGE / "src" / "omnivia_core_mcp").glob("*.py"))
+INTEROPERABILITY = REPO_ROOT / "docs" / "distribution" / "mcp-host-interoperability.md"
+#: A whole server, package or profile called read-only, or every mutation called
+#: absent. Both are false of restricted, which carries `decision.evaluate`. A single
+#: read tool's own "Read-only." description is true and is not matched.
+FALSE_SURFACE_CLAIM = re.compile(
+    r"\bread-only (?:access|surface|allow-list|server|profile)\b"
+    r"|\bevery mutation (?:is|are) (?:deliberately )?absent\b",
+    re.IGNORECASE,
+)
+
+
+def _stated_text(path: Path) -> str:
+    """Every string a module states -- docstrings, messages, descriptions -- folded.
+
+    ``ast`` merges implicitly concatenated literals into one constant, so a sentence
+    wrapped across source lines is read whole. Comments state nothing to a reader.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return "\n".join(
+        " ".join(node.value.split())
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+
+
+def test_the_false_surface_claim_detector_sees_both_claims_and_allows_true_text() -> None:
+    """Anti-vacuous: the scan below is only worth as much as this detector."""
+    assert FALSE_SURFACE_CLAIM.search("gives an AI host read-only access to one workspace")
+    assert FALSE_SURFACE_CLAIM.search("workspace creation and every mutation are deliberately absent")
+    assert not FALSE_SURFACE_CLAIM.search("every other mutation are deliberately absent")
+    assert not FALSE_SURFACE_CLAIM.search("read-only job observation")
+
+
+def test_no_mcp_module_or_document_calls_a_profile_read_only() -> None:
+    """The scan covers every MCP module, not only ``manifest.py``, and the public documents.
+
+    The package docstring and the server's initialize instructions also have to state
+    the bounded surface, so a description cannot pass by saying nothing.
+    """
+    stated = {path.name: _stated_text(path) for path in MCP_MODULES}
+    assert {"__init__.py", "configuration.py", "manifest.py", "server.py"} <= set(stated)
+    for document in (MCP_PACKAGE / "README.md", INTEROPERABILITY):
+        stated[document.name] = " ".join(document.read_text(encoding="utf-8").split())
+    for name, text in stated.items():
+        assert not FALSE_SURFACE_CLAIM.search(text), name
+    for name in ("__init__.py", "server.py"):
+        assert "bounded non-authoring" in stated[name].lower(), name
+        assert "advisory decision evaluation" in stated[name], name
+
+
 def test_the_side_effecting_operations_are_exactly_the_admitted_mutations() -> None:
     mutations = {entry["operation"] for entry in AUTHORING if _side_effect(entry["operation"]) != "none"}
     assert mutations == ADMITTED_MUTATIONS == {
@@ -603,13 +680,11 @@ def test_the_addendum_declares_no_completion_and_marks_no_gate_green() -> None:
 
 
 def test_no_plan_declares_completion_while_a_real_host_gate_is_pending() -> None:
-    gates = {
-        row[0].split()[0]: row[-1]
-        for row in TABLE_ROWS
-        if re.match(r"I-\d ", row[0])
-    }
-    assert sorted(gates) == [f"I-{number}" for number in range(1, 9)]
-    assert set(gates.values()) == {"pending-phase-8"}
+    gate_rows = [row for row in TABLE_ROWS if re.match(r"I-\d ", row[0])]
+    assert [row[0].split()[0] for row in gate_rows] == [
+        f"I-{number}" for number in range(1, 9)
+    ]
+    assert {row[-1] for row in gate_rows} == {"pending-phase-8"}
     completion_status = re.search(r"^\*\*Status:\*\* (.*)$", COMPLETION_PLAN, re.MULTILINE)
     assert completion_status is not None
     assert not _completion_claims(completion_status.group(1))

@@ -47,6 +47,8 @@ SERVER_KEY: Final = "omnivia-core"
 SUPPORTED_SYSTEM: Final = "darwin"
 SUPPORTED_MACHINE: Final = "arm64"
 OS_PRODUCT: Final = "macOS"
+SUPPORTED_OS_VERSION: Final = "27.0"
+SUPPORTED_OS_BUILD: Final = "26A428"
 FIRST_PARTY: Final = (
     "omnivia-core",
     "omnivia-core-runtime",
@@ -85,8 +87,12 @@ GATES: Final = {
         "initialize_verified",
         "restricted_tools_exact",
         "authoring_tools_exact",
-        "excluded_tools_absent",
-        "excluded_tool_undispatchable",
+        "restricted_excluded_tools_absent",
+        "restricted_excluded_tool_undispatchable",
+        "authoring_excluded_tools_absent",
+        "authoring_excluded_tool_undispatchable",
+        "decision_evaluate_refused",
+        "decision_owner_observed",
     ),
     "i4": (
         "capture_and_search",
@@ -128,6 +134,9 @@ GATES: Final = {
 #: Owner paging for the import job: one event per page, so its two events span pages.
 IMPORT_PAGE_SIZE: Final = 1
 MAX_EVENT_PAGES: Final = 64
+#: The bound on the imported-evidence search.  The import workspace holds two
+#: artifacts, the staging capture and the import's own, so one page is complete.
+IMPORTED_EVIDENCE_LIMIT: Final = 10
 
 
 class ReasonCode(enum.Enum):
@@ -153,6 +162,7 @@ class ReasonCode(enum.Enum):
     ENTRYPOINT_UNRESOLVED = "entrypoint_unresolved"
     PROTOCOL_VIOLATION = "protocol_violation"
     HOST_LAUNCH_FAILED = "host_launch_failed"
+    CLEANUP_INCOMPLETE = "cleanup_incomplete"
 
 
 class QualificationError(Exception):
@@ -190,6 +200,64 @@ PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_T
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
+#: The thirty-nine of the fifty-seven catalogue operations that the exposure
+#: manifest does not admit (v1.4 addendum, sections 1 and 5; the other eighteen
+#: are the authoring inventory), under their MCP-facing names.  The manifest
+#: stays the authority; ``test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest``
+#: in ``tests/package_qualification/test_mcp_real_host_qualification.py`` checks
+#: this tuple against the catalogue and the manifest, so it cannot drift silently.
+UNEXPOSED_TOOLS: Final = tuple(
+    operation.replace(".", "_")
+    for operation in (
+        "analysis.start", "candidate.approve", "candidate.reject", "chat.command",
+        "chat.events", "chat.snapshot", "context.priority.set",
+        "continuity.checkpoint.append", "continuity.handoff.read",
+        "continuity.session.close", "continuity.session.register",
+        "decision.definition.disable", "decision.definition.get",
+        "decision.definition.list", "decision.definition.publish",
+        "decision.model.activate", "decision.model.install", "decision.model.list",
+        "decision.model.remove", "decision.outcome.submit",
+        "decision.result_use.evaluate", "decision.settings.get",
+        "decision.settings.update", "engineering.repository.register",
+        "engineering.review.record", "engineering.source.capture.commit",
+        "engineering.source.record", "job.cancel", "job.retry", "knowledge.propose",
+        "memory.get", "memory.list", "record.supersede", "workflow.control",
+        "workflow.inspect", "workflow.review", "workflow.start", "workspace.create",
+        "workspace.list",
+    )
+)
+#: Deterministic qualification sentinels for every section-7 category that has
+#: no catalogue operation.  These names are deliberately not catalogue entries:
+#: they let the harness prove that no host profile exposes or dispatches the
+#: underlying administrative capability class.
+SECTION7_SENTINELS: Final = {
+    "service_lifecycle_discovery": (
+        "service_start", "service_stop", "service_health", "service_readiness",
+        "service_status", "service_discovery",
+    ),
+    "bootstrap_workspace_selection": ("bootstrap", "workspace_select"),
+    "grants": ("grant_create", "grant_renew", "grant_revoke", "grant_inspect"),
+    "filesystem_path_selection": ("filesystem_path_select",),
+    "urls": ("url_set",),
+    "credentials": ("credential_set",),
+    "connector_configuration": ("connector_configure",),
+    "administration_configuration": ("administration_configure",),
+    "connector_mutation": ("connector_mutate",),
+}
+SECTION7_TOOLS: Final = tuple(
+    tool for sentinels in SECTION7_SENTINELS.values() for tool in sentinels
+)
+#: Every excluded name each profile must prove undispatchable.  The restricted
+#: profile also excludes the five authoring additions it does not expose.
+EXCLUDED_TOOLS: Final = {
+    "restricted": (*AUTHORING_TOOLS[RESTRICTED_TOOL_COUNT:], *UNEXPOSED_TOOLS, *SECTION7_TOOLS),
+    "authoring": (*UNEXPOSED_TOOLS, *SECTION7_TOOLS),
+}
+#: The one restricted-profile mutation, submitted with no granted capability.  The
+#: installed service refuses it with ``capability_not_granted``; the harness proves
+#: only that the decision surface stays disabled and creates no decision record.
+DECISION_KEY: Final = f"{QUALIFICATION_TOKEN}-decision-1"
+MAX_FRAME_BYTES: Final = 1_048_576
 
 # --- candidate, platform and pin validation --------------------------------
 
@@ -252,23 +320,33 @@ def _file_digest(path: Path) -> str:
 def _verified_wheels(
     wheels: Sequence[object], candidate: Path
 ) -> dict[str, tuple[Path, str]]:
-    """Return each first-party wheel's path and SHA-256 after matching file to manifest."""
-    entries: dict[str, list[Mapping[str, Any]]] = {name: [] for name in FIRST_PARTY}
+    """Verify the whole wheel closure, first-party and third-party alike.
+
+    Each entry must name one plain file directly inside ``wheels/``, whose size
+    and SHA-256 equal the manifest's.  The manifest must account for every
+    ``.whl`` the directory holds, so nothing outside the closure can be installed.
+    Each first-party distribution appears exactly once and is flagged as such.
+    """
+    first_party = {_normalized(name) for name in FIRST_PARTY}
+    verified: dict[str, tuple[Path, str]] = {}
     for entry in wheels:
         item = _mapping(entry)
         name = item.get("name")
-        normalized = _normalized(name) if isinstance(name, str) else ""
-        if item.get("first_party") is True or normalized in entries:
-            if normalized not in entries or item.get("first_party") is not True:
-                raise QualificationError(ReasonCode.CANDIDATE_INVALID)
-            entries[normalized].append(item)
-    verified: dict[str, tuple[Path, str]] = {}
-    for name, found in entries.items():
-        if len(found) != 1:
+        flagged = item.get("first_party")
+        if not isinstance(name, str) or type(flagged) is not bool:
             raise QualificationError(ReasonCode.CANDIDATE_INVALID)
-        relative = found[0].get("path")
-        expected = found[0].get("sha256")
-        if not isinstance(relative, str) or not isinstance(expected, str):
+        normalized = _normalized(name)
+        if (normalized in first_party) != flagged or normalized in verified:
+            raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+        relative = item.get("path")
+        expected = item.get("sha256")
+        size = item.get("bytes")
+        if (
+            not isinstance(relative, str)
+            or not isinstance(expected, str)
+            or type(size) is not int
+            or size < 0
+        ):
             raise QualificationError(ReasonCode.CANDIDATE_INVALID)
         parts = PurePosixPath(relative).parts
         if len(parts) != 2 or parts[0] != "wheels" or parts[1] in {"", ".", ".."}:
@@ -276,24 +354,84 @@ def _verified_wheels(
         path = candidate / "wheels" / parts[1]
         if path.is_symlink() or not path.is_file():
             raise QualificationError(ReasonCode.CANDIDATE_INVALID)
-        actual = _file_digest(path)
-        if not _SHA256.fullmatch(expected) or actual != expected:
+        if path.stat().st_size != size or not _SHA256.fullmatch(expected):
             raise QualificationError(ReasonCode.WHEEL_DIGEST_MISMATCH)
-        verified[name] = (path, actual)
+        actual = _file_digest(path)
+        if actual != expected:
+            raise QualificationError(ReasonCode.WHEEL_DIGEST_MISMATCH)
+        verified[normalized] = (path, actual)
+    if not first_party <= set(verified):
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+    listed = {path.name for path, _ in verified.values()}
+    if {path.name for path in (candidate / "wheels").glob("*.whl")} != listed:
+        raise QualificationError(ReasonCode.CANDIDATE_INVALID)
     return verified
 
 
 def verify_first_party_wheels(
     wheels: Sequence[object], candidate: Path
 ) -> dict[str, str]:
-    """Return each first-party wheel's SHA-256 after matching file to manifest."""
-    return {name: digest for name, (_, digest) in _verified_wheels(wheels, candidate).items()}
+    """Return each first-party wheel's SHA-256 after verifying the whole closure."""
+    verified = _verified_wheels(wheels, candidate)
+    return {name: verified[name][1] for name in FIRST_PARTY}
+
+
+def hashed_requirements(verified: Mapping[str, tuple[Path, str]]) -> str:
+    """One hashed requirement per verified wheel, as file URLs so any path is safe.
+
+    ``pip install --require-hashes`` then refuses any distribution the closure does
+    not list and any byte that differs from its recorded digest.
+    """
+    return "".join(
+        f"{path.resolve().as_uri()} --hash=sha256:{digest}\n"
+        for path, digest in sorted(verified.values(), key=lambda item: item[0].name)
+    )
 
 
 @dataclass(frozen=True)
 class Candidate:
     revision: str
     wheels: Mapping[str, str]
+    closure_count: int
+    closure_sha256: str
+    harness_sha256: str
+
+
+def _closure_binding(wheels: Sequence[object]) -> tuple[int, str]:
+    """Return a deterministic count and digest of the normalized manifest closure."""
+    normalized: list[dict[str, object]] = []
+    for entry in wheels:
+        item = _mapping(entry)
+        name = item.get("name")
+        version = item.get("version")
+        path = item.get("path")
+        digest = item.get("sha256")
+        size = item.get("bytes")
+        first_party = item.get("first_party")
+        if (
+            not isinstance(name, str)
+            or not isinstance(version, str)
+            or not isinstance(path, str)
+            or not isinstance(digest, str)
+            or type(size) is not int
+            or type(first_party) is not bool
+        ):
+            raise QualificationError(ReasonCode.CANDIDATE_INVALID)
+        normalized.append(
+            {
+                "name": _normalized(name),
+                "version": version,
+                "path": PurePosixPath(path).as_posix(),
+                "sha256": digest,
+                "bytes": size,
+                "first_party": first_party,
+            }
+        )
+    normalized.sort(key=lambda item: (str(item["name"]), str(item["path"])))
+    encoded = json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return len(normalized), hashlib.sha256(encoded).hexdigest()
 
 
 def _json_document(path: Path) -> Mapping[str, Any]:
@@ -321,7 +459,15 @@ def load_candidate(candidate: Path) -> Candidate:
     if not isinstance(wheels, list):
         raise QualificationError(ReasonCode.CANDIDATE_INVALID)
     require_sdk_pins(wheels)
-    return Candidate(revision, verify_first_party_wheels(wheels, candidate))
+    first_party = verify_first_party_wheels(wheels, candidate)
+    closure_count, closure_sha256 = _closure_binding(wheels)
+    return Candidate(
+        revision,
+        first_party,
+        closure_count,
+        closure_sha256,
+        _file_digest(SCRIPT_PATH),
+    )
 
 
 # --- native host commands and configuration --------------------------------
@@ -622,6 +768,7 @@ def utc_timestamp(moment: datetime) -> str:
 def build_record(
     *,
     candidate: Candidate,
+    schema_sha256: str,
     os_identity: OsIdentity,
     host: HostIdentity,
     ledger: GateLedger,
@@ -636,7 +783,11 @@ def build_record(
     observed true.
     """
     started, finished = utc_timestamp(started_at), utc_timestamp(finished_at)
-    if host.name not in HOST_VERSIONS or finished < started:
+    if (
+        host.name not in HOST_VERSIONS
+        or finished < started
+        or not _SHA256.fullmatch(schema_sha256)
+    ):
         raise QualificationError(ReasonCode.RECORD_INVALID)
     if reason is ReasonCode.NONE:
         reason = None
@@ -650,6 +801,12 @@ def build_record(
         "reason_code": (reason or ReasonCode.NONE).value,
         "source": {"revision": candidate.revision, "clean": True},
         "wheels": {name: candidate.wheels[name] for name in FIRST_PARTY},
+        "bindings": {
+            "wheel_closure_count": candidate.closure_count,
+            "wheel_closure_sha256": candidate.closure_sha256,
+            "harness_sha256": candidate.harness_sha256,
+            "schema_sha256": schema_sha256,
+        },
         "os": {
             "product": OS_PRODUCT,
             "version": os_identity.version,
@@ -686,13 +843,16 @@ def build_minimal_failure_record(
     }
 
 
-def load_schema(path: Path) -> Mapping[str, Any]:
+def load_schema(path: Path, expected_sha256: str | None = None) -> Mapping[str, Any]:
     import jsonschema  # lazy: the proxy mode runs on the stdlib alone
 
     try:
-        schema = _mapping(json.loads(path.read_text(encoding="utf-8")), ReasonCode.RECORD_INVALID)
+        raw = path.read_bytes()
+        if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+        schema = _mapping(json.loads(raw.decode("utf-8")), ReasonCode.RECORD_INVALID)
         jsonschema.Draft202012Validator.check_schema(schema)
-    except (OSError, ValueError, jsonschema.SchemaError):
+    except (OSError, UnicodeDecodeError, ValueError, jsonschema.SchemaError):
         raise QualificationError(ReasonCode.RECORD_INVALID) from None
     return schema
 
@@ -824,11 +984,21 @@ def bootstrap_candidate(
     if not isinstance(entries, list):
         raise QualificationError(ReasonCode.CANDIDATE_INVALID)
     verified = _verified_wheels(entries, candidate_dir)
-    if {name: digest for name, (_, digest) in verified.items()} != dict(candidate.wheels):
+    closure_count, closure_sha256 = _closure_binding(entries)
+    if (
+        {name: verified[name][1] for name in FIRST_PARTY} != dict(candidate.wheels)
+        or closure_count != candidate.closure_count
+        or closure_sha256 != candidate.closure_sha256
+    ):
         raise QualificationError(ReasonCode.WHEEL_DIGEST_MISMATCH)
     home = root / "bootstrap-home"
     make_private_directory(home)
     environment = {"PATH": SYSTEM_PATH, "HOME": str(home), "PYTHONNOUSERSITE": "1"}
+    requirements = root / "closure-requirements.txt"
+    try:
+        _write_private(requirements, hashed_requirements(verified))
+    except OSError:
+        raise QualificationError(ReasonCode.INSTALL_FAILED) from None
     environment_directory = root / "candidate-venv"
     python = environment_directory / "bin" / "python"
     try:
@@ -837,9 +1007,8 @@ def bootstrap_candidate(
             [
                 str(python), "-I", "-m", "pip", "install",
                 "--isolated", "--no-index", "--only-binary=:all:",
-                "--disable-pip-version-check", "--no-input",
-                "--find-links", str(candidate_dir / "wheels"),
-                *[str(path) for path, _ in verified.values()],
+                "--require-hashes", "--disable-pip-version-check", "--no-input",
+                "--requirement", str(requirements),
             ],
             environment,
             root,
@@ -924,6 +1093,12 @@ def reexec_under_candidate(
 INTERNAL_PROXY: Final = "--internal-proxy"
 PROXY_VIOLATION_EXIT: Final = 3
 PROXY_WITHHELD_EXIT: Final = 4
+#: An observation or pipe failure: the proxy cannot prove what it relayed, so it stops.
+PROXY_FAILED_EXIT: Final = 5
+#: The longest the proxy keeps the child's input open for unanswered requests.
+DRAIN_TIMEOUT: Final = 30.0
+#: The longest the withheld seal waits for an in-flight host write before failing closed.
+SEAL_WRITE_TIMEOUT: Final = 5.0
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 VIOLATION_KINDS: Final = frozenset(
     {
@@ -935,6 +1110,9 @@ VIOLATION_KINDS: Final = frozenset(
         "invalid_tool_call",
         "invalid_tool_result",
         "invalid_tool_inventory",
+        "invalid_initialize",
+        "frame_after_withheld",
+        "oversized_frame",
     }
 )
 
@@ -962,7 +1140,15 @@ def _is_names(value: object) -> bool:
 #: What a failed call was refused for.  Only these closed classes are observed;
 #: the refusal text itself is classified in the relay and never kept.
 REFUSALS: Final = frozenset(
-    {"none", "idempotency_conflict", "not_callable", "not_exposed", "credential_missing", "other"}
+    {
+        "none",
+        "idempotency_conflict",
+        "capability_not_granted",
+        "not_callable",
+        "not_exposed",
+        "credential_missing",
+        "other",
+    }
 )
 
 
@@ -984,7 +1170,8 @@ EVENT_SHAPES: Final[dict[str, dict[str, Callable[[object], bool]]]] = {
         "refusal": lambda value: value in REFUSALS,
     },
     "request_paused": {"tool": _is_name},
-    "response_withheld": {"tool": _is_name},
+    #: The withheld answer is never forwarded or kept; only its canonical digest is.
+    "response_withheld": {"tool": _is_name, "tool_error": _is_bool, "result_digest": _is_digest},
     "protocol_violation": {"kind": lambda value: value in VIOLATION_KINDS},
 }
 
@@ -1015,13 +1202,19 @@ def arguments_digest(arguments: object) -> str:
 
 
 def canonical_result_digest(structured: object) -> str:
-    """Digest of one structured result with only its pagination position removed.
+    """Digest of one structured result with only its continuation token removed.
 
     A continuation token is bound to the principal that issued it, so the host's
-    and the owner's pages of one snapshot differ in ``page`` alone.
+    and the owner's pages of one snapshot differ in that token alone.  Every other
+    field of ``page``, and every other field of the result, stays in the digest.
     """
-    if isinstance(structured, dict):
-        structured = {key: value for key, value in structured.items() if key != "page"}
+    if isinstance(structured, dict) and isinstance(structured.get("page"), dict):
+        position = {
+            key: value
+            for key, value in structured["page"].items()
+            if key != "continuation_token"
+        }
+        structured = {**structured, "page": position}
     return arguments_digest(structured)
 
 
@@ -1034,6 +1227,8 @@ def refusal_class(result: object) -> str:
     text = re.sub(r"\s+", "", "".join(item for item in texts if isinstance(item, str)))
     if '"code":"idempotency_conflict"' in text:
         return "idempotency_conflict"
+    if '"code":"capability_not_granted"' in text:
+        return "capability_not_granted"
     if "isnotatoolthisserverexposes" in text:
         return "not_exposed"
     # The fixed sanitized message of the installed-credential store: proof the credential is gone.
@@ -1214,23 +1409,59 @@ class _Relay:
         self.pause_before = pause_before
         self.pause_consumed = False
         self.pending: dict[str, tuple[str, str | None, bool]] = {}
-        self.lock = threading.Lock()
+        #: Guards ``pending``, ``closed`` and ``writing``.  Never held across a pipe write.
+        self.state = threading.Condition()
+        #: True while the one host frame in flight to the child is being written.
+        self.writing = False
+        #: Once the interruption answer or a violation is observed, no host frame is
+        #: admitted and no child frame is relayed again.
+        self.closed = False
         self.violated = threading.Event()
         self.released = threading.Event()
+        #: Set once the relay stops reading responses; a drain then has nothing to wait for.
+        self.finished = threading.Event()
 
-    def request(self, frame: bytes) -> None:
+    def drain(self, timeout: float) -> None:
+        """Wait, bounded, for every relayed request to be answered.
+
+        The host's end of input must not close the child's stdin while a request is
+        unanswered: an MCP server that reads end-of-input can exit before it writes
+        the answer, so the answer would be lost.  Only the bound ends the wait.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not self.finished.is_set():
+            with self.state:
+                if not self.pending:
+                    return
+            time.sleep(0.01)
+
+    def seal(self) -> bool:
+        """Wait, bounded, for the in-flight host write to finish; False if it cannot.
+
+        Call only after ``response`` has closed the relay, so no new host frame is
+        admitted.  Once this returns True no host frame can reach the child.
+        """
+        with self.state:
+            return self.state.wait_for(lambda: not self.writing, SEAL_WRITE_TIMEOUT)
+
+    def request(self, frame: bytes, sink: Any | None = None) -> None:
+        """Observe and, when supplied, forward one host frame.
+
+        The request is recorded before its frame is written, so an answer can never
+        arrive for an unrecorded request.  The write itself runs outside ``state``:
+        a child that stops reading must not block the response thread.
+        """
         message = _parse_frame(frame)
         method = message.get("method")
         key = _request_key(message.get("id"))
-        if not isinstance(method, str) or key is None:
-            return
-        if method == "initialize":
+        entry: tuple[str, str | None, bool] | None = None
+        if isinstance(method, str) and key is not None and method == "initialize":
             self.observer.emit("initialize_request")
-            entry: tuple[str, str | None, bool] = (method, None, False)
-        elif method == "tools/list":
+            entry = (method, None, False)
+        elif isinstance(method, str) and key is not None and method == "tools/list":
             self.observer.emit("tools_list_request")
             entry = (method, None, False)
-        elif method == "tools/call":
+        elif isinstance(method, str) and key is not None and method == "tools/call":
             params = message.get("params")
             if not isinstance(params, dict) or not _is_name(params.get("name")):
                 raise _Violation("invalid_tool_call")
@@ -1252,12 +1483,25 @@ class _Relay:
                 while not pause.release.is_file() and not self.released.wait(0.01):
                     pass
             entry = (method, tool, target is not None and (tool, digest) == (target.tool, target.arguments_digest))
-        else:
+        with self.state:
+            if self.closed:
+                raise _Violation("frame_after_withheld")
+            if entry is not None:
+                if key in self.pending:
+                    raise _Violation("duplicate_request")
+                assert key is not None
+                self.pending[key] = entry
+            # Admission and the in-flight mark are one step, so seal() cannot miss a write.
+            self.writing = sink is not None
+        if sink is None:
             return
-        with self.lock:
-            if key in self.pending:
-                raise _Violation("duplicate_request")
-            self.pending[key] = entry
+        try:
+            sink.write(frame)
+            sink.flush()
+        finally:
+            with self.state:
+                self.writing = False
+                self.state.notify_all()
 
     def response(self, frame: bytes) -> bool:
         """Observe a server frame; True means it must be withheld, never forwarded."""
@@ -1265,30 +1509,39 @@ class _Relay:
         key = _request_key(message.get("id"))
         if "method" in message or key is None:
             return False
-        with self.lock:
+        with self.state:
+            if self.closed:
+                raise _Violation("frame_after_withheld")
             entry = self.pending.pop(key, None)
+            if entry is not None and entry[2]:
+                self.closed = True
         if entry is None:
             return False
         method, tool, targeted = entry
         result = message.get("result")
         ok = isinstance(result, dict) and "error" not in message
         if method == "initialize":
-            self.observer.emit("initialize_response", ok=ok)
+            # The negotiated version must be the one this harness speaks; a reply
+            # without a version string is malformed, not merely unsuccessful.
+            protocol = result.get("protocolVersion") if isinstance(result, dict) else None
+            if not ok or not isinstance(protocol, str) or protocol != MCP_PROTOCOL_VERSION:
+                self.observer.emit("initialize_response", ok=False)
+                raise _Violation("invalid_initialize")
+            self.observer.emit("initialize_response", ok=True)
         elif method == "tools/list":
             tools = result.get("tools") if isinstance(result, dict) else None
             if (
                 not isinstance(tools, list)
                 or len(tools) > 256
                 or not all(isinstance(item, dict) and _is_name(item.get("name")) for item in tools)
+                # Pagination is unsupported: a listing that continues is not the whole inventory.
+                or (isinstance(result, dict) and "nextCursor" in result)
             ):
                 raise _Violation("invalid_tool_inventory")
             names = [item["name"] for item in tools]
             self.observer.emit(
                 "tools_list_response", ok=ok, tool_count=len(tools), tool_names=names
             )
-        elif targeted:
-            self.observer.emit("response_withheld", tool=tool)
-            return True
         else:
             failed = not ok or (isinstance(result, dict) and result.get("isError") is True)
             structured = result.get("structuredContent") if isinstance(result, dict) else None
@@ -1298,17 +1551,27 @@ class _Relay:
                     raise _Violation("invalid_tool_result")
             elif not isinstance(structured, dict):
                 raise _Violation("invalid_tool_result")
+            digest = canonical_result_digest(structured)
+            if targeted:
+                # What the withheld answer would have said is kept as this digest alone,
+                # so a later same-key replay can be held to it.
+                self.observer.emit(
+                    "response_withheld", tool=tool, tool_error=failed, result_digest=digest
+                )
+                return True
             self.observer.emit(
                 "tool_call_response",
                 tool=tool,
                 ok=ok,
                 tool_error=failed,
-                result_digest=canonical_result_digest(structured),
+                result_digest=digest,
                 refusal=refusal_class(result) if ok else "other",
             )
         return False
 
     def violation(self, kind: str) -> None:
+        with self.state:
+            self.closed = True
         if not self.violated.is_set():
             self.violated.set()
             self.observer.emit("protocol_violation", kind=kind)
@@ -1324,74 +1587,126 @@ def _stop(child: subprocess.Popen[bytes]) -> None:
             child.wait()
 
 
+def _read_frame(stream: Any) -> bytes:
+    """Read one newline-delimited frame, never more than ``MAX_FRAME_BYTES`` of it.
+
+    The bound applies before any byte is parsed or forwarded: a longer frame is
+    a protocol violation, so an oversized line can never exhaust memory.
+    """
+    frame: bytes = stream.readline(MAX_FRAME_BYTES + 1)
+    if len(frame) > MAX_FRAME_BYTES:
+        raise _Violation("oversized_frame")
+    return frame
+
+
+def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Observer) -> int:
+    """Relay frames until either side ends, then stop and reap the child.
+
+    An observation failure (a write or a validation error) is fatal: the frame it
+    concerns is not forwarded, the child is stopped, and the exit is
+    ``PROXY_FAILED_EXIT``.  A violation is observed once and exits with
+    ``PROXY_VIOLATION_EXIT``.
+    """
+    stdin, stdout = child.stdin, child.stdout
+    assert stdin is not None and stdout is not None
+    failed = threading.Event()
+
+    def fail_closed() -> None:
+        failed.set()
+        _stop(child)
+
+    def observe_violation(kind: str) -> None:
+        try:
+            relay.violation(kind)
+        except (OSError, QualificationError):
+            failed.set()
+        _stop(child)
+
+    def terminate(_signal: int, _frame: object) -> None:
+        _stop(child)
+        os._exit(143)
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGHUP, terminate)
+
+    def pump_host() -> None:
+        try:
+            while frame := _read_frame(sys.stdin.buffer):
+                relay.request(frame, stdin)
+            relay.drain(DRAIN_TIMEOUT)
+        except _Violation as violation:
+            observe_violation(violation.kind)
+        except OSError:
+            # A write that fails after a violation is the child being stopped, not a fault.
+            if not relay.violated.is_set():
+                fail_closed()
+        except QualificationError:
+            fail_closed()
+        finally:
+            relay.released.set()
+            with contextlib.suppress(OSError):
+                stdin.close()
+
+    threading.Thread(target=pump_host, daemon=True).start()
+    withheld = False
+    try:
+        while frame := _read_frame(stdout):
+            if relay.response(frame):
+                withheld = True
+                relay.finished.set()
+                if relay.seal():
+                    relay.released.wait()
+                else:
+                    # The in-flight write is stuck behind a child that stopped reading.
+                    failed.set()
+                break
+            sys.stdout.buffer.write(frame)
+            sys.stdout.buffer.flush()
+    except _Violation as violation:
+        observe_violation(violation.kind)
+    except (OSError, QualificationError):
+        fail_closed()
+    relay.finished.set()
+    _stop(child)
+    if failed.is_set():
+        return PROXY_FAILED_EXIT
+    if relay.violated.is_set():
+        return PROXY_VIOLATION_EXIT
+    return PROXY_WITHHELD_EXIT if withheld else (child.returncode or 0)
+
+
 def run_proxy(spec_path: Path) -> int:
     """Relay stdin/stdout to the installed MCP entry point, byte for byte.
 
-    Frames are newline-delimited JSON-RPC (the MCP stdio framing).  Each frame is
-    forwarded exactly as read; observation parses only a copy.  A frame that is
-    not a JSON object fails closed: it is not forwarded, the child is stopped
-    and the proxy exits non-zero.  The child's stderr stays on this process's
+    Frames are newline-delimited JSON-RPC (the MCP stdio framing), each bounded to
+    ``MAX_FRAME_BYTES``.  Each frame is forwarded exactly as read; observation
+    parses only a copy.  A frame that is not a JSON object, or is oversized, fails
+    closed: it is not forwarded, the child is stopped and the proxy exits
+    non-zero.  The child is stopped and reaped on every exit path, including a
+    handled qualification failure.  The child's stderr stays on this process's
     stderr, never stdout.  The one configured interruption target's response is
-    withheld indefinitely and never replaced.
+    withheld indefinitely and never replaced; only its canonical digest is observed.
     """
     child_command, observation, interruption, pause_before = _load_spec(spec_path)
     try:
         observer = _Observer(observation)
     except OSError:
         return 2
-    relay = _Relay(observer, interruption, pause_before)
+    child: subprocess.Popen[bytes] | None = None
     try:
+        relay = _Relay(observer, interruption, pause_before)
         try:
             child = subprocess.Popen(child_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         except OSError:
             return 2
-        assert child.stdin is not None and child.stdout is not None
-        observer.emit("proxy_started")
-
-        def terminate(_signal: int, _frame: object) -> None:
-            _stop(child)
-            os._exit(143)
-
-        signal.signal(signal.SIGTERM, terminate)
-        signal.signal(signal.SIGHUP, terminate)
-
-        def pump_host() -> None:
-            try:
-                for frame in iter(sys.stdin.buffer.readline, b""):
-                    relay.request(frame)
-                    child.stdin.write(frame)  # type: ignore[union-attr]
-                    child.stdin.flush()  # type: ignore[union-attr]
-            except _Violation as violation:
-                relay.violation(violation.kind)
-                _stop(child)
-            except OSError:
-                pass
-            finally:
-                relay.released.set()
-                try:
-                    child.stdin.close()  # type: ignore[union-attr]
-                except OSError:
-                    pass
-
-        threading.Thread(target=pump_host, daemon=True).start()
-        withheld = False
         try:
-            for frame in iter(child.stdout.readline, b""):
-                if relay.response(frame):
-                    withheld = True
-                    relay.released.wait()
-                    break
-                sys.stdout.buffer.write(frame)
-                sys.stdout.buffer.flush()
-        except _Violation as violation:
-            relay.violation(violation.kind)
-        except OSError:
-            pass
-        _stop(child)
-        if relay.violated.is_set():
-            return PROXY_VIOLATION_EXIT
-        return PROXY_WITHHELD_EXIT if withheld else (child.returncode or 0)
+            observer.emit("proxy_started")
+        except (OSError, QualificationError):
+            return PROXY_FAILED_EXIT
+        return _relay_session(child, relay, observer)
     finally:
+        if child is not None:
+            _stop(child)
         observer.close()
 
 
@@ -1436,6 +1751,9 @@ class ObservationSummary:
     outcomes: tuple[tuple[str, str, str], ...] = ()
     #: A second MCP initialize after the paused request: a substituted process.
     initialized_after_pause: bool = False
+    #: The canonical digest of the withheld answer, when it was a successful
+    #: structured result.  The answer itself is never kept.
+    withheld_digest: str | None = None
 
 
 def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSummary:
@@ -1467,6 +1785,14 @@ def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSum
         ),
         paused=any(e["event"] == "request_paused" for e in events),
         withheld=any(e["event"] == "response_withheld" for e in events),
+        withheld_digest=next(
+            (
+                e["result_digest"]
+                for e in events
+                if e["event"] == "response_withheld" and not e["tool_error"]
+            ),
+            None,
+        ),
         violation=any(e["event"] == "protocol_violation" for e in events),
         outcomes=tuple(
             (e["tool"], e["refusal"], e["result_digest"])
@@ -1617,24 +1943,28 @@ class HostRunResult:
     paused: bool
 
 
-def _kill_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
+def _kill_group(process: subprocess.Popen[bytes]) -> bool:
+    """TERM then KILL the host's whole process group and prove it is absent."""
+    group = process.pid
+    if not _group_running(group):
+        return True
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(group, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
+        return not _group_running(group)
+    if process.poll() is None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    if _wait_group_absent(group):
+        return True
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return not _group_running(group)
+    if process.poll() is None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+    return _wait_group_absent(group)
 
 
 def run_host(
@@ -1671,6 +2001,7 @@ def run_host(
         except OSError:
             raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
         interrupted = timed_out = paused = False
+        failure: BaseException | None = None
         try:
             while process.poll() is None:
                 if not paused and _event_seen(observation, "request_paused"):
@@ -1684,8 +2015,17 @@ def run_host(
                     timed_out = True
                     break
                 time.sleep(poll_interval)
+        except BaseException as error:  # noqa: BLE001 - cleanup must run before every re-raise
+            failure = error
         finally:
-            _kill_group(process)
+            cleaned = _kill_group(process)
+        if not cleaned:
+            if failure is not None:
+                print(f"reason_code={ReasonCode.CLEANUP_INCOMPLETE.value}", file=sys.stderr)
+            else:
+                raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE)
+        if failure is not None:
+            raise failure
         if timed_out:
             raise QualificationError(ReasonCode.HOST_TIMEOUT)
         stdout.seek(0)
@@ -1794,6 +2134,12 @@ class CoreContext:
     workspace_id: str
     process: subprocess.Popen[str] | None = None
     replacement_pid: int | None = None
+    #: The process evidence (pid, start time, boot id) of the one Core this run
+    #: expects to serve the workspace.  ``start_core`` sets it; only the deliberate
+    #: ``restart_core`` moves it, to the replacement.
+    expected: dict[str, Any] | None = None
+    #: Set when a Core process survived its stop; the run then refuses to pass.
+    retained: bool = False
 
     @property
     def database(self) -> Path:
@@ -1877,49 +2223,213 @@ def start_core(installed: InstalledCandidate, context: CoreContext) -> int:
     process_id = (
         process_document.get("pid") if isinstance(process_document, dict) else None
     )
-    if type(process_id) is not int or process_id != process.pid:
+    if (
+        not isinstance(process_document, dict)
+        or type(process_id) is not int
+        or process_id != process.pid
+    ):
         stop_core(context)
         raise QualificationError(ReasonCode.GATE_FAILED)
+    context.expected = dict(process_document)
     return process_id
 
 
-def _wait_pid_absent(pid: int) -> None:
+def _published(context: CoreContext) -> Mapping[str, Any]:
+    """The service descriptor as published, or empty when it cannot be read."""
+    try:
+        document = json.loads(context.descriptor.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _ready_process(context: CoreContext) -> dict[str, Any] | None:
+    """The process evidence (pid, start time, boot id) a ready descriptor publishes."""
+    published = _published(context)
+    process = published.get("process")
+    return process if published.get("ready") is True and isinstance(process, dict) else None
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Permission denied proves neither absence nor safe ownership.  Treat the
+        # PID as present so cleanup retains/fails closed instead of claiming it
+        # disappeared.
+        return True
+    return True
+
+
+def core_alive(context: CoreContext) -> bool:
+    """Whether the expected Core still runs and is the ready one the descriptor names.
+
+    ``service health`` cannot show this by itself: a managed-local client answers
+    a Core that exited by starting a replacement, and the replacement is healthy.
+    The whole process evidence is compared, so a reused pid is not the same Core.
+    """
+    expected = context.expected
+    pid = None if expected is None else expected.get("pid")
+    if type(pid) is not int or _ready_process(context) != expected:
+        return False
+    process = context.process
+    if process is not None and process.pid == pid:
+        return process.poll() is None
+    return _pid_running(pid)
+
+
+def _process_group(pid: int) -> int | None:
+    """Return a safe foreign process group for ``pid``, or fail closed."""
+    try:
+        group = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError):
+        return None
+    if group <= 1 or group == os.getpgrp():
+        return None
+    return group
+
+
+def _group_running(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_group_absent(group: int) -> bool:
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        except PermissionError:
-            pass
+        if not _group_running(group):
+            return True
         time.sleep(0.05)
+    return False
+
+
+def _terminate_core_group(
+    pid: int, process: subprocess.Popen[str] | None = None
+) -> bool:
+    """TERM then KILL the entire Core process group and prove it is absent."""
+    # ``start_core`` creates this child in a new session, so its pid is the
+    # process-group id even after the leader exits.  Retain that known identity
+    # instead of asking getpgid for a pid that may already have disappeared while
+    # descendants in its group remain alive.
+    group = pid if process is not None and process.pid == pid else _process_group(pid)
+    if group is None:
+        return not _pid_running(pid)
+    if group <= 1 or group == os.getpgrp():
+        return False
+    try:
+        os.killpg(group, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    if process is not None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+    if _wait_group_absent(group):
+        return True
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    if process is not None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+    return _wait_group_absent(group)
+
+
+def _process_identity_matches(evidence: Mapping[str, Any] | None) -> bool | None:
+    """Match descriptor evidence before signalling a non-child PID.
+
+    ``False`` means the named Core is absent or the PID has been reused, so it
+    must not be signalled. ``None`` means the identity could not be established;
+    cleanup then fails closed without signalling an uncertain process.
+    """
+    if not isinstance(evidence, Mapping):
+        return None
+    pid = evidence.get("pid")
+    start_time = evidence.get("start_time")
+    boot_id = evidence.get("boot_id")
+    if type(pid) is not int or not isinstance(start_time, str) or not isinstance(boot_id, str):
+        return None
+    if platform.system().lower() != SUPPORTED_SYSTEM:
+        return None
+    try:
+        started_probe = subprocess.run(
+            ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if started_probe.returncode != 0:
+            return False if not _pid_running(pid) else None
+        started = started_probe.stdout.strip()
+        booted_probe = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if booted_probe.returncode != 0:
+            return None
+        booted = booted_probe.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not started:
+        return False if not _pid_running(pid) else None
+    if not booted:
+        return None
+    return started == start_time and booted == boot_id
 
 
 def stop_core(context: CoreContext) -> None:
+    """Stop every Core process serving this context, and record any that survives.
+
+    That is the process this context started, the deliberate replacement, and any
+    other running Core the descriptor names: a managed-local client's replacement
+    for a Core that exited, which a failed continuity check must not leak.
+    Escalation is SIGTERM, then SIGKILL after a bound.  A survivor sets
+    ``context.retained``, which the caller turns into ``cleanup_incomplete``; it
+    is never reported as a clean stop.
+    """
     process = context.process
-    if process is not None and process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-    replacement = context.replacement_pid
-    if replacement is not None:
-        try:
-            os.kill(replacement, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-        _wait_pid_absent(replacement)
+    if process is not None and not _terminate_core_group(process.pid, process):
+        context.retained = True
+    named = _published(context).get("process")
+    pid = named.get("pid") if isinstance(named, dict) else None
+    started = None if process is None else process.pid
+    unplanned = (
+        pid
+        if type(pid) is int and pid not in (started, context.replacement_pid) and _pid_running(pid)
+        else None
+    )
+    candidates = (
+        (context.replacement_pid, context.expected),
+        (unplanned, named if isinstance(named, dict) else None),
+    )
+    for survivor, evidence in candidates:
+        if survivor is None:
+            continue
+        identity = _process_identity_matches(evidence)
+        if identity is False:
+            continue
+        if identity is None:
+            context.retained = True
+            continue
+        if not _terminate_core_group(survivor):
+            context.retained = True
 
 
 def _host_admin_name(host: str) -> str:
@@ -2094,44 +2604,73 @@ def owner_rows(
     return rows
 
 
-def core_healthy(installed: InstalledCandidate, context: CoreContext) -> bool:
+def _service_health(installed: InstalledCandidate, context: CoreContext) -> bool:
     return owner_call(installed, context, ("service", "health")).get("status") == "pass"
 
 
+def core_healthy(installed: InstalledCandidate, context: CoreContext) -> bool:
+    """Health of the Core this run expects, never of a replacement for it.
+
+    The probe runs through a managed-local client, which starts a replacement for a
+    Core that exited.  So the expected Core must first be alive and named by the
+    descriptor, and still be after the probe.
+    """
+    return core_alive(context) and _service_health(installed, context) and core_alive(context)
+
+
 def restart_core(installed: InstalledCandidate, context: CoreContext) -> None:
+    """Crash the expected Core and let a managed-local client replace it.
+
+    The one deliberate change of the expected Core: it must still be the one this
+    context started, and the replacement becomes the expected Core.  I-6 and I-7
+    recover from a crash, not a shutdown, so the whole group gets SIGKILL with no
+    TERM first, and only a child that died of that signal counts.  A group that
+    outlives the bound is retained.
+    """
     process = context.process
-    if process is None or process.poll() is not None:
+    if process is None or process.poll() is not None or not core_alive(context):
         raise QualificationError(ReasonCode.GATE_FAILED)
     first_pid = process.pid
-    try:
-        os.killpg(first_pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        raise QualificationError(ReasonCode.GATE_FAILED) from None
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        raise QualificationError(ReasonCode.GATE_FAILED) from None
-    if not core_healthy(installed, context):
+    group = _process_group(first_pid)
+    if group is None:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(group, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=5)
+    if not _wait_group_absent(group):
+        context.retained = True
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    if process.poll() != -signal.SIGKILL:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    if not _service_health(installed, context):
         raise QualificationError(ReasonCode.GATE_FAILED)
     deadline = time.monotonic() + CORE_TIMEOUT
     while time.monotonic() < deadline:
-        try:
-            descriptor = _mapping(
-                json.loads(context.descriptor.read_text(encoding="utf-8")),
-                ReasonCode.GATE_FAILED,
-            )
-        except (OSError, ValueError):
-            time.sleep(0.05)
-            continue
-        process_document = descriptor.get("process")
-        replacement = (
-            process_document.get("pid") if isinstance(process_document, dict) else None
-        )
-        if descriptor.get("ready") is True and type(replacement) is int and replacement != first_pid:
-            context.replacement_pid = replacement
+        replacement = _ready_process(context)
+        pid = None if replacement is None else replacement.get("pid")
+        if type(pid) is int and pid != first_pid:
+            context.replacement_pid = pid
+            context.expected = dict(replacement or {})
+            if not core_alive(context):
+                raise QualificationError(ReasonCode.GATE_FAILED)
             return
         time.sleep(0.05)
     raise QualificationError(ReasonCode.GATE_FAILED)
+
+
+def read_only_database(database: Path) -> sqlite3.Connection:
+    """Open a stopped Core's database for inspection, with no write, lock or side file.
+
+    ``mode=ro`` alone still creates the ``-wal`` and ``-shm`` files of a WAL
+    database, so ``immutable=1`` is added: SQLite then reads the main file alone and
+    takes no lock.  That is sound only once its writer has stopped cleanly and
+    checkpointed, so a ``-wal`` or ``-journal`` still present, whose content an
+    immutable read would skip, is refused rather than read around.
+    """
+    if any(os.path.lexists(f"{database}{suffix}") for suffix in ("-wal", "-journal")):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
 
 
 def stage_source(installed: InstalledCandidate, context: CoreContext) -> Mapping[str, Any]:
@@ -2157,7 +2696,7 @@ def stage_source(installed: InstalledCandidate, context: CoreContext) -> Mapping
     if captured.get("status") != "captured":
         raise QualificationError(ReasonCode.GATE_FAILED)
     try:
-        with contextlib.closing(sqlite3.connect(context.database)) as connection:
+        with contextlib.closing(read_only_database(context.database)) as connection:
             row = connection.execute(
                 "SELECT s.staged_source_ref, s.source_kind, s.declared_checksum, "
                 "s.content_length_bytes, s.media_type, s.source_version "
@@ -2188,7 +2727,7 @@ def imported_job(context: CoreContext) -> str:
     deadline = time.monotonic() + CORE_TIMEOUT
     while time.monotonic() < deadline:
         try:
-            with contextlib.closing(sqlite3.connect(context.database)) as connection:
+            with contextlib.closing(read_only_database(context.database)) as connection:
                 rows = connection.execute(
                     "SELECT j.job_id, j.state FROM omnivia_durable_jobs j "
                     "JOIN omnivia_application_import_claims c ON c.job_id = j.job_id "
@@ -2212,6 +2751,8 @@ def inspect_settled_import_job(
 ) -> str:
     """Read the durable import only while Core is not the database owner."""
     stop_core(context)
+    if context.retained:
+        raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE)
     progress("import_core_stopped_for_inspection")
     job_id = imported_job(context)
     start_core(installed, context)
@@ -2250,16 +2791,6 @@ def _sequence_prompt(calls: Sequence[tuple[str, Mapping[str, Any]]], marker: str
     )
 
 
-def _absent_tool_prompt(tool: str, marker: str) -> str:
-    return (
-        "This is an isolated MCP qualification step. Use only the configured "
-        f"{SERVER_KEY} MCP server. Attempt to use the excluded tool named {tool}; "
-        f"it may be displayed as {claude_tool_name(tool)}. Do not call any other "
-        "tool. The excluded tool must be unavailable. After confirming that it "
-        f"cannot be called, output exactly {marker} and nothing else."
-    )
-
-
 def _traversal_prompt(tool: str, arguments: Mapping[str, Any], pages: int, marker: str) -> str:
     payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
     return (
@@ -2287,8 +2818,9 @@ def _single_outcome(result: HostRunResult, tool: str) -> tuple[str, str]:
     return outcomes[0]
 
 
-def _excluded_probe_payload(tool: str) -> bytes:
-    messages = (
+def _excluded_probe_payload(tools: Sequence[str]) -> bytes:
+    """Initialize, list, then one ``tools/call`` per excluded name, all deterministic."""
+    messages: list[dict[str, Any]] = [
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -2301,30 +2833,39 @@ def _excluded_probe_payload(tool: str) -> bytes:
         },
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": {}},
-        },
-    )
+    ]
+    for number, tool in enumerate(tools, start=3):
+        messages.append(
+            {
+                "jsonrpc": "2.0",
+                "id": number,
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": {}},
+            }
+        )
     return b"".join(
         json.dumps(message, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
         for message in messages
     )
 
 
-def probe_excluded_tool(
+def probe_excluded_tools(
     installed: InstalledCandidate,
     core_config: Path,
     root: Path,
     host: str,
     tools: tuple[str, ...],
-    tool: str,
+    excluded: Sequence[str],
     *,
     run: ProtocolRunner = _run_protocol,
 ) -> None:
-    """Send a real ``tools/call`` through the proxy and require an allow-list refusal."""
+    """Dispatch every excluded name at the real server and require each allow-list refusal.
+
+    No model is involved: the harness itself issues each ``tools/call``, so a
+    profile is proven to refuse every excluded name, not only the ones a model
+    happened to try.  The server answers each name ``not_exposed`` with no
+    structured result, and the proxy must observe exactly those answers.
+    """
     layout = host_layout(root, host)
     create_layout(layout)
     observation = layout.root / "observation.jsonl"
@@ -2340,7 +2881,7 @@ def probe_excluded_tool(
         proxy = proxy_server_entry(installed.python, spec)
         completed = run(
             [proxy["command"], *proxy["args"]],
-            _excluded_probe_payload(tool),
+            _excluded_probe_payload(excluded),
             host_environment(layout, installed.python),
             layout.workspace,
             CORE_TIMEOUT,
@@ -2354,19 +2895,23 @@ def probe_excluded_tool(
         summary = summarize_observation(read_observation(observation))
     except (OSError, subprocess.SubprocessError):
         raise QualificationError(ReasonCode.GATE_FAILED) from None
-    expected = (tool, arguments_digest({}))
+    # Answers may arrive in any order; each name must be seen exactly once.
+    expected_requests = sorted((name, arguments_digest({})) for name in excluded)
+    expected_outcomes = sorted(
+        (name, "not_exposed", canonical_result_digest(None)) for name in excluded
+    )
     if (
         summary.violation
         or not summary.initialized
         or not summary.listed
         or summary.listed_tools != tools
-        or summary.called != (tool,)
-        or summary.requests != (expected,)
-        or summary.responded != (tool,)
+        or not set(excluded).isdisjoint(summary.listed_tools)
+        or list(summary.called) != list(excluded)
+        or sorted(summary.requests) != expected_requests
+        or sorted(summary.responded) != sorted(excluded)
         or summary.succeeded
-        or summary.tool_errors != (tool,)
-        or summary.outcomes
-        != ((tool, "not_exposed", canonical_result_digest(None)),)
+        or sorted(summary.tool_errors) != sorted(excluded)
+        or sorted(summary.outcomes) != expected_outcomes
     ):
         raise QualificationError(ReasonCode.GATE_FAILED)
 
@@ -2395,7 +2940,6 @@ class HostDriver:
         on_withheld: Callable[[], None] = lambda: None,
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
-        absent: bool = False,
     ) -> HostRunResult:
         """Run one fresh host process: ``calls`` in order, or ``pages`` calls to the first.
 
@@ -2417,9 +2961,7 @@ class HostDriver:
             on_paused()
             _write_private(release, "release\n")
 
-        if absent:
-            prompt = _absent_tool_prompt(tool, marker)
-        elif pages > 1:
+        if pages > 1:
             prompt = _traversal_prompt(tool, arguments, pages, marker)
         elif len(calls) > 1:
             prompt = _sequence_prompt(calls, marker)
@@ -2459,36 +3001,6 @@ class HostDriver:
             self.progress("host_inventory_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
         return result
-
-    def prove_absent(self, tool: str) -> None:
-        """Prove one sentinel is absent to the host and rejected by server dispatch."""
-        result = self._run([(tool, {})], absent=True)
-        summary = result.summary
-        if (
-            tool in summary.listed_tools
-            or summary.called
-            or summary.requests
-            or summary.responded
-            or summary.succeeded
-            or summary.tool_errors
-            or summary.outcomes
-            or not result.exited_cleanly
-            or not result.marker_seen
-            or result.interrupted
-            or result.paused
-            or summary.withheld
-            or summary.paused
-        ):
-            self.progress("excluded_tool_dispatchable")
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        probe_excluded_tool(
-            self.installed,
-            self.core_config,
-            self.root / f"excluded-probe-{self.sequence:02d}",
-            self.host,
-            self.tools,
-            tool,
-        )
 
     def call(
         self,
@@ -2773,6 +3285,36 @@ def verified_event_stream(pages: Sequence[Mapping[str, Any]], limit: int) -> lis
     return events
 
 
+def holds_imported_artifact(
+    result: Mapping[str, Any], job_id: str, staged: Mapping[str, Any]
+) -> bool:
+    """Whether one complete evidence page holds exactly one artifact of import ``job_id``.
+
+    The trusted staging capture is itself evidence of the staged bytes' kind,
+    checksum and media type, so only the binding to the run tells the import's
+    artifact apart.  The import publishes its own source identity, so the staged
+    source id is never assumed.  A page that continues is refused: "exactly one"
+    would then say nothing about the pages not read.
+    """
+    evidence = result.get("evidence")
+    if not isinstance(evidence, list) or _continuation(result) is not None:
+        return False
+    imported = [
+        artifact
+        for artifact in evidence
+        if isinstance(artifact, dict) and artifact.get("import_run_id") == job_id
+    ]
+    if len(imported) != 1:
+        return False
+    source = imported[0].get("source")
+    return (
+        isinstance(source, dict)
+        and source.get("kind") == staged["source_kind"]
+        and imported[0].get("content_checksum") == staged["content_checksum"]
+        and imported[0].get("media_type") == staged["media_type"]
+    )
+
+
 @dataclass(frozen=True)
 class ImportJourney:
     context: CoreContext
@@ -2789,13 +3331,23 @@ def _direct_mutations(
     principal: str,
     ledger: GateLedger,
 ) -> None:
-    """Capture and memory: exact replays keep one effect; changed payloads conflict."""
+    """Capture and memory: exact replays keep one effect; changed payloads conflict.
+
+    A search counts only when the host's canonical result digest equals the digest
+    of the owner's observation of the same search.  Only digests are kept.
+    """
     capture = _capture_arguments(
         DIRECT_SOURCE_ID, CAPTURE_KEY, f"real host captured note {QUALIFICATION_TOKEN}\n"
     )
     first = _single_outcome(authoring.call("evidence_capture", capture), "evidence_capture")
-    authoring.call("evidence_search", {"query": QUALIFICATION_TOKEN})
+    evidence = _single_outcome(
+        authoring.call("evidence_search", {"query": QUALIFICATION_TOKEN}), "evidence_search"
+    )
     authoring.progress("capture_search_host_ok")
+    owner_evidence = owner_call(
+        installed, context, ("evidence", "search"), {"query": QUALIFICATION_TOKEN}
+    )
+    _require(evidence == ("none", canonical_result_digest(owner_evidence)))
     _require(
         _count(installed, context, ("evidence", "search"), {"query": DIRECT_SOURCE_ID}, "evidence")
         == 1
@@ -2820,9 +3372,23 @@ def _direct_mutations(
     _record_true(ledger, "i4", "capture_changed_conflict")
 
     created = _single_outcome(authoring.call("memory_create", _memory_arguments(principal)), "memory_create")
-    authoring.call("memory_search", {"query": QUALIFICATION_TOKEN})
-    authoring.call("memory_search", {"query": QUALIFICATION_TOKEN, "view": "candidates"})
+    default_host = _single_outcome(
+        authoring.call("memory_search", {"query": QUALIFICATION_TOKEN}), "memory_search"
+    )
+    candidate_host = _single_outcome(
+        authoring.call("memory_search", {"query": QUALIFICATION_TOKEN, "view": "candidates"}),
+        "memory_search",
+    )
     authoring.progress("memory_search_hosts_ok")
+    default_owner = owner_call(installed, context, ("memory", "search"), {"query": QUALIFICATION_TOKEN})
+    candidate_owner = owner_call(
+        installed,
+        context,
+        ("memory", "search"),
+        {"query": QUALIFICATION_TOKEN, "view": "candidates"},
+    )
+    _require(default_host == ("none", canonical_result_digest(default_owner)))
+    _require(candidate_host == ("none", canonical_result_digest(candidate_owner)))
     _require(_memory_counts(installed, context) == (0, 1))
     _record_true(ledger, "i4", "proposed_memory", "default_invisible", "candidate_visible")
 
@@ -2902,15 +3468,19 @@ def _import_journey(
         _require(host_pages == [canonical_result_digest(page) for page in pages])
         _record_true(ledger, "i5", "job_events_paged", "job_events_match_owner")
 
-        evidence_query = {"query": STAGED_SOURCE_ID}
+        # The staged source's kind matches the staging capture and the import's own
+        # artifact alike; the bounded page is compared whole, owner against host.
+        evidence_query = {"query": str(staged["source_kind"]), "limit": IMPORTED_EVIDENCE_LIMIT}
         owner_evidence = owner_call(installed, context, ("evidence", "search"), evidence_query)
-        _require(bool(owner_evidence.get("evidence")))
         retrieved = _single_outcome(driver.call("evidence_search", evidence_query), "evidence_search")
-        _require(retrieved[1] == canonical_result_digest(owner_evidence))
+        _require(retrieved == ("none", canonical_result_digest(owner_evidence)))
+        _require(holds_imported_artifact(owner_evidence, job_id, staged))
         _record_true(ledger, "i5", "imported_evidence_retrieved")
         return ImportJourney(context, driver, arguments, job_id, events)
     except BaseException:
         stop_core(context)
+        if context.retained:
+            print(f"reason_code={ReasonCode.CLEANUP_INCOMPLETE.value}", file=sys.stderr)
         raise
 
 
@@ -2944,7 +3514,8 @@ def _ambiguous_response(
     interrupted = authoring.call(
         "evidence_capture", arguments, interrupt=True, on_withheld=observe_commit
     )
-    _require(committed and interrupted.interrupted)
+    withheld = interrupted.summary.withheld_digest
+    _require(committed and interrupted.interrupted and withheld is not None)
     _record_true(ledger, "i6", "commit_observed_before_response", "host_stopped_before_response")
 
     restart_core(installed, context)
@@ -2954,7 +3525,8 @@ def _ambiguous_response(
 
     first = _single_outcome(authoring.call("evidence_capture", arguments), "evidence_capture")
     second = _single_outcome(authoring.call("evidence_capture", arguments), "evidence_capture")
-    _require(first == second)
+    # Each replay answers exactly what the withheld response would have said.
+    _require(first == second == ("none", withheld))
     _require(
         _count(
             installed,
@@ -3060,6 +3632,70 @@ def _revocation(
     _record_true(ledger, "i8", "authoring_revoked", "core_healthy")
 
 
+def _decision_arguments() -> dict[str, Any]:
+    """The restricted profile's one mutation, in the shape the installed service admits."""
+    subject = f"{QUALIFICATION_TOKEN}-subject"
+    return {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": subject, "revision": "r1"}],
+            "input": {"source_refs": [{"id": subject, "revision": "r1"}]},
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": DECISION_KEY,
+    }
+
+
+def _restricted_decision(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    restricted: HostDriver,
+    ledger: GateLedger,
+) -> None:
+    """The host's refusal of ``decision.evaluate`` must match the owner's view of the workspace.
+
+    With no decision capability granted, the service refuses the call with
+    ``capability_not_granted``.  The host must observe exactly that refusal, and
+    the owner must observe a disabled decision surface and no decision record.
+    Audit or other operational bookkeeping is outside this narrowly stated proof.
+    """
+    restricted.call(
+        "decision_evaluate",
+        _decision_arguments(),
+        expected_error=True,
+        refusal="capability_not_granted",
+    )
+    _record_true(ledger, "i3", "decision_evaluate_refused")
+    status = owner_call(installed, context, ("decisions", "status"), {})
+    records = owner_call(installed, context, ("decisions", "records"), {}).get("records")
+    _require(status.get("enabled") is False and records == [])
+    _record_true(ledger, "i3", "decision_owner_observed")
+
+
+def _probe_excluded(
+    installed: InstalledCandidate,
+    host: str,
+    config: Path,
+    profile: str,
+    root: Path,
+) -> None:
+    """Probe one profile's excluded names while its configuration is the current one.
+
+    Each ``configure`` rewrites the host's single MCP configuration, so the probe
+    must run before the other profile is configured, never after.  The harness
+    issues each ``tools/call`` itself, so the proof needs no model.
+    """
+    probe_excluded_tools(
+        installed,
+        config,
+        root / profile,
+        host,
+        PROFILE_TOOLS[profile],
+        EXCLUDED_TOOLS[profile],
+    )
+
+
 def qualify_host(
     *,
     host: str,
@@ -3073,10 +3709,12 @@ def qualify_host(
     ledger = GateLedger() if ledger is None else ledger
     _record_true(ledger, "i1", "candidate_installed", "entrypoints_resolved")
     context = initialize_core(installed, run_root / "core")
-    progress("core_initialized")
-    start_core(installed, context)
-    progress("core_started")
+    imported: ImportJourney | None = None
+    failed = False
     try:
+        progress("core_initialized")
+        start_core(installed, context)
+        progress("core_started")
         restricted_config = configure_profile(installed, context, host, "restricted")
         progress("restricted_configured")
         _record_true(ledger, "i2", "restricted_configured")
@@ -3094,6 +3732,16 @@ def qualify_host(
         restricted.call("workspace_inspect", {})
         progress("restricted_host_ok")
         _record_true(ledger, "i3", "initialize_verified", "restricted_tools_exact")
+        _restricted_decision(installed, context, restricted, ledger)
+        progress("restricted_decision_ok")
+        _probe_excluded(installed, host, restricted_config, "restricted", run_root / "excluded-probe")
+        _record_true(
+            ledger,
+            "i3",
+            "restricted_excluded_tools_absent",
+            "restricted_excluded_tool_undispatchable",
+        )
+        progress("restricted_excluded_refused")
 
         authoring_config = configure_profile(installed, context, host, "authoring")
         progress("authoring_configured")
@@ -3128,31 +3776,45 @@ def qualify_host(
         _record_true(ledger, "i3", "authoring_tools_exact")
         progress("direct_mutations_ok")
 
-        authoring.prove_absent("job_cancel")
-        _record_true(ledger, "i3", "excluded_tools_absent", "excluded_tool_undispatchable")
+        _probe_excluded(installed, host, authoring_config, "authoring", run_root / "excluded-probe")
+        _record_true(
+            ledger,
+            "i3",
+            "authoring_excluded_tools_absent",
+            "authoring_excluded_tool_undispatchable",
+        )
         progress("excluded_tool_refused")
 
         imported = _import_journey(
             installed, run_root / "import", host, binary, auth_file, ledger, progress
         )
-        try:
-            progress("import_journey_ok")
-            _ambiguous_response(installed, context, authoring, ledger)
-            progress("ambiguous_response_ok")
-            _revocation(installed, context, host, authoring, principal, imported, ledger)
-            progress("revocation_ok")
-            if not (
-                restricted.protocol_clean
-                and authoring.protocol_clean
-                and imported.driver.protocol_clean
-            ):
-                raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
-            _record_true(ledger, "i7", "stdout_protocol_only")
-            return ledger
-        finally:
-            stop_core(imported.context)
+        progress("import_journey_ok")
+        _ambiguous_response(installed, context, authoring, ledger)
+        progress("ambiguous_response_ok")
+        _revocation(installed, context, host, authoring, principal, imported, ledger)
+        progress("revocation_ok")
+        if not (
+            restricted.protocol_clean
+            and authoring.protocol_clean
+            and imported.driver.protocol_clean
+        ):
+            raise QualificationError(ReasonCode.PROTOCOL_VIOLATION)
+        _record_true(ledger, "i7", "stdout_protocol_only")
+    except BaseException:
+        failed = True
+        raise
     finally:
+        if imported is not None:
+            stop_core(imported.context)
         stop_core(context)
+        if failed and (
+            context.retained or (imported is not None and imported.context.retained)
+        ):
+            print(f"reason_code={ReasonCode.CLEANUP_INCOMPLETE.value}", file=sys.stderr)
+    # Teardown runs first: a Core process that survived its stop is never a pass.
+    if context.retained or (imported is not None and imported.context.retained):
+        raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE)
+    return ledger
 
 
 def os_identity(
@@ -3177,6 +3839,8 @@ def os_identity(
         completed.returncode != 0
         or not re.fullmatch(r"[0-9]{1,3}[A-Z][0-9]{1,5}[a-z]?", build)
         or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version)
+        or version != SUPPORTED_OS_VERSION
+        or build != SUPPORTED_OS_BUILD
     ):
         raise QualificationError(ReasonCode.PLATFORM_UNSUPPORTED)
     return OsIdentity(version, build, platform.machine().lower())
@@ -3205,10 +3869,76 @@ def installed_from_prefix(prefix: Path) -> InstalledCandidate:
     return installed
 
 
+# --- runtime cleanup -------------------------------------------------------
+
+#: The one parent of every runtime root: short, so Core's socket path stays under
+#: the Unix-domain limit, and fixed, so a supplied ``--runtime-root`` can be held to it.
+RUNTIME_PARENT: Final = Path("/tmp")
+RUNTIME_PREFIX: Final = "ovmcp-real-"
+RUNTIME_RECEIPT: Final = "bootstrap-receipt.json"
+
+
+def require_owned_runtime(root: Path) -> None:
+    """Refuse, untouched, a ``--runtime-root`` this harness did not create.
+
+    Cleanup deletes the root recursively, so ownership is proved before any cleanup
+    can reach it: an ``ovmcp-real-`` directory directly under the harness parent,
+    not a symlink, owner-only, holding the owner-only bootstrap receipt.  Anything
+    else is ``entrypoint_unresolved`` and is never deleted.
+    """
+    if root.parent != RUNTIME_PARENT or not root.name.startswith(RUNTIME_PREFIX):
+        raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+    try:
+        shapes = (
+            (os.lstat(root), stat.S_ISDIR),
+            (os.lstat(root / RUNTIME_RECEIPT), stat.S_ISREG),
+        )
+    except OSError:
+        raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED) from None
+    for status, kind in shapes:
+        if (
+            not kind(status.st_mode)
+            or status.st_uid != os.getuid()
+            or status.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+
+
+def remove_runtime(root: Path) -> None:
+    """Delete the runtime root and prove it is gone, or refuse ``cleanup_incomplete``.
+
+    The root can hold a copied Codex credential and the candidate install, so a
+    partial deletion is never reported as success.  Nothing here can run after a
+    SIGKILL of this harness: the root and any Core process it started then survive
+    until removed by hand.  That limit is documented, not worked around.
+    """
+    try:
+        shutil.rmtree(root)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE) from None
+    if os.path.lexists(root):
+        raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE)
+
+
+def discard_runtime(root: Path) -> None:
+    """Best-effort removal on a failure path, which keeps the original reason.
+
+    A failed removal is reported on stderr as ``cleanup_incomplete`` so the
+    retained state is never silent, but the record still carries the first failure.
+    """
+    try:
+        remove_runtime(root)
+    except QualificationError:
+        print(f"reason_code={ReasonCode.CLEANUP_INCOMPLETE.value}", file=sys.stderr)
+
+
 # --- command line ---------------------------------------------------------
 
 
-def _preflight(arguments: argparse.Namespace) -> None:
+def _preflight(arguments: argparse.Namespace) -> tuple[Candidate, str]:
+    """Refuse an unusable invocation; return the reloaded candidate and the schema digest."""
     load_candidate(arguments.candidate)
     require_platform(platform.system().lower(), platform.machine().lower())
     binary: Path = arguments.host_binary
@@ -3219,6 +3949,25 @@ def _preflight(arguments: argparse.Namespace) -> None:
     else:
         require_auth_file(arguments.auth_file)
     load_schema(arguments.schema)
+    candidate = load_candidate(arguments.candidate)
+    try:
+        return candidate, _file_digest(arguments.schema)
+    except OSError:
+        raise QualificationError(ReasonCode.RECORD_INVALID) from None
+
+
+def candidate_receipt(candidate: Candidate, schema_sha256: str) -> dict[str, object]:
+    """The closed bootstrap binding carried across the candidate-runtime exec."""
+    if not _SHA256.fullmatch(schema_sha256):
+        raise QualificationError(ReasonCode.RECORD_INVALID)
+    return {
+        "revision": candidate.revision,
+        "wheels": dict(candidate.wheels),
+        "wheel_closure_count": candidate.closure_count,
+        "wheel_closure_sha256": candidate.closure_sha256,
+        "harness_sha256": candidate.harness_sha256,
+        "schema_sha256": schema_sha256,
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -3247,6 +3996,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--schema is required")
     started_at = datetime.now(UTC)
     candidate: Candidate | None = None
+    schema_sha256: str | None = None
     identity: OsIdentity | None = None
     host_identity: HostIdentity | None = None
     ledger = GateLedger()
@@ -3263,27 +4013,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         if any(getattr(arguments, name) is None for name in required):
             parser.error("qualification requires --host, --host-binary, --candidate, "
                          "--auth-file and --output")
-        _preflight(arguments)
-        trace("preflight_ok")
-        candidate = load_candidate(arguments.candidate)
         runtime_root: Path | None = arguments.runtime_root
         if runtime_root is None:
-            temporary_parent = "/tmp" if Path("/tmp").is_dir() else None
-            runtime_root = Path(
-                tempfile.mkdtemp(prefix="ovmcp-real-", dir=temporary_parent)
-            )
-            runtime_root.chmod(0o700)
+            candidate, schema_sha256 = _preflight(arguments)
+            trace("preflight_ok")
+            runtime_root = Path(tempfile.mkdtemp(prefix=RUNTIME_PREFIX, dir=RUNTIME_PARENT))
             try:
+                try:
+                    runtime_root.chmod(0o700)
+                except OSError:
+                    raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED) from None
                 installed = bootstrap_candidate(
                     arguments.candidate, candidate, runtime_root
                 )
                 trace("bootstrap_ok")
                 _write_private(
-                    runtime_root / "bootstrap-receipt.json",
+                    runtime_root / RUNTIME_RECEIPT,
                     json.dumps(
                         {
-                            "revision": candidate.revision,
-                            "wheels": dict(candidate.wheels),
+                            **candidate_receipt(candidate, schema_sha256),
                         },
                         sort_keys=True,
                         separators=(",", ":"),
@@ -3299,22 +4047,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     [*arguments_list, "--runtime-root", str(runtime_root)],
                     environ=environment,
                 )
+                raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
             except BaseException:
-                shutil.rmtree(runtime_root, ignore_errors=True)
+                discard_runtime(runtime_root)
                 raise
-            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
 
-        if not in_candidate_runtime(os.environ, sys.prefix):
-            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
-        trace("candidate_runtime_ok")
-        if Path(sys.prefix).resolve() != (runtime_root / "candidate-venv").resolve():
-            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
-        receipt = _json_document(runtime_root / "bootstrap-receipt.json")
-        if receipt != {"revision": candidate.revision, "wheels": dict(candidate.wheels)}:
-            raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
-        installed = installed_from_prefix(Path(sys.prefix))
-        trace("candidate_receipt_ok")
+        # Every failure below deletes the supplied root, so it must first prove the
+        # harness created it; a root that cannot is refused and never touched.
+        require_owned_runtime(runtime_root)
         try:
+            candidate, schema_sha256 = _preflight(arguments)
+            trace("preflight_ok")
+            if not in_candidate_runtime(os.environ, sys.prefix):
+                raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+            trace("candidate_runtime_ok")
+            if Path(sys.prefix).resolve() != (runtime_root / "candidate-venv").resolve():
+                raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+            receipt = _json_document(runtime_root / RUNTIME_RECEIPT)
+            if receipt != candidate_receipt(candidate, schema_sha256):
+                raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
+            installed = installed_from_prefix(Path(sys.prefix))
+            trace("candidate_receipt_ok")
             version_layout = host_layout(runtime_root / "version", arguments.host)
             create_layout(version_layout)
             version = require_host_version(
@@ -3345,18 +4098,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             trace("journey_ok")
             record = build_record(
                 candidate=candidate,
+                schema_sha256=schema_sha256,
                 os_identity=identity,
                 host=host_identity,
                 ledger=ledger,
                 started_at=started_at,
                 finished_at=datetime.now(UTC),
             )
-            write_record(record, load_schema(arguments.schema), arguments.output)
+            # Verified removal comes before the pass record: a retained runtime root
+            # (it can hold a copied host credential) must never publish a pass.
+            remove_runtime(runtime_root)
+            trace("runtime_removed")
+            write_record(
+                record,
+                load_schema(arguments.schema, schema_sha256),
+                arguments.output,
+            )
             trace("record_ok")
             print("qualification pass")
             return 0
         finally:
-            shutil.rmtree(runtime_root, ignore_errors=True)
+            discard_runtime(runtime_root)
     except QualificationError as error:
         if (
             arguments.output is not None
@@ -3368,6 +4130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 record = (
                     build_record(
                         candidate=candidate,
+                        schema_sha256=schema_sha256,
                         os_identity=identity,
                         host=host_identity,
                         ledger=ledger,
@@ -3376,6 +4139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         reason=error.code,
                     )
                     if candidate is not None
+                    and schema_sha256 is not None
                     and identity is not None
                     and host_identity is not None
                     else build_minimal_failure_record(
@@ -3384,7 +4148,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         finished_at=finished_at,
                     )
                 )
-                write_record(record, load_schema(arguments.schema), arguments.output)
+                write_record(
+                    record,
+                    load_schema(arguments.schema, schema_sha256),
+                    arguments.output,
+                )
             except QualificationError:
                 pass
         print(f"reason_code={error.code.value}", file=sys.stderr)
