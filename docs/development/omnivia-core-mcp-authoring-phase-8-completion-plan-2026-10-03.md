@@ -22,6 +22,9 @@ principal and protected authoring grant.
 
 ## 2. Authoritative inputs
 
+- `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-10-03-v1.4-addendum.md`
+  (normative completion baseline; it supersedes the v1.3 inventory and read-only
+  restricted statements as section 2 of the addendum records, and it marks no gate green)
 - `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12-v1.3.md`
 - `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-implementation-plan-2026-09-12.md`
 - `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-traceability-2026-09-12.md`

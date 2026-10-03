@@ -9,6 +9,10 @@ feature is not declared finished by this document.
 **Specification:**
 `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12-v1.3.md`
 
+**Normative completion baseline:**
+`docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-10-03-v1.4-addendum.md`.
+It controls the inventories, the `decision.evaluate` classification and the real-host matrix this record is measured against. It records no gate as green.
+
 **Implementation plan:**
 `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-implementation-plan-2026-09-12.md`
 (Phase 7, "end-to-end, security, and recovery acceptance")
@@ -449,6 +453,11 @@ What closed the two review rows that were `partial`:
 ---
 
 ## 9. What Phase 8 still owns
+
+The v1.4 completion addendum is the normative source for the restricted thirteen,
+the authoring eighteen, the classification of `decision.evaluate` and the
+Claude Code 2.1.288, Codex CLI 0.146.0 and macOS 27.0 (build 26A428, arm64)
+matrix that the items below refer to. The addendum does not mark any item green.
 
 The installed-wheel work is complete and retained above. The real-host harness
 and its closed schema now exist, and a diagnostic Codex CLI 0.146.0 run against
