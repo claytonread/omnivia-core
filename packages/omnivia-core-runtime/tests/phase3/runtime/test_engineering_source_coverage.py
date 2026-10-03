@@ -17,16 +17,19 @@ import hashlib
 import json
 import re
 import sqlite3
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.ownership.fencing import StaleGeneration, fenced_transaction
-from omnivia_core_runtime.ownership.identity import SystemClock
+from omnivia_core_runtime.ownership.identity import Clock, SystemClock
+from omnivia_core_runtime.service import application as application_module
 from omnivia_core_runtime.service.application import (
     ENGINEERING_FAMILY_PURPOSES,
     GOVERNANCE_FAMILY_PURPOSES,
@@ -116,7 +119,15 @@ class _InstallationService:
     authority = SimpleNamespace(installation_id=s0.INSTALLATION_ID)
 
 
-def _surface(holder: Any) -> ProductionApplicationSurface:
+def _surface(holder: Any, clock: Clock | None = None) -> ProductionApplicationSurface:
+    """The production surface; `clock` replaces the server clock of its families.
+
+    `_build_production_application_surface` hands `started.clock` only to the workflow
+    and decision families; the memory, job, governance, chat and engineering builders
+    default to a fresh `SystemClock`. A test clock therefore takes effect by standing in
+    for that default while the surface is composed, and only then: production wiring is
+    untouched and an ordinary workspace (`clock=None`) builds exactly as before.
+    """
     probe = Dispatcher.for_service_operations(
         Grant(
             principal=PRINCIPAL,
@@ -125,29 +136,40 @@ def _surface(holder: Any) -> ProductionApplicationSurface:
         ),
         holder,
     )
-    started = SimpleNamespace(**vars(holder), workspace_id=WORKSPACE_ID, clock=SystemClock())
+    started = SimpleNamespace(
+        **vars(holder),
+        workspace_id=WORKSPACE_ID,
+        clock=SystemClock() if clock is None else clock,
+    )
     installation = build_installation_application_dispatcher(
         service=_InstallationService(),  # type: ignore[arg-type]
         principal_id=PRINCIPAL,
         fallback=probe,
     )
-    return _build_production_application_surface(
-        started=started,  # type: ignore[arg-type]
-        probe=probe,
-        installation=installation,
+    substitute = (
+        nullcontext()
+        if clock is None
+        else mock.patch.object(application_module, "SystemClock", lambda: clock)
     )
+    with substitute:
+        return _build_production_application_surface(
+            started=started,  # type: ignore[arg-type]
+            probe=probe,
+            installation=installation,
+        )
 
 
 class Workspace:
     """An owned production surface behind a trusted continuity adapter."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, clock: Clock | None = None) -> None:
+        self.clock = clock
         path = tmp_path / "workspace.sqlite"
         m2.materialise_phase0_baseline(path)
         m2.bootstrap_and_migrate(path)
         self.holder = m2.take_ownership(path)
         m2.seed_chain(self.holder)
-        self.surface = _surface(self.holder)
+        self.surface = _surface(self.holder, self.clock)
         self._requests = 0
         self._continuity_bindings: dict[str, TrustedContinuityBinding] = {}
 
@@ -155,7 +177,7 @@ class Workspace:
         """Drop the connection and adopt the workspace again, as a restart does."""
         self.holder.connection.close()
         self.holder = m2.take_ownership(self.holder.path)
-        self.surface = _surface(self.holder)
+        self.surface = _surface(self.holder, self.clock)
 
     def binding_for(self, principal_id: str) -> TrustedContinuityBinding:
         return self._continuity_bindings[principal_id]
