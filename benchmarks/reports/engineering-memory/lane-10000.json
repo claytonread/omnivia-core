@@ -1,51 +1,905 @@
 {
+  "report_format": "engineering-memory-qualification/2",
+  "spec": "SPEC-CORE-ENGMEM-001 section 20.2",
   "lane": "engineering-memory-qualification",
-  "recorded_at": "2026-09-30T23:08:18.210467+00:00",
+  "run": {
+    "started_at": "2026-10-03T12:35:59.817894+00:00",
+    "finished_at": "2026-10-03T12:39:41.326476+00:00",
+    "seed_seconds": 99.3
+  },
   "environment": {
-    "platform": "macOS-27.0-arm64-arm-64bit",
-    "machine": "arm64",
-    "python": "3.11.15",
-    "cpu_count": 18
-  },
-  "corpus_observations": 10000,
-  "seed_seconds": 139.8,
-  "corpus": {
-    "seed_scheme": "engineering-memory-qualification:10000",
-    "digest": "841384163b5d10b0a7e5a55e351f4d6071b09c8b12a9af3334daac3bd59efe16"
-  },
-  "discovery_backlog": 10000,
-  "operations": {
-    "engineering.search": {
-      "n": 100,
-      "p50_ms": 275.067,
-      "p95_ms": 336.7,
-      "p99_ms": 370.056,
-      "mean_ms": 280.139
+    "cpu": {
+      "model": "arm",
+      "logical_count": 18,
+      "physical_count": null,
+      "source": "sysctl"
     },
-    "engineering.search.current_safe": {
-      "n": 100,
-      "p50_ms": 245.867,
-      "p95_ms": 268.598,
-      "p99_ms": 292.395,
-      "mean_ms": 246.866
+    "memory": {
+      "physical_bytes": 68719476736,
+      "source": "os.sysconf"
     },
-    "engineering.context.build": {
-      "n": 30,
-      "p50_ms": 988.154,
-      "p95_ms": 1051.115,
-      "p99_ms": 1131.984,
-      "mean_ms": 990.698
+    "storage": {
+      "class": "local-ssd",
+      "source": "operator declaration",
+      "database_location": "pytest tmp_path of the run"
     },
-    "engineering.context.build.current_safe": {
-      "outcome": "success",
-      "elapsed_ms": 985.367
+    "os": {
+      "name": "Darwin",
+      "version": "27.0",
+      "build": "26A428",
+      "architecture": "arm64",
+      "platform": "macOS-27.0-arm64-arm-64bit"
     },
-    "continuity.checkpoint.append": {
-      "n": 100,
-      "p50_ms": 1.239,
-      "p95_ms": 1.66,
-      "p99_ms": 8.476,
-      "mean_ms": 1.434
+    "runtimes": {
+      "python": "3.11.15",
+      "python_implementation": "CPython",
+      "sqlite": "3.53.1",
+      "core_runtime": "0.1.0",
+      "core_runtime_distribution": "0.1.0",
+      "contract": "1.3"
     }
+  },
+  "source": {
+    "commit": "c706d8cc6ea0678ed20b9faa54842c3e6a9a1f52",
+    "branch": "codex/engineering-memory-register-completion",
+    "dirty": false,
+    "dirty_path_count": 0,
+    "dirty_digest": null
+  },
+  "migration": {
+    "head": 62,
+    "head_name": "0062_engineering_scoped_difference.sql",
+    "applied": 61
+  },
+  "database": {
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "page_size": 4096,
+    "cache_size": -2000,
+    "mmap_size": 0,
+    "locking_mode": "exclusive",
+    "wal_autocheckpoint": 1000,
+    "foreign_keys": 1
+  },
+  "corpus": {
+    "generator": "engineering-memory-qualification-corpus",
+    "generator_version": "2",
+    "observations": 10000,
+    "digest": "92f3b0bd7b5b6de8117feae6bd1d4af1f069e69db3bbb9b89c87806e11494944",
+    "kinds": {
+      "conflict_member": 20,
+      "open": 998,
+      "labeled": 8982
+    },
+    "acl": {
+      "open_partition_records": 1018,
+      "open_rule": "every 10th non-conflict record, plus the unlabeled conflict members",
+      "labeled_records": 8982,
+      "label": "group.engineering (held by the owner session, not by the reader)"
+    },
+    "code_spans": {
+      "long_span_records": 2495,
+      "chars_per_field": 1900,
+      "rule": "every 4th non-conflict record, summary and what"
+    },
+    "source_snapshots": {
+      "repository_id": "erepo-app",
+      "digest": "6e6d7512e855e795319c3736e37063866b42626c041299429deabfd9a8864f64",
+      "worktrees": [
+        {
+          "worktree": 0,
+          "checkout_id": "erc-2f49bff8-c2af-4bff-bb72-f5d3464f9761",
+          "snapshot_id": "esnap-qual-wt0",
+          "snapshot_kind": "working_tree",
+          "stream_id": "estream-qual-wt0",
+          "sequence": 1,
+          "capture_status": "complete",
+          "file_count": 4,
+          "manifest_digest": "sha256:13dc3615af8862de12c0623fd0ff32db6ba8ac048512276ca5f967eb1242f057",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "head_commit": "5067f8a8487ca3714f66e83015eef8514023b7de",
+          "observations": 3334
+        },
+        {
+          "worktree": 1,
+          "checkout_id": "erc-7711877d-3c1e-4f6a-9739-cdcea05ecc96",
+          "snapshot_id": "esnap-qual-wt1",
+          "snapshot_kind": "working_tree",
+          "stream_id": "estream-qual-wt1",
+          "sequence": 1,
+          "capture_status": "complete",
+          "file_count": 4,
+          "manifest_digest": "sha256:8e5b6e9086ce600b588766af9712877b4591616888ef3aecd9fad17a943167d6",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "head_commit": "5067f8a8487ca3714f66e83015eef8514023b7de",
+          "observations": 3334
+        },
+        {
+          "worktree": 2,
+          "checkout_id": "erc-cde46af9-a3c2-4a43-9c1c-ce0c98d47762",
+          "snapshot_id": "esnap-qual-wt2",
+          "snapshot_kind": "working_tree",
+          "stream_id": "estream-qual-wt2",
+          "sequence": 1,
+          "capture_status": "complete",
+          "file_count": 4,
+          "manifest_digest": "sha256:0763455983d76aa4b7e664d68420ad2a7959eb7970cd559f9886f5bfdc45a44c",
+          "coverage": {
+            "state": "current",
+            "covered_sequence": 1,
+            "announced_sequence": 1
+          },
+          "head_commit": "5067f8a8487ca3714f66e83015eef8514023b7de",
+          "observations": 3332
+        }
+      ],
+      "method": "real Git worktrees of one repository; engineering.repository.register, production working-tree capture seal, engineering.source.capture.commit"
+    },
+    "conflict_groups": {
+      "count": 10,
+      "members_per_group": 2,
+      "members_share_a_worktree": true,
+      "method": "pairs sharing a topic key, seeded first; produced by the production EngineeringConflictExecutor draining their own discovery runs. No semantic assessment provider ran, so each group is a structural unresolved_overlap, never an assessed material conflict",
+      "discovery": {
+        "before_drain": {
+          "runs": 10000,
+          "terminal": 0,
+          "backlog": 10000
+        },
+        "after_drain": {
+          "runs": 10000,
+          "terminal": 20,
+          "backlog": 9980
+        },
+        "drain": {
+          "passes": 20,
+          "seconds": 3.5
+        },
+        "relation_candidates": {
+          "unresolved_overlap": 10
+        }
+      }
+    },
+    "checkpoint_payloads": {
+      "short": {
+        "target_canonical_bytes": null
+      },
+      "medium": {
+        "target_canonical_bytes": 16384
+      },
+      "near_limit": {
+        "target_canonical_bytes": 253952
+      }
+    }
+  },
+  "policy": {
+    "digest": "660a2482c90bb096ef23a14ec6a218ce73a48666de472dfad42ee8a8f4869b8a",
+    "snapshot": {
+      "current_safe_candidate_cap": 1000,
+      "context_budget": {
+        "tokens": 4000,
+        "bytes": 16384,
+        "hydrations": 8,
+        "ceiling_tokens": 16000,
+        "ceiling_bytes": 65536,
+        "ceiling_hydrations": 32
+      },
+      "pack_versions": {
+        "renderer": "eng-render-2",
+        "builder": "eng-build-2",
+        "conflict_renderer": "eng-render-4",
+        "conflict_builder": "eng-build-4"
+      },
+      "preview": {
+        "projection_version": 1,
+        "preview_max_codepoints": 480,
+        "preview_max_bytes": 2048
+      },
+      "discovery": {
+        "candidate_budget": 8,
+        "scan_record_budget": 128,
+        "execution_budget": 8,
+        "semantic_assessment": "no provider configured"
+      },
+      "checkpoint_payload_cap_bytes": 262144,
+      "authorization": {
+        "owner": "local owner session: holds every evidence label",
+        "reader": "engineering-family session without the owner-held `group.engineering` label",
+        "label_partition": "every 10th non-conflict record is open"
+      },
+      "workload": {
+        "worktrees": 3,
+        "conflict_groups": 10,
+        "checkpoint_classes": {
+          "short": null,
+          "medium": 16384,
+          "near_limit": 253952
+        }
+      }
+    }
+  },
+  "effective_context_budget": {
+    "model_tokens": 4000,
+    "model_bytes": 16384,
+    "hydrations": 8,
+    "evidence_bytes": 262144,
+    "authorized_candidates": 2000
+  },
+  "cache": {
+    "os_page_cache": {
+      "controlled": false,
+      "note": "not dropped or measured; a system-cold lane is pending"
+    },
+    "cold": {
+      "label": "connection-cold",
+      "procedure": "before every cold sample the workspace connection is closed and the workspace adopted again, as a service restart does: a fresh SQLite connection, page cache and prepared statements, and a rebuilt dispatcher; the operation then runs once with no warm-up",
+      "controlled": [
+        "sqlite connection",
+        "sqlite page cache",
+        "dispatcher state"
+      ],
+      "not_controlled": [
+        "operating-system page cache",
+        "CPU caches",
+        "process-level Python caches and module state"
+      ]
+    },
+    "warm": {
+      "label": "warm",
+      "procedure": "5 discarded requests per operation on one connection, then the measured samples on the same connection"
+    }
+  },
+  "concurrency": {
+    "declared": {
+      "reader_threads": 4,
+      "requests_per_reader": 25,
+      "reader_operations": [
+        "engineering.search",
+        "engineering.search.current_safe",
+        "engineering.search.acl_partitioned_reader",
+        "engineering.context.build",
+        "engineering.context.build.current_safe",
+        "engineering.context.build.conflict_groups"
+      ],
+      "writer_threads": 1,
+      "checkpoints_by_writer": 25,
+      "serialization": "one shared SQLite gate around every dispatch, as the production socket and HTTP transports hold it; concurrency is queued, not parallel"
+    },
+    "cold_and_warm_lanes": "one request at a time"
+  },
+  "sampling": {
+    "search_samples": 100,
+    "pack_samples": 30,
+    "checkpoint_samples_per_size_class": 100,
+    "cold_samples_per_operation": 10,
+    "warmup_requests": 5,
+    "concurrent_requests": 125
+  },
+  "lanes": {
+    "cold": {
+      "started_at": "2026-10-03T12:37:44.114013+00:00",
+      "finished_at": "2026-10-03T12:37:58.683597+00:00",
+      "samples_per_operation": 10,
+      "operations": {
+        "engineering.search": {
+          "n": 10,
+          "min_ms": 159.208,
+          "p50_ms": 165.071,
+          "p95_ms": 189.729,
+          "p99_ms": 189.729,
+          "max_ms": 189.729,
+          "mean_ms": 171.596
+        },
+        "engineering.search.current_safe": {
+          "n": 10,
+          "min_ms": 162.12,
+          "p50_ms": 164.45,
+          "p95_ms": 190.418,
+          "p99_ms": 190.418,
+          "max_ms": 190.418,
+          "mean_ms": 170.925
+        },
+        "engineering.search.acl_partitioned_reader": {
+          "n": 10,
+          "min_ms": 161.142,
+          "p50_ms": 162.992,
+          "p95_ms": 168.923,
+          "p99_ms": 168.923,
+          "max_ms": 168.923,
+          "mean_ms": 163.515
+        },
+        "engineering.context.build": {
+          "n": 10,
+          "min_ms": 249.992,
+          "p50_ms": 255.885,
+          "p95_ms": 283.369,
+          "p99_ms": 283.369,
+          "max_ms": 283.369,
+          "mean_ms": 260.054
+        },
+        "engineering.context.build.current_safe": {
+          "n": 10,
+          "min_ms": 250.187,
+          "p50_ms": 258.074,
+          "p95_ms": 499.371,
+          "p99_ms": 499.371,
+          "max_ms": 499.371,
+          "mean_ms": 285.246
+        },
+        "engineering.context.build.conflict_groups": {
+          "n": 10,
+          "min_ms": 233.751,
+          "p50_ms": 236.916,
+          "p95_ms": 248.55,
+          "p99_ms": 248.55,
+          "max_ms": 248.55,
+          "mean_ms": 239.28
+        },
+        "continuity.checkpoint.append.short": {
+          "n": 10,
+          "min_ms": 1.963,
+          "p50_ms": 2.288,
+          "p95_ms": 4.211,
+          "p99_ms": 4.211,
+          "max_ms": 4.211,
+          "mean_ms": 2.494,
+          "payload_bytes": {
+            "min": 117,
+            "max": 125
+          }
+        },
+        "continuity.checkpoint.append.medium": {
+          "n": 10,
+          "min_ms": 2.772,
+          "p50_ms": 3.035,
+          "p95_ms": 4.132,
+          "p99_ms": 4.132,
+          "max_ms": 4.132,
+          "mean_ms": 3.237,
+          "payload_bytes": {
+            "min": 16384,
+            "max": 16384
+          }
+        },
+        "continuity.checkpoint.append.near_limit": {
+          "n": 10,
+          "min_ms": 13.494,
+          "p50_ms": 14.208,
+          "p95_ms": 16.892,
+          "p99_ms": 16.892,
+          "max_ms": 16.892,
+          "mean_ms": 14.672,
+          "payload_bytes": {
+            "min": 253952,
+            "max": 253952
+          }
+        }
+      },
+      "resources": {
+        "wall_seconds": 14.569,
+        "cpu_seconds": 14.166,
+        "cpu_utilisation": 0.972,
+        "peak_rss_bytes_at_end": 96944128,
+        "database_bytes_at_end": 253274352
+      }
+    },
+    "warm": {
+      "started_at": "2026-10-03T12:37:58.683669+00:00",
+      "finished_at": "2026-10-03T12:39:22.104872+00:00",
+      "warmup_requests_per_operation": 5,
+      "operations": {
+        "engineering.search": {
+          "n": 100,
+          "min_ms": 152.689,
+          "p50_ms": 170.837,
+          "p95_ms": 217.869,
+          "p99_ms": 236.751,
+          "max_ms": 245.668,
+          "mean_ms": 177.598
+        },
+        "engineering.search.current_safe": {
+          "n": 100,
+          "min_ms": 151.656,
+          "p50_ms": 161.677,
+          "p95_ms": 186.472,
+          "p99_ms": 217.177,
+          "max_ms": 412.872,
+          "mean_ms": 168.017
+        },
+        "engineering.search.acl_partitioned_reader": {
+          "n": 100,
+          "min_ms": 148.809,
+          "p50_ms": 154.81,
+          "p95_ms": 178.687,
+          "p99_ms": 188.627,
+          "max_ms": 194.452,
+          "mean_ms": 158.461
+        },
+        "engineering.context.build": {
+          "n": 30,
+          "min_ms": 235.919,
+          "p50_ms": 246.622,
+          "p95_ms": 324.169,
+          "p99_ms": 411.069,
+          "max_ms": 411.069,
+          "mean_ms": 260.699
+        },
+        "engineering.context.build.current_safe": {
+          "n": 30,
+          "min_ms": 229.151,
+          "p50_ms": 237.176,
+          "p95_ms": 284.724,
+          "p99_ms": 363.29,
+          "max_ms": 363.29,
+          "mean_ms": 247.142
+        },
+        "engineering.context.build.conflict_groups": {
+          "n": 30,
+          "min_ms": 217.484,
+          "p50_ms": 238.772,
+          "p95_ms": 289.111,
+          "p99_ms": 304.195,
+          "max_ms": 304.195,
+          "mean_ms": 240.721
+        },
+        "continuity.checkpoint.append.short": {
+          "n": 100,
+          "min_ms": 1.36,
+          "p50_ms": 2.181,
+          "p95_ms": 2.935,
+          "p99_ms": 5.016,
+          "max_ms": 11.542,
+          "mean_ms": 2.327,
+          "payload_bytes": {
+            "min": 119,
+            "max": 127
+          }
+        },
+        "continuity.checkpoint.append.medium": {
+          "n": 100,
+          "min_ms": 2.07,
+          "p50_ms": 2.875,
+          "p95_ms": 5.051,
+          "p99_ms": 11.647,
+          "max_ms": 12.196,
+          "mean_ms": 3.312,
+          "payload_bytes": {
+            "min": 16384,
+            "max": 16384
+          }
+        },
+        "continuity.checkpoint.append.near_limit": {
+          "n": 100,
+          "min_ms": 12.964,
+          "p50_ms": 14.092,
+          "p95_ms": 21.61,
+          "p99_ms": 23.761,
+          "max_ms": 24.931,
+          "mean_ms": 14.983,
+          "payload_bytes": {
+            "min": 253952,
+            "max": 253952
+          }
+        }
+      },
+      "resources": {
+        "wall_seconds": 83.42,
+        "cpu_seconds": 81.471,
+        "cpu_utilisation": 0.977,
+        "peak_rss_bytes_at_end": 96944128,
+        "database_bytes_at_end": 285120176
+      }
+    },
+    "concurrent": {
+      "started_at": "2026-10-03T12:39:22.105191+00:00",
+      "finished_at": "2026-10-03T12:39:41.245781+00:00",
+      "declared_workload": {
+        "reader_threads": 4,
+        "requests_per_reader": 25,
+        "reader_operations": [
+          "engineering.search",
+          "engineering.search.current_safe",
+          "engineering.search.acl_partitioned_reader",
+          "engineering.context.build",
+          "engineering.context.build.current_safe",
+          "engineering.context.build.conflict_groups"
+        ],
+        "writer_threads": 1,
+        "checkpoints_by_writer": 25,
+        "serialization": "one shared SQLite gate around every dispatch, as the production socket and HTTP transports hold it; concurrency is queued, not parallel"
+      },
+      "total_requests": 125,
+      "wall_seconds": 19.138,
+      "throughput_requests_per_second": 6.53,
+      "operations": {
+        "continuity.checkpoint.append.medium": {
+          "end_to_end": {
+            "n": 8,
+            "min_ms": 684.218,
+            "p50_ms": 731.043,
+            "p95_ms": 847.889,
+            "p99_ms": 847.889,
+            "max_ms": 847.889,
+            "mean_ms": 750.47
+          },
+          "service": {
+            "n": 8,
+            "min_ms": 3.244,
+            "p50_ms": 3.49,
+            "p95_ms": 3.805,
+            "p99_ms": 3.805,
+            "max_ms": 3.805,
+            "mean_ms": 3.501
+          },
+          "gate_wait": {
+            "n": 8,
+            "min_ms": 680.413,
+            "p50_ms": 727.57,
+            "p95_ms": 844.561,
+            "p99_ms": 844.561,
+            "max_ms": 844.561,
+            "mean_ms": 746.969
+          }
+        },
+        "continuity.checkpoint.append.near_limit": {
+          "end_to_end": {
+            "n": 8,
+            "min_ms": 698.494,
+            "p50_ms": 769.48,
+            "p95_ms": 1477.148,
+            "p99_ms": 1477.148,
+            "max_ms": 1477.148,
+            "mean_ms": 844.179
+          },
+          "service": {
+            "n": 8,
+            "min_ms": 13.572,
+            "p50_ms": 14.545,
+            "p95_ms": 16.187,
+            "p99_ms": 16.187,
+            "max_ms": 16.187,
+            "mean_ms": 14.55
+          },
+          "gate_wait": {
+            "n": 8,
+            "min_ms": 683.969,
+            "p50_ms": 754.787,
+            "p95_ms": 1462.417,
+            "p99_ms": 1462.417,
+            "max_ms": 1462.417,
+            "mean_ms": 829.629
+          }
+        },
+        "continuity.checkpoint.append.short": {
+          "end_to_end": {
+            "n": 9,
+            "min_ms": 2.329,
+            "p50_ms": 718.598,
+            "p95_ms": 942.348,
+            "p99_ms": 942.348,
+            "max_ms": 942.348,
+            "mean_ms": 651.627
+          },
+          "service": {
+            "n": 9,
+            "min_ms": 2.328,
+            "p50_ms": 2.682,
+            "p95_ms": 10.414,
+            "p99_ms": 10.414,
+            "max_ms": 10.414,
+            "mean_ms": 3.515
+          },
+          "gate_wait": {
+            "n": 9,
+            "min_ms": 0.0,
+            "p50_ms": 716.126,
+            "p95_ms": 939.823,
+            "p99_ms": 939.823,
+            "max_ms": 939.823,
+            "mean_ms": 648.112
+          }
+        },
+        "engineering.context.build": {
+          "end_to_end": {
+            "n": 17,
+            "min_ms": 222.736,
+            "p50_ms": 787.773,
+            "p95_ms": 876.362,
+            "p99_ms": 1444.638,
+            "max_ms": 1444.638,
+            "mean_ms": 793.219
+          },
+          "service": {
+            "n": 17,
+            "min_ms": 208.835,
+            "p50_ms": 231.383,
+            "p95_ms": 246.99,
+            "p99_ms": 265.736,
+            "max_ms": 265.736,
+            "mean_ms": 232.464
+          },
+          "gate_wait": {
+            "n": 17,
+            "min_ms": 0.001,
+            "p50_ms": 568.049,
+            "p95_ms": 640.404,
+            "p99_ms": 1208.99,
+            "max_ms": 1208.99,
+            "mean_ms": 560.755
+          }
+        },
+        "engineering.context.build.conflict_groups": {
+          "end_to_end": {
+            "n": 16,
+            "min_ms": 222.169,
+            "p50_ms": 765.722,
+            "p95_ms": 913.848,
+            "p99_ms": 977.488,
+            "max_ms": 977.488,
+            "mean_ms": 754.005
+          },
+          "service": {
+            "n": 16,
+            "min_ms": 205.409,
+            "p50_ms": 220.896,
+            "p95_ms": 264.64,
+            "p99_ms": 279.945,
+            "max_ms": 279.945,
+            "mean_ms": 224.999
+          },
+          "gate_wait": {
+            "n": 16,
+            "min_ms": 2.743,
+            "p50_ms": 544.826,
+            "p95_ms": 637.275,
+            "p99_ms": 753.493,
+            "max_ms": 753.493,
+            "mean_ms": 529.006
+          }
+        },
+        "engineering.context.build.current_safe": {
+          "end_to_end": {
+            "n": 16,
+            "min_ms": 542.94,
+            "p50_ms": 772.999,
+            "p95_ms": 986.411,
+            "p99_ms": 1453.134,
+            "max_ms": 1453.134,
+            "mean_ms": 804.792
+          },
+          "service": {
+            "n": 16,
+            "min_ms": 212.348,
+            "p50_ms": 228.201,
+            "p95_ms": 236.504,
+            "p99_ms": 275.301,
+            "max_ms": 275.301,
+            "mean_ms": 229.043
+          },
+          "gate_wait": {
+            "n": 16,
+            "min_ms": 315.43,
+            "p50_ms": 544.758,
+            "p95_ms": 711.11,
+            "p99_ms": 1216.63,
+            "max_ms": 1216.63,
+            "mean_ms": 575.749
+          }
+        },
+        "engineering.search": {
+          "end_to_end": {
+            "n": 17,
+            "min_ms": 144.492,
+            "p50_ms": 722.295,
+            "p95_ms": 909.246,
+            "p99_ms": 1423.62,
+            "max_ms": 1423.62,
+            "mean_ms": 707.069
+          },
+          "service": {
+            "n": 17,
+            "min_ms": 134.156,
+            "p50_ms": 149.988,
+            "p95_ms": 166.427,
+            "p99_ms": 195.486,
+            "max_ms": 195.486,
+            "mean_ms": 151.435
+          },
+          "gate_wait": {
+            "n": 17,
+            "min_ms": 0.001,
+            "p50_ms": 568.932,
+            "p95_ms": 750.831,
+            "p99_ms": 1257.194,
+            "max_ms": 1257.194,
+            "mean_ms": 555.633
+          }
+        },
+        "engineering.search.acl_partitioned_reader": {
+          "end_to_end": {
+            "n": 17,
+            "min_ms": 146.998,
+            "p50_ms": 731.31,
+            "p95_ms": 861.799,
+            "p99_ms": 1607.336,
+            "max_ms": 1607.336,
+            "mean_ms": 701.567
+          },
+          "service": {
+            "n": 17,
+            "min_ms": 137.776,
+            "p50_ms": 150.277,
+            "p95_ms": 162.477,
+            "p99_ms": 165.421,
+            "max_ms": 165.421,
+            "mean_ms": 150.223
+          },
+          "gate_wait": {
+            "n": 17,
+            "min_ms": 0.001,
+            "p50_ms": 575.119,
+            "p95_ms": 711.522,
+            "p99_ms": 1455.627,
+            "max_ms": 1455.627,
+            "mean_ms": 551.343
+          }
+        },
+        "engineering.search.current_safe": {
+          "end_to_end": {
+            "n": 17,
+            "min_ms": 152.262,
+            "p50_ms": 735.278,
+            "p95_ms": 867.793,
+            "p99_ms": 913.629,
+            "max_ms": 913.629,
+            "mean_ms": 678.355
+          },
+          "service": {
+            "n": 17,
+            "min_ms": 136.92,
+            "p50_ms": 150.7,
+            "p95_ms": 160.025,
+            "p99_ms": 161.823,
+            "max_ms": 161.823,
+            "mean_ms": 150.903
+          },
+          "gate_wait": {
+            "n": 17,
+            "min_ms": 0.002,
+            "p50_ms": 585.303,
+            "p95_ms": 708.12,
+            "p99_ms": 759.264,
+            "max_ms": 759.264,
+            "mean_ms": 527.453
+          }
+        }
+      },
+      "resources": {
+        "wall_seconds": 19.141,
+        "cpu_seconds": 18.882,
+        "cpu_utilisation": 0.986,
+        "peak_rss_bytes_at_end": 96944128,
+        "database_bytes_at_end": 286807728
+      }
+    }
+  },
+  "resources": {
+    "peak_rss_bytes": 96944128,
+    "peak_rss_scope": "process high-water mark (ru_maxrss), whole pytest process",
+    "peak_rss_unavailable": null,
+    "current_rss_unavailable": "current RSS needs /proc (Linux); no portable standard-library source",
+    "working_set": "not captured: no portable standard-library source",
+    "points": [
+      {
+        "at": "after_worktree_provisioning",
+        "wall_seconds": 0.775,
+        "cpu_seconds": 0.116,
+        "peak_rss_bytes": 95043584,
+        "current_rss_bytes": null,
+        "database_bytes": 4876320
+      },
+      {
+        "at": "after_seed",
+        "wall_seconds": 100.102,
+        "cpu_seconds": 90.137,
+        "peak_rss_bytes": 96944128,
+        "current_rss_bytes": null,
+        "database_bytes": 254798496
+      },
+      {
+        "at": "after_conflict_discovery",
+        "wall_seconds": 103.819,
+        "cpu_seconds": 93.808,
+        "peak_rss_bytes": 96944128,
+        "current_rss_bytes": null,
+        "database_bytes": 254798496
+      },
+      {
+        "at": "before_cold_lane",
+        "wall_seconds": 103.82,
+        "cpu_seconds": 93.809,
+        "peak_rss_bytes": 96944128,
+        "current_rss_bytes": null,
+        "database_bytes": 254798496
+      },
+      {
+        "at": "after_cold_lane",
+        "wall_seconds": 118.389,
+        "cpu_seconds": 107.975,
+        "peak_rss_bytes": 96944128,
+        "current_rss_bytes": null,
+        "database_bytes": 253274352
+      },
+      {
+        "at": "after_warm_lane",
+        "wall_seconds": 201.809,
+        "cpu_seconds": 189.446,
+        "peak_rss_bytes": 96944128,
+        "current_rss_bytes": null,
+        "database_bytes": 285120176
+      },
+      {
+        "at": "after_concurrent_lane",
+        "wall_seconds": 220.95,
+        "cpu_seconds": 208.328,
+        "peak_rss_bytes": 96944128,
+        "current_rss_bytes": null,
+        "database_bytes": 286807728
+      }
+    ]
+  },
+  "reference": {
+    "profile": {
+      "cpu_logical_cores": 4,
+      "memory_gib": 16,
+      "storage_class": "local-ssd",
+      "observations": 100000
+    },
+    "warm_targets": {
+      "preview_search": {
+        "target_p95_ms": 300,
+        "operations": [
+          "engineering.search",
+          "engineering.search.current_safe",
+          "engineering.search.acl_partitioned_reader"
+        ],
+        "observed_worst_p95_ms": 217.869,
+        "within_target": true
+      },
+      "context_build_4k_tokens_16kib": {
+        "target_p95_ms": 1000,
+        "operations": [
+          "engineering.context.build",
+          "engineering.context.build.current_safe",
+          "engineering.context.build.conflict_groups"
+        ],
+        "observed_worst_p95_ms": 324.169,
+        "within_target": true
+      },
+      "checkpoint_commit": {
+        "target_p95_ms": 200,
+        "operations": [
+          "continuity.checkpoint.append.short",
+          "continuity.checkpoint.append.medium",
+          "continuity.checkpoint.append.near_limit"
+        ],
+        "observed_worst_p95_ms": 21.61,
+        "within_target": true
+      }
+    },
+    "warm_targets_note": "within_target is advisory unless release_blockers is empty: the targets are defined only on the reference profile",
+    "release_eligible": false,
+    "release_blockers": [
+      "corpus 10000 is below the 100000 reference",
+      "system-cold lane not executed: the OS page cache is not controlled"
+    ]
   }
 }
