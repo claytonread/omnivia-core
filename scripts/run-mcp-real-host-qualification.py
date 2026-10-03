@@ -33,7 +33,7 @@ import time
 import tomllib
 import venv
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
@@ -57,7 +57,7 @@ FIRST_PARTY: Final = (
     "omnivia-core-mcp",
 )
 SDK_PINS: Final = {"mcp": "2.0.0", "mcp-types": "2.0.0"}
-HOST_VERSIONS: Final = {"claude-code": "2.1.288", "codex-cli": "0.146.0"}
+HOST_VERSIONS: Final = {"claude-code": "2.1.289", "codex-cli": "0.146.0"}
 SCRIPT_PATH: Final = Path(__file__).resolve()
 RESTRICTED_TOOL_COUNT: Final = 13
 AUTHORING_TOOL_COUNT: Final = 18
@@ -482,17 +482,34 @@ def claude_tool_name(tool: str) -> str:
     return f"mcp__{SERVER_KEY}__{tool}"
 
 
-def claude_mcp_config(entry: Mapping[str, Any]) -> dict[str, Any]:
-    """The Claude MCP document; the server's empty token variable overrides any inherited token."""
-    return {"mcpServers": {SERVER_KEY: {**entry, "env": {CLAUDE_TOKEN_VARIABLE: ""}}}}
+def claude_mcp_config(
+    entry: Mapping[str, Any], *, redirect: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """The Claude MCP document; its environment overrides any inherited profile or token.
+
+    ``redirect`` is the private layout's home and config directory, given only for an
+    existing login, whose host process keeps the real profile.  The empty token
+    variable always overrides any inherited token.
+    """
+    environment = {**(redirect or {}), CLAUDE_TOKEN_VARIABLE: ""}
+    return {"mcpServers": {SERVER_KEY: {**entry, "env": environment}}}
 
 
 def claude_command(
-    binary: Path, *, mcp_config: Path, prompt: str, tools: Sequence[str]
+    binary: Path,
+    *,
+    mcp_config: Path,
+    prompt: str,
+    tools: Sequence[str],
+    existing_login: bool = False,
 ) -> list[str]:
-    """One non-interactive run with named MCP calls pre-authorized and no prompts."""
+    """One non-interactive run with named MCP calls pre-authorized and no prompts.
+
+    An existing login runs with ``--safe-mode`` and ``--restricted`` too, because
+    the host's own customizations and built-in tools are not ours to trust.
+    """
     allowed = ",".join(claude_tool_name(tool) for tool in tools)
-    return [
+    command = [
         str(binary),
         "-p",
         prompt,
@@ -511,6 +528,9 @@ def claude_command(
         "--setting-sources",
         "project",
     ]
+    if existing_login:
+        command.extend(["--safe-mode", "--restricted"])
+    return command
 
 
 def codex_config_toml(entry: Mapping[str, Any]) -> str:
@@ -673,15 +693,80 @@ def read_claude_token(source: Path) -> str:
     return token
 
 
-def provision_credential(host: str, layout: HostLayout, auth_file: Path) -> dict[str, str]:
+@dataclass(frozen=True)
+class AuthFile:
+    """An owner-protected credential file: Claude's setup token, or Codex's ``auth.json``."""
+
+    path: Path
+
+
+def _plain_text(value: str) -> bool:
+    return value != "" and value.isprintable() and value == value.strip()
+
+
+@dataclass(frozen=True)
+class ExistingLogin:
+    """The Claude CLI profile already logged in on this host.  It names no file.
+
+    ``home`` and ``user`` are the invoking process's own values, carried unchanged so
+    the host process selects the same login.  They are hidden from ``repr``.
+    """
+
+    home: str = field(repr=False)
+    user: str = field(repr=False)
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str]) -> ExistingLogin:
+        """Capture ``HOME`` and ``USER``, or refuse with a fixed code and no value."""
+        home, user = environ.get("HOME", ""), environ.get("USER", "")
+        if not (
+            _plain_text(home)
+            and os.path.isabs(home)
+            and _plain_text(user)
+        ):
+            raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE)
+        return cls(home, user)
+
+
+#: The one credential source a run uses.  Exactly one is ever selected.
+AuthSource = AuthFile | ExistingLogin
+
+
+def auth_source(
+    host: str,
+    auth_file: Path | None,
+    existing_login: bool,
+    environ: Mapping[str, str] | None = None,
+) -> AuthSource:
+    """Select exactly one auth source, or raise ``ValueError`` with a fixed message.
+
+    An existing login also captures the invoking ``HOME`` and ``USER``; a missing or
+    malformed value raises ``QualificationError`` (``authentication_unavailable``).
+    """
+    if existing_login:
+        if host != "claude-code" or auth_file is not None:
+            raise ValueError("--use-existing-host-auth is Claude only and excludes --auth-file")
+        return ExistingLogin.from_environ(os.environ if environ is None else environ)
+    if auth_file is None:
+        raise ValueError("qualification requires --auth-file or --use-existing-host-auth")
+    return AuthFile(auth_file)
+
+
+def provision_credential(host: str, layout: HostLayout, auth: AuthSource) -> dict[str, str]:
     """Place Codex's ``auth.json``, or return Claude's token for its environment only.
 
-    Claude never gets a credential file: its token reaches the host solely as
-    ``CLAUDE_CODE_OAUTH_TOKEN``, which overrides any keychain login.
+    Claude never gets a credential file: a setup token reaches the host solely as
+    ``CLAUDE_CODE_OAUTH_TOKEN``, which overrides any keychain login.  An existing
+    login provisions nothing and never reads or copies the real profile.  Codex
+    accepts no existing login, so that pairing is refused here too.
     """
+    if isinstance(auth, ExistingLogin):
+        if host != "claude-code":
+            raise QualificationError(ReasonCode.AUTHENTICATION_UNAVAILABLE)
+        return {}
     if host == "claude-code":
-        return {CLAUDE_TOKEN_VARIABLE: read_claude_token(auth_file)}
-    copy_auth_file(auth_file, layout.auth_destination)
+        return {CLAUDE_TOKEN_VARIABLE: read_claude_token(auth.path)}
+    copy_auth_file(auth.path, layout.auth_destination)
     return {}
 
 
@@ -1812,11 +1897,22 @@ def _write_private_file(path: Path, text: str) -> None:
         raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
 
 
-def write_host_config(layout: HostLayout, host: str, entry: Mapping[str, Any]) -> Path:
-    """Write the native per-run MCP configuration for ``host`` and return its path."""
+def write_host_config(
+    layout: HostLayout,
+    host: str,
+    entry: Mapping[str, Any],
+    *,
+    existing_login: ExistingLogin | None = None,
+) -> Path:
+    """Write the native per-run MCP configuration for ``host`` and return its path.
+
+    An existing login's Claude MCP child is pointed at the private layout, never the
+    real profile; token mode writes the empty token override alone.
+    """
     if host == "claude-code":
         path = layout.root / "claude-mcp.json"
-        _write_private_file(path, json.dumps(claude_mcp_config(entry)))
+        redirect = None if existing_login is None else layout.environment()
+        _write_private_file(path, json.dumps(claude_mcp_config(entry, redirect=redirect)))
     elif host == "codex-cli":
         path = layout.config_dir / "config.toml"
         _write_private_file(path, codex_config_toml(entry))
@@ -1826,18 +1922,32 @@ def write_host_config(layout: HostLayout, host: str, entry: Mapping[str, Any]) -
 
 
 def host_environment(
-    layout: HostLayout, binary: Path, credential: Mapping[str, str] | None = None
+    layout: HostLayout,
+    binary: Path,
+    credential: Mapping[str, str] | None = None,
+    *,
+    existing_login: ExistingLogin | None = None,
 ) -> dict[str, str]:
     """A minimal environment: no operator variable or ambient config reaches the host.
 
     ``credential`` is the only extra input, given by ``provision_credential``: the
-    provisioned portable credential intentionally reaches the host.
+    provisioned portable credential intentionally reaches the host.  An existing
+    login keeps the invoking ``HOME`` and ``USER`` so the host selects the same
+    profile; it sets no config variable and injects no token.  The per-run
+    ``TMPDIR`` is private in both modes.
     """
+    if existing_login is None:
+        redirect = layout.environment()
+        profile: dict[str, str] = {}
+    else:
+        redirect = {}
+        profile = {"HOME": existing_login.home, "USER": existing_login.user}
     return {
         "PATH": f"{binary.parent}:{SYSTEM_PATH}",
         "LANG": "en_US.UTF-8",
         "TMPDIR": str(layout.temporary),
-        **layout.environment(),
+        **redirect,
+        **profile,
         **(credential or {}),
     }
 
@@ -1850,9 +1960,16 @@ def host_command(
     *,
     prompt: str,
     tools: Sequence[str],
+    existing_login: bool = False,
 ) -> list[str]:
     if host == "claude-code":
-        return claude_command(binary, mcp_config=config, prompt=prompt, tools=tools)
+        return claude_command(
+            binary,
+            mcp_config=config,
+            prompt=prompt,
+            tools=tools,
+            existing_login=existing_login,
+        )
     if host == "codex-cli":
         return codex_command(
             binary, workspace=layout.workspace, prompt=prompt, last_message=layout.root / "last-message.txt"
@@ -1892,13 +2009,14 @@ def require_host_authentication(
     host: str,
     binary: Path,
     layout: HostLayout,
-    auth_file: Path,
+    auth: AuthSource,
     *,
     run: Runner = _run_transient,
 ) -> None:
-    """Prove the provisioned credential works in the isolated host home."""
+    """Prove the credential works with the same environment and mode a session uses."""
     create_layout(layout)
-    credential = provision_credential(host, layout, auth_file)
+    existing_login = auth if isinstance(auth, ExistingLogin) else None
+    credential = provision_credential(host, layout, auth)
     command = (
         [str(binary), "auth", "status", "--json"]
         if host == "claude-code"
@@ -1907,7 +2025,7 @@ def require_host_authentication(
     try:
         completed = run(
             command,
-            host_environment(layout, binary, credential),
+            host_environment(layout, binary, credential, existing_login=existing_login),
             layout.workspace,
             60.0,
         )
@@ -2058,7 +2176,7 @@ def run_host_session(
     layout: HostLayout,
     installed: InstalledCandidate,
     core_config: Path,
-    auth_file: Path,
+    auth: AuthSource,
     prompt: str,
     marker: str,
     tools: Sequence[str],
@@ -2070,7 +2188,8 @@ def run_host_session(
 ) -> HostRunResult:
     """Lay out an isolated host, point it at the proxy and run it once."""
     create_layout(layout)
-    credential = provision_credential(host, layout, auth_file)
+    existing_login = auth if isinstance(auth, ExistingLogin) else None
+    credential = provision_credential(host, layout, auth)
     observation = layout.root / "observation.jsonl"
     spec = layout.root / "proxy-spec.json"
     child = mcp_server_entry(installed.mcp, core_config)
@@ -2084,11 +2203,24 @@ def run_host_session(
         )
     except OSError:
         raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
-    config = write_host_config(layout, host, proxy_server_entry(installed.python, spec))
-    command = host_command(host, binary, layout, config, prompt=prompt, tools=tools)
+    config = write_host_config(
+        layout,
+        host,
+        proxy_server_entry(installed.python, spec),
+        existing_login=existing_login,
+    )
+    command = host_command(
+        host,
+        binary,
+        layout,
+        config,
+        prompt=prompt,
+        tools=tools,
+        existing_login=existing_login is not None,
+    )
     return run_host(
         command,
-        env=host_environment(layout, binary, credential),
+        env=host_environment(layout, binary, credential, existing_login=existing_login),
         cwd=layout.workspace,
         observation=observation,
         marker=marker,
@@ -2934,7 +3066,7 @@ def probe_excluded_tools(
 class HostDriver:
     host: str
     binary: Path
-    auth_file: Path
+    auth: AuthSource
     installed: InstalledCandidate
     core_config: Path
     root: Path
@@ -2987,7 +3119,7 @@ class HostDriver:
             layout=layout,
             installed=self.installed,
             core_config=self.core_config,
-            auth_file=self.auth_file,
+            auth=self.auth,
             prompt=prompt,
             marker=marker,
             tools=tuple(dict.fromkeys(name for name, _ in calls)),
@@ -3425,7 +3557,7 @@ def _import_journey(
     run_root: Path,
     host: str,
     binary: Path,
-    auth_file: Path,
+    auth: AuthSource,
     ledger: GateLedger,
     progress: Callable[[str], None],
 ) -> ImportJourney:
@@ -3438,7 +3570,7 @@ def _import_journey(
         driver = HostDriver(
             host,
             binary,
-            auth_file,
+            auth,
             installed,
             config,
             run_root / "import-host",
@@ -3714,7 +3846,7 @@ def qualify_host(
     *,
     host: str,
     binary: Path,
-    auth_file: Path,
+    auth: AuthSource,
     installed: InstalledCandidate,
     run_root: Path,
     progress: Callable[[str], None] = lambda _stage: None,
@@ -3735,7 +3867,7 @@ def qualify_host(
         restricted = HostDriver(
             host,
             binary,
-            auth_file,
+            auth,
             installed,
             restricted_config,
             run_root / "restricted-host",
@@ -3764,7 +3896,7 @@ def qualify_host(
         authoring = HostDriver(
             host,
             binary,
-            auth_file,
+            auth,
             installed,
             authoring_config,
             run_root / "authoring-host",
@@ -3800,7 +3932,7 @@ def qualify_host(
         progress("excluded_tool_refused")
 
         imported = _import_journey(
-            installed, run_root / "import", host, binary, auth_file, ledger, progress
+            installed, run_root / "import", host, binary, auth, ledger, progress
         )
         progress("import_journey_ok")
         _ambiguous_response(installed, context, authoring, ledger)
@@ -3951,17 +4083,18 @@ def discard_runtime(root: Path) -> None:
 # --- command line ---------------------------------------------------------
 
 
-def _preflight(arguments: argparse.Namespace) -> tuple[Candidate, str]:
+def _preflight(arguments: argparse.Namespace, auth: AuthSource) -> tuple[Candidate, str]:
     """Refuse an unusable invocation; return the reloaded candidate and the schema digest."""
     load_candidate(arguments.candidate)
     require_platform(platform.system().lower(), platform.machine().lower())
     binary: Path = arguments.host_binary
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise QualificationError(ReasonCode.HOST_BINARY_UNAVAILABLE)
-    if arguments.host == "claude-code":
-        read_claude_token(arguments.auth_file)
-    else:
-        require_auth_file(arguments.auth_file)
+    if isinstance(auth, AuthFile):
+        if arguments.host == "claude-code":
+            read_claude_token(auth.path)
+        else:
+            require_auth_file(auth.path)
     load_schema(arguments.schema)
     candidate = load_candidate(arguments.candidate)
     try:
@@ -3993,6 +4126,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--host-binary", type=Path)
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--auth-file", type=Path)
+    parser.add_argument(
+        "--use-existing-host-auth",
+        action="store_true",
+        help="Claude only: use the already logged-in Claude CLI profile instead of --auth-file",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--schema", type=Path)
     parser.add_argument("--runtime-root", type=Path, help=argparse.SUPPRESS)
@@ -4023,13 +4161,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_record(record, load_schema(arguments.schema))
             print("record valid")
             return 0
-        required = ("host", "host_binary", "candidate", "auth_file", "output")
+        required = ("host", "host_binary", "candidate", "output")
         if any(getattr(arguments, name) is None for name in required):
-            parser.error("qualification requires --host, --host-binary, --candidate, "
-                         "--auth-file and --output")
+            parser.error("qualification requires --host, --host-binary, --candidate and --output")
+        try:
+            auth = auth_source(arguments.host, arguments.auth_file, arguments.use_existing_host_auth)
+        except ValueError as error:
+            parser.error(str(error))
+        existing_login = auth if isinstance(auth, ExistingLogin) else None
         runtime_root: Path | None = arguments.runtime_root
         if runtime_root is None:
-            candidate, schema_sha256 = _preflight(arguments)
+            candidate, schema_sha256 = _preflight(arguments, auth)
             trace("preflight_ok")
             runtime_root = Path(tempfile.mkdtemp(prefix=RUNTIME_PREFIX, dir=RUNTIME_PARENT))
             try:
@@ -4056,6 +4198,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "LANG": "en_US.UTF-8",
                     "TMPDIR": str(runtime_root),
                 }
+                if existing_login is not None:
+                    # The child re-validates these; they carry no secret, only the profile.
+                    environment.update(HOME=existing_login.home, USER=existing_login.user)
                 reexec_under_candidate(
                     installed,
                     [*arguments_list, "--runtime-root", str(runtime_root)],
@@ -4070,7 +4215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # harness created it; a root that cannot is refused and never touched.
         require_owned_runtime(runtime_root)
         try:
-            candidate, schema_sha256 = _preflight(arguments)
+            candidate, schema_sha256 = _preflight(arguments, auth)
             trace("preflight_ok")
             if not in_candidate_runtime(os.environ, sys.prefix):
                 raise QualificationError(ReasonCode.ENTRYPOINT_UNRESOLVED)
@@ -4087,7 +4232,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             version = require_host_version(
                 arguments.host,
                 arguments.host_binary,
-                host_environment(version_layout, arguments.host_binary),
+                host_environment(
+                    version_layout, arguments.host_binary, existing_login=existing_login
+                ),
                 version_layout.workspace,
             )
             host_identity = HostIdentity(arguments.host, version)
@@ -4096,14 +4243,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.host,
                 arguments.host_binary,
                 host_layout(runtime_root / "authentication", arguments.host),
-                arguments.auth_file,
+                auth,
             )
             trace("host_authentication_ok")
             identity = os_identity()
             ledger = qualify_host(
                 host=arguments.host,
                 binary=arguments.host_binary,
-                auth_file=arguments.auth_file,
+                auth=auth,
                 installed=installed,
                 run_root=runtime_root / "qualification",
                 progress=trace,

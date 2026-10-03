@@ -918,7 +918,7 @@
           "host": {
             "properties": {
               "version": {
-                "const": "2.1.288"
+                "const": "2.1.289"
               }
             }
           }

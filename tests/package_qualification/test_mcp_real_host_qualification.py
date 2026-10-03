@@ -696,7 +696,7 @@ def test_record_construction_accepts_no_model_text() -> None:
 
 # --- record construction ---------------------------------------------------
 
-def _inputs(ledger: Any = None, host_version: str = "2.1.288", host: str = "claude-code") -> dict[str, Any]:
+def _inputs(ledger: Any = None, host_version: str = "2.1.289", host: str = "claude-code") -> dict[str, Any]:
     return {
         "candidate": q.Candidate(
             REVISION,
@@ -1775,12 +1775,12 @@ def test_host_version_accepts_only_one_pinned_native_identity(tmp_path: Path) ->
         return lambda *_: subprocess.CompletedProcess([], status, output, b"ignored")
 
     assert q.require_host_version(
-        "claude-code", Path("/bin/claude"), {}, tmp_path, run=runner(b"2.1.288 (Claude Code)\n")
-    ) == "2.1.288"
+        "claude-code", Path("/bin/claude"), {}, tmp_path, run=runner(b"2.1.289 (Claude Code)\n")
+    ) == "2.1.289"
     assert q.require_host_version(
         "codex-cli", Path("/bin/codex"), {}, tmp_path, run=runner(b"codex-cli 0.146.0\n")
     ) == "0.146.0"
-    for output in (b"2.1.288\n", b"Claude Code 2.1.288 2.1.289\n"):
+    for output in (b"2.1.289\n", b"Claude Code 2.1.288 2.1.289\n", b"Claude Code 2.1.288\n"):
         with pytest.raises(q.QualificationError) as error:
             q.require_host_version(
                 "claude-code", Path("/bin/claude"), {}, tmp_path, run=runner(output)
@@ -1803,7 +1803,7 @@ def test_host_authentication_is_proved_only_inside_the_isolated_home(tmp_path: P
         assert arguments[1] == "login"
         return subprocess.CompletedProcess(arguments, 0, b"", b"warning\nLogged in using ChatGPT\n")
 
-    q.require_host_authentication("codex-cli", binary, layout, auth, run=run)
+    q.require_host_authentication("codex-cli", binary, layout, q.AuthFile(auth), run=run)
 
 
 @posix_only
@@ -1814,7 +1814,7 @@ def test_an_unusable_copied_host_credential_fails_before_a_journey(tmp_path: Pat
             "claude-code",
             tmp_path / "claude",
             layout,
-            _token_file(tmp_path),
+            q.AuthFile(_token_file(tmp_path)),
             run=lambda *_: subprocess.CompletedProcess(
                 [], 0, b'{"loggedIn":false}', b"discarded"
             ),
@@ -1884,7 +1884,7 @@ def test_malformed_claude_token_files_are_refused_without_disclosure(
             "claude-code",
             _claude_binary(tmp_path),
             layout,
-            source,
+            q.AuthFile(source),
             run=lambda *args: calls.append(args),
         )
     assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
@@ -1919,7 +1919,9 @@ def test_claude_authentication_injects_only_the_token_into_the_minimal_environme
         seen.append((list(arguments), dict(environment)))
         return subprocess.CompletedProcess(arguments, 0, b'{"loggedIn":true}', b"")
 
-    q.require_host_authentication("claude-code", _claude_binary(tmp_path), layout, source, run=run)
+    q.require_host_authentication(
+        "claude-code", _claude_binary(tmp_path), layout, q.AuthFile(source), run=run
+    )
     [(arguments, environment)] = seen
     assert arguments[1:] == ["auth", "status", "--json"]
     assert environment == {
@@ -1961,7 +1963,7 @@ def test_every_claude_session_receives_the_token_and_nothing_persists(
         layout=layout,
         installed=installed,
         core_config=tmp_path / "core.json",
-        auth_file=source,
+        auth=q.AuthFile(source),
         prompt="prompt-text",
         marker="marker-text",
         tools=q.RESTRICTED_TOOLS,
@@ -1996,7 +1998,7 @@ def test_codex_keeps_its_copied_auth_file_and_never_receives_the_token(
         seen.append(dict(environment))
         return subprocess.CompletedProcess(arguments, 0, b"Logged in\n", b"")
 
-    q.require_host_authentication("codex-cli", binary, layout, auth, run=run)
+    q.require_host_authentication("codex-cli", binary, layout, q.AuthFile(auth), run=run)
     assert layout.auth_destination.read_bytes() == SECRET
     assert stat.S_IMODE(layout.auth_destination.stat().st_mode) == 0o600
     assert set(seen[0]) == {"PATH", "LANG", "TMPDIR", "HOME", "CODEX_HOME"}
@@ -2007,7 +2009,7 @@ def test_codex_keeps_its_copied_auth_file_and_never_receives_the_token(
     # Codex copies a token-shaped file verbatim; it is never read as a token.
     second = q.host_layout(tmp_path / "second", "codex-cli")
     token_shaped = _token_file(tmp_path, name="codex-token-shaped")
-    assert q.provision_credential("codex-cli", second, token_shaped) == {}
+    assert q.provision_credential("codex-cli", second, q.AuthFile(token_shaped)) == {}
     assert second.auth_destination.read_bytes() == TOKEN.encode("ascii") + b"\n"
 
 
@@ -2024,13 +2026,13 @@ def test_the_token_reaches_no_run_outside_an_authenticated_claude_session(
 
     def runner(argv: Any, env: Any, cwd: Path, timeout: float) -> Any:
         seen.append(dict(env))
-        return subprocess.CompletedProcess(argv, 0, b"2.1.288 (Claude Code)\n", b"")
+        return subprocess.CompletedProcess(argv, 0, b"2.1.289 (Claude Code)\n", b"")
 
     q.require_host_version("claude-code", binary, q.host_environment(layout, binary), tmp_path, run=runner)
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in seen[0]
     codex = q.host_layout(tmp_path, "codex-cli")
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in q.host_environment(
-        codex, binary, q.provision_credential("codex-cli", codex, _auth(tmp_path))
+        codex, binary, q.provision_credential("codex-cli", codex, q.AuthFile(_auth(tmp_path)))
     )
 
 
@@ -2162,7 +2164,7 @@ def test_host_driver_retries_only_a_missing_target_and_allows_safe_reads(
     driver = q.HostDriver(
         "codex-cli",
         tmp_path / "codex",
-        tmp_path / "auth",
+        q.AuthFile(tmp_path / "auth"),
         object(),
         tmp_path / "core.json",
         tmp_path / "sessions",
@@ -2191,7 +2193,7 @@ def test_host_driver_refuses_an_unexpected_mutation(
     driver = q.HostDriver(
         "codex-cli",
         tmp_path / "codex",
-        tmp_path / "auth",
+        q.AuthFile(tmp_path / "auth"),
         object(),
         tmp_path / "core.json",
         tmp_path / "sessions",
@@ -2351,7 +2353,7 @@ def test_host_driver_releases_the_same_paused_request_after_revocation(
     driver = q.HostDriver(
         "codex-cli",
         tmp_path / "codex",
-        tmp_path / "auth",
+        q.AuthFile(tmp_path / "auth"),
         object(),
         tmp_path / "core.json",
         tmp_path / "sessions",
@@ -2519,7 +2521,7 @@ def run(
             token
             for key, value in arguments.items()
             if value is not None
-            for token in (key, str(value))
+            for token in ((key,) if value is True else (key, str(value)))
         ]
         status = q.main(argv)
         captured = capsys.readouterr()
@@ -2881,7 +2883,7 @@ def _driver(tmp_path: Path, **kwargs: Any) -> Any:
     return q.HostDriver(
         "codex-cli",
         tmp_path / "codex",
-        tmp_path / "auth",
+        q.AuthFile(tmp_path / "auth"),
         object(),
         tmp_path / "core.json",
         tmp_path / "sessions",
@@ -3643,7 +3645,7 @@ def _journey(
     q.qualify_host(
         host="codex-cli",
         binary=root / "codex",
-        auth_file=root / "auth",
+        auth=q.AuthFile(root / "auth"),
         installed=object(),  # type: ignore[arg-type]
         run_root=root,
         progress=log.append,
@@ -4338,7 +4340,7 @@ def test_qualify_host_stops_a_core_when_startup_fails_after_spawning(
         q.qualify_host(
             host="codex-cli",
             binary=tmp_path / "codex",
-            auth_file=tmp_path / "auth",
+            auth=q.AuthFile(tmp_path / "auth"),
             installed=object(),  # type: ignore[arg-type]
             run_root=tmp_path,
         )
@@ -4694,7 +4696,7 @@ def test_a_pass_is_never_published_over_retained_runtime(
     monkeypatch.setattr(sys, "prefix", str(prefix))
     monkeypatch.setattr(q, "in_candidate_runtime", lambda *_: True)
     monkeypatch.setattr(q, "installed_from_prefix", lambda *_: installed)
-    monkeypatch.setattr(q, "require_host_version", lambda *_, **__: "2.1.288")
+    monkeypatch.setattr(q, "require_host_version", lambda *_, **__: "2.1.289")
     monkeypatch.setattr(q, "require_host_authentication", lambda *_, **__: None)
     monkeypatch.setattr(q, "qualify_host", lambda **_: _passed_ledger())
     monkeypatch.setattr(q, "os_identity", lambda: q.OsIdentity("27.0", "26A428", "arm64"))
@@ -4738,3 +4740,479 @@ def test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest() ->
     assert len(catalogue) == 57 and len(outside) == 39
     assert sorted(name.replace(".", "_") for name in outside) == sorted(q.UNEXPOSED_TOOLS)
     assert {entry.tool_name for entry in manifest.AUTHORING_MANIFEST} == set(q.AUTHORING_TOOLS)
+
+
+# --- existing host login (Claude only) --------------------------------------
+
+AMBIENT_HOME = "/Users/operator"
+AMBIENT_USER = "operator"
+LOGIN = q.ExistingLogin(AMBIENT_HOME, AMBIENT_USER)
+
+
+def _ambient(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The invoking process's profile values, as an existing-login run captures them."""
+    monkeypatch.setenv("HOME", AMBIENT_HOME)
+    monkeypatch.setenv("USER", AMBIENT_USER)
+
+
+@pytest.mark.parametrize(
+    ("host", "auth_file", "existing_login", "expected"),
+    [
+        ("claude-code", "file", False, q.AuthFile),
+        ("codex-cli", "file", False, q.AuthFile),
+        ("claude-code", None, True, q.ExistingLogin),
+    ],
+)
+def test_auth_source_selects_exactly_one_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    auth_file: str | None,
+    existing_login: bool,
+    expected: type,
+) -> None:
+    _ambient(monkeypatch)
+    path = tmp_path / "auth" if auth_file else None
+    assert isinstance(q.auth_source(host, path, existing_login), expected)
+
+
+@pytest.mark.parametrize(
+    ("host", "auth_file", "existing_login"),
+    [
+        ("claude-code", None, False),
+        ("codex-cli", None, False),
+        ("claude-code", "file", True),
+        ("codex-cli", "file", True),
+        ("codex-cli", None, True),
+    ],
+)
+def test_auth_source_refuses_every_ambiguous_or_misplaced_selection(
+    tmp_path: Path, host: str, auth_file: str | None, existing_login: bool
+) -> None:
+    path = tmp_path / "auth" if auth_file else None
+    with pytest.raises(ValueError):
+        q.auth_source(host, path, existing_login)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"--use-existing-host-auth": True},
+        {"--host": "codex-cli", "--auth-file": None, "--use-existing-host-auth": True},
+    ],
+)
+def test_the_cli_refuses_an_ambiguous_auth_source_as_a_usage_error(
+    run: Any, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        run(**overrides)
+    assert exit_info.value.code == 2
+    assert not run.output.exists()
+
+
+def test_an_existing_login_keeps_the_invoking_profile_and_redirects_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "operator-ambient-value-000000")
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    binary = _claude_binary(tmp_path)
+    assert q.host_environment(layout, binary, existing_login=LOGIN) == {
+        "PATH": f"{binary.parent}:{q.SYSTEM_PATH}",
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": str(layout.temporary),
+        "HOME": AMBIENT_HOME,
+        "USER": AMBIENT_USER,
+    }
+
+
+def test_an_existing_login_captures_the_invoking_profile_values_only() -> None:
+    environ = {"HOME": AMBIENT_HOME, "USER": AMBIENT_USER, "CLAUDE_CODE_OAUTH_TOKEN": TOKEN}
+    assert q.ExistingLogin.from_environ(environ) == LOGIN
+    assert AMBIENT_HOME not in repr(LOGIN) and AMBIENT_USER not in repr(LOGIN)
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {},
+        {"USER": AMBIENT_USER},
+        {"HOME": AMBIENT_HOME},
+        {"HOME": "", "USER": AMBIENT_USER},
+        {"HOME": "relative/home", "USER": AMBIENT_USER},
+        {"HOME": f"{AMBIENT_HOME}\n", "USER": AMBIENT_USER},
+        {"HOME": AMBIENT_HOME, "USER": ""},
+        {"HOME": AMBIENT_HOME, "USER": " operator"},
+        {"HOME": AMBIENT_HOME, "USER": "op\x00erator"},
+    ],
+)
+def test_a_missing_or_malformed_ambient_profile_refuses_without_echoing_it(
+    environ: dict[str, str],
+) -> None:
+    with pytest.raises(q.QualificationError) as error:
+        q.auth_source("claude-code", None, True, environ=environ)
+    assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+    assert str(error.value) == Reason.AUTHENTICATION_UNAVAILABLE.value
+
+
+def test_an_existing_login_provisions_no_credential_and_copies_nothing(tmp_path: Path) -> None:
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    assert q.provision_credential("claude-code", layout, LOGIN) == {}
+    assert not layout.auth_destination.exists()
+
+
+@pytest.mark.parametrize("call", ["provision", "authenticate"])
+def test_codex_fails_closed_if_an_existing_login_is_ever_paired_with_it(
+    tmp_path: Path, call: str
+) -> None:
+    layout = q.host_layout(tmp_path / "isolated", "codex-cli")
+    with pytest.raises(q.QualificationError) as error:
+        if call == "provision":
+            q.provision_credential("codex-cli", layout, LOGIN)
+        else:
+            q.require_host_authentication(
+                "codex-cli",
+                tmp_path,
+                layout,
+                LOGIN,
+                run=lambda *_args, **_kwargs: pytest.fail("the host ran"),
+            )
+    assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+    assert not layout.auth_destination.exists()
+
+
+def test_the_mcp_child_redirects_the_profile_only_for_an_existing_login(tmp_path: Path) -> None:
+    existing = q.host_layout(tmp_path / "existing", "claude-code")
+    token = q.host_layout(tmp_path / "token", "claude-code")
+    q.create_layout(existing)
+    q.create_layout(token)
+    existing_text = q.write_host_config(existing, "claude-code", ENTRY, existing_login=LOGIN).read_text(
+        encoding="utf-8"
+    )
+    token_text = q.write_host_config(token, "claude-code", ENTRY).read_text(encoding="utf-8")
+    assert json.loads(existing_text)["mcpServers"][q.SERVER_KEY]["env"] == {
+        "HOME": str(existing.home),
+        "CLAUDE_CONFIG_DIR": str(existing.config_dir),
+        "CLAUDE_CODE_OAUTH_TOKEN": "",
+    }
+    assert json.loads(token_text)["mcpServers"][q.SERVER_KEY]["env"] == {"CLAUDE_CODE_OAUTH_TOKEN": ""}
+    assert AMBIENT_HOME not in existing_text and AMBIENT_USER not in existing_text
+
+
+def test_the_existing_login_command_adds_only_the_safe_and_restricted_flags(tmp_path: Path) -> None:
+    arguments = {"mcp_config": tmp_path / "m.json", "prompt": "p", "tools": q.RESTRICTED_TOOLS}
+    token = q.claude_command(_claude_binary(tmp_path), **arguments)
+    existing = q.claude_command(_claude_binary(tmp_path), **arguments, existing_login=True)
+    assert "--safe-mode" not in token and "--restricted" not in token
+    assert existing == [*token, "--safe-mode", "--restricted"]
+
+
+def test_the_token_mode_keeps_its_redirects_and_its_command_without_the_hardening_flags(
+    tmp_path: Path,
+) -> None:
+    layout = q.host_layout(tmp_path, "claude-code")
+    binary = _claude_binary(tmp_path)
+    environment = q.host_environment(layout, binary, {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN})
+    assert environment["HOME"] == str(layout.home)
+    assert environment["CLAUDE_CONFIG_DIR"] == str(layout.config_dir)
+    assert environment["CLAUDE_CODE_OAUTH_TOKEN"] == TOKEN
+    command = q.claude_command(binary, mcp_config=tmp_path / "m.json", prompt="p", tools=q.RESTRICTED_TOOLS)
+    assert "--safe-mode" not in command and "--restricted" not in command
+
+
+def test_an_existing_login_session_runs_hardened_with_no_token_and_no_profile_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    installed = q.InstalledCandidate(
+        tmp_path / "venv",
+        tmp_path / "venv" / "python",
+        tmp_path / "venv" / "service",
+        tmp_path / "venv" / "omnivia",
+        tmp_path / "venv" / "mcp",
+    )
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(q, "run_host", lambda command, **kwargs: seen.update(command=list(command), **kwargs))
+    q.run_host_session(
+        host="claude-code",
+        binary=_claude_binary(tmp_path),
+        layout=layout,
+        installed=installed,
+        core_config=tmp_path / "core.json",
+        auth=LOGIN,
+        prompt="prompt-text",
+        marker="marker-text",
+        tools=q.RESTRICTED_TOOLS,
+        timeout=1.0,
+    )
+    assert seen["env"] == {
+        "PATH": f"{tmp_path}:{q.SYSTEM_PATH}",
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": str(layout.temporary),
+        "HOME": AMBIENT_HOME,
+        "USER": AMBIENT_USER,
+    }
+    assert "CLAUDE_CONFIG_DIR" not in seen["env"]
+    command = seen["command"]
+    for flag in ("--safe-mode", "--restricted", "--strict-mcp-config", "--no-session-persistence"):
+        assert flag in command
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    config_text = (layout.root / "claude-mcp.json").read_text(encoding="utf-8")
+    server = json.loads(config_text)["mcpServers"]
+    assert server[q.SERVER_KEY]["env"] == {
+        "HOME": str(layout.home),
+        "CLAUDE_CONFIG_DIR": str(layout.config_dir),
+        "CLAUDE_CODE_OAUTH_TOKEN": "",
+    }
+    assert AMBIENT_HOME not in config_text
+    assert not (layout.config_dir / ".credentials.json").exists()
+
+
+@posix_only
+def test_an_existing_login_is_proved_only_by_auth_status_in_the_session_environment(
+    tmp_path: Path,
+) -> None:
+    layout = q.host_layout(tmp_path / "isolated", "claude-code")
+    binary = _claude_binary(tmp_path)
+    seen: list[tuple[list[str], dict[str, str], Path, float]] = []
+
+    def run(arguments: Any, environment: Any, cwd: Path, timeout: float) -> Any:
+        seen.append((list(arguments), dict(environment), cwd, timeout))
+        return subprocess.CompletedProcess(arguments, 0, b'{"loggedIn": true}', b"")
+
+    q.require_host_authentication("claude-code", binary, layout, LOGIN, run=run)
+    [(arguments, environment, cwd, timeout)] = seen
+    assert arguments == [str(binary), "auth", "status", "--json"]
+    assert environment == q.host_environment(layout, binary, existing_login=LOGIN)
+    assert environment["HOME"] == AMBIENT_HOME and environment["USER"] == AMBIENT_USER
+    assert cwd == layout.workspace and timeout == 60.0
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (1, b'{"loggedIn": true}'),
+        (0, b'{"loggedIn": false}'),
+        (0, b'{"loggedIn": "true"}'),
+        (0, b'["loggedIn"]'),
+        (0, b"not json sk-ant-leak"),
+        (0, b""),
+    ],
+)
+def test_an_existing_login_fails_closed_unless_auth_status_reports_a_login(
+    tmp_path: Path, returncode: int, stdout: bytes
+) -> None:
+    def run(arguments: Any, environment: Any, cwd: Path, timeout: float) -> Any:
+        return subprocess.CompletedProcess(arguments, returncode, stdout, b"sk-ant-leak")
+
+    with pytest.raises(q.QualificationError) as error:
+        q.require_host_authentication(
+            "claude-code",
+            _claude_binary(tmp_path),
+            q.host_layout(tmp_path / "isolated", "claude-code"),
+            LOGIN,
+            run=run,
+        )
+    assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+    assert "sk-ant-leak" not in str(error.value)
+
+
+@posix_only
+def test_an_existing_login_whose_status_probe_cannot_run_is_refused(tmp_path: Path) -> None:
+    def run(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("probe refused")
+
+    with pytest.raises(q.QualificationError) as error:
+        q.require_host_authentication(
+            "claude-code",
+            _claude_binary(tmp_path),
+            q.host_layout(tmp_path / "isolated", "claude-code"),
+            LOGIN,
+            run=run,
+        )
+    assert _code(error) is Reason.AUTHENTICATION_UNAVAILABLE
+
+
+def test_the_driver_carries_an_existing_login_into_every_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Stop(Exception):
+        pass
+
+    seen: list[object] = []
+
+    def capture(**kwargs: Any) -> object:
+        seen.append(kwargs["auth"])
+        raise Stop
+
+    monkeypatch.setattr(q, "run_host_session", capture)
+    driver = q.HostDriver(
+        "claude-code",
+        _claude_binary(tmp_path),
+        LOGIN,
+        object(),
+        tmp_path / "core.json",
+        tmp_path / "sessions",
+        q.AUTHORING_TOOLS,
+    )
+    with pytest.raises(Stop):
+        driver.call("memory_search", {"query": "fixed"})
+    assert seen == [LOGIN]
+
+
+def _existing_child(
+    candidate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    receipt: object = None,
+) -> Path:
+    """A child run handed an owned runtime, stubbed up to the host authentication step."""
+    _ambient(monkeypatch)
+    matching = q.candidate_receipt(
+        q.load_candidate(candidate), hashlib.sha256(SCHEMA.read_bytes()).hexdigest()
+    )
+    runtime = _owned_runtime(
+        monkeypatch, tmp_path / "parent", matching if receipt is None else receipt
+    )
+    prefix = runtime / "candidate-venv"
+    installed = q.InstalledCandidate(
+        prefix,
+        prefix / "bin" / "python",
+        prefix / "bin" / "omnivia-core-service",
+        prefix / "bin" / "omnivia",
+        prefix / "bin" / "omnivia-core-mcp",
+    )
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(q, "in_candidate_runtime", lambda *_: True)
+    monkeypatch.setattr(q, "installed_from_prefix", lambda *_: installed)
+    monkeypatch.setattr(q, "require_host_version", lambda *_, **__: "2.1.289")
+    monkeypatch.setattr(q, "require_host_authentication", lambda *_, **__: None)
+    monkeypatch.setattr(q, "qualify_host", lambda **_: _passed_ledger())
+    monkeypatch.setattr(q, "os_identity", lambda: q.OsIdentity("27.0", "26A428", "arm64"))
+    return runtime
+
+
+def test_the_child_hands_the_existing_login_to_the_auth_step_and_passes(
+    run: Any, candidate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _existing_child(candidate, monkeypatch, tmp_path)
+    seen: dict[str, Any] = {}
+
+    def version_step(host: str, binary: Path, env: Any, cwd: Path, **_: Any) -> str:
+        seen["version_env"] = dict(env)
+        return "2.1.289"
+
+    def auth_step(host: str, binary: Path, layout: Any, auth: Any, **_: Any) -> None:
+        seen["auth"] = auth
+
+    monkeypatch.setattr(q, "require_host_version", version_step)
+    monkeypatch.setattr(q, "require_host_authentication", auth_step)
+    status, out, err = run(
+        **{"--auth-file": None, "--use-existing-host-auth": True, "--runtime-root": runtime}
+    )
+    assert (status, out, err) == (0, "qualification pass\n", "")
+    assert seen["auth"] == LOGIN
+    assert set(seen["version_env"]) == {"PATH", "LANG", "TMPDIR", "HOME", "USER"}
+    assert seen["version_env"]["HOME"] == AMBIENT_HOME
+    assert seen["version_env"]["USER"] == AMBIENT_USER
+    assert "CLAUDE_CONFIG_DIR" not in seen["version_env"]
+
+
+def test_a_child_whose_receipt_differs_refuses_the_existing_login_before_authenticating(
+    run: Any, candidate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _existing_child(candidate, monkeypatch, tmp_path, receipt={})
+    monkeypatch.setattr(
+        q, "require_host_authentication", lambda *_, **__: pytest.fail("authenticated")
+    )
+    status, out, err = run(
+        **{"--auth-file": None, "--use-existing-host-auth": True, "--runtime-root": runtime}
+    )
+    assert (status, out, err) == (1, "", "reason_code=entrypoint_unresolved\n")
+
+
+def test_an_existing_login_auth_failure_records_only_its_stable_code(
+    run: Any, candidate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _existing_child(candidate, monkeypatch, tmp_path)
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise q.QualificationError(Reason.AUTHENTICATION_UNAVAILABLE)
+
+    monkeypatch.setattr(q, "require_host_authentication", refuse)
+    status, out, err = run(
+        **{"--auth-file": None, "--use-existing-host-auth": True, "--runtime-root": runtime}
+    )
+    assert (status, out, err) == (1, "", "reason_code=authentication_unavailable\n")
+    record_text = run.output.read_text(encoding="utf-8")
+    record = json.loads(record_text)
+    assert (record["verdict"], record["reason_code"]) == ("fail", "authentication_unavailable")
+    assert AMBIENT_HOME not in record_text and AMBIENT_USER not in record_text
+
+
+@posix_only
+def test_the_existing_login_flag_survives_the_candidate_reexec_without_any_auth_path(
+    run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _ambient(monkeypatch)
+    installed = q.InstalledCandidate(
+        tmp_path / "candidate-venv",
+        tmp_path / "candidate-venv" / "bin" / "python",
+        tmp_path / "candidate-venv" / "bin" / "omnivia-core-service",
+        tmp_path / "candidate-venv" / "bin" / "omnivia",
+        tmp_path / "candidate-venv" / "bin" / "omnivia-core-mcp",
+    )
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(q, "bootstrap_candidate", lambda *_: installed)
+
+    def reexec(candidate_install: Any, argv: list[str], *, environ: Any) -> None:
+        observed.update(argv=argv, environ=environ)
+        raise q.QualificationError(Reason.ENTRYPOINT_UNRESOLVED)
+
+    monkeypatch.setattr(q, "reexec_under_candidate", reexec)
+    status, out, err = run(**{"--auth-file": None, "--use-existing-host-auth": True})
+    assert (status, out, err) == (1, "", "reason_code=entrypoint_unresolved\n")
+    argv = observed["argv"]
+    assert "--use-existing-host-auth" in argv and "--auth-file" not in argv
+    assert argv[-2] == "--runtime-root"
+    assert "auth.bin" not in " ".join(argv)
+    environ = observed["environ"]
+    assert set(environ) == {"PATH", "LANG", "TMPDIR", "HOME", "USER"}
+    assert (environ["HOME"], environ["USER"]) == (AMBIENT_HOME, AMBIENT_USER)
+    assert AMBIENT_HOME not in " ".join(argv) and AMBIENT_USER not in " ".join(argv)
+    assert "auth.bin" not in run.output.read_text(encoding="utf-8")
+    assert AMBIENT_HOME not in run.output.read_text(encoding="utf-8")
+
+
+def test_token_mode_reexec_carries_no_profile_values_even_when_the_profile_is_set(
+    run: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _ambient(monkeypatch)
+    installed = q.InstalledCandidate(
+        tmp_path / "candidate-venv",
+        tmp_path / "candidate-venv" / "bin" / "python",
+        tmp_path / "candidate-venv" / "bin" / "omnivia-core-service",
+        tmp_path / "candidate-venv" / "bin" / "omnivia",
+        tmp_path / "candidate-venv" / "bin" / "omnivia-core-mcp",
+    )
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(q, "bootstrap_candidate", lambda *_: installed)
+
+    def reexec(candidate_install: Any, argv: list[str], *, environ: Any) -> None:
+        observed.update(environ=environ)
+        raise q.QualificationError(Reason.ENTRYPOINT_UNRESOLVED)
+
+    monkeypatch.setattr(q, "reexec_under_candidate", reexec)
+    assert run() == (1, "", "reason_code=entrypoint_unresolved\n")
+    assert set(observed["environ"]) == {"PATH", "LANG", "TMPDIR"}
+
+
+def test_removing_an_existing_login_run_never_touches_the_real_profile(tmp_path: Path) -> None:
+    profile = tmp_path / "real-home" / ".claude"
+    profile.mkdir(parents=True)
+    (profile / ".credentials.json").write_text("host", encoding="utf-8")
+    root = tmp_path / "runtime"
+    q.create_layout(q.host_layout(root, "claude-code"))
+    q.remove_runtime(root)
+    assert not root.exists()
+    assert (profile / ".credentials.json").read_text(encoding="utf-8") == "host"

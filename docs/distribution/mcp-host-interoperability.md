@@ -250,14 +250,16 @@ Model text is not acceptance evidence. A harness must independently verify Core
 state and validate the closed redacted record. Prompts and model responses are
 ephemeral and are not retained.
 
-As of the Phase 8 implementation start, the approved replacement host baseline
-is Claude Code `2.1.288`, Codex CLI `0.146.0`, and macOS `27.0` build `26A428`
-on arm64. These values qualify nothing by themselves; they become evidence only
-after the corresponding real-host run passes at the frozen candidate commit.
+The approved replacement host baseline is Claude Code `2.1.289` (the installed
+supported CLI verified on 2026-10-04, replacing the Phase 8 start value
+`2.1.288`), Codex CLI `0.146.0`, and macOS `27.0` build `26A428` on arm64. These
+values qualify nothing by themselves; they become evidence only after the
+corresponding real-host run passes at the frozen candidate commit.
 
 The executable harness is `scripts/run-mcp-real-host-qualification.py`. A run
 names one host, its installed binary, one clean candidate directory, one
-explicit authentication file, the closed schema, and an output record:
+explicit authentication source (an `--auth-file`, or for Claude Code only
+`--use-existing-host-auth`), the closed schema, and an output record:
 
 ```bash
 .venv/bin/python scripts/run-mcp-real-host-qualification.py \
@@ -282,6 +284,20 @@ and a token-only authentication file:
   --output /absolute/path/to/claude-record.json
 ```
 
+To use the operator's already logged-in Claude CLI profile instead, pass
+`--use-existing-host-auth` in place of `--auth-file`. The two are mutually
+exclusive, and Codex CLI does not accept this flag:
+
+```bash
+.venv/bin/python scripts/run-mcp-real-host-qualification.py \
+  --host claude-code \
+  --host-binary /absolute/path/to/claude \
+  --candidate /absolute/path/to/candidate \
+  --use-existing-host-auth \
+  --schema docs/distribution/schemas/mcp-real-host-qualification-record-v1.schema.json \
+  --output /absolute/path/to/claude-record.json
+```
+
 ### `--auth-file` by host
 
 The same flag carries a different kind of credential for each host. For both,
@@ -301,21 +317,38 @@ never echoed.
   `CLAUDE_CODE_OAUTH_TOKEN` into the isolated Claude host environment, so no
   credential file is written into the isolated home.
 
-For both hosts, `HOME` and the host's configuration variable (`CLAUDE_CONFIG_DIR`
-for Claude Code, `CODEX_HOME` for Codex CLI) remain isolated. The normal
-host configuration is not copied, read or changed by the harness, and the
-portable Claude token does not rely on the operator's keychain login. The token
-is held in memory only for the authentication check and Claude host sessions;
-the harness does not write it to disk or include it in a record. The MCP server
-process explicitly receives `CLAUDE_CODE_OAUTH_TOKEN` set to the empty string,
-so neither the proxy nor Core inherits the token even though the Claude host
-process has it.
+In file mode, for both hosts, `HOME` and the host's configuration variable
+(`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex CLI) remain
+isolated. The normal host configuration is not copied, read or changed by the
+harness, and the portable Claude token does not rely on the operator's keychain
+login. The token is held in memory only for the authentication check and Claude
+host sessions; the harness does not write it to disk or include it in a record.
+The MCP server process explicitly receives `CLAUDE_CODE_OAUTH_TOKEN` set to the
+empty string, so neither the proxy nor Core inherits the token even though the
+Claude host process has it.
+
+With `--use-existing-host-auth`, the Claude host process runs as the operator's
+own logged-in CLI profile. The harness captures the invoking `HOME` and `USER`
+and passes exactly those two values to the host, so the host selects the same
+login. It sets no `CLAUDE_CONFIG_DIR` and injects no token. A missing or
+malformed value is refused as `authentication_unavailable`, and neither value
+appears in argv, stderr, a record or a retained config. The harness reads,
+copies, prints and deletes none of the profile's credentials; it proves the
+login only through `claude auth status --json` in the session environment. The
+MCP server process is pointed at the harness-owned home and configuration
+directories with an empty `CLAUDE_CODE_OAUTH_TOKEN`, so Core never sees the real
+profile. This mode is less isolated than file mode, the login is not isolated
+per run, and it runs only when the operator passes the flag. Its guardrails are
+`--safe-mode`, `--restricted`, a private per-run `TMPDIR`, strict MCP config,
+the bounded tool allowlist, and no session persistence.
 
 Before Core starts, the harness provisions the credential and asks that host's
-own authentication-status command to prove it works in the isolated home. A
-credential that is bound to the operator's keychain or normal configuration
-fails as `authentication_unavailable`. The harness does not weaken isolation or
-point the run at the operator's normal host state.
+own authentication-status command to prove it works in the session environment.
+In file mode that is the isolated home, and a credential that is bound to the
+operator's keychain or normal configuration fails as `authentication_unavailable`.
+In existing-login mode the same command runs against the operator's profile, as
+described above. The harness does not weaken file-mode isolation or point a file
+run at the operator's normal host state.
 
 Success and failure records are validated against the closed schema before an
 atomic write. Early failures use the schema's minimal failure branch; once the
