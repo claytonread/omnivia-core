@@ -802,6 +802,11 @@ COVERAGE_REFUSALS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("proof kind outside its vocabulary", _coverage(proof_kind="complete")),
     ("proof kind in another case", _coverage(proof_kind="Complete_Enumeration")),
     ("proof refs as text", _coverage(proof_refs="listing-2026-10-04")),
+    ("proof refs as list text", _coverage(proof_refs='["listing-2026-10-04"]')),
+    ("proof refs as an integer", _coverage(proof_refs=7)),
+    ("proof refs as a boolean", _coverage(proof_refs=True)),
+    ("proof refs as null", _coverage(proof_refs=None)),
+    ("proof refs as an object", _coverage(proof_refs={"ref": "listing-2026-10-04"})),
     ("proof refs past 64 entries", _coverage(proof_refs=[f"proof-{index}" for index in range(65)])),
     ("duplicate proof refs", _coverage(proof_refs=["proof-1", "proof-1"])),
     ("proof ref with a space", _coverage(proof_refs=["listing 1"])),
@@ -863,6 +868,15 @@ SOURCE_REFUSALS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("scope digest in capitals", _source(scope_digest="sha256:" + "A" * 64)),
     ("evidence refs past 64 entries", _source(evidence_refs=[f"evidence-{index}" for index in range(65)])),
     ("duplicate evidence refs", _source(evidence_refs=["evidence-1", "evidence-1"])),
+    ("evidence refs as text", _source(evidence_refs="source-evidence-1")),
+    ("evidence refs as list text", _source(evidence_refs='["source-evidence-1"]')),
+    ("evidence refs as an integer", _source(evidence_refs=7)),
+    ("evidence refs as a boolean", _source(evidence_refs=False)),
+    ("evidence refs as null", _source(evidence_refs=None)),
+    ("evidence refs as an object", _source(evidence_refs={"ref": "source-evidence-1"})),
+    ("source reference as text", _source(source_ref="source-erp")),
+    ("source reference as a list", _source(source_ref=["source-erp", "source-erp-r4"])),
+    ("interval as text", _source(observation_interval="last minute")),
 )
 
 #: The payload classes the closed shapes exist to refuse. Each carries something other
@@ -1067,6 +1081,57 @@ def test_the_schema_refuses_a_source_observation_outside_its_shape(
 ) -> None:
     _admitted_then_undone(refusing)
     _refused(refusing, SOURCE_SHAPE, source_observation_json=_text(document))
+
+
+def _rebuilds() -> dict[str, str]:
+    """Each closed-shape statement's canonical rebuild, as one expression over `:document`."""
+    migration = next(item for item in load_migrations() if item.version == MIGRATION_VERSION)
+    found: dict[str, str] = {}
+    for match in re.finditer(r"AND (json_object\()", migration.sql):
+        depth, end = 0, match.start(1)
+        for end in range(match.start(1), len(migration.sql)):
+            depth += {"(": 1, ")": -1}.get(migration.sql[end], 0)
+            if depth == 0 and migration.sql[end] == ")":
+                break
+        expression = migration.sql[match.start(1) : end + 1]
+        column = re.search(r"NEW\.(\w+)_json", expression)
+        assert column is not None
+        found[column.group(1)] = expression.replace(f"NEW.{column.group(1)}_json", ":document")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("base", "document"),
+    [
+        *(
+            pytest.param("coverage", document, id=f"coverage {label}")
+            for label, document in COVERAGE_REFUSALS
+        ),
+        *(
+            pytest.param("source_observation", document, id=f"source {label}")
+            for label, document in SOURCE_REFUSALS
+        ),
+    ],
+)
+def test_each_rebuild_is_safe_for_every_shape_in_any_evaluation_order(
+    base: str, document: dict[str, Any]
+) -> None:
+    """SQLite does not promise the order in which it evaluates the terms of an OR, so a rebuild
+    may run before the type checks beside it. Run unconditionally, it must still yield a
+    document and never a JSON1 error, and the canonical baseline must rebuild to itself."""
+    rebuilds = _rebuilds()
+    assert sorted(rebuilds) == ["coverage", "source_observation"]
+    baseline = _text(_coverage() if base == "coverage" else _source())
+    connection = sqlite3.connect(":memory:")
+    try:
+
+        def rebuilt(text: str) -> object:
+            return connection.execute(f"SELECT {rebuilds[base]}", {"document": text}).fetchone()[0]
+
+        assert isinstance(rebuilt(_text(document)), str)
+        assert rebuilt(baseline) == baseline
+    finally:
+        connection.close()
 
 
 @pytest.mark.parametrize(

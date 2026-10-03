@@ -241,9 +241,12 @@ WHERE o.state_generation = (
 -- both documents are JSON objects within the depth ceiling, each holds exactly its
 -- closed shape with sorted keys, and the scope digests and verification instant agree
 -- with the row. The evidence statements test only non-NULL text, so a missing document
--- is reported by its NOT NULL constraint as before. UPDATE and DELETE carry no
--- predicate: there is no condition under which rewriting or removing an observation
--- is correct.
+-- is reported by its NOT NULL constraint as before. A rebuilt list passes through
+-- `json()` only inside a CASE on its `json_type`: SQLite does not promise the order in
+-- which it evaluates the terms of an OR, and `json()` of a bare string is an error, so
+-- a list of any other type is rebuilt as `[]` and refused for its shape, never by JSON1.
+-- UPDATE and DELETE carry no predicate: there is no condition under which rewriting or
+-- removing an observation is correct.
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_analysis_dataset_state_observations_insert
 BEFORE INSERT ON omnivia_analysis_dataset_state_observations
@@ -326,7 +329,9 @@ BEGIN
                        'deduplicated_rows', json_extract(NEW.coverage_json, '$.deduplicated_rows'),
                        'expected_source_rows', json_extract(NEW.coverage_json, '$.expected_source_rows'),
                        'proof_kind', json_extract(NEW.coverage_json, '$.proof_kind'),
-                       'proof_refs', json(json_extract(NEW.coverage_json, '$.proof_refs')),
+                       'proof_refs', CASE json_type(NEW.coverage_json, '$.proof_refs')
+                           WHEN 'array' THEN json(json_extract(NEW.coverage_json, '$.proof_refs'))
+                           ELSE json_array() END,
                        'rejected_rows', json_extract(NEW.coverage_json, '$.rejected_rows'),
                        'scope_digest', json_extract(NEW.coverage_json, '$.scope_digest'))
                    IS NOT NEW.coverage_json)
@@ -385,7 +390,10 @@ BEGIN
                            json_extract(NEW.source_observation_json, '$.applied_checkpoint_ref'),
                        'evidence_kind', json_extract(NEW.source_observation_json, '$.evidence_kind'),
                        'evidence_refs',
-                           json(json_extract(NEW.source_observation_json, '$.evidence_refs')),
+                           CASE json_type(NEW.source_observation_json, '$.evidence_refs')
+                               WHEN 'array' THEN
+                                   json(json_extract(NEW.source_observation_json, '$.evidence_refs'))
+                               ELSE json_array() END,
                        'observation_interval', json(json_object(
                            'end_exclusive_at_us', json_extract(NEW.source_observation_json,
                                '$.observation_interval.end_exclusive_at_us'),
