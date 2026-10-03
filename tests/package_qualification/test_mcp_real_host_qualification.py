@@ -3054,45 +3054,93 @@ def test_a_retained_credential_missing_refusal_keeps_no_raw_text(tmp_path: Path)
     assert "holds no credential" not in path.read_text(encoding="ascii")
 
 
-_ORDERED_CALLS = [
-    ("evidence_capture", {"input": {}, "idempotency_key": "fixed"}),
-    ("memory_create", {"input": {}, "idempotency_key": "fixed"}),
-    ("job_get", {"job_id": "job"}),
-]
+_REVOKED_TOOL = "evidence_capture"
+_REVOKED_ARGUMENTS = {"input": {}, "idempotency_key": "fixed"}
+_REFUSED = q.canonical_result_digest(None)
 
 
 @pytest.mark.parametrize(
-    ("position", "observed"),
-    [(None, None)]
-    + [
-        (position, observed)
-        for position in range(3)
-        for observed in ("not_callable", "other", "none")
+    ("mode", "progress"),
+    [
+        ("exact", None),
+        ("not_called", "host_refusal_mismatch"),
+        ("other_tool", "host_refusal_mismatch"),
+        ("extra_request", "host_refusal_mismatch"),
+        ("wrong_arguments", "host_refusal_mismatch"),
+        ("succeeded", "host_refusal_mismatch"),
+        ("generic_error", "host_refusal_mismatch"),
+        ("initialized_after_pause", "host_refusal_mismatch"),
+        ("timed_out", "host_completion_mismatch"),
     ],
 )
-def test_refuse_in_order_requires_the_credential_missing_class_at_every_position(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: int | None, observed: str | None
+def test_refuse_revoked_requires_the_one_exact_request_refused_as_credential_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, progress: str | None
 ) -> None:
-    outcomes = tuple(
-        (tool, observed if index == position else "credential_missing", q.canonical_result_digest(None))
-        for index, (tool, _) in enumerate(_ORDERED_CALLS)
-    )
-    requests = tuple((tool, q.arguments_digest(arguments)) for tool, arguments in _ORDERED_CALLS)
+    digest = q.arguments_digest(_REVOKED_ARGUMENTS)
+    other = q.arguments_digest({"input": {"other": True}, "idempotency_key": "fixed"})
+    refused = ((_REVOKED_TOOL, "credential_missing", _REFUSED),)
+    shapes = {
+        "exact": (((_REVOKED_TOOL, digest),), refused),
+        "not_called": ((), ()),
+        "other_tool": ((("job_get", digest),), (("job_get", "credential_missing", _REFUSED),)),
+        "extra_request": (((_REVOKED_TOOL, digest),) * 2, refused * 2),
+        "wrong_arguments": (((_REVOKED_TOOL, other),), refused),
+        "succeeded": (((_REVOKED_TOOL, digest),), ((_REVOKED_TOOL, "none", _REFUSED),)),
+        "generic_error": (((_REVOKED_TOOL, digest),), ((_REVOKED_TOOL, "idempotency_conflict", _REFUSED),)),
+        "initialized_after_pause": (((_REVOKED_TOOL, digest),), refused),
+        "timed_out": (((_REVOKED_TOOL, digest),), refused),
+    }
+    requests, outcomes = shapes[mode]
+    revoked: list[bool] = []
 
     def run(**kwargs: Any) -> Any:
+        if mode == "not_called":
+            return _outcome_result((), ())  # the request never reaches its pause
         kwargs["pause_before"].release.parent.mkdir(parents=True, exist_ok=True)
         kwargs["on_paused"]()
         result = _outcome_result(requests, outcomes)
-        summary = dataclasses.replace(result.summary, paused=True)
-        return dataclasses.replace(result, summary=summary, paused=True)
+        summary = dataclasses.replace(
+            result.summary, paused=True, initialized_after_pause=mode == "initialized_after_pause"
+        )
+        timed_out = mode == "timed_out"
+        return dataclasses.replace(
+            result,
+            summary=summary,
+            paused=True,
+            exited_cleanly=not timed_out,
+            marker_seen=not timed_out,
+        )
 
     monkeypatch.setattr(q, "run_host_session", run)
-    driver = _driver(tmp_path)
-    if position is None:
-        driver.refuse_in_order(_ORDERED_CALLS, on_paused=lambda: None)
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    if progress is None:
+        driver.refuse_revoked(_REVOKED_TOOL, _REVOKED_ARGUMENTS, on_paused=lambda: revoked.append(True))
+        assert revoked == [True]
         return
     with pytest.raises(q.QualificationError) as error:
-        driver.refuse_in_order(_ORDERED_CALLS, on_paused=lambda: None)
+        driver.refuse_revoked(_REVOKED_TOOL, _REVOKED_ARGUMENTS, on_paused=lambda: revoked.append(True))
+    expected = Reason.HOST_OUTPUT_AMBIGUOUS if progress == "host_completion_mismatch" else Reason.GATE_FAILED
+    assert _code(error) is expected
+    assert log == [progress]
+
+
+@pytest.mark.parametrize("drift", [None, "configuration", "principal"])
+def test_a_regrant_keeps_the_configuration_path_and_rotates_the_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str | None
+) -> None:
+    """The service rotates the principal on every configure after a revoke (rotated=True)."""
+    driver = _driver(tmp_path)
+    config = tmp_path / "moved.json" if drift == "configuration" else driver.core_config
+    # The stale principal is the one that was just revoked; a fresh grant must not reuse it.
+    principal = "principal:revoked" if drift == "principal" else "principal:fresh"
+    monkeypatch.setattr(q, "configure_profile", lambda *_args: config)
+    monkeypatch.setattr(q, "configuration_principal", lambda _config: principal)
+    if drift is None:
+        assert q._regrant(object(), object(), "codex-cli", driver, "principal:revoked") == "principal:fresh"  # type: ignore[arg-type]
+        return
+    with pytest.raises(q.QualificationError) as error:
+        q._regrant(object(), object(), "codex-cli", driver, "principal:revoked")  # type: ignore[arg-type]
     assert _code(error) is Reason.GATE_FAILED
 
 
@@ -3204,31 +3252,119 @@ def test_an_expected_refusal_must_be_the_observed_class(
     assert _code(error) is Reason.GATE_FAILED
 
 
-@pytest.mark.parametrize("sent", [1, 2, 3])
-def test_a_traversal_is_exactly_the_expected_ordered_pages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent: int
-) -> None:
-    tool = "job_events"
-    arguments = {"job_id": "job-1", "limit": 1}
-    requests = ((tool, q.arguments_digest(arguments)),) + tuple(
-        (tool, q.arguments_digest({**arguments, "page": {"continuation_token": f"t{n}"}}))
-        for n in range(1, sent)
-    )
-    outcomes = tuple(
-        (tool, "none", q.canonical_result_digest({"events": [n]})) for n in range(sent)
-    )
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _outcome_result(requests, outcomes))
-    driver = _driver(tmp_path)
-    if sent != 2:
-        with pytest.raises(q.QualificationError) as error:
-            driver.traverse(tool, arguments, pages=2)
-        assert _code(error) is Reason.GATE_FAILED
-        return
-    result = driver.traverse(tool, arguments, pages=2)
-    assert [digest for _, digest in q._outcomes(result.summary, tool)] == [
-        q.canonical_result_digest({"events": [0]}),
-        q.canonical_result_digest({"events": [1]}),
+_TRAVERSAL_TOOL = "job_events"
+_TRAVERSAL_ARGUMENTS = {"job_id": "job-1", "limit": 1}
+
+
+def _owner_pages(count: int) -> list[dict[str, Any]]:
+    """Owner pages whose continuation tokens chain: page n is followed by token ``t{n}``."""
+    return [
+        {"events": [n], "page": {"continuation_token": f"t{n}"} if n < count - 1 else {}}
+        for n in range(count)
     ]
+
+
+def _attempt(kind: str, pages: list[dict[str, Any]]) -> Any:
+    """One host session's traversal of ``pages``; ``kind`` names the way it can be wrong."""
+    tool, arguments = _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS
+    requests = [(tool, q.arguments_digest(arguments))]
+    requests += [
+        (tool, q.arguments_digest({**arguments, "page": {"continuation_token": f"t{n}"}}))
+        for n in range(len(pages) - 1)
+    ]
+    outcomes = [(tool, "none", q.canonical_result_digest(page)) for page in pages]
+    if kind == "short":
+        requests, outcomes = requests[:1], outcomes[:1]
+    elif kind == "extra":
+        requests, outcomes = [*requests, requests[-1]], [*outcomes, outcomes[-1]]
+    elif kind == "wrong_token":
+        forged = {**arguments, "page": {"continuation_token": "forged"}}
+        requests[1] = (tool, q.arguments_digest(forged))
+    elif kind == "failed_page":
+        outcomes[-1] = (tool, "idempotency_conflict", q.canonical_result_digest(None))
+    elif kind == "wrong_page":
+        outcomes[-1] = (tool, "none", q.canonical_result_digest({"events": [99]}))
+    return _outcome_result(tuple(requests), tuple(outcomes))
+
+
+def test_a_traversal_is_exactly_the_expected_ordered_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(3)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt("exact", pages))
+    driver = _driver(tmp_path)
+    result = driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
+    assert driver.sequence == 1
+    assert [digest for _, digest in q._outcomes(result.summary, _TRAVERSAL_TOOL)] == [
+        q.canonical_result_digest(page) for page in pages
+    ]
+
+
+@pytest.mark.parametrize("wrong", ["short", "extra", "wrong_token"])
+@pytest.mark.parametrize("bad_attempts", [1, 2])
+def test_a_wrong_paged_sequence_is_retried_in_a_fresh_session_until_one_attempt_is_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong: str, bad_attempts: int
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter([_attempt(wrong, pages)] * bad_attempts + [_attempt("exact", pages)])
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    driver = _driver(tmp_path)
+    driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
+    assert driver.sequence == bad_attempts + 1
+
+
+@pytest.mark.parametrize("wrong", ["short", "extra", "wrong_token"])
+def test_a_paged_read_is_refused_after_three_wrong_sequences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong: str
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter([_attempt(wrong, pages)] * 3)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 3
+    assert log == ["host_traversal_sequence_mismatch"] * 3
+
+
+@pytest.mark.parametrize("kind", ["failed_page", "wrong_page"])
+def test_a_wrong_page_result_is_refused_without_a_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    pages = _owner_pages(2)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt(kind, pages))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 1
+    assert log == ["host_traversal_mismatch"]
+
+
+def test_a_traversal_that_does_not_exit_cleanly_is_refused_without_a_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(2)
+    timed_out = dataclasses.replace(_attempt("short", pages), exited_cleanly=False, marker_seen=False)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: timed_out)
+    driver = _driver(tmp_path)
+    with pytest.raises(q.QualificationError) as error:
+        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 1
+
+
+def test_a_non_read_traversal_is_never_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = _owner_pages(2)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt("short", pages))
+    driver = _driver(tmp_path)
+    with pytest.raises(q.QualificationError) as error:
+        driver.traverse("evidence_capture", _TRAVERSAL_ARGUMENTS, expected=pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 1
 
 
 def test_core_health_is_read_after_each_host_exit_before_its_result_is_used(
@@ -3257,17 +3393,11 @@ def test_core_health_is_read_after_each_host_exit_before_its_result_is_used(
 def test_core_health_is_checked_after_a_traversal_host_exits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tool = "job_events"
-    arguments = {"job_id": "job-1", "limit": 1}
-    requests = ((tool, q.arguments_digest(arguments)),) * 2
-    outcomes = (
-        (tool, "none", q.canonical_result_digest({"events": [0]})),
-        (tool, "none", q.canonical_result_digest({"events": [1]})),
-    )
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _outcome_result(requests, outcomes))
+    pages = _owner_pages(2)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt("exact", pages))
     driver = _driver(tmp_path, healthy=lambda: False)
     with pytest.raises(q.QualificationError) as error:
-        driver.traverse("job_events", arguments, pages=2)
+        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
     assert _code(error) is Reason.GATE_FAILED
 
 
@@ -3467,22 +3597,14 @@ def _in_order(log: list[str], needles: list[str]) -> bool:
 def _tampered(
     tamper: str | None, steps: list[tuple[str, dict[str, Any]]]
 ) -> list[tuple[str, dict[str, Any]]]:
-    """What the host serves of one admitted session's calls, with post-revocation tampers applied."""
-    if len(steps) < 2:  # only the multi-call sessions after the pause are tampered
-        return steps
-    if tamper == "skipped_post_revoke":
-        return steps[:-1]
-    if tamper in {"later_calls_in_fresh_session", "session_ends_at_pause"}:
-        return steps[:1]
-    if tamper == "reordered_post_revoke":
-        return [steps[0], *reversed(steps[1:])]
-    if tamper == "duplicated_post_revoke":
-        return [*steps, steps[-1]]
-    if tamper == "changed_post_revoke_arguments":
-        name, arguments = steps[1]
-        return [steps[0], (name, {**arguments, "idempotency_key": "other-key"}), *steps[2:]]
-    if tamper == "unexpected_post_revoke_mutation":
-        return [*steps, ("job_cancel", {})]
+    """What the host serves of one admitted session's request, with post-revocation tampers applied."""
+    name, arguments = steps[0]
+    if tamper == "other_tool_called":
+        return [("job_cancel", {})]
+    if tamper == "extra_request":
+        return [steps[0], steps[0]]
+    if tamper == "changed_arguments":
+        return [(name, {**arguments, "tampered": True})]
     return steps
 
 
@@ -3495,6 +3617,8 @@ def _journey(
 ) -> tuple[q.GateLedger, list[str]]:
     cores: dict[Path, FakeCore] = {}
     log = [] if log is None else log
+    # Each configure rotates the principal, as the service does; the path never moves.
+    configures: dict[Path, int] = {}
 
     def initialize(_installed: Any, path: Path) -> Any:
         cores[path] = FakeCore(tamper)
@@ -3538,9 +3662,8 @@ def _journey(
 
     def run(self: Any, calls: Any, arguments: Any = None, *, pages: int = 1, interrupt: bool = False,
             on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None) -> Any:
-        # The pre-repair driver passed one (tool, arguments) pair; the repaired one passes steps.
-        steps = [(calls, arguments)] if isinstance(calls, str) else list(calls)
-        tool, first = steps[0]
+        tool, first = calls, arguments
+        steps = [(tool, first)]
         core = cores[Path(self.core_config).parent]
         digest = q.arguments_digest(first)
         log.append(f"host:{tool}:{'interrupt' if interrupt else 'pause' if pause_before else 'call'}")
@@ -3548,6 +3671,16 @@ def _journey(
             # Launch authority is gone: a process started now cannot initialize (the live failure).
             self.progress("host_initialize_missing")
             raise q.QualificationError(Reason.GATE_FAILED)
+        if pause_before and core.tamper == "target_not_called":
+            # The session never reaches its paused request, so no revocation can land.
+            return q.HostRunResult(
+                q.ObservationSummary(
+                    initialized=True, listed=True, listed_tools=self.tools, called=(),
+                    requests=(), responded=(), succeeded=(), tool_errors=(), paused=False,
+                    withheld=False, violation=False,
+                ),
+                marker_seen=True, exited_cleanly=True, interrupted=False, paused=False,
+            )
         if pause_before:
             on_paused()
         if interrupt:
@@ -3583,24 +3716,20 @@ def _journey(
                 if token:
                     current = {**first, "page": {"continuation_token": token}}
         else:
-            served = _tampered(core.tamper, steps)
-            for index, (name, args) in enumerate(served):
+            # Only the paused post-revocation request is tampered; earlier sessions are honest.
+            served = _tampered(core.tamper, steps) if pause_before else steps
+            for name, args in served:
                 log.append(f"call:{name}")
                 requests.append((name, q.arguments_digest(args)))
                 refusal, structured = core.serve(name, args)
-                if index == 1 and core.tamper == "wrong_post_revoke_refusal" and refusal == "credential_missing":
+                if core.tamper == "wrong_refusal" and refusal == "credential_missing":
                     refusal = "idempotency_conflict"
                 outcomes.append((name, refusal, q.canonical_result_digest(structured)))
         if core.tamper == "core_replaced_unexpectedly" and tool == "evidence_capture":
             core.replace()  # Core exited mid-session; a managed-local client replaced it
         if not self.healthy():
             raise q.QualificationError(Reason.GATE_FAILED)
-        # Only the repaired summary carries this field; the pre-repair one does not.
-        pause_fields = (
-            {"initialized_after_pause": core.tamper == "initialized_after_pause"}
-            if "initialized_after_pause" in q.ObservationSummary.__dataclass_fields__
-            else {}
-        )
+        timed_out = pause_before and core.tamper == "times_out"
         return q.HostRunResult(
             q.ObservationSummary(
                 initialized=True, listed=True, listed_tools=self.tools,
@@ -3609,9 +3738,10 @@ def _journey(
                 succeeded=tuple(name for name, refusal, _ in outcomes if refusal == "none"),
                 tool_errors=tuple(name for name, refusal, _ in outcomes if refusal != "none"),
                 paused=pause_before, withheld=False, violation=False, outcomes=tuple(outcomes),
-                **pause_fields,
+                initialized_after_pause=pause_before and core.tamper == "initialized_after_pause",
             ),
-            marker_seen=True, exited_cleanly=True, interrupted=False, paused=pause_before,
+            marker_seen=not timed_out, exited_cleanly=not timed_out, interrupted=False,
+            paused=pause_before,
         )
 
     monkeypatch.setattr(q, "initialize_core", initialize)
@@ -3621,22 +3751,37 @@ def _journey(
     # The descriptor check of the real `core_healthy`; its health probe is `owner` below.
     monkeypatch.setattr(q, "core_alive", lambda context: cores[context.root].serving == context.expected)
     monkeypatch.setattr(q, "revoke_authoring", revoke)
-    monkeypatch.setattr(q, "verify_revoked", lambda *_args: None)
 
     def probe(*_args: Any) -> None:
         # A dispatched excluded name is refused by the deterministic probe, not by a model run.
         if tamper == "excluded_dispatched":
             raise q.QualificationError(Reason.GATE_FAILED)
 
+    def configure(_installed: Any, context: Any, _host: str, profile: str) -> Path:
+        # A configure grants fresh authority: the revoked state is cleared, the principal
+        # rotates, and the configuration path stays the one this Core owns.
+        cores[context.root].revoked = False
+        configures[context.root] = configures.get(context.root, 0) + 1
+        log.append(f"configure:{context.root.name}")
+        return context.root / f"{profile}.json"
+
+    def verify(_installed: Any, context: Any, _host: str) -> None:
+        if not cores[context.root].revoked:
+            raise q.QualificationError(Reason.GATE_FAILED)
+        log.append(f"verified:{context.root.name}")
+
     monkeypatch.setattr(q, "probe_excluded_tools", probe)
     monkeypatch.setattr(q, "owner_call", owner)
     monkeypatch.setattr(
         q, "stage_source", lambda _installed, context: cores[context.root].stage(dict(JOURNEY_STAGED))
     )
+    monkeypatch.setattr(q, "configure_profile", configure)
     monkeypatch.setattr(
-        q, "configure_profile", lambda _installed, context, _host, profile: context.root / f"{profile}.json"
+        q,
+        "configuration_principal",
+        lambda config: f"principal:{config.stem}:{configures[config.parent]}",
     )
-    monkeypatch.setattr(q, "configuration_principal", lambda config: f"principal:{config.stem}")
+    monkeypatch.setattr(q, "verify_revoked", verify)
     monkeypatch.setattr(q, "imported_job", lambda context: cores[context.root].single_job())
     monkeypatch.setattr(q.HostDriver, "_run", run)
     ledger = q.GateLedger() if ledger is None else ledger
@@ -3674,24 +3819,46 @@ def test_the_journey_proves_every_gate_in_the_pinned_order(
             "host:evidence_capture:call",
         ],
     )
-    # One admitted session per revocation: the paused request, the revocation, then
-    # every later call in that same session (no new host process in between).
+    # One admitted session per refused request: the paused request, its revocation, the
+    # refused call, then a regrant before the next session is paused.  Nothing follows a
+    # refusal inside the same session, so no multi-call dependency survives a refusal.
     authoring = log.index("host:evidence_capture:pause")
-    assert log[authoring : authoring + 5] == [
+    assert log[authoring : authoring + 14] == [
         "host:evidence_capture:pause",
         "revoke:core",
+        "verified:core",
         "call:evidence_capture",
+        "configure:core",
+        "host:evidence_capture:pause",
+        "revoke:core",
+        "verified:core",
         "call:evidence_capture",
+        "configure:core",
+        "host:memory_create:pause",
+        "revoke:core",
+        "verified:core",
         "call:memory_create",
     ]
     imported = log.index("host:job_get:pause")
-    assert log[imported : imported + 5] == [
+    assert log[imported : imported + 14] == [
         "host:job_get:pause",
         "revoke:import-core",
+        "verified:import-core",
         "call:job_get",
+        "configure:import-core",
+        "host:job_events:pause",
+        "revoke:import-core",
+        "verified:import-core",
         "call:job_events",
+        "configure:import-core",
+        "host:import_start:pause",
+        "revoke:import-core",
+        "verified:import-core",
         "call:import_start",
     ]
+    # Both contexts end revoked and are re-verified after the final refusal, before shutdown.
+    final = log.index("call:import_start", imported) + 1
+    assert log[final : final + 2] == ["verified:core", "verified:import-core"]
 
 
 @pytest.mark.parametrize(
@@ -3720,34 +3887,50 @@ def test_a_journey_that_violates_one_observation_is_refused(
 
 
 @pytest.mark.parametrize(
-    "tamper",
+    ("tamper", "progress"),
     [
-        # Each admitted session must be served exactly the planned calls, in order,
-        # with the planned digests, each refused as credential_missing.
-        "skipped_post_revoke",
-        "reordered_post_revoke",
-        "duplicated_post_revoke",
-        "changed_post_revoke_arguments",
-        "wrong_post_revoke_refusal",
-        "unexpected_post_revoke_mutation",
-        # A later call that a substitute process would serve never reaches this session.
-        "later_calls_in_fresh_session",
-        "session_ends_at_pause",
+        # The paused session never reaches its request, so nothing can be revoked under it.
+        ("target_not_called", "host_refusal_mismatch"),
+        # The session serves a different tool, or the target plus an extra request.
+        ("other_tool_called", "host_refusal_mismatch"),
+        ("extra_request", "host_refusal_mismatch"),
+        # The request is served with arguments other than the exact planned ones.
+        ("changed_arguments", "host_refusal_mismatch"),
+        # The refusal is a different class than credential_missing.
+        ("wrong_refusal", "host_refusal_mismatch"),
         # A second initialize after the pause means the process was substituted.
-        "initialized_after_pause",
+        ("initialized_after_pause", "host_refusal_mismatch"),
         # An accepted replay or read after revocation is a failure, not a pass.
-        "revocation_ignored",
+        ("revocation_ignored", "host_refusal_mismatch"),
+        # The paused session never completes; that is a completion failure, not a retry.
+        ("times_out", "host_completion_mismatch"),
     ],
 )
 def test_a_post_revocation_session_that_deviates_is_refused_at_its_own_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str, progress: str
 ) -> None:
     log: list[str] = []
     with pytest.raises(q.QualificationError) as error:
         _journey(monkeypatch, tmp_path, tamper, log)
-    assert _code(error) is Reason.GATE_FAILED
-    assert "host_sequence_mismatch" in log
+    expected = Reason.HOST_OUTPUT_AMBIGUOUS if progress == "host_completion_mismatch" else Reason.GATE_FAILED
+    assert _code(error) is expected
+    assert progress in log
+    # The first paused session is the one that fails: no regrant, no later session.
+    tail = log[log.index("host:evidence_capture:pause") :]
+    assert [entry for entry in tail if entry.endswith(":pause")] == ["host:evidence_capture:pause"]
+    assert not any(entry.startswith("configure:") for entry in tail)
     assert "host_initialize_missing" not in log
+
+
+def test_a_fail_closed_gate_is_not_recorded_before_its_refusal_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate claims a refusal, so it is recorded only once that refusal has passed."""
+    ledger = q.GateLedger()
+    with pytest.raises(q.QualificationError):
+        _journey(monkeypatch, tmp_path, "wrong_refusal", ledger=ledger)
+    for check in ("mutation_fail_closed", "replay_fail_closed", "job_reads_fail_closed"):
+        assert ledger.status("i8", check) is q.GateStatus.PENDING
 
 
 @pytest.mark.parametrize(

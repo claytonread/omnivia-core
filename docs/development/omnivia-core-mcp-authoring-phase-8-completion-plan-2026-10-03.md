@@ -377,7 +377,9 @@ harness keeps the already-admitted real host session open, pauses its first
 post-revocation request until revocation lands, and requires every later call in
 that same session to fail closed. A disposable Codex CLI rerun against that
 historical candidate passed the repaired journey; it remains diagnostic rather
-than exact-tip acceptance.
+than exact-tip acceptance. That single-session model is superseded: each refused
+request now has its own paused, admitted session, with a fresh configure between
+them, as described in the Gate D status of the standalone completion plan.
 
 Independent review then found four acceptance weaknesses: the historical PR
 #108 disposition inventory had stopped at GitHub's first 100 files, excluded

@@ -522,6 +522,7 @@ Current local status at the time of this plan update:
 | Hosted checks for `ffa1b36c` | in progress, not final acceptance evidence | Evidence-search jobs are green on Linux, macOS and Windows; Core acceptance and the three Phase 2 jobs are still running. These checks qualify only the superseded checkpoint and must run again on the evidence-closeout head |
 | Qualified runtime behavior and final candidate | behavior frozen at `84b1510b`; review-closeout checkpoint not yet pushed | Commit and push the behavior-neutral final comment, regression and plan correction, then build a new Standard candidate from that clean exact tip |
 | Real-host records | not current | Historical Codex records are diagnostic only; both hosts must run against the same new candidate |
+| Real-host revocation harness (I-8) | repaired locally, not accepted | Simulated journey only: each refused request now has its own paused, admitted host session, and every regrant is a fresh configure that keeps the configuration path and rotates the principal. The simulated qualification file passes; no real-host run, provider call or Gate D record exists |
 | Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
 
@@ -596,6 +597,25 @@ commit are named; no code or harness change is permitted without discarding the
 candidate and restarting Gate C.
 
 #### Gate D — qualify both real hosts
+
+Status: pending. The I-8 revocation harness has a provider- and model-agnostic
+repair, verified only against the simulated Core and host runner. Each
+post-revocation request (the evidence capture mutation and its replay, the
+memory replay, `job_get`, `job_events` and the import start replay) runs in its
+own host session that is paused before that one request. Authority is revoked
+while the request is held, and the request must be refused exactly once as
+`credential_missing` with its exact arguments, with no retry after revocation. A
+regrant is a fresh `mcp configure`. The service rotates the MCP principal on each
+configure after a revoke, so the regrant keeps the configuration path and must
+produce a different principal. Replayed requests keep the principal the owner
+recorded as their actor. The final revocation is verified for both contexts.
+Only a wrong request sequence in the paged read `job_events` may be retried in a
+fresh session, at most twice, as a whole attempt. A tool error, wrong success
+count, wrong page digest, incomplete host completion or mutation is refused at
+once. The user has authorized the external data flow: fixed qualification
+prompts and bounded, service-derived results may be sent through both the Codex
+and Claude providers. That authorization is recorded in the task. Both real-host
+records below remain pending; neither provider has passed.
 
 1. Before either run, obtain explicit user authorization for the external data
    flow. Each real host sends fixed qualification prompts and bounded,

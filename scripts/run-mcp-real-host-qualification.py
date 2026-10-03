@@ -200,6 +200,8 @@ PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_T
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
+#: Read-only paged tools whose whole traversal may be repeated in a fresh session.
+PAGED_READ_TOOLS: Final = frozenset({"job_events"})
 #: The thirty-nine of the fifty-seven catalogue operations that the exposure
 #: manifest does not admit (v1.4 addendum, sections 1 and 5; the other eighteen
 #: are the authoring inventory), under their MCP-facing names.  The manifest
@@ -2789,22 +2791,6 @@ def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
     )
 
 
-def _sequence_prompt(calls: Sequence[tuple[str, Mapping[str, Any]]], marker: str) -> str:
-    steps = "\n".join(
-        f"{number}. Call {tool} (displayed as {claude_tool_name(tool)}) with exactly this JSON: "
-        f"{json.dumps(arguments, sort_keys=True, separators=(',', ':'))}"
-        for number, (tool, arguments) in enumerate(calls, start=1)
-    )
-    return (
-        "This is an isolated MCP qualification step. Use only the configured "
-        f"{SERVER_KEY} MCP server. Make these calls in this exact order, each exactly "
-        "once, one after another. Do not add, remove, rewrite or infer any value, and "
-        "do not call any other tool. Whether a call succeeds or returns an error, "
-        f"continue with the next call. After the last call output exactly {marker} and "
-        f"nothing else.\n{steps}"
-    )
-
-
 def _traversal_prompt(tool: str, arguments: Mapping[str, Any], pages: int, marker: str) -> str:
     payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
     return (
@@ -2947,7 +2933,8 @@ class HostDriver:
 
     def _run(
         self,
-        calls: Sequence[tuple[str, Mapping[str, Any]]],
+        tool: str,
+        arguments: Mapping[str, Any],
         *,
         pages: int = 1,
         interrupt: bool = False,
@@ -2955,15 +2942,14 @@ class HostDriver:
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
     ) -> HostRunResult:
-        """Run one fresh host process: ``calls`` in order, or ``pages`` calls to the first.
+        """Run one fresh host process: one call to ``tool``, or ``pages`` calls to it.
 
-        Only the first call can be interrupted or paused; later calls run in this
-        same process, so they are admitted by the launch that admitted the first.
+        A paged traversal's later calls run in the same process, so they are admitted
+        by the launch that admitted the first.
         """
         self.sequence += 1
         marker = f"OMNIVIA_MCP_QUALIFICATION_STEP_{self.sequence}_DONE"
         layout = host_layout(self.root / f"session-{self.sequence:02d}", self.host)
-        tool, arguments = calls[0]
         digest = arguments_digest(arguments)
         interruption = Interruption(tool, digest) if interrupt else None
         pause: PauseBefore | None = None
@@ -2977,8 +2963,6 @@ class HostDriver:
 
         if pages > 1:
             prompt = _traversal_prompt(tool, arguments, pages, marker)
-        elif len(calls) > 1:
-            prompt = _sequence_prompt(calls, marker)
         else:
             prompt = _tool_prompt(tool, arguments, marker)
         result = run_host_session(
@@ -2990,7 +2974,7 @@ class HostDriver:
             auth_file=self.auth_file,
             prompt=prompt,
             marker=marker,
-            tools=tuple(dict.fromkeys(name for name, _ in calls)),
+            tools=(tool,),
             timeout=HOST_TIMEOUT,
             interruption=interruption,
             pause_before=pause,
@@ -3030,7 +3014,8 @@ class HostDriver:
         _remaining_missing_retries: int = 2,
     ) -> HostRunResult:
         result = self._run(
-            [(tool, arguments)],
+            tool,
+            arguments,
             interrupt=interrupt,
             on_withheld=on_withheld,
             pause_before=pause_before,
@@ -3104,38 +3089,34 @@ class HostDriver:
             raise QualificationError(ReasonCode.GATE_FAILED)
         return result
 
-    def refuse_in_order(
+    def refuse_revoked(
         self,
-        calls: Sequence[tuple[str, Mapping[str, Any]]],
+        tool: str,
+        arguments: Mapping[str, Any],
         *,
         on_paused: Callable[[], None],
     ) -> HostRunResult:
-        """One admitted session makes ``calls`` in order; each must be refused as credential_missing.
+        """One admitted session makes exactly ``tool(arguments)``, refused as credential_missing.
 
-        The first request is paused until ``on_paused`` has run (the revocation), then
-        released.  No later call is retried in a fresh process: a process started after
-        the revocation cannot initialize, so that retry could only ever fail.
+        The session is paused before its one request.  ``on_paused`` revokes the
+        authority while the request is held, then the request is released.  Nothing is
+        retried: a process started after revocation cannot initialize, and a retry
+        that found no pause would run the request against live authority.
         """
-        result = self._run(calls, pause_before=True, on_paused=on_paused)
+        result = self._run(tool, arguments, pause_before=True, on_paused=on_paused)
         summary = result.summary
-        expected = [(tool, arguments_digest(arguments)) for tool, arguments in calls]
-        observed = [
-            request for request in summary.requests if request[0] not in SAFE_AUXILIARY_TOOLS
-        ]
-        refused = [
-            (tool, refusal)
-            for tool, refusal, _ in summary.outcomes
-            if tool not in SAFE_AUXILIARY_TOOLS
-        ]
+        digest = arguments_digest(arguments)
         if (
             not result.paused
             or not summary.paused
             or summary.initialized_after_pause
-            or observed != expected
-            or refused != [(tool, "credential_missing") for tool, _ in calls]
-            or any(tool in summary.succeeded for tool, _ in calls)
+            or tuple(summary.requests) != ((tool, digest),)
+            or tuple(summary.called) != (tool,)
+            or [(name, refusal) for name, refusal, _ in summary.outcomes]
+            != [(tool, "credential_missing")]
+            or summary.succeeded
         ):
-            self.progress("host_sequence_mismatch")
+            self.progress("host_refusal_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
         if (
             not result.exited_cleanly
@@ -3147,9 +3128,32 @@ class HostDriver:
             raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
         return result
 
-    def traverse(self, tool: str, arguments: Mapping[str, Any], *, pages: int) -> HostRunResult:
-        """One host process pages ``tool`` exactly ``pages`` times, each call succeeding."""
-        result = self._run([(tool, arguments)], pages=pages)
+    def traverse(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected: Sequence[Mapping[str, Any]],
+        _remaining_sequence_retries: int = 2,
+    ) -> HostRunResult:
+        """One host process pages ``tool`` once per owner page, each answered with that page's digest.
+
+        The exact request sequence is ``arguments``, then each later call carrying the
+        continuation token of the page before it.  Only a wrong request sequence (missing,
+        extra, reordered or wrong-argument calls) is retried in a fresh session, at most
+        twice, and only for a paged read.  Once the exact sequence was made, any tool
+        error, wrong success count, wrong page digest or bad host completion is refused
+        at once.  An attempt passes only when its whole sequence and every page digest
+        are exact, so a partial traversal is never accepted.
+        """
+        pages = len(expected)
+        expected_requests = [(tool, arguments_digest(arguments))]
+        for page in expected[:-1]:
+            token = _continuation(page)
+            expected_requests.append(
+                (tool, arguments_digest({**arguments, "page": {"continuation_token": token}}))
+            )
+        result = self._run(tool, arguments, pages=pages)
         summary = result.summary
         if (
             not result.exited_cleanly
@@ -3157,12 +3161,27 @@ class HostDriver:
             or result.paused
             or summary.paused
             or summary.withheld
-            or set(summary.called) != {tool}
-            or len(summary.requests) != pages
-            or summary.requests[0] != (tool, arguments_digest(arguments))
-            or summary.succeeded.count(tool) != pages
-            or summary.tool_errors
         ):
+            self.progress("host_traversal_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if set(summary.called) != {tool} or tuple(summary.requests) != tuple(expected_requests):
+            # The model made the wrong calls: the only failure that may start a fresh session.
+            self.progress("host_traversal_sequence_mismatch")
+            if tool in PAGED_READ_TOOLS and _remaining_sequence_retries > 0:
+                return self.traverse(
+                    tool,
+                    arguments,
+                    expected=expected,
+                    _remaining_sequence_retries=_remaining_sequence_retries - 1,
+                )
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        # The exact sequence was made, so the host or tool is at fault: never retried.
+        if summary.tool_errors or summary.succeeded.count(tool) != pages:
+            self.progress("host_traversal_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if [digest for _, digest in _outcomes(summary, tool)] != [
+            canonical_result_digest(page) for page in expected
+        ]:
             self.progress("host_traversal_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
         return result
@@ -3475,11 +3494,7 @@ def _import_journey(
         _require(len(pages) > 1)
         unpaged = owner_call(installed, context, ("job", "events"), {"job_id": job_id}).get("events")
         _require(unpaged == events)
-        traversal = driver.traverse(
-            "job_events", {"job_id": job_id, "limit": IMPORT_PAGE_SIZE}, pages=len(pages)
-        )
-        host_pages = [digest for _, digest in _outcomes(traversal.summary, "job_events")]
-        _require(host_pages == [canonical_result_digest(page) for page in pages])
+        driver.traverse("job_events", {"job_id": job_id, "limit": IMPORT_PAGE_SIZE}, expected=pages)
         _record_true(ledger, "i5", "job_events_paged", "job_events_match_owner")
 
         # The staged source's kind matches the staging capture and the import's own
@@ -3586,53 +3601,70 @@ def _revocation(
     imported: ImportJourney,
     ledger: GateLedger,
 ) -> None:
-    """Revoke every authoring principal, then prove each later call fails closed."""
+    """Revoke each authority while its own request is held, then prove each request fails closed.
+
+    Every post-revocation request runs in its own admitted host session.  The session
+    is paused before that one request, the authority is revoked while it is held, and
+    only then is the request released and required to be refused as credential_missing.
+    Between sessions the same configuration path is granted again under a rotated
+    principal, so the next host can initialize before its own pause.  Replayed requests
+    keep the principal the owner recorded as their actor.  The final revocation is left
+    in force and re-verified for both contexts.
+    """
     before = _journey_counts(installed, context)
+    # The principal the next paused session is admitted under; each revocation ends it.
+    admitted = principal
 
     def revoke_primary() -> None:
         revoke_authoring(installed, context, host)
         verify_revoked(installed, context, host)
 
-    # One admitted session: the first capture is paused until the revocation has
-    # landed, so it is the in-flight request that must be refused.  The same-key
-    # capture replay and the same-key memory replay reuse that session.
-    authoring.refuse_in_order(
-        [
-            (
-                "evidence_capture",
-                _capture_arguments(AFTER_REVOKE_SOURCE_ID, AFTER_REVOKE_KEY, "must not settle"),
-            ),
-            (
-                "evidence_capture",
-                _capture_arguments(
-                    INTERRUPTED_SOURCE_ID,
-                    INTERRUPTED_KEY,
-                    f"interrupted response note {QUALIFICATION_TOKEN}\n",
-                ),
-            ),
-            ("memory_create", _memory_arguments(principal)),
-        ],
+    authoring.refuse_revoked(
+        "evidence_capture",
+        _capture_arguments(AFTER_REVOKE_SOURCE_ID, AFTER_REVOKE_KEY, "must not settle"),
         on_paused=revoke_primary,
     )
-    authoring.progress("revocation_host_ok")
     _require(_journey_counts(installed, context) == before)
-    _record_true(ledger, "i8", "mutation_fail_closed", "replay_fail_closed")
+    _record_true(ledger, "i8", "mutation_fail_closed")
+    admitted = _regrant(installed, context, host, authoring, admitted)
+    authoring.refuse_revoked(
+        "evidence_capture",
+        _capture_arguments(
+            INTERRUPTED_SOURCE_ID,
+            INTERRUPTED_KEY,
+            f"interrupted response note {QUALIFICATION_TOKEN}\n",
+        ),
+        on_paused=revoke_primary,
+    )
+    _require(_journey_counts(installed, context) == before)
+    admitted = _regrant(installed, context, host, authoring, admitted)
+    authoring.refuse_revoked("memory_create", _memory_arguments(principal), on_paused=revoke_primary)
+    _require(_journey_counts(installed, context) == before)
 
     # The import principal is a separate authoring context with its own Core.  Its
-    # session is admitted before its revocation, which lands on the paused read.
+    # sessions are admitted before their revocations, which land on each paused request.
+    import_admitted = configuration_principal(imported.driver.core_config)
+
     def revoke_import() -> None:
         revoke_authoring(installed, imported.context, host)
         verify_revoked(installed, imported.context, host)
 
-    imported.driver.refuse_in_order(
-        [
-            ("job_get", {"job_id": imported.job_id}),
-            ("job_events", {"job_id": imported.job_id}),
-            ("import_start", imported.arguments),
-        ],
-        on_paused=revoke_import,
+    imported.driver.refuse_revoked(
+        "job_get", {"job_id": imported.job_id}, on_paused=revoke_import
+    )
+    import_admitted = _regrant(
+        installed, imported.context, host, imported.driver, import_admitted
+    )
+    imported.driver.refuse_revoked(
+        "job_events", {"job_id": imported.job_id}, on_paused=revoke_import
     )
     _record_true(ledger, "i8", "job_reads_fail_closed")
+    import_admitted = _regrant(
+        installed, imported.context, host, imported.driver, import_admitted
+    )
+    imported.driver.refuse_revoked("import_start", imported.arguments, on_paused=revoke_import)
+    # Every same-key replay (the interrupted capture, the memory and the import start) is refused.
+    _record_true(ledger, "i8", "replay_fail_closed")
 
     owner_job = owner_call(installed, imported.context, ("job", "get"), {"job_id": imported.job_id})
     job = owner_job.get("job")
@@ -3643,7 +3675,30 @@ def _revocation(
     _require(owner_events == imported.events)
     _record_true(ledger, "i8", "owner_job_observed_after_revoke")
     _require(core_healthy(installed, context) and core_healthy(installed, imported.context))
+    verify_revoked(installed, context, host)
+    verify_revoked(installed, imported.context, host)
     _record_true(ledger, "i8", "authoring_revoked", "core_healthy")
+
+
+def _regrant(
+    installed: InstalledCandidate,
+    context: CoreContext,
+    host: str,
+    driver: HostDriver,
+    revoked: str,
+) -> str:
+    """Install fresh authority for the same authoring profile; return its principal.
+
+    The service rotates the MCP principal on every configure after a revoke: a new
+    bearer under a new principal id.  The configuration path is deterministic and must
+    not move, and the new principal must differ from the revoked one, which is the
+    proof that the authority is fresh rather than the revoked grant reinstated.
+    configure prints only after its own handshake through the real server entry point.
+    """
+    config = configure_profile(installed, context, host, "authoring")
+    principal = configuration_principal(config)
+    _require(config == driver.core_config and principal != revoked)
+    return principal
 
 
 def _decision_arguments() -> dict[str, Any]:
