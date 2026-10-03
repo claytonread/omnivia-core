@@ -268,11 +268,15 @@ these changes, all in the existing closed, redacted schema:
 7. `initialize` must negotiate `2025-06-18`. An initialize error, missing or
    malformed version, or version mismatch is a protocol violation.
 8. A paginated `tools/list` (`nextCursor` present) is refused.
-9. The canonical digest removes only `page.continuation_token`. Every other
-   field, including the other `page` fields, stays in the digest, with drift
-   tests.
-10. Runtime cleanup is verified, not silent. A root that cannot be removed
-    fails the run as `cleanup_incomplete` before any pass record is written.
+9. The canonical digest masks only the value of `page.continuation_token`,
+   because that token is bound to the principal that issued it. Whether a
+   non-empty token was present stays in the digest as a marker, so a continuing
+   page and an exhausted page digest differently while two principals' non-empty
+   tokens digest the same. Every other field, including the other `page`
+   fields, stays in the digest, with drift tests.
+10. Runtime cleanup is verified, not silent. A root that cannot be removed, or
+    that still exists after a deletion reports a vanished nested entry, fails
+    the run as `cleanup_incomplete` before any pass record is written.
     A supplied `--runtime-root` must first prove the harness created it: an
     owner-only `ovmcp-real-` directory directly under `/tmp`, not a symlink,
     holding the owner-only bootstrap receipt. A root that cannot is refused as
@@ -404,19 +408,22 @@ Counts from before the repair round are historical. The post-repair counts are
 given in the next block.
 
 Current uncommitted repair (`9022e2aa` plus all review corrections, including
-the Gate A repair): the three named focused files pass with 546 tests. The Gate
-A review baseline was 515, and the completed review repair added 31 regressions
+the Gate A repair and the final-review repair): the three named focused files
+pass with 553 tests. The Gate A review baseline was 515, the completed review
+repair added 31 regressions (546), and the final-review repair added seven more
 for runtime-root ownership, the SIGKILL crash restart, identity-proved authoring
 teardown, permission-denied process probes, exited-leader group cleanup,
 bootstrap failure cleanup, async session cleanup and non-vacuous completion
 claims. Ruff, strict mypy on both qualification scripts and
-`git diff --check` are clean. The complete Phase 2 suite passes with 596 tests
-and four expected platform-specific skips, including the shared-launcher
-ownership regression.
+`git diff --check` are clean. The complete Phase 2 suite passes after the
+final-review repair with 596 tests and four expected platform-specific skips,
+including the shared-launcher ownership regression.
 A live installed authoring journey passed before the final local corrections in
 this round; it must be rerun from the frozen candidate. The broader MCP, CLI,
-package-qualification and service-conformance gate now passes 1,902 tests after
-the completed review repair. Its earlier 1,796-test result remains historical.
+package-qualification and service-conformance gate now passes 2,659 tests after
+the final-review repair. The 1,902-test result covered only the MCP package, the
+CLI package and the three focused files and was not that four-directory gate;
+the earlier 2,652, 2,645 and 1,796 results are historical.
 
 Earlier results follow. They are historical and none is current candidate
 evidence:
@@ -438,7 +445,8 @@ evidence:
   passing;
 - historical, superseded: combined MCP, CLI, authoring traceability and
   real-host harness gate: 1,796 passed at the preceding uncommitted checkpoint;
-  the current post-repair gate passes 1,902 tests;
+  the 1,902-test MCP package, CLI package and three-file result is not the
+  four-directory gate;
 - historical, diagnostic only: the Codex CLI real-host journey at clean
   `4ec9fa17` reported a pass, but its record is unauditable under the current
   closed schema and closes no current I row. The repaired same-session journey

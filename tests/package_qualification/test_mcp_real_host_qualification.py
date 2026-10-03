@@ -2933,7 +2933,11 @@ def test_relay_keeps_result_digests_and_closed_refusal_classes_only(tmp_path: Pa
 
     summary = q.summarize_observation(q.read_observation(path))
     assert summary.outcomes == (
-        ("evidence_capture", "none", q.canonical_result_digest({"evidence": [1], "page": {}})),
+        (
+            "evidence_capture",
+            "none",
+            q.canonical_result_digest({"evidence": [1], "page": {"continuation_token": "other"}}),
+        ),
         ("memory_create", "idempotency_conflict", q.canonical_result_digest(None)),
         ("evidence_search", "not_callable", q.canonical_result_digest(None)),
         ("job_get", "other", q.canonical_result_digest(None)),
@@ -3124,6 +3128,19 @@ def test_only_the_continuation_token_is_outside_the_result_digest() -> None:
     assert q.canonical_result_digest(one_principal) != q.canonical_result_digest(
         {**one_principal, "page": "a-string-page"}
     )
+
+
+def test_token_presence_is_in_the_digest_but_its_value_is_not() -> None:
+    page = {"events": [{"sequence": 0}], "job_id": "job-1", "snapshot_event_count": 2}
+    continuing = {**page, "page": {"continuation_token": "token-for-one-principal", "total": 2}}
+    other = {**page, "page": {"continuation_token": "token-for-the-owner", "total": 2}}
+    exhausted_none = {**page, "page": {"continuation_token": None, "total": 2}}
+    exhausted_empty = {**page, "page": {"continuation_token": "", "total": 2}}
+    exhausted_omitted = {**page, "page": {"total": 2}}
+    assert q.canonical_result_digest(continuing) == q.canonical_result_digest(other)
+    for exhausted in (exhausted_none, exhausted_empty, exhausted_omitted):
+        assert q.canonical_result_digest(continuing) != q.canonical_result_digest(exhausted)
+    assert q.canonical_result_digest(exhausted_none) == q.canonical_result_digest(exhausted_empty)
 
 
 @pytest.mark.parametrize(
@@ -4063,6 +4080,23 @@ def test_removing_the_runtime_proves_it_is_gone(tmp_path: Path) -> None:
     q.remove_runtime(root)  # already gone is still gone
 
 
+def test_a_nested_disappearance_that_leaves_the_root_is_cleanup_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runtime"
+    root.mkdir()
+    (root / "credential").write_text("secret", encoding="utf-8")
+
+    def vanish(_path: Path) -> None:
+        raise FileNotFoundError("nested entry")
+
+    monkeypatch.setattr(q.shutil, "rmtree", vanish)
+    with pytest.raises(q.QualificationError) as error:
+        q.remove_runtime(root)
+    assert _code(error) is Reason.CLEANUP_INCOMPLETE
+    assert (root / "credential").exists()
+
+
 def test_a_runtime_that_cannot_be_removed_is_cleanup_incomplete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4278,6 +4312,63 @@ def test_non_child_identity_fails_closed_when_boot_probe_fails(
     assert q._process_identity_matches(_evidence(4242)) is None
 
 
+@pytest.mark.parametrize("probe", ["start", "boot"])
+def test_non_child_identity_mismatch_on_a_live_pid_is_indeterminate(
+    monkeypatch: pytest.MonkeyPatch, probe: str
+) -> None:
+    probes = iter(
+        [
+            subprocess.CompletedProcess(
+                [], 0, stdout="other\n" if probe == "start" else "start-1\n", stderr=""
+            ),
+            subprocess.CompletedProcess(
+                [], 0, stdout="other\n" if probe == "boot" else "boot-1\n", stderr=""
+            ),
+        ]
+    )
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q.subprocess, "run", lambda *_args, **_kwargs: next(probes))
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: True)
+    assert q._process_identity_matches(_evidence(4242)) is None
+
+
+def test_non_child_identity_mismatch_on_an_absent_pid_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout="other\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="boot-1\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q.subprocess, "run", lambda *_args, **_kwargs: next(probes))
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: False)
+    assert q._process_identity_matches(_evidence(4242)) is False
+
+
+def test_a_mismatched_live_core_identity_is_retained_and_never_signalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = q.CoreContext(tmp_path, tmp_path / "w", tmp_path / "i", "ws")
+    context.replacement_pid = 2_000_000_000
+    context.expected = _evidence(context.replacement_pid)
+    probes = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout="reused\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="boot-1\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(q.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(q.subprocess, "run", lambda *_args, **_kwargs: next(probes))
+    monkeypatch.setattr(q, "_pid_running", lambda _pid: True)
+    monkeypatch.setattr(
+        q, "_terminate_core_group", lambda *_args: pytest.fail("signalled an uncertain process")
+    )
+    q.stop_core(context)
+    assert context.retained is True
+
+
 def _sleeper(**options: Any) -> subprocess.Popen[str]:
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], text=True, **options)
 
@@ -4465,8 +4556,13 @@ def test_teardown_stops_an_unplanned_replacement_the_descriptor_names(
     assert context.retained is False
 
 
+@pytest.mark.parametrize("nested_disappearance", [False, True])
 def test_a_pass_is_never_published_over_retained_runtime(
-    run: Any, candidate: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    run: Any,
+    candidate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    nested_disappearance: bool,
 ) -> None:
     runtime = _owned_runtime(
         monkeypatch,
@@ -4491,15 +4587,27 @@ def test_a_pass_is_never_published_over_retained_runtime(
     monkeypatch.setattr(q, "qualify_host", lambda **_: _passed_ledger())
     monkeypatch.setattr(q, "os_identity", lambda: q.OsIdentity("27.0", "26A428", "arm64"))
 
-    def refuse(_root: Path) -> None:
-        raise q.QualificationError(Reason.CLEANUP_INCOMPLETE)
+    if nested_disappearance:
+        # A nested entry vanishes mid-delete: rmtree raises FileNotFoundError, but the
+        # root and a credential-like file are still there.
+        (runtime / "credential").write_text("secret", encoding="utf-8")
 
-    monkeypatch.setattr(q, "remove_runtime", refuse)
+        def vanish(_root: Path) -> None:
+            raise FileNotFoundError("nested entry")
+
+        monkeypatch.setattr(q.shutil, "rmtree", vanish)
+    else:
+
+        def refuse(_root: Path) -> None:
+            raise q.QualificationError(Reason.CLEANUP_INCOMPLETE)
+
+        monkeypatch.setattr(q, "remove_runtime", refuse)
     status, out, err = run(**{"--runtime-root": runtime})
     assert (status, out) == (1, "")
     assert err.endswith("reason_code=cleanup_incomplete\n")
     record = json.loads(run.output.read_text(encoding="utf-8"))
     assert (record["verdict"], record["reason_code"]) == ("fail", "cleanup_incomplete")
+    assert not nested_disappearance or (runtime / "credential").exists()
 
 
 def test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest() -> None:

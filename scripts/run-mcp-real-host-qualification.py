@@ -1202,18 +1202,18 @@ def arguments_digest(arguments: object) -> str:
 
 
 def canonical_result_digest(structured: object) -> str:
-    """Digest of one structured result with only its continuation token removed.
+    """Digest of one structured result with its continuation token value masked.
 
     A continuation token is bound to the principal that issued it, so the host's
-    and the owner's pages of one snapshot differ in that token alone.  Every other
-    field of ``page``, and every other field of the result, stays in the digest.
+    and the owner's pages of one snapshot differ in that token alone.  Whether a
+    token was present stays in the digest as a marker, so a continuing page and an
+    exhausted page differ.  Every other field of the result stays in the digest.
     """
     if isinstance(structured, dict) and isinstance(structured.get("page"), dict):
-        position = {
-            key: value
-            for key, value in structured["page"].items()
-            if key != "continuation_token"
-        }
+        position = dict(structured["page"])
+        if "continuation_token" in position:
+            token = position["continuation_token"]
+            position["continuation_token"] = "<present>" if token else "<absent>"
         structured = {**structured, "page": position}
     return arguments_digest(structured)
 
@@ -2349,9 +2349,10 @@ def _terminate_core_group(
 def _process_identity_matches(evidence: Mapping[str, Any] | None) -> bool | None:
     """Match descriptor evidence before signalling a non-child PID.
 
-    ``False`` means the named Core is absent or the PID has been reused, so it
-    must not be signalled. ``None`` means the identity could not be established;
-    cleanup then fails closed without signalling an uncertain process.
+    ``True`` means the identity matches. ``False`` means the PID is absent.
+    ``None`` means the identity could not be established, including a mismatch
+    on a PID that is still running; cleanup then fails closed without signalling
+    an uncertain process.
     """
     if not isinstance(evidence, Mapping):
         return None
@@ -2391,7 +2392,10 @@ def _process_identity_matches(evidence: Mapping[str, Any] | None) -> bool | None
         return False if not _pid_running(pid) else None
     if not booted:
         return None
-    return started == start_time and booted == boot_id
+    if started == start_time and booted == boot_id:
+        return True
+    # A different identity on a live pid is uncertain, never proof of absence.
+    return False if not _pid_running(pid) else None
 
 
 def stop_core(context: CoreContext) -> None:
@@ -3915,7 +3919,7 @@ def remove_runtime(root: Path) -> None:
     try:
         shutil.rmtree(root)
     except FileNotFoundError:
-        return
+        pass  # success only if the root itself is absent, checked below
     except OSError:
         raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE) from None
     if os.path.lexists(root):

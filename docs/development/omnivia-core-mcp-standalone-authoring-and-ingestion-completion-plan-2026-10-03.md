@@ -117,8 +117,8 @@ Completed on the branch:
   repairs, 358 focused tests and a 1,754-test MCP/CLI/traceability integration
   gate passed. The first repair checkpoint reached 454 focused tests and a
   1,796-test integration gate. Both sets are historical and superseded; the
-  current focused counts are recorded in the Phase 8 plan and the integration
-  gate is pending a rerun after the latest corrections;
+  current focused and four-directory integration results are recorded in the
+  Phase 8 plan and the section 11 execution runbook;
 - the 121 paths changed by historical PR #108 are classified in
   `omnivia-core-pr-108-file-disposition-map-2026-10-04.md`: 2 already ported,
   12 rewritten for the current architecture, 96 already superseded and 11
@@ -517,10 +517,10 @@ Current local status at the time of this plan update:
 | Area | State | Evidence or next action |
 |---|---|---|
 | Eleven-finding repair round | implemented, uncommitted | Complete diff remains to receive one final independent read-only review |
-| Relay fail-closed/deadlock repair | implemented and locally verified | Three new real-proxy regressions are included in the 546-test focused gate |
-| Focused qualification/traceability gate | passing | 546 tests pass (515 at the Gate A review baseline, plus 31 completed-review regressions); strict mypy for both qualification scripts, Ruff and `git diff --check` pass |
-| Phase 2 shared-launcher failure | corrected and locally verified | The complete local Phase 2 suite passes with 596 tests and four expected platform-specific skips; require fresh Linux, macOS and Windows results after push |
-| Broader integration gate | passing | 1,902 MCP, CLI, package-qualification and service-conformance tests pass after the completed review repair; the previous 1,796-test result is historical |
+| Relay fail-closed/deadlock repair | implemented and locally verified | Three new real-proxy regressions are included in the 553-test focused gate |
+| Focused qualification/traceability gate | passing | 553 tests pass (515 at the Gate A review baseline, plus 31 completed-review and seven final-review regressions); strict mypy for both qualification scripts, Ruff and `git diff --check` pass |
+| Phase 2 shared-launcher failure | corrected and locally verified | The complete local Phase 2 suite passes after the final-review repair with 596 tests and four expected platform-specific skips; require fresh Linux, macOS and Windows results after push |
+| Broader integration gate | passing | The four named directories pass 2,659 tests after the final-review repair. The earlier 2,652, 2,645, 1,902 and 1,796 results are historical; 1,902 covered only the MCP package, CLI package and three focused files |
 | Qualified runtime commit and candidate | not frozen | Freeze only after the final independent read-only review, reviewed checkpoint commit and push |
 | Real-host records | not current | Historical Codex records are diagnostic only; both hosts must run against the same new candidate |
 | Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
@@ -537,13 +537,15 @@ Current local status at the time of this plan update:
    - digest canonicalization, cleanup and child-process reaping;
    - exact revocation classification and truthful evidence booleans.
 2. Rerun the three focused qualification/traceability files and record the
-   actual count from the current diff; the current local result is 546 passing
+   actual count from the current diff; the current local result is 553 passing
    tests (515 at the Gate A review baseline, before the completed review's 31
-   regressions), and historical counts must not be carried forward.
+   and the final review's seven regressions), and historical counts must not be
+   carried forward.
 3. Run Ruff, strict mypy for both qualification scripts and `git diff --check`.
-4. Run the broader MCP, CLI, traceability and qualification gate. The current
-   post-repair result is 1,902 passing tests; the earlier 1,796-test result is
-   historical and superseded.
+4. Run the broader four-directory gate. The current post-final-review result is
+   2,659 passing tests. The 1,902-test figure covered only the MCP package, CLI
+   package and three focused files and was not this gate; the earlier 2,652,
+   2,645 and 1,796 results are historical and superseded.
 5. Obtain a fresh independent read-only correctness/security review of the
    entire current diff. Resolve every actionable finding and repeat the affected
    checks.
@@ -559,7 +561,8 @@ jobs. The shared-launcher ownership test found the literal
 `omnivia-core-service` in `packages/omnivia-core-mcp/src/omnivia_core_mcp/server.py`.
 The smallest architecture-correct correction is now present in the uncommitted
 repair and its targeted ownership regression passes. Do not weaken the test.
-The complete local Phase 2 suite now passes with 596 tests and four expected
+The complete local Phase 2 suite passes after the final-review repair with 596
+tests and four expected
 platform-specific skips. Include the correction in the reviewed candidate and
 require fresh Linux, macOS and Windows results after the next push.
 
