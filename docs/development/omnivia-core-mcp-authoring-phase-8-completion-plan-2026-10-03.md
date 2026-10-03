@@ -292,15 +292,14 @@ all 121 paths. The harness now probes excluded dispatch deterministically,
 rejects every malformed structured-result shape, and accepts revocation only
 when the installed credential store emits its exact fixed sanitized missing
 message. Generic timeout, transport, cancellation and not-callable failures no
-longer satisfy I-8. A fresh independent read-only review found no remaining
-code defect; its three test-coverage observations were added before acceptance.
+longer satisfy I-8. A focused read-only review of the final two-file hardening
+found no code defect; its three test-coverage observations were added. A full
+exact-tip independent review is still required before candidate freeze.
 
 No exact-tip Claude or Codex real-host record exists yet, so no I row is green.
-WP3 remains open for both final host records. An authenticated Codex diagnostic
-of the stricter classifier was not started because the execution policy requires
-explicit approval before locally derived qualification data may be sent through
-an external model connection. Claude qualification also still requires the
-owner-only token file produced outside the repository by `claude setup-token`.
+WP3 remains open for both final host records. Claude qualification still
+requires the owner-only token file produced outside the repository by
+`claude setup-token`.
 The real-host part of WP5 and final WP6 closeout therefore remain open. This
 documentation edit creates a new candidate commit, so both hosts must be run
 against the later frozen tip rather than any historical candidate.
@@ -318,7 +317,7 @@ against the later frozen tip rather than any historical candidate.
   isolated installs, and 59 Swift tests; final-tip rerun pending;
 - real-host harness/schema focused suite: 358 focused tests, with targeted Ruff,
   strict mypy, schema validation and diff hygiene passing;
-- combined MCP, CLI, authoring traceability and real-host harness gate: 1,764
+- combined MCP, CLI, authoring traceability and real-host harness gate: 1,754
   passed;
 - Codex CLI real-host journey at clean `4ec9fa17`: pass; the repaired same-session
   journey also passed diagnostically against historical candidate `960ed703`;
@@ -363,8 +362,7 @@ writer.
 Commit and push the reviewed hardening, freeze that exact tip, build one clean
 candidate, and rerun the installed restricted, authoring and lifecycle journeys.
 Then run full preflight, update PR #167 and obtain fresh hosted checks. Real-host
-acceptance additionally requires explicit authorization for the authenticated
-external model data flow and an owner-only Claude token file generated outside
-the repository with `claude setup-token`. Retain only the closed redacted host
-records outside the source tree. Merge remains blocked until the user explicitly
-authorizes it and the hosted checks are green at the latest tip.
+acceptance additionally requires an owner-only Claude token file generated
+outside the repository with `claude setup-token`. Retain only the closed
+redacted host records outside the source tree. Merge remains blocked until the
+user explicitly authorizes it and the hosted checks are green at the latest tip.

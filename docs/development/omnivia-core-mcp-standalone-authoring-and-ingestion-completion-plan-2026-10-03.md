@@ -106,7 +106,7 @@ Completed on the branch:
 - the real-host harness and closed record schema now represent every step in
   the section 8 journey, including excluded-tool refusal, replay/conflict,
   stable event paging, revocation and post-host Core health; 358 focused tests
-  and a 1,764-test MCP/CLI/traceability integration gate pass;
+  and a 1,754-test MCP/CLI/traceability integration gate pass;
 - the 121 paths changed by historical PR #108 are classified in
   `omnivia-core-pr-108-file-disposition-map-2026-10-04.md`: 2 already ported,
   12 rewritten for the current architecture, 96 already superseded and 11
@@ -114,11 +114,10 @@ Completed on the branch:
 
 Remaining before completion:
 
-1. checkpoint the reviewed final harness hardening and freeze the resulting
-   clean source tip;
+1. checkpoint the focused-reviewed harness hardening, complete full exact-tip
+   independent review, and freeze the resulting clean source tip;
 2. build and verify release-form artifacts from that exact tip;
-3. run both real hosts against the frozen artifacts; the authenticated model
-   data flow requires explicit authorization before either run starts;
+3. run both real hosts against the frozen artifacts;
 4. obtain a token-only Claude credential outside the repository from
    `claude setup-token`; the token must never be pasted into the repository or
    retained evidence;
@@ -133,11 +132,11 @@ Remaining before completion:
 
 | Order | Work package | Status | Exit condition |
 |---|---|---|---|
-| 1 | Stabilize current branch | reviewed; checkpoint pending | Final hardening and its independent-review tests are committed and pushed |
+| 1 | Stabilize current branch | focused patch review complete; full exact-tip review pending | Final hardening passes full independent review and is committed and pushed |
 | 2 | Close planning evidence | complete through reviewed predecessor; this update pending | This plan and the complete 121-path PR #108 file-disposition map are tracked |
 | 3 | Complete harness coverage | complete locally; checkpoint pending | Automated tests prove every section 8 case and reject incomplete evidence |
 | 4 | Freeze candidate | pending | Clean source tip, release wheels, SDK pins, and host versions are immutable |
-| 5 | Run real hosts | blocked on explicit authenticated-flow approval, Claude token and frozen tip | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
+| 5 | Run real hosts | blocked on Claude token and frozen tip | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
 | 6 | Reconcile records | pending | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
 | 7 | Accept exact tip | pending | Independent review, focused suites, full preflight, and hosted checks are green |
 | 8 | Integrate and retire | authorization required | Authorized merge, explicit release decision, and separately authorized cleanup are complete |
