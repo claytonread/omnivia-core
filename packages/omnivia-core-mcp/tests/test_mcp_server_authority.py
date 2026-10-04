@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -647,6 +648,33 @@ def listed(connected: server.ConnectedSession) -> list[str]:
             return [tool.name for tool in (await attached.list_tools()).tools]
 
     return anyio.run(ask)
+
+
+def test_initialize_describes_each_profile_as_the_bounded_surface_it_is() -> None:
+    """Restricted carries `decision.evaluate`, so no description calls it read-only.
+
+    Read back over the official client, as a host receives it at initialize, and
+    from the console entry point's own help text.
+    """
+
+    def instructions(connected: server.ConnectedSession) -> str:
+        async def ask() -> str:
+            async with Client(server.build_server(session=connected)) as attached:
+                return str(attached.instructions)
+
+        return anyio.run(ask)
+
+    restricted = instructions(session())
+    assert "Bounded non-authoring access" in restricted
+    assert "one advisory decision evaluation" in restricted
+    assert "changes no business record" in restricted
+    authoring = instructions(authoring_session())
+    assert "one advisory decision evaluation" in authoring
+    assert "proposed-only memory creation" in authoring
+    assert "Each mutation takes the operation input under `input`" in authoring
+    for text in (restricted, authoring, str(server.build_parser().description)):
+        assert "read-only" not in text.lower()
+        assert "every mutation are" not in text
 
 
 def test_the_listing_does_not_vary_with_the_configured_purposes() -> None:
@@ -1476,6 +1504,42 @@ def test_a_shared_managed_start_failure_becomes_a_fixed_startup_refusal(
         server.connect(configuration())
     assert ENDPOINT not in str(refusal.value)
     assert str(STATE) not in str(refusal.value)
+
+
+def test_the_startup_guidance_names_the_real_bootstrap_and_no_nonexistent_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`omnivia init` is not a command. The guidance names the service's `--init`.
+
+    The refusal is read back from the real path, and the package's own sources and
+    README are scanned so the nonexistent command cannot return in any active text.
+    The adapter names no service program and claims no process: the runtime's
+    architecture guard forbids the program name in adapter source.
+    """
+
+    def fail(_config: Any, **_kwargs: Any) -> Any:
+        raise ManagedStartError("refused")
+
+    monkeypatch.setattr(server, "connect_managed_local", fail)
+    with pytest.raises(server.StartupError) as refusal:
+        server.connect(configuration())
+    message = str(refusal.value)
+    assert "Core service's own `--init` maintenance mode" in message
+    assert "omnivia-core-service" not in message
+    assert "--managed-start" not in message
+    assert "this server starts" not in message.lower()
+    assert "--workspace" in message
+    assert "--installation-state" in message
+    assert "omnivia --installation-state" in message
+    assert "mcp configure --host" in message
+    assert "restart the host" in message
+    # The MCP configuration carries a workspace id and installation state, never a
+    # workspace path, so the guidance must not tell the owner to reuse one.
+    assert "same explicit" not in message
+    assert "this configuration uses" not in message
+    package = Path(server.__file__).parents[2]
+    for active in (Path(server.__file__), package / "README.md"):
+        assert not re.search(r"\bomnivia init\b", active.read_text(encoding="utf-8"))
 
 
 def install(monkeypatch: pytest.MonkeyPatch, recorder: ConnectRecorder) -> None:

@@ -25,11 +25,17 @@ Standard library only, like its two neighbours here: nothing in this module may
 import a Runtime, Client, MCP or CLI package, and a green row's own evidence is
 not run here. This module proves the record's references resolve, not that the
 product behind them works.
+
+The final section holds the v1.4 completion addendum and its reference chain to
+the same standard: the exposure manifest is read from its source with ``ast``
+and the operation catalogue from its generated JSON, so the addendum's inventory,
+classification and version claims cannot drift from the code they describe.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -82,6 +88,7 @@ TOP_LEVEL_DIRECTORIES = frozenset(
 #: one of them except under a negation, so "no real-host record" passes and
 #: "real-host qualification passed" does not.
 COMPLETION_WORDS = (
+    "pass",
     "complete",
     "completed",
     "passes",
@@ -89,17 +96,30 @@ COMPLETION_WORDS = (
     "passing",
     "qualifies",
     "qualified",
+    "accepted",
+    "closed",
     "verified",
     "satisfied",
     "green",
     "done",
 )
 NEGATIONS = frozenset(
-    {"no", "not", "never", "cannot", "without", "neither", "nor", "yet", "un"}
+    {
+        "no",
+        "not",
+        "never",
+        "cannot",
+        "without",
+        "neither",
+        "nor",
+        "yet",
+        "un",
+    }
 )
 
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 _FENCED_BLOCK = re.compile(r"^```[a-z]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
+_FAIL_CLOSED = re.compile(r"\bfail(?:s|ed|ing)?(?:\s+|-)closed\b")
 _TRAILING_PUNCTUATION = '.,;:)"\''
 
 
@@ -169,6 +189,7 @@ STATED_ROWS = [
 _STEM = "docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion"
 SOURCES = (
     f"{_STEM}-requirements-2026-09-12-v1.3.md",
+    f"{_STEM}-requirements-2026-10-03-v1.4-addendum.md",
     f"{_STEM}-implementation-plan-2026-09-12.md",
 )
 
@@ -267,7 +288,11 @@ def test_every_pytest_node_the_record_names_resolves_to_a_real_test() -> None:
         scope = _scope(ast.parse(source, filename=str(module)).body)
         for segment in path[:-1]:
             assert segment in scope, node_id
-            scope = _scope(scope[segment].body)  # type: ignore[union-attr]
+            parent = scope[segment]
+            assert isinstance(
+                parent, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ), node_id
+            scope = _scope(parent.body)
         leaf, _, parameter = path[-1].partition("[")
         assert leaf in scope, node_id
         if parameter:
@@ -289,7 +314,12 @@ def _completion_claims(row: str) -> list[str]:
     denial while "real-host qualification passed" is a claim.
     """
     claims = []
-    for clause in re.split(r"[.,;|]", row.lower()):
+    prose = _INLINE_CODE.sub("", row.lower())
+    # "Fail closed" describes a refusal invariant, not completion.  Remove only
+    # that phrase; a generic "fails" must not suppress a later completion claim
+    # in the same clause (for example, "the run fails but the gate passed").
+    prose = _FAIL_CLOSED.sub("", prose)
+    for clause in re.split(r"[.,;|]", prose):
         words = re.findall(r"[a-z0-9-]+", clause)
         if NEGATIONS.isdisjoint(words):
             claims += [word for word in words if word in COMPLETION_WORDS]
@@ -299,10 +329,16 @@ def _completion_claims(row: str) -> list[str]:
 def test_the_completion_word_detector_sees_a_claim_and_allows_a_denial() -> None:
     """Anti-vacuous: the rule below is only worth as much as this detector."""
     assert _completion_claims("real-host qualification passed | pending-phase-8")
+    assert _completion_claims("real-host qualification pass | pending-phase-8")
+    assert _completion_claims("the host gate is accepted")
+    assert _completion_claims("the evidence row is closed")
     assert _completion_claims("the packaging gate is complete")
     assert _completion_claims("no host ran it | the wheelhouse gate passed")
+    assert _completion_claims("the run fails but the gate passed")
     assert not _completion_claims("no real-host run has passed | pending-phase-8")
     assert not _completion_claims("not yet qualified against the pinned wheelhouse")
+    assert not _completion_claims("the mutation must fail closed")
+    assert not _completion_claims("the mutation failed closed")
     assert not _completion_claims("staged import observed through job_events")
 
 
@@ -329,3 +365,342 @@ def test_every_stated_row_names_at_least_one_evidence_type() -> None:
     for status, evidence_types, row in STATED_ROWS:
         assert evidence_types, row
         assert status in STATUSES, row
+
+
+# --------------------------------------------------------------------------
+# The v1.4 completion addendum: inventories, classification, version, chain
+# --------------------------------------------------------------------------
+
+ADDENDUM_NAME = (
+    "omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-10-03-v1.4-addendum.md"
+)
+ADDENDUM_PATH = REPO_ROOT / "docs" / "development" / ADDENDUM_NAME
+ADDENDUM = ADDENDUM_PATH.read_text(encoding="utf-8")
+V13_NAME = "omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12-v1.3.md"
+V13 = (REPO_ROOT / "docs" / "development" / V13_NAME).read_text(encoding="utf-8")
+IMPLEMENTATION_PLAN = (
+    REPO_ROOT
+    / "docs"
+    / "development"
+    / "omnivia-core-mcp-standalone-authoring-and-ingestion-implementation-plan-2026-09-12.md"
+).read_text(encoding="utf-8")
+COMPLETION_PLAN = (
+    REPO_ROOT / "docs" / "development" / "omnivia-core-mcp-authoring-phase-8-completion-plan-2026-10-03.md"
+).read_text(encoding="utf-8")
+MANIFEST_SOURCE = (
+    REPO_ROOT / "packages" / "omnivia-core-mcp" / "src" / "omnivia_core_mcp" / "manifest.py"
+).read_text(encoding="utf-8")
+WHEELHOUSE = (REPO_ROOT / "scripts" / "mcp-wheelhouse-constraints.txt").read_text(encoding="utf-8")
+CATALOGUE_ENTRIES = json.loads(
+    (REPO_ROOT / "contracts" / "application" / "v1" / "schemas" / "operations.schema.json").read_text(
+        encoding="utf-8"
+    )
+)["x-omnivia-operation-catalogue"]
+CATALOGUE = {entry["name"]: entry for entry in CATALOGUE_ENTRIES}
+
+#: The reviewed inventories, in manifest order, as the addendum names them.
+RESTRICTED_INVENTORY = (
+    ("workspace_inspect", "workspace.inspect"),
+    ("evidence_search", "evidence.search"),
+    ("knowledge_search", "knowledge.search"),
+    ("memory_search", "memory.search"),
+    ("graph_traverse", "graph.traverse"),
+    ("context_pack_build", "context_pack.build"),
+    ("engineering_search", "engineering.search"),
+    ("engineering_expand", "engineering.expand"),
+    ("engineering_context_build", "engineering.context.build"),
+    ("decision_evaluate", "decision.evaluate"),
+    ("decision_record_get", "decision.record.get"),
+    ("decision_record_list", "decision.record.list"),
+    ("decision_status", "decision.status"),
+)
+ADDITIONS_INVENTORY = (
+    ("memory_create", "memory.create"),
+    ("evidence_capture", "evidence.capture"),
+    ("import_start", "import.start"),
+    ("job_get", "job.get"),
+    ("job_events", "job.events"),
+)
+EXCLUDED_OPERATIONS = ("job.cancel", "job.retry")
+MODEL_SELECTS_NOTHING = (
+    "workspace, principal, purpose, scope, capability, credential, grant, endpoint or profile"
+)
+
+
+def _assigned(name: str) -> ast.expr:
+    """The value assigned to one module-level name in ``manifest.py``."""
+    for node in ast.parse(MANIFEST_SOURCE).body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and node.value is not None
+        ):
+            return node.value
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return node.value
+    raise AssertionError(f"{name} is not assigned in manifest.py")
+
+
+def _exposed(name: str) -> list[dict[str, str]]:
+    """Each ``ExposedOperation(...)`` literal in one manifest tuple, in order."""
+    tuple_value = _assigned(name)
+    assert isinstance(tuple_value, ast.Tuple), name
+    rows: list[dict[str, str]] = []
+    for call in tuple_value.elts:
+        assert isinstance(call, ast.Call), name
+        row: dict[str, str] = {}
+        for keyword in call.keywords:
+            assert keyword.arg is not None, name
+            value = ast.literal_eval(keyword.value)
+            assert isinstance(value, str), name
+            row[keyword.arg] = value
+        rows.append(row)
+    return rows
+
+
+MANIFEST_VERSION = ast.literal_eval(_assigned("MANIFEST_VERSION"))
+_ADMITTED = _assigned("ADMITTED_MUTATIONS")
+assert isinstance(_ADMITTED, ast.Call), "ADMITTED_MUTATIONS is no longer frozenset({...})"
+ADMITTED_MUTATIONS = ast.literal_eval(_ADMITTED.args[0])
+RESTRICTED = _exposed("RESTRICTED_MANIFEST")
+ADDITIONS = _exposed("_AUTHORING_ADDITIONS")
+AUTHORING = RESTRICTED + ADDITIONS
+
+
+def _cells(text: str) -> list[list[str]]:
+    """Every table row of ``text`` as its stripped cells."""
+    return [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in text.splitlines()
+        if line.strip().startswith("|") and line.strip().endswith("|")
+    ]
+
+
+def _side_effect(operation: str) -> str:
+    value = CATALOGUE[operation]["scope"]["side_effect"]
+    assert isinstance(value, str), operation
+    return value
+
+
+def test_the_restricted_and_authoring_inventories_are_the_reviewed_thirteen_and_eighteen() -> None:
+    assert [(entry["tool_name"], entry["operation"]) for entry in RESTRICTED] == list(
+        RESTRICTED_INVENTORY
+    )
+    assert [(entry["tool_name"], entry["operation"]) for entry in ADDITIONS] == list(
+        ADDITIONS_INVENTORY
+    )
+    assert len(RESTRICTED) == 13
+    assert len(AUTHORING) == 18
+
+
+def test_the_manifest_version_is_the_one_the_addendum_names() -> None:
+    assert MANIFEST_VERSION == "2.3"
+    assert f"`{MANIFEST_VERSION}`" in ADDENDUM
+
+
+def test_the_generated_catalogue_is_the_fifty_seven_the_addendum_states() -> None:
+    assert len(CATALOGUE_ENTRIES) == 57
+    assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
+    assert "57 operations" in ADDENDUM
+    assert "fifty-four" not in MANIFEST_SOURCE
+
+
+def test_restricted_is_bounded_non_authoring_and_not_read_only() -> None:
+    """Restricted is bounded non-authoring: twelve reads and one durable mutation."""
+    mutations = [entry["operation"] for entry in RESTRICTED if _side_effect(entry["operation"]) != "none"]
+    assert mutations == ["decision.evaluate"]
+    assert "bounded non-authoring" in ADDENDUM
+    assert "It is not read-only." in ADDENDUM
+    assert "gets the read-only surface" not in MANIFEST_SOURCE
+    assert "read-only surface" not in MANIFEST_SOURCE
+    assert "read-only allow-list" not in MANIFEST_SOURCE
+
+
+MCP_PACKAGE = REPO_ROOT / "packages" / "omnivia-core-mcp"
+MCP_MODULES = sorted((MCP_PACKAGE / "src" / "omnivia_core_mcp").glob("*.py"))
+INTEROPERABILITY = REPO_ROOT / "docs" / "distribution" / "mcp-host-interoperability.md"
+#: A whole server, package or profile called read-only, or every mutation called
+#: absent. Both are false of restricted, which carries `decision.evaluate`. A single
+#: read tool's own "Read-only." description is true and is not matched.
+FALSE_SURFACE_CLAIM = re.compile(
+    r"\bread-only (?:access|surface|allow-list|server|profile)\b"
+    r"|\bevery mutation (?:is|are) (?:deliberately )?absent\b",
+    re.IGNORECASE,
+)
+
+
+def _stated_text(path: Path) -> str:
+    """Every string a module states -- docstrings, messages, descriptions -- folded.
+
+    ``ast`` merges implicitly concatenated literals into one constant, so a sentence
+    wrapped across source lines is read whole. Comments state nothing to a reader.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return "\n".join(
+        " ".join(node.value.split())
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+
+
+def test_the_false_surface_claim_detector_sees_both_claims_and_allows_true_text() -> None:
+    """Anti-vacuous: the scan below is only worth as much as this detector."""
+    assert FALSE_SURFACE_CLAIM.search("gives an AI host read-only access to one workspace")
+    assert FALSE_SURFACE_CLAIM.search("workspace creation and every mutation are deliberately absent")
+    assert not FALSE_SURFACE_CLAIM.search("every other mutation are deliberately absent")
+    assert not FALSE_SURFACE_CLAIM.search("read-only job observation")
+
+
+def test_no_mcp_module_or_document_calls_a_profile_read_only() -> None:
+    """The scan covers every MCP module, not only ``manifest.py``, and the public documents.
+
+    The package docstring and the server's initialize instructions also have to state
+    the bounded surface, so a description cannot pass by saying nothing.
+    """
+    stated = {path.name: _stated_text(path) for path in MCP_MODULES}
+    assert {"__init__.py", "configuration.py", "manifest.py", "server.py"} <= set(stated)
+    for document in (MCP_PACKAGE / "README.md", INTEROPERABILITY):
+        stated[document.name] = " ".join(document.read_text(encoding="utf-8").split())
+    for name, text in stated.items():
+        assert not FALSE_SURFACE_CLAIM.search(text), name
+    for name in ("__init__.py", "server.py"):
+        assert "bounded non-authoring" in stated[name].lower(), name
+        assert "advisory decision evaluation" in stated[name], name
+
+
+def test_the_side_effecting_operations_are_exactly_the_admitted_mutations() -> None:
+    mutations = {entry["operation"] for entry in AUTHORING if _side_effect(entry["operation"]) != "none"}
+    assert mutations == ADMITTED_MUTATIONS == {
+        "memory.create",
+        "evidence.capture",
+        "import.start",
+        "decision.evaluate",
+    }
+
+
+def test_memory_create_is_documented_as_proposed_only() -> None:
+    assert "proposed-only governed memory record" in ADDENDUM
+    assert "never creates accepted canonical knowledge" in ADDENDUM
+
+
+def test_every_tool_is_classified_from_the_catalogue_in_manifest_order() -> None:
+    rows = [cells for cells in _cells(ADDENDUM) if cells[0].isdigit() and len(cells) == 10]
+    assert [row[0] for row in rows] == [str(number) for number in range(1, 19)]
+    assert [row[1] for row in rows] == [f"`{entry['tool_name']}`" for entry in AUTHORING]
+    assert [row[2] for row in rows] == [f"`{entry['operation']}`" for entry in AUTHORING]
+    for row, exposed in zip(rows, AUTHORING, strict=True):
+        entry = CATALOGUE[exposed["operation"]]
+        capability = entry["required_capability"]
+        idempotency = entry["idempotency"]
+        assert row[3] == ("both" if exposed in RESTRICTED else "authoring"), exposed["tool_name"]
+        assert row[4] == entry["scope"]["side_effect"], exposed["tool_name"]
+        assert row[5] == entry["audit"]["audit_category"], exposed["tool_name"]
+        assert row[6] == f"`{exposed['purpose']}`", exposed["tool_name"]
+        assert row[7] == ", ".join(f"`{scope}`" for scope in entry["scope"]["required_scopes"])
+        assert capability["required"] is True
+        assert row[8] == f"`{capability['id']}` {capability['minimum_version']}", exposed["tool_name"]
+        expected = ("Key required" if idempotency["required"] else "No key") + (
+            "; safe to retry" if idempotency["safe_to_retry"] else "; not safe to retry"
+        )
+        assert row[9] == expected, exposed["tool_name"]
+        assert entry["audit"]["audited"] is True
+
+
+def test_the_prose_lists_name_the_same_eighteen_tools_in_order() -> None:
+    listed = re.findall(r"^(\d+)\. `([a-z_]+)` \(`([a-z._]+)`\)", ADDENDUM, re.MULTILINE)
+    assert [int(number) for number, _, _ in listed] == list(range(1, 19))
+    assert [(tool, operation) for _, tool, operation in listed] == [
+        (entry["tool_name"], entry["operation"]) for entry in AUTHORING
+    ]
+
+
+def test_decision_evaluate_is_admitted_explicitly_with_its_catalogue_posture() -> None:
+    entry = CATALOGUE["decision.evaluate"]
+    assert entry["scope"] == {
+        "required_scopes": ["decision:invoke"],
+        "side_effect": "update",
+        "scope_kind": "workspace",
+    }
+    assert entry["required_capability"] == {
+        "id": "decision.invoke",
+        "minimum_version": "1.0",
+        "required": True,
+    }
+    assert entry["idempotency"] == {
+        "supports_idempotency_key": True,
+        "required": True,
+        "safe_to_retry": False,
+    }
+    assert entry["audit"]["audit_category"] == "mutation"
+    assert entry["job"]["completion_mode"] == "always_returns_job"
+    assert "decision.evaluate" in ADMITTED_MUTATIONS
+    for statement in (
+        "`decision:invoke`",
+        "`decision.invoke` 1.0",
+        "`ADMITTED_MUTATIONS`",
+        "It never mutates business records",
+        "never authorises an action",
+    ):
+        assert statement in ADDENDUM, statement
+    decision_row = next(row for row in _cells(ADDENDUM) if len(row) == 10 and row[1] == "`decision_evaluate`")
+    assert decision_row[4:6] == ["update", "mutation"]
+    assert decision_row[9] == "Key required; not safe to retry"
+
+
+def test_the_excluded_operations_and_the_model_selection_rule_are_preserved() -> None:
+    authoring_operations = {entry["operation"] for entry in AUTHORING}
+    for operation in EXCLUDED_OPERATIONS:
+        assert operation in CATALOGUE, operation
+        assert operation not in authoring_operations, operation
+        assert f"`{operation}`" in ADDENDUM, operation
+    assert MODEL_SELECTS_NOTHING in ADDENDUM
+
+
+def test_v13_is_preserved_unrewritten_and_the_addendum_names_it_as_its_base() -> None:
+    flat = " ".join(V13.split())  # v1.3 wraps its sentences; compare the words, not the lines
+    assert "the existing six read-only tools" in flat
+    assert "advertises exactly eleven tools" in flat
+    assert V13_NAME in ADDENDUM
+
+
+def test_the_addendum_and_its_references_name_each_other_as_normative() -> None:
+    assert ADDENDUM_NAME in IMPLEMENTATION_PLAN and "Normative completion baseline" in IMPLEMENTATION_PLAN
+    assert ADDENDUM_NAME in DOCUMENT and "Normative completion baseline" in DOCUMENT
+    assert ADDENDUM_NAME in COMPLETION_PLAN and "normative completion baseline" in COMPLETION_PLAN
+
+
+def test_the_addendum_declares_no_completion_and_marks_no_gate_green() -> None:
+    status = re.search(r"^\*\*Status:\*\*(.*?)\n\*\*", ADDENDUM, re.MULTILINE | re.DOTALL)
+    assert status is not None
+    assert not _completion_claims(status.group(1))
+    assert "does not mark any gate green" in ADDENDUM
+
+
+def test_no_plan_declares_completion_while_a_real_host_gate_is_pending() -> None:
+    gate_rows = [row for row in TABLE_ROWS if re.match(r"I-\d ", row[0])]
+    assert [row[0].split()[0] for row in gate_rows] == [
+        f"I-{number}" for number in range(1, 9)
+    ]
+    assert {row[-1] for row in gate_rows} == {"pending-phase-8"}
+    completion_status = re.search(r"^\*\*Status:\*\* (.*)$", COMPLETION_PLAN, re.MULTILINE)
+    assert completion_status is not None
+    assert not _completion_claims(completion_status.group(1))
+
+
+def test_the_matrix_is_the_frozen_baseline_and_every_host_gate_is_pending() -> None:
+    for value in ("2.1.288", "0.146.0", "27.0", "26A428", "arm64"):
+        assert value in ADDENDUM, value
+    assert "mcp==2.0.0" in WHEELHOUSE.splitlines()
+    assert "mcp-types==2.0.0" in WHEELHOUSE.splitlines()
+    gate_rows = [cells for cells in _cells(ADDENDUM) if re.fullmatch(r"I-\d", cells[0])]
+    assert [cells[0] for cells in gate_rows] == [f"I-{number}" for number in range(1, 9)]
+    for cells in gate_rows:
+        assert cells[2] == cells[3] == "pending-phase-8", cells[0]
+
+
+def test_the_manifest_docstring_names_a_bounded_restricted_surface() -> None:
+    assert "bounded non-authoring surface rather than the wider one" in MANIFEST_SOURCE
+    assert "four named mutations" in MANIFEST_SOURCE

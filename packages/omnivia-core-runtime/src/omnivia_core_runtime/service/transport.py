@@ -487,6 +487,15 @@ class _SocketChannel:
         self.connection.sendall(payload)
 
     def close(self) -> None:
+        # Closing a descriptor from another thread does not reliably interrupt a
+        # blocking recv on every supported kernel (macOS can leave it asleep until
+        # its original timeout).  Shut the stream down first so both directions
+        # wake, then always release the descriptor.  Shutdown is best-effort: an
+        # already-closed or peer-reset connection is still successfully closed.
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.connection.close()
 
 
@@ -580,6 +589,7 @@ class _Listener(Protocol):
 class _SocketListener:
     server: socket.socket
     timeout: float
+    address: str
 
     def accept(self) -> _Channel | None:
         try:
@@ -590,7 +600,24 @@ class _SocketListener:
         return _SocketChannel(connection)
 
     def wake(self) -> None:
-        """Nothing to do: the accept times out every 0.2s and re-reads the flag."""
+        """Wake a blocked ``accept`` with a bounded loopback connection.
+
+        The listener timeout remains a backstop, but it is also the entire stop
+        budget if this method is a no-op.  Under host load that made shutdown race
+        the 200 ms accept timeout and intermittently retain the serving thread.
+        """
+        wake = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        wake.settimeout(0.05)
+        try:
+            wake.connect(self.address)
+        except OSError:
+            # A concurrent accepted client, endpoint teardown, or peer reset can
+            # make the wake unnecessary or impossible.  The listener timeout is
+            # still the bounded fallback and stop() verifies the thread actually
+            # exited before releasing any owned resource.
+            pass
+        finally:
+            wake.close()
 
     def close(self) -> None:
         self.server.close()
@@ -805,7 +832,7 @@ class LocalSocketServer:
         server.settimeout(0.2)
         identity = path.stat()
         self._owned_socket_identity = (identity.st_dev, identity.st_ino)
-        return _SocketListener(server, self.timeout)
+        return _SocketListener(server, self.timeout, endpoint.address)
 
     def _bind_pipe(self, endpoint: LocalEndpoint) -> _Listener:
         # Probed first for the reason the socket side probes: a name that answers

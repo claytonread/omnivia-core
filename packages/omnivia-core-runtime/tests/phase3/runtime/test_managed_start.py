@@ -611,7 +611,7 @@ def test_the_result_document_is_versioned_and_shaped(home: Path) -> None:
 def test_a_missing_workspace_is_a_deterministic_refusal_that_creates_nothing(
     home: Path,
 ) -> None:
-    """R004-08 and §10: managed start never creates a workspace. `omnivia init` does."""
+    """R004-08 and §10: managed start creates no workspace; service `--init` does."""
     empty = home / "not-a-workspace"
     empty.mkdir()
 
