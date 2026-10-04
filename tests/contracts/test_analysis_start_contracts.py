@@ -948,3 +948,97 @@ def test_a_benign_mapping_with_only_exact_keys_still_classifies() -> None:
     assert classify_analysis_start_request(request)[0] == (
         ERROR_CODE_DEPENDENCY_UNAVAILABLE
     )
+
+
+# ---------------------------------------------------------------------------
+# Scalar-ancestry barrier: a str/int/float/bytes hybrid that also mixes in a
+# container ABC is a scalar, never a JSON container, so no protocol method runs.
+# ---------------------------------------------------------------------------
+
+# Every hostile protocol method records its call here before raising, so a
+# classifier that entered a container protocol fails on the call log even if
+# the exception were swallowed.
+_HYBRID_CALLS: list[str] = []
+
+
+def _hostile_protocol(self: Any, *args: Any, **kwargs: Any) -> Any:
+    _HYBRID_CALLS.append(type(self).__name__)
+    raise RuntimeError(_OPERATOR_SECRET)
+
+
+def _hybrid(scalar: type, container: type) -> type:
+    """A scalar subclass mixing in a container ABC, every container method hostile.
+
+    CPython lays out str, int, float, bytes and bytearray as variable-size types,
+    but the ABC mixins add no layout, so each combination below is constructible.
+    """
+    namespace = {
+        name: _hostile_protocol
+        for name in ("__iter__", "__len__", "__getitem__", "__contains__", "keys")
+    }
+    return type(
+        f"_{scalar.__name__}_{container.__name__}", (scalar, container), namespace
+    )
+
+
+_SCALAR_CONTAINER_HYBRIDS = [
+    pytest.param(_hybrid(str, Mapping), id="str-mapping"),
+    pytest.param(_hybrid(str, Sequence), id="str-sequence"),
+    pytest.param(_hybrid(int, Mapping), id="int-mapping"),
+    pytest.param(_hybrid(int, Sequence), id="int-sequence"),
+    pytest.param(_hybrid(float, Mapping), id="float-mapping"),
+    pytest.param(_hybrid(float, Sequence), id="float-sequence"),
+    pytest.param(_hybrid(bytes, Mapping), id="bytes-mapping"),
+    pytest.param(_hybrid(bytes, Sequence), id="bytes-sequence"),
+    pytest.param(_hybrid(bytearray, Mapping), id="bytearray-mapping"),
+    pytest.param(_hybrid(bytearray, Sequence), id="bytearray-sequence"),
+]
+
+_HYBRID_POSITIONS = [
+    pytest.param(lambda h: {"use_class": h}, id="use-class"),
+    pytest.param(lambda h: {"purpose_reference": h}, id="purpose-reference"),
+    pytest.param(lambda h: {"business_timezone": h}, id="business-timezone"),
+    pytest.param(lambda h: {"as_of_date": h}, id="as-of-date"),
+    pytest.param(lambda h: {"target": h}, id="target"),
+    pytest.param(
+        lambda h: {"target": {"kind": "metric", "metric_revision_id": h}},
+        id="target-revision",
+    ),
+    pytest.param(lambda h: {"parameters": h}, id="parameters"),
+    pytest.param(
+        lambda h: {"parameters": [{"name": "p", "value": h}]}, id="parameter-value"
+    ),
+    pytest.param(
+        lambda h: {"parameters": [{"name": "p", "value": {"k": h}}]},
+        id="nested-mapping-value",
+    ),
+    pytest.param(
+        lambda h: {"parameters": [{"name": "p", "value": {"k": [h]}}]},
+        id="nested-array-value",
+    ),
+    pytest.param(lambda h: {"output_bounds": h}, id="output-bounds"),
+]
+
+
+@pytest.mark.parametrize("hybrid", _SCALAR_CONTAINER_HYBRIDS)
+def test_a_scalar_container_hybrid_as_the_root_document_is_invalid_request(
+    hybrid: type,
+) -> None:
+    _HYBRID_CALLS.clear()
+    code, detail = classify_analysis_start_request(hybrid())
+    assert code == ERROR_CODE_INVALID_REQUEST
+    assert _OPERATOR_SECRET not in detail
+    assert _HYBRID_CALLS == []
+
+
+@pytest.mark.parametrize("position", _HYBRID_POSITIONS)
+@pytest.mark.parametrize("hybrid", _SCALAR_CONTAINER_HYBRIDS)
+def test_a_scalar_container_hybrid_in_any_field_or_nested_position_is_invalid_request(
+    hybrid: type, position: Any
+) -> None:
+    _HYBRID_CALLS.clear()
+    request = _valid_request(**position(hybrid()))
+    code, detail = classify_analysis_start_request(request)
+    assert code == ERROR_CODE_INVALID_REQUEST
+    assert _OPERATOR_SECRET not in detail
+    assert _HYBRID_CALLS == []

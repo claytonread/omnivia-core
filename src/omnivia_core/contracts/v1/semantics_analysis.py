@@ -102,10 +102,16 @@ _INVALID_REQUEST_DETAIL: Final = (
 )
 
 
+#: Scalar and byte-like ancestry. A value with any of these in its MRO is never a
+#: JSON container, even when it also mixes in a Mapping or Sequence ABC, so the
+#: scalar barrier runs before any container protocol is entered.
+_NON_CONTAINER_ANCESTORS: Final = (str, int, float, bytes, bytearray, memoryview)
+
+
 def _is_array(value: Any) -> bool:
     """A JSON array: any non-text, non-bytes ``Sequence`` (list, tuple, custom)."""
-    return isinstance(value, Sequence) and not isinstance(
-        value, (str, bytes, bytearray, memoryview)
+    return not isinstance(value, _NON_CONTAINER_ANCESTORS) and isinstance(
+        value, Sequence
     )
 
 
@@ -115,8 +121,9 @@ def _mapping_keys(value: Any) -> frozenset[str] | None:
 
     Each key's type is checked before anything hashes or compares it, so a
     hostile ``str`` subclass key is refused without entering a set or lookup.
+    A scalar or byte-like hybrid is refused before its Mapping protocol runs.
     """
-    if not isinstance(value, Mapping):
+    if isinstance(value, _NON_CONTAINER_ANCESTORS) or not isinstance(value, Mapping):
         return None
     keys: list[str] = []
     for key in value:
@@ -148,7 +155,9 @@ def _json_data(value: Any, depth: int = 0) -> bool:
     turning the strict decode into unbounded work.
 
     Scalars are gated by exact type, so a subclass is refused before any of its
-    methods run; the NaN/infinity comparisons only ever see an exact float.
+    methods run; the NaN/infinity comparisons only ever see an exact float. A
+    scalar or byte-like subclass that also mixes in a container ABC is refused by
+    the ancestry barrier before its Mapping or Sequence branch is entered.
     """
     if depth > 32:
         return False
@@ -157,6 +166,8 @@ def _json_data(value: Any, depth: int = 0) -> bool:
         return True
     if kind is float:
         return value == value and value not in (float("inf"), float("-inf"))  # noqa: PLR0124 - NaN check
+    if isinstance(value, _NON_CONTAINER_ANCESTORS):
+        return False
     if isinstance(value, Mapping):
         keys = _mapping_keys(value)
         return keys is not None and all(

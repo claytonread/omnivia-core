@@ -12,7 +12,7 @@ itself.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Final
 
@@ -294,3 +294,69 @@ def test_hostile_scalars_render_a_fixed_non_retryable_refusal(
     assert not hasattr(raised.value, "result")
     assert raised.value.__cause__ is None
     assert _OPERATOR_SECRET not in f"{raised.value}{raised.value!r}"
+
+
+# Scalar/byte-like hybrids that also mix in a container ABC. Every container
+# method records its call before raising, so the handler must not enter one.
+_HYBRID_CALLS: list[str] = []
+
+
+def _hostile_protocol(self: Any, *args: Any, **kwargs: Any) -> Any:
+    _HYBRID_CALLS.append(type(self).__name__)
+    raise RuntimeError(_OPERATOR_SECRET)
+
+
+def _hybrid(scalar: type, container: type) -> type:
+    namespace = {
+        name: _hostile_protocol
+        for name in ("__iter__", "__len__", "__getitem__", "__contains__", "keys")
+    }
+    return type(
+        f"_{scalar.__name__}_{container.__name__}", (scalar, container), namespace
+    )
+
+
+_HybridStrMapping = _hybrid(str, Mapping)
+_HybridIntSequence = _hybrid(int, Sequence)
+_HybridFloatMapping = _hybrid(float, Mapping)
+_HybridBytesSequence = _hybrid(bytes, Sequence)
+_HybridBytearrayMapping = _hybrid(bytearray, Mapping)
+
+
+@pytest.mark.parametrize(
+    "request_input",
+    [
+        pytest.param(_HybridStrMapping(), id="root-str-mapping"),
+        pytest.param(_HybridBytesSequence(), id="root-bytes-sequence"),
+        pytest.param(
+            dict(_valid_input(), use_class=_HybridFloatMapping()), id="use-class"
+        ),
+        pytest.param(
+            dict(_valid_input(), purpose_reference=_HybridBytearrayMapping()),
+            id="purpose-reference",
+        ),
+        pytest.param(
+            dict(
+                _valid_input(),
+                parameters=[{"name": "p", "value": {"k": _HybridIntSequence()}}],
+            ),
+            id="nested-parameter-value",
+        ),
+    ],
+)
+def test_scalar_container_hybrids_render_the_fixed_non_retryable_refusal(
+    request_input: Any,
+) -> None:
+    _HYBRID_CALLS.clear()
+    context, _ = _context(request_input)
+    with pytest.raises(OperationError) as raised:
+        analysis_start(context)
+    assert raised.value.code == ERROR_CODE_INVALID_REQUEST
+    assert raised.value.retry_class == "non_retryable"
+    assert raised.value.job_reference is None
+    assert raised.value.audit_reference is None
+    assert raised.value.__dict__.get("authorization") is None
+    assert not hasattr(raised.value, "result")
+    assert raised.value.__cause__ is None
+    assert _OPERATOR_SECRET not in f"{raised.value}{raised.value!r}"
+    assert _HYBRID_CALLS == []
