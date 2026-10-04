@@ -168,6 +168,8 @@ from omnivia_core.contracts.v1 import (
     OutcomeRequestCreateInput,
     OutcomeRequestReadInput,
     PrincipalClaim,
+    ProjectContextReadInput,
+    ProjectContextSwitchInput,
     RequestEnvelope,
     RequestMetadata,
     ResponseEnvelope,
@@ -342,6 +344,8 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "task_context.export.read": TaskContextExportReadInput.from_wire,
     "outcome.request.create": OutcomeRequestCreateInput.from_wire,
     "outcome.request.read": OutcomeRequestReadInput.from_wire,
+    "project.context.read": ProjectContextReadInput.from_wire,
+    "project.context.switch": ProjectContextSwitchInput.from_wire,
 }
 
 
@@ -1473,7 +1477,7 @@ async def serve(*, session: ConnectedSession) -> None:
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
     RESTRICTED_PROFILE: 14,
-    AUTHORING_PROFILE: 33,
+    AUTHORING_PROFILE: 35,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

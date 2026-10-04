@@ -21,7 +21,7 @@
     "verdict": {"const": "pass"},
     "profile": {"const": "authoring"},
     "protocol_version": {"const": "2025-06-18"},
-    "tool_count": {"const": 33},
+    "tool_count": {"const": 35},
     "tools": {
       "type": "array",
       "prefixItems": [
@@ -57,11 +57,13 @@
         {"const": "task_context_export"},
         {"const": "task_context_export_read"},
         {"const": "outcome_request_create"},
-        {"const": "outcome_request_read"}
+        {"const": "outcome_request_read"},
+        {"const": "project_context_read"},
+        {"const": "project_context_switch"}
       ],
       "items": false,
-      "minItems": 33,
-      "maxItems": 33
+      "minItems": 35,
+      "maxItems": 35
     },
     "sdk_versions": {
       "type": "object",

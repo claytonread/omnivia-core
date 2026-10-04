@@ -266,7 +266,7 @@
           ],
           "properties": {
             "tool_count": {
-              "const": 33
+              "const": 35
             },
             "tools": {
               "type": "array",
@@ -369,11 +369,17 @@
                 },
                 {
                   "const": "outcome_request_read"
+                },
+                {
+                  "const": "project_context_read"
+                },
+                {
+                  "const": "project_context_switch"
                 }
               ],
               "items": false,
-              "minItems": 33,
-              "maxItems": 33
+              "minItems": 35,
+              "maxItems": 35
             }
           }
         }

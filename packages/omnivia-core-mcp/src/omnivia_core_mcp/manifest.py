@@ -1,8 +1,8 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds seventy-seven operations. This module names fourteen of them in the
-``restricted`` profile and thirty-three in the ``authoring`` profile. A newly
+holds seventy-nine operations. This module names fourteen of them in the
+``restricted`` profile and thirty-five in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -20,20 +20,22 @@ Engineering Memory reads, the four decision tools, and the trigger health read.
 ``decision.evaluate`` is the one side-effecting operation in this profile; it is
 admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring thirty-three** are those fourteen plus nineteen additions. The
+**The authoring thirty-five** are those fourteen plus twenty-one additions. The
 mutations among them are ``memory.create``, ``evidence.capture``, ``import.start``,
 the three trigger mutations ``trigger.declare``, ``trigger.lifecycle`` and
 ``trigger.ingest``, the three skill authoring mutations ``skills.draft.create``,
 ``skills.draft.update`` and ``skills.proposal.submit``, the two knowledge sharing
 mutations ``knowledge.share.propose`` and ``knowledge.share.decide``, and the two
-task-context mutations ``task_context.export`` and ``outcome.request.create``. The
+task-context mutations ``task_context.export`` and ``outcome.request.create``, and
+the project-context mutation ``project.context.switch``. The
 reads among them are the two job observations, ``job.get`` and ``job.events``, that
 make an asynchronous import followable, the two sharing reads, ``knowledge.share.read``
 and ``knowledge.share.lineage``, and the two task-context reads,
-``task_context.export.read`` and ``outcome.request.read``. Which Projects a principal
+``task_context.export.read`` and ``outcome.request.read``, and the project-context read
+``project.context.read``. Which Projects a principal
 may act for is decided by the server's Project document, never by this profile, and
 the task-context reads are workspace-hidden by the server, not by this profile. The
-fourteen named mutations, which include ``decision.evaluate``, are the *only* side-effecting
+fifteen named mutations, which include ``decision.evaluate``, are the *only* side-effecting
 operations this module can admit, and they are named as a literal set: another
 mutation cannot arrive through a contract or audit-category change.
 Publishing, deprecating, installing and removing a skill are not here: they need
@@ -48,7 +50,7 @@ read-only: it carries ``decision.evaluate``, which has durable effects.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
 any entry that is neither a catalogue read (``side_effect="none"`` *and*
-``audit_category="read"``) nor one of the fourteen named mutations. A future editor
+``audit_category="read"``) nor one of the fifteen named mutations. A future editor
 who adds ``record.supersede`` here does not ship a destructive tool with a wrong
 comment; the package fails to import.
 
@@ -114,8 +116,9 @@ __all__ = [
 #: authoring mutations to the authoring profile; ``2.6`` adds the four knowledge
 #: sharing operations to the authoring profile, two as mutations and two as reads;
 #: `2.7` adds the four task-context operations to the authoring profile, two as
-#: mutations and two as reads.
-MANIFEST_VERSION: Final = "2.7"
+#: mutations and two as reads; `2.8` adds the two project-context operations to the
+#: authoring profile, one as a mutation and one as a read.
+MANIFEST_VERSION: Final = "2.8"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -151,6 +154,7 @@ ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
+        "project.context.switch",
     }
 )
 
@@ -385,7 +389,8 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #: for admitting a stimulus, and `job_observation` for watching what that produced.
 #: `knowledge_sharing` proposes and accepts a share, and `knowledge_share_observation`
 #: reads one. `task_context_export` and `outcome_request` write an export and an outcome
-#: request, and `task_context_observation` reads either back.
+#: request, and `task_context_observation` reads either back. `project_context`
+#: switches the active Project context.
 #: A purpose invented here would be refused at the first call rather than caught
 #: by review.
 _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
@@ -612,10 +617,32 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
             "recorded. Its identity is re-derived before it is served. Reads only."
         ),
     ),
+    ExposedOperation(
+        tool_name="project_context_read",
+        operation="project.context.read",
+        purpose="task_context_observation",
+        title="Read the active Project context",
+        description=(
+            "Return the active Project context of this workspace as it stands, without "
+            "changing it. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="project_context_switch",
+        operation="project.context.switch",
+        purpose="project_context",
+        title="Switch the active Project context",
+        description=(
+            "Make one Project of this workspace the active context. Writes. The call takes "
+            "an outer object with the operation input under `input` and a caller-chosen "
+            "`idempotency_key`; replaying the same key with the same input answers from "
+            "the settled outcome instead of switching twice."
+        ),
+    ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then nineteen
-#: additions (33 tools total).
+#: The `authoring` profile: the restricted surface, in its order, then twenty-one
+#: additions (35 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
@@ -767,7 +794,7 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the thirty-three deletes anything: the mutations create or
+            # None of the authoring tools deletes anything: the mutations create or
             # move a subscription's state, and supersession and cancellation are
             # not exposed at all.
             destructive_hint=False,

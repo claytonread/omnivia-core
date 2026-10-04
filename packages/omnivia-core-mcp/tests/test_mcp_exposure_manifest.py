@@ -94,6 +94,8 @@ EXPECTED_AUTHORING = EXPECTED_RESTRICTED + (
     ("task_context_export_read", "task_context.export.read", "task_context_observation"),
     ("outcome_request_create", "outcome.request.create", "outcome_request"),
     ("outcome_request_read", "outcome.request.read", "task_context_observation"),
+    ("project_context_read", "project.context.read", "task_context_observation"),
+    ("project_context_switch", "project.context.switch", "project_context"),
 )
 
 EXPECTED_SURFACES = {
@@ -119,6 +121,7 @@ EXPECTED_MUTATIONS = frozenset(
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
+        "project.context.switch",
     }
 )
 
@@ -207,9 +210,9 @@ def test_the_two_profiles_are_exactly_fourteen_and_twenty_five_tools() -> None:
     """The counts the requirements fix, asserted as counts as well as names: a
     listing that gained a tool and lost one would satisfy neither line."""
     assert len(manifest.exposure_manifest("restricted")) == 14
-    assert len(manifest.exposure_manifest("authoring")) == 33
+    assert len(manifest.exposure_manifest("authoring")) == 35
     assert len(manifest.tools("restricted")) == 14
-    assert len(manifest.tools("authoring")) == 33
+    assert len(manifest.tools("authoring")) == 35
 
 
 # The name keeps its original figures because the dated traceability ledger cites it.
@@ -229,6 +232,7 @@ def test_the_authoring_profile_is_the_restricted_fourteen_plus_eleven() -> None:
         "knowledge_share_read", "knowledge_share_lineage",
         "task_context_export", "task_context_export_read",
         "outcome_request_create", "outcome_request_read",
+        "project_context_read", "project_context_switch",
     ]
 
 
@@ -301,7 +305,7 @@ def test_the_manifest_version_names_this_surface() -> None:
     minor one: a cached `1.1` listing is not a subset of what this advertises,
     it is the whole of one of two answers.
     """
-    assert manifest.MANIFEST_VERSION == "2.7"
+    assert manifest.MANIFEST_VERSION == "2.8"
 
 
 def test_captured_source_commit_is_explicitly_omitted_from_model_facing_mcp() -> None:
@@ -357,6 +361,8 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
         "task_context.export.read": "task_context_observation",
         "outcome.request.create": "outcome_request",
         "outcome.request.read": "task_context_observation",
+        "project.context.read": "task_context_observation",
+        "project.context.switch": "project_context",
     }
 
 
@@ -397,7 +403,7 @@ def test_the_authoring_profile_has_fourteen_mutations_and_nineteen_reads() -> No
             assert catalogue.audit.audit_category == "mutation", entry.operation
             mutations.add(entry.operation)
     assert mutations == EXPECTED_MUTATIONS
-    assert len(reads) == 19
+    assert len(reads) == 20
     assert manifest.ADMITTED_MUTATIONS == EXPECTED_MUTATIONS
 
 
@@ -882,7 +888,7 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         for tool in manifest.tools("authoring")
         if tool.annotations is not None
     }
-    assert len(hints) == 33
+    assert len(hints) == 35
     mutations = {
         "memory_create", "evidence_capture", "import_start",
         "decision_evaluate", "trigger_declare", "trigger_lifecycle",
@@ -892,6 +898,7 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         "knowledge_share_decide",
         "task_context_export",
         "outcome_request_create",
+        "project_context_switch",
     }
     for mutation in mutations:
         assert hints[mutation] == (False, False, False), mutation

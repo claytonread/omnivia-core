@@ -15,6 +15,7 @@ check is a corruption fault, never a missing or ineligible row.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
+    ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
@@ -29,10 +31,15 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ContractDecodeError,
     ContractSemanticError,
+    OutcomeAdmission,
     OutcomeRequestCreateInput,
     OutcomeRequestCreateResult,
     OutcomeRequestReadInput,
     OutcomeRequestReadResult,
+    ProjectContextReadInput,
+    ProjectContextReadResult,
+    ProjectContextSwitchInput,
+    ProjectContextSwitchResult,
     TaskContextExportInput,
     TaskContextExportReadInput,
     TaskContextExportReadResult,
@@ -56,16 +63,26 @@ from omnivia_core_runtime.service.operations import (
     OperationContext,
     application_refusal,
 )
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
+)
 from omnivia_core_runtime.service.task_context import (
     EXPORT_OPERATION as OPERATION_EXPORT,
 )
 from omnivia_core_runtime.service.task_context import (
+    REFUSED_ADMISSION_INVALID,
+    REFUSED_ADMISSION_NOT_FOUND,
     REFUSED_BUDGET_INSUFFICIENT,
     REFUSED_BUDGET_INVALID,
+    REFUSED_CONTEXT_MISMATCH,
+    REFUSED_EXPORT_MISMATCH,
     REFUSED_HANDOFF_INVALID,
     REFUSED_HANDOFF_MISSING,
     REFUSED_INELIGIBLE,
+    REFUSED_LIFECYCLE_CLOSED,
     REFUSED_NOT_FOUND,
+    REFUSED_NOT_MEMBER,
     REFUSED_OBJECTIVE_INVALID,
     REFUSED_OBJECTIVE_UNBOUNDED,
     REFUSED_SIZE_EXCEEDED,
@@ -73,21 +90,30 @@ from omnivia_core_runtime.service.task_context import (
     TaskContextRefused,
     build_export,
     build_outcome_request,
+    check_standing,
+    decide_switch,
+    parse_admission,
     plain_copy,
 )
 from omnivia_core_runtime.storage.task_context import (
+    CONTEXT_TOKEN_PREFIX,
     StoredExport,
     StoredOutcomeRequest,
+    StoredProjectContext,
     TaskContextInvalid,
     read_export,
     read_outcome_request,
+    read_project_context,
     record_export,
     record_outcome_request,
+    record_project_context,
 )
 
 OPERATION_EXPORT_READ: Final = "task_context.export.read"
 OPERATION_OUTCOME_CREATE: Final = "outcome.request.create"
 OPERATION_OUTCOME_READ: Final = "outcome.request.read"
+OPERATION_PROJECT_CONTEXT_READ: Final = "project.context.read"
+OPERATION_PROJECT_CONTEXT_SWITCH: Final = "project.context.switch"
 
 TASK_CONTEXT_FAMILY_OPERATIONS: Final = frozenset(
     {
@@ -95,6 +121,8 @@ TASK_CONTEXT_FAMILY_OPERATIONS: Final = frozenset(
         OPERATION_EXPORT_READ,
         OPERATION_OUTCOME_CREATE,
         OPERATION_OUTCOME_READ,
+        OPERATION_PROJECT_CONTEXT_READ,
+        OPERATION_PROJECT_CONTEXT_SWITCH,
     }
 )
 
@@ -109,6 +137,10 @@ _MESSAGE_SIZE: Final = "the export or objective exceeds its size bound"
 _MESSAGE_NOT_FOUND: Final = "no such export or outcome request is visible to the caller"
 _MESSAGE_CONFLICT: Final = "the export is not in a state that allows this request"
 _MESSAGE_CORRUPT: Final = "the stored task-context row failed its integrity check"
+_MESSAGE_ADMISSION_NOT_FOUND: Final = (
+    "no such Project, Work, source or revision is bound for this Workspace"
+)
+_MESSAGE_NOT_MEMBER: Final = "the caller is not an owner or member of the Project"
 
 _STATUS_BY_REASON: Final[Mapping[str, tuple[str, str]]] = {
     REFUSED_HANDOFF_MISSING: (ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID),
@@ -121,6 +153,12 @@ _STATUS_BY_REASON: Final[Mapping[str, tuple[str, str]]] = {
     REFUSED_NOT_FOUND: (ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND),
     REFUSED_STALE_FENCE: (ERROR_CODE_CONFLICT, _MESSAGE_CONFLICT),
     REFUSED_INELIGIBLE: (ERROR_CODE_CONFLICT, _MESSAGE_CONFLICT),
+    REFUSED_ADMISSION_INVALID: (ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID),
+    REFUSED_ADMISSION_NOT_FOUND: (ERROR_CODE_NOT_FOUND, _MESSAGE_ADMISSION_NOT_FOUND),
+    REFUSED_NOT_MEMBER: (ERROR_CODE_AUTHORIZATION_DENIED, _MESSAGE_NOT_MEMBER),
+    REFUSED_CONTEXT_MISMATCH: (ERROR_CODE_CONFLICT, _MESSAGE_CONFLICT),
+    REFUSED_EXPORT_MISMATCH: (ERROR_CODE_CONFLICT, _MESSAGE_CONFLICT),
+    REFUSED_LIFECYCLE_CLOSED: (ERROR_CODE_CONFLICT, _MESSAGE_CONFLICT),
 }
 
 
@@ -170,7 +208,7 @@ def _export_fields(export: StoredExport) -> dict[str, Any]:
 
 
 def _outcome_fields(request: StoredOutcomeRequest) -> dict[str, Any]:
-    return {
+    fields: dict[str, Any] = {
         "outcome_request_id": request.outcome_request_id,
         "export_id": request.export_id,
         "source_handoff_identity": request.source_handoff_identity,
@@ -179,6 +217,29 @@ def _outcome_fields(request: StoredOutcomeRequest) -> dict[str, Any]:
         "status": request.status,
         "fencing_generation": request.fencing_generation,
         "created_at": _timestamp(request.created_at_us),
+    }
+    # A legacy request omits the admission fields entirely, as it always has.
+    if request.admission_json is not None:
+        fields["admission"] = OutcomeAdmission.from_wire(
+            {
+                "summary": json.loads(request.admission_json),
+                "identity": request.admission_identity,
+            }
+        )
+        fields["context_generation"] = CONTEXT_TOKEN_PREFIX + str(
+            request.context_generation
+        )
+    return fields
+
+
+def _context_fields(current: StoredProjectContext | None) -> dict[str, Any]:
+    """The typed empty state when no Project is active, otherwise the Project and its opaque generation token."""
+    if current is None:
+        return {"state": "none"}
+    return {
+        "state": "active",
+        "project_id": current.project_id,
+        "context_generation": current.token,
     }
 
 
@@ -199,6 +260,7 @@ def _servable(
 
 _VALID_EXPORT = _servable(TaskContextExportResult.from_wire)
 _VALID_OUTCOME = _servable(OutcomeRequestCreateResult.from_wire)
+_VALID_CONTEXT = _servable(ProjectContextSwitchResult.from_wire)
 
 
 def _read_export(connection: Any, *, workspace_id: str, export_id: str) -> StoredExport:
@@ -237,6 +299,8 @@ class TaskContextHandlers:
     binding: ServiceBinding
     clock: Clock
     allocate_identifier: Callable[[str], str]
+    #: The Projects this installation admits outcomes for. Composed once, and empty by default.
+    admission: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS
 
     def _connection(self) -> Any:
         connection = getattr(self.service, "connection", None)
@@ -373,17 +437,77 @@ class TaskContextHandlers:
         )
         return TaskContextExportReadResult(**_export_fields(export)).to_wire()
 
-    def outcome_request_create(
+    def project_context_read(self, context: OperationContext) -> Mapping[str, Any]:
+        """Observe the Workspace's active Project and its generation, or the typed empty state."""
+        self._bound(context)
+        self._input(context, frozenset(), ProjectContextReadInput.from_wire)
+        connection = self._connection()
+        current = _refusing(
+            lambda: read_project_context(connection, workspace_id=context.workspace_id)
+        )
+        return ProjectContextReadResult(**_context_fields(current)).to_wire()
+
+    def project_context_switch(
         self, context: OperationContext
     ) -> AuditedOperationResult:
-        """Receive one objective against an export of this workspace, under the current fence."""
+        """Make one bound Project the Workspace's active context. The first choice is generation one."""
         self._bound(context)
         request = self._input(
             context,
-            frozenset({"objective", "export_id"}),
+            frozenset({"project_id"}),
+            ProjectContextSwitchInput.from_wire,
+        )
+        payload = plain_copy(context.request.input)
+
+        def mutate(
+            fenced: Any, grant: MutationGrant, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            current = _refusing(
+                lambda: read_project_context(fenced, workspace_id=context.workspace_id)
+            )
+            decided = _refusing(
+                lambda: decide_switch(
+                    workspace_id=context.workspace_id,
+                    principal=context.principal,
+                    project_id=request.project_id,
+                    current=current,
+                    authority=self.admission,
+                    fencing_generation=grant.fencing_generation,
+                    switched_at_us=settlement.settled_at_us,
+                )
+            )
+            # Choosing the Project that is already active writes nothing and keeps its generation.
+            if decided is not current:
+                _refusing(
+                    lambda: record_project_context(fenced, decided, previous=current)
+                )
+            return ProjectContextSwitchResult(**_context_fields(decided)).to_wire()
+
+        def replay_authority(fenced: Any) -> None:
+            self._bound(context)
+
+        return self._mutate(context, payload, mutate, _VALID_CONTEXT, replay_authority)
+
+    def outcome_request_create(
+        self, context: OperationContext
+    ) -> AuditedOperationResult:
+        """Receive one objective against an export of this workspace, under the current fence.
+
+        A structured request also carries an admission. It is checked before anything is stored, and a replay of it
+        is answered only while the caller still stands in the declared Project at the generation it named.
+        """
+        self._bound(context)
+        request = self._input(
+            context,
+            frozenset({"objective", "export_id", "admission"}),
             OutcomeRequestCreateInput.from_wire,
         )
         payload = plain_copy(context.request.input)
+        admission = (
+            _refusing(lambda: parse_admission(payload["admission"]))
+            if "admission" in payload
+            else None
+        )
 
         def mutate(
             fenced: Any, grant: MutationGrant, settlement: MutationSettlementContext
@@ -395,6 +519,9 @@ class TaskContextHandlers:
                     export_id=request.export_id,
                 )
             )
+            active = _refusing(
+                lambda: read_project_context(fenced, workspace_id=context.workspace_id)
+            )
             outcome = _refusing(
                 lambda: build_outcome_request(
                     workspace_id=context.workspace_id,
@@ -403,13 +530,17 @@ class TaskContextHandlers:
                     export=export,
                     current_generation=grant.fencing_generation,
                     created_at_us=settlement.settled_at_us,
+                    admission=admission,
+                    authority=self.admission,
+                    active=active,
                 )
             )
             stored = _refusing(lambda: record_outcome_request(fenced, outcome))
             return OutcomeRequestCreateResult(**_outcome_fields(stored)).to_wire()
 
         def replay_authority(fenced: Any) -> None:
-            # A replayed request still answers only while the export it names is in this workspace.
+            # A replayed request still answers only while the export it names is in this workspace, and, for a
+            # structured one, while the caller stands in its Project at the generation it named.
             _refusing(
                 lambda: _read_export(
                     fenced,
@@ -417,6 +548,17 @@ class TaskContextHandlers:
                     export_id=request.export_id,
                 )
             )
+            if admission is not None:
+                _refusing(
+                    lambda: check_standing(
+                        admission,
+                        principal=context.principal,
+                        authority=self.admission,
+                        active=read_project_context(
+                            fenced, workspace_id=context.workspace_id
+                        ),
+                    )
+                )
 
         return self._mutate(context, payload, mutate, _VALID_OUTCOME, replay_authority)
 
@@ -444,6 +586,8 @@ __all__ = [
     "OPERATION_EXPORT_READ",
     "OPERATION_OUTCOME_CREATE",
     "OPERATION_OUTCOME_READ",
+    "OPERATION_PROJECT_CONTEXT_READ",
+    "OPERATION_PROJECT_CONTEXT_SWITCH",
     "TASK_CONTEXT_FAMILY_OPERATIONS",
     "TaskContextHandlers",
 ]

@@ -115,6 +115,8 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "task_context.export.read",
     "outcome.request.create",
     "outcome.request.read",
+    "project.context.read",
+    "project.context.switch",
 )
 
 #: Advertised schemas that belong to no operation. One entry: the canonical

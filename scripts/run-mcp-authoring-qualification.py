@@ -94,6 +94,8 @@ AUTHORING_TOOLS: Final = (
     "task_context_export_read",
     "outcome_request_create",
     "outcome_request_read",
+    "project_context_read",
+    "project_context_switch",
 )
 RECORD_FILE: Final = "mcp-authoring-qualification.json"
 #: The sanitized message of an installed credential that is no longer held.
@@ -462,7 +464,7 @@ async def _empty_workspace_journey(
         tools = [tool.name for tool in listed.tools]
         _require(
             tools == list(AUTHORING_TOOLS),
-            "the authoring inventory was not the accepted thirty-three",
+            "the authoring inventory was not the accepted thirty-five",
         )
         checks["tool_discovery"] = True
         empty_evidence = _success(await _call(session, "evidence_search", {"query": TOKEN}), "empty evidence search")

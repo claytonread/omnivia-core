@@ -1364,6 +1364,72 @@
     },
     "SkillResolveResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult"
+    },
+    "ProjectContextToken": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextToken"
+    },
+    "ProjectContextStateKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextStateKind"
+    },
+    "ProjectContextReadInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadInput"
+    },
+    "ProjectContextSwitchInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchInput"
+    },
+    "AdmissionRevision": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionRevision"
+    },
+    "AdmissionScope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionScope"
+    },
+    "AdmissionAppContext": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionAppContext"
+    },
+    "AdmissionRoles": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionRoles"
+    },
+    "AdmissionAdapter": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionAdapter"
+    },
+    "AdmissionDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionDisposition"
+    },
+    "AdmissionExecutionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionExecutionState"
+    },
+    "AdmissionBindingStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionBindingStatus"
+    },
+    "AdmissionScopeStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionScopeStatus"
+    },
+    "AdmissionRoleStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionRoleStatus"
+    },
+    "AdmissionTokenEstimator": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionTokenEstimator"
+    },
+    "AdmissionDeclaredBindings": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionDeclaredBindings"
+    },
+    "AdmissionBudgets": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionBudgets"
+    },
+    "AdmissionIdentity": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionIdentity"
+    },
+    "OutcomeAdmissionSummary": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeAdmissionSummary"
+    },
+    "OutcomeAdmission": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeAdmission"
+    },
+    "ProjectContextReadResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadResult"
+    },
+    "ProjectContextSwitchResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchResult"
     }
   }
 }

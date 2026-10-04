@@ -189,7 +189,7 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
     assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
-def test_authoring_policy_is_the_read_surface_plus_exactly_nineteen() -> None:
+def test_authoring_policy_is_the_read_surface_plus_exactly_twenty_one() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
     # R004 section 9.1's "workspace contributor authority sufficient for
@@ -219,6 +219,8 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_nineteen() -> None:
         "task_context.export.read",
         "outcome.request.create",
         "outcome.request.read",
+        "project.context.read",
+        "project.context.switch",
     }
     assert kinds(added, McpGrantKind.SCOPE) == {
         "skill:author",
@@ -232,6 +234,8 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_nineteen() -> None:
         "task_context:export_read",
         "outcome:request",
         "outcome:request_read",
+        "project_context:read",
+        "project_context:switch",
     }
     assert kinds(added, McpGrantKind.PURPOSE) == {
         "memory_authoring",
@@ -245,6 +249,7 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_nineteen() -> None:
         "task_context_export",
         "task_context_observation",
         "outcome_request",
+        "project_context",
     }
     assert {
         (grant.value, grant.version)
@@ -264,6 +269,8 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_nineteen() -> None:
         ("task_context.export_read", "1.0"),
         ("outcome.request", "1.0"),
         ("outcome.request_read", "1.0"),
+        ("project_context.read", "1.0"),
+        ("project_context.switch", "1.0"),
     }
 
 

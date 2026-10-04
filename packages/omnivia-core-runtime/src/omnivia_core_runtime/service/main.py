@@ -99,7 +99,7 @@ from omnivia_core_runtime.service.installation_host import (
 )
 from omnivia_core_runtime.service.knowledge_projects import (
     KnowledgeProjectsRefused,
-    load_project_authorities,
+    load_project_documents,
 )
 from omnivia_core_runtime.service.knowledge_sharing import NO_PROJECTS, ProjectAuthority
 from omnivia_core_runtime.service.legacy_import import (
@@ -118,6 +118,10 @@ from omnivia_core_runtime.service.mcp_control import (
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,
+)
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -291,6 +295,7 @@ def _build_production_application_surface(
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
     project_authority: ProjectAuthority = NO_PROJECTS,
+    admission_authority: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
 ) -> ProductionApplicationSurface:
     """Compose the exact production route for one live service.
 
@@ -471,6 +476,7 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=knowledge_sharing,
+        admission=admission_authority,
         clock=started.clock,
     )
     return compose_production_application_surface(
@@ -977,10 +983,15 @@ def main(
 
     # The Project bindings each served workspace is composed with. Read here, before anything can be
     # advertised, and not for --check-only, which serves nothing. A refusal is a refusal to start.
+    # Both authorities come from one read of the same document, so sharing and admission cannot disagree about who
+    # is in a Project. Nothing else reads it.
     project_authorities: Mapping[str, ProjectAuthority] = {}
+    admission_authorities: Mapping[str, OutcomeAdmissionAuthority] = {}
     if not args.check_only:
         try:
-            project_authorities = load_project_authorities(settings.installation_root)
+            project_authorities, admission_authorities = load_project_documents(
+                settings.installation_root
+            )
         except KnowledgeProjectsRefused as refused:
             sys.stderr.write(f"refusing to serve: {refused}\n")
             return 2
@@ -1067,6 +1078,9 @@ def main(
             workflow_wait_policy=workflow_wait_policy,
             project_authority=project_authorities.get(
                 started.workspace_id, NO_PROJECTS
+            ),
+            admission_authority=admission_authorities.get(
+                started.workspace_id, NO_OUTCOME_ADMISSIONS
             ),
         )
         # One router, handed to both transports. That is the whole of how HTTP shares

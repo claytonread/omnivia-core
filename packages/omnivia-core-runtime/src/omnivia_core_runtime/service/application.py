@@ -159,6 +159,12 @@ from omnivia_core_runtime.service.handlers.task_context import (
     OPERATION_OUTCOME_READ as OUTCOME_READ_OPERATION,
 )
 from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_PROJECT_CONTEXT_READ as PROJECT_CONTEXT_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_PROJECT_CONTEXT_SWITCH as PROJECT_CONTEXT_SWITCH_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
     TASK_CONTEXT_FAMILY_OPERATIONS,
     TaskContextHandlers,
 )
@@ -225,6 +231,10 @@ from omnivia_core_runtime.service.operations import (
     failure,
     server_capability_snapshot,
     success,
+)
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.storage import continuity as continuity_storage
@@ -1636,6 +1646,9 @@ TASK_CONTEXT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         TASK_CONTEXT_EXPORT_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
         OUTCOME_CREATE_OPERATION: MUTATION_PURPOSES[OUTCOME_CREATE_OPERATION],
         OUTCOME_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        # Reading the active Project is an observation. Choosing one is a contributor's act with its own purpose.
+        PROJECT_CONTEXT_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        PROJECT_CONTEXT_SWITCH_OPERATION: MUTATION_PURPOSES[PROJECT_CONTEXT_SWITCH_OPERATION],
     }
 )
 
@@ -1664,6 +1677,8 @@ def build_task_context_registry(handlers: TaskContextHandlers) -> ApplicationOpe
         (TASK_CONTEXT_EXPORT_READ_OPERATION, handlers.task_context_export_read),
         (OUTCOME_CREATE_OPERATION, handlers.outcome_request_create),
         (OUTCOME_READ_OPERATION, handlers.outcome_request_read),
+        (PROJECT_CONTEXT_READ_OPERATION, handlers.project_context_read),
+        (PROJECT_CONTEXT_SWITCH_OPERATION, handlers.project_context_switch),
     ):
         registry.register(operation, cast(OperationHandler, handler))
     return registry
@@ -1676,12 +1691,17 @@ def build_task_context_application_dispatcher(
     installation_id: str,
     workspace_id: str,
     fallback: ApplicationFallback,
+    admission: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
     clock: Clock | None = None,
     allocate_identifier: IdentifierAllocator = random_identifier,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the four task-context operations around the existing router."""
+    """Compose the six task-context operations around the existing router.
+
+    `admission` is the server's outcome-admission authority for this Workspace. It has no default other than empty,
+    which admits nothing, and no request, session or grant can add to it.
+    """
     session = task_context_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -1695,6 +1715,7 @@ def build_task_context_application_dispatcher(
             binding=binding,
             clock=SystemClock() if clock is None else clock,
             allocate_identifier=allocate_identifier,
+            admission=admission,
         )
     )
     return ApplicationDispatcher(

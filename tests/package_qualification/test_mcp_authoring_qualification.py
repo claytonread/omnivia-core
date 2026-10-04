@@ -50,7 +50,7 @@ def _record() -> dict[str, object]:
         "verdict": "pass",
         "profile": "authoring",
         "protocol_version": "2025-06-18",
-        "tool_count": 33,
+        "tool_count": 35,
         "tools": [
             "workspace_inspect",
             "evidence_search",
@@ -85,6 +85,8 @@ def _record() -> dict[str, object]:
             "task_context_export_read",
             "outcome_request_create",
             "outcome_request_read",
+            "project_context_read",
+            "project_context_switch",
         ],
         "sdk_versions": {"mcp": "2.0.0", "mcp-types": "2.0.0"},
         "environment": {

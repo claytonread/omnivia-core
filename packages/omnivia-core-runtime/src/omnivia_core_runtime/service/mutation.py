@@ -146,6 +146,9 @@ KNOWLEDGE_SHARING_PURPOSE: Final = "knowledge_sharing"
 #: export a handoff never carries the authority to request an outcome against the export.
 TASK_CONTEXT_EXPORT_PURPOSE: Final = "task_context_export"
 OUTCOME_REQUEST_PURPOSE: Final = "outcome_request"
+#: Making a bound Project the Workspace's active context (C08). A grant to switch context is not a grant to
+#: request an outcome, and an outcome request never moves the active Project.
+PROJECT_CONTEXT_PURPOSE: Final = "project_context"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -196,6 +199,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "knowledge.share.decide": KNOWLEDGE_SHARING_PURPOSE,
         "task_context.export": TASK_CONTEXT_EXPORT_PURPOSE,
         "outcome.request.create": OUTCOME_REQUEST_PURPOSE,
+        "project.context.switch": PROJECT_CONTEXT_PURPOSE,
     }
 )
 
@@ -287,6 +291,9 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # reach nothing outside it, so both are contributor work.
         "task_context.export": WORKSPACE_CONTRIBUTOR_ROLE,
         "outcome.request.create": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Choosing the active Project is contributor work in one workspace: it writes no record and
+        # reaches nothing outside it. Membership of the chosen Project is checked by the handler.
+        "project.context.switch": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

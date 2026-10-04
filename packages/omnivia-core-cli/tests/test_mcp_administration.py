@@ -494,6 +494,7 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
             "knowledge_sharing",
             "memory_authoring",
             "outcome_request",
+            "project_context",
             "skill_authoring",
             "task_context_export",
             "task_context_observation",

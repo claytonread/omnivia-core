@@ -31,6 +31,7 @@ __all__ = [
     "LIFECYCLE_ACTIVE",
     "LIFECYCLE_ARCHIVED",
     "LIFECYCLE_PAUSED",
+    "NO_OUTCOME_ADMISSIONS",
     "REFUSAL_REASONS",
     "SCOPE_EXECUTE",
     "SCOPE_PREPARE",
@@ -372,3 +373,7 @@ class OutcomeAdmissionAuthority:
             executor=roles.executor,
             reviewer=roles.reviewer,
         )
+
+
+#: No Project admitted, which refuses every structured outcome request, and cannot be widened by a request.
+NO_OUTCOME_ADMISSIONS: Final = OutcomeAdmissionAuthority()

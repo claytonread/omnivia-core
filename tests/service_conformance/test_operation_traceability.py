@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.7",
+    "manifest_version": "2.8",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -110,6 +110,8 @@ MCP_EXPOSED = (
     ("task_context.export.read", "task_context_export_read"),
     ("outcome.request.create", "outcome_request_create"),
     ("outcome.request.read", "outcome_request_read"),
+    ("project.context.read", "project_context_read"),
+    ("project.context.switch", "project_context_switch"),
 )
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
@@ -166,10 +168,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 77
+    assert len(OPERATION_CATALOGUE) == 79
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 77
-    assert len(set(FIXTURE_NAMES)) == 77
+    assert len(FIXTURE_NAMES) == 79
+    assert len(set(FIXTURE_NAMES)) == 79
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -296,7 +298,7 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 33
+    assert len(exposed) == 35
     assert len(omitted) == 44
 
 
@@ -324,6 +326,7 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
                 "skills.draft.create", "skills.draft.update", "skills.proposal.submit",
                 "knowledge.share.propose", "knowledge.share.decide",
                 "task_context.export", "outcome.request.create",
+                "project.context.switch",
             )
         else:
             assert op.scope.side_effect == "none"
@@ -368,7 +371,7 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 205
+    assert reference["case_count"] == 209
 
 
 def test_the_referenced_corpus_file_exists_and_holds_exactly_205_unique_cases() -> None:
@@ -376,8 +379,8 @@ def test_the_referenced_corpus_file_exists_and_holds_exactly_205_unique_cases() 
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 205
-    assert len(set(case_ids)) == 205
+    assert len(case_ids) == 209
+    assert len(set(case_ids)) == 209
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

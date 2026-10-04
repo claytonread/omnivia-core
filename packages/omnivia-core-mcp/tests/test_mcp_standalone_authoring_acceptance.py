@@ -115,6 +115,8 @@ AUTHORING_TOOLS = (
     "task_context_export_read",
     "outcome_request_create",
     "outcome_request_read",
+    "project_context_read",
+    "project_context_switch",
 )
 
 #: One token, carried by the captured note and by the proposed fact, so a single
@@ -446,11 +448,11 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
     assert observed["protocol_version"] == PROTOCOL_VERSION, "another revision"
     assert observed["server_name"] == SERVER_NAME, "another server answered"
     assert observed["tools"] == list(AUTHORING_TOOLS), (
-        "the listing is not the thirty-three"
+        "the listing is not the thirty-five"
     )
     assert AUTHORING_TOOLS == tuple(
         entry.tool_name for entry in exposure_manifest("authoring")
-    ), "the expected thirty-three drifted from the manifest"
+    ), "the expected thirty-five drifted from the manifest"
 
     # --- the workspace this began on held nothing -----------------------------
 

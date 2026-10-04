@@ -3,7 +3,7 @@
 The Model Context Protocol server for OmniVia Core: a stdio MCP server that
 gives an AI host curated, profile-bound access to one local OmniVia Core
 workspace. The default `restricted` profile exposes fourteen reviewed tools;
-the explicitly enabled `authoring` profile exposes thirty-three. `restricted` is
+the explicitly enabled `authoring` profile exposes thirty-five. `restricted` is
 bounded and non-authoring, not read-only: `decision_evaluate` writes durable
 evaluation, job and audit records, though it never mutates business records or
 executes actions.
@@ -116,7 +116,7 @@ command line — drives it with the official SDK's `stdio_client` and
 a host would use. The peer must identify itself as `omnivia-core` at this
 package's version; the advertised inventory must be exactly one profile's own
 tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — fourteen or
-thirty-three; and the document's `allowed_purposes` must be exactly that profile's
+thirty-five; and the document's `allowed_purposes` must be exactly that profile's
 manifest purposes. Which profile is in force is read off the inventory the child
 advertised, never assumed from the document, so a `mutation_enabled: true`
 configuration the protected authority declines to admit is refused here.

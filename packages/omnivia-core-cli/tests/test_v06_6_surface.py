@@ -127,6 +127,8 @@ EXPECTED_COMMANDS = (
     (("task-context", "export-read"), "task_context.export.read", "task_context_observation"),
     (("outcome", "request-create"), "outcome.request.create", "outcome_request"),
     (("outcome", "request-read"), "outcome.request.read", "task_context_observation"),
+    (("project-context", "read"), "project.context.read", "task_context_observation"),
+    (("project-context", "switch"), "project.context.switch", "project_context"),
 )
 
 EXPECTED_PROBES = (
@@ -175,14 +177,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_seventy_seven_application_commands_are_declared_in_order() -> None:
+def test_the_seventy_nine_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 77
+    assert len(APPLICATION_COMMANDS) == 79
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

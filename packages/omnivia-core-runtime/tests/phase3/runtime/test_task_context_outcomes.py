@@ -696,4 +696,4 @@ def test_the_0068_allocation_pins_its_filename_predecessor_owner_and_state() -> 
 def test_the_0068_checksum_is_the_allocated_digest_of_the_migration_text() -> None:
     (migration,) = [migration for migration in load_migrations() if migration.version == 68]
     assert migration.checksum == _migration_file_digest() == _allocation(68)["sha256"]
-    assert migration.checksum == "d218882fdb63bcad31069e829171a69b697e1feb0c7c5d32828cecd63561543c"
+    assert migration.checksum == "fce1d79b1c73d9ef40d324568e619059a5b6954179a50a4d15d5a29ffa93b3e9"

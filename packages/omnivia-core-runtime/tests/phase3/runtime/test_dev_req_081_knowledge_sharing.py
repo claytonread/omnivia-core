@@ -273,7 +273,7 @@ def test_the_four_operations_sit_at_their_frozen_positions_and_are_distinct() ->
         "knowledge.share.lineage",
     )
     assert SHARING_OPERATIONS == tuple(names[69:73])
-    assert len(names) == len(set(names)) == 77
+    assert len(names) == len(set(names)) == 79
 
 
 def test_appending_the_family_changed_no_earlier_operation_contract() -> None:
@@ -290,7 +290,7 @@ def test_the_production_registry_holds_the_four_operations_under_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 77
+    assert len(surface.registry.operations) == 79
     assert set(SHARING_OPERATIONS) <= surface.registry.operations
     families = {id(surface._routes[name]) for name in SHARING_OPERATIONS}
     assert len(families) == 1

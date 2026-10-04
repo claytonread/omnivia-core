@@ -23,12 +23,23 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final, TypeGuard
 
-from omnivia_core.contracts.v1 import to_canonical_json
+from omnivia_core.contracts.v1 import is_identifier, is_workspace_id, to_canonical_json
+from omnivia_core_runtime.service.outcome_admission import (
+    ACTION_READ,
+    ACTION_SUBMIT,
+    NO_OUTCOME_ADMISSIONS,
+    SCOPES,
+    DeclaredRoles,
+    OutcomeAdmissionAuthority,
+    OutcomeAdmissionRefused,
+)
 from omnivia_core_runtime.storage.task_context import (
     StoredExport,
     StoredOutcomeRequest,
+    StoredProjectContext,
     token_estimate,
 )
 
@@ -146,6 +157,74 @@ REFUSED_OBJECTIVE_UNBOUNDED: Final = "objective_unbounded"
 REFUSED_NOT_FOUND: Final = "not_found"
 REFUSED_STALE_FENCE: Final = "stale_fence"
 REFUSED_INELIGIBLE: Final = "ineligible"
+#: Structured admission (C08). A shape, bound, identity or declared-fact mismatch is `admission_invalid`. A Project,
+#: Work, source or revision the Workspace does not bind is `admission_not_found`. A caller who is not an owner or
+#: member of the Project is `not_member`. The active Project, or its generation, is not the one named, or an
+#: export does not describe the Project, target and revision named, is a conflict, as is a closed lifecycle.
+REFUSED_ADMISSION_INVALID: Final = "admission_invalid"
+REFUSED_ADMISSION_NOT_FOUND: Final = "admission_not_found"
+REFUSED_NOT_MEMBER: Final = "not_member"
+REFUSED_CONTEXT_MISMATCH: Final = "context_mismatch"
+REFUSED_EXPORT_MISMATCH: Final = "export_mismatch"
+REFUSED_LIFECYCLE_CLOSED: Final = "lifecycle_closed"
+
+#: Dev's admission summary, exactly. Revision is an integer from one; the labels say what kind of claim each field is.
+ADMISSION_REVISION_MINIMUM: Final = 1
+ADMISSION_ADAPTER: Final = "dev-task-admission"
+ADMISSION_LABELS: Final[Mapping[str, str]] = {
+    "adapter": ADMISSION_ADAPTER,
+    "disposition": "draft-for-review",
+    "executionState": "not-authorized",
+    "bindingStatus": "declared-not-verified",
+    "scopeStatus": "requested-not-granted",
+    "roleStatus": "declared-not-authenticated",
+}
+#: Dev's admission ceiling for a byte budget. It is larger than the export's, which is Core's own bound.
+MAX_ADMISSION_BYTE_BUDGET: Final = 16 * 1024 * 1024
+#: Dev's list and text bounds on a summary, mirrored exactly and checked across both lists together.
+MAX_ADMISSION_LIST: Final = 16
+MAX_ADMISSION_TEXT_BYTES: Final = 512
+MAX_ADMISSION_LIST_TOTAL_BYTES: Final = 4096
+MAX_ADMISSION_SUMMARY_BYTES: Final = 65_536
+MAX_CONTEXT_GENERATION: Final = 9_223_372_036_854_775_807
+_CONTEXT_TOKEN: Final = re.compile(r"ctxgen-([1-9][0-9]{0,18})")
+_IDENTITY: Final = re.compile(r"[0-9a-f]{64}")
+_ADMISSION_KEYS: Final = frozenset({"summary", "identity"})
+_SUMMARY_KEYS: Final = frozenset(
+    {
+        "revision",
+        *ADMISSION_LABELS,
+        "outcomeObjective",
+        "appContext",
+        "declaredBindings",
+        "declaredRoles",
+        "assumptions",
+        "constraints",
+        "requestedScopes",
+        "budgets",
+    }
+)
+_APP_KEYS: Final = frozenset({"appId", "surfaceId"})
+_BINDING_KEYS: Final = frozenset(
+    {
+        "projectId",
+        "workspaceId",
+        "workId",
+        "sourceTarget",
+        "sourceRevision",
+        "expectedContextGeneration",
+    }
+)
+_ROLE_KEYS: Final = frozenset({"owner", "executor", "reviewer"})
+_BUDGET_KEYS: Final = frozenset({"tokenBudget", "byteBudget", "tokenEstimator"})
+#: How an admission decision's closed refusal maps onto the reasons above. Anything not listed is invalid.
+_ADMISSION_REASON: Final[Mapping[str, str]] = {
+    "unknown_project": REFUSED_ADMISSION_NOT_FOUND,
+    "unknown_work": REFUSED_ADMISSION_NOT_FOUND,
+    "unknown_source": REFUSED_ADMISSION_NOT_FOUND,
+    "unknown_revision": REFUSED_ADMISSION_NOT_FOUND,
+    "lifecycle_closed": REFUSED_LIFECYCLE_CLOSED,
+}
 
 
 class TaskContextRefused(Exception):
@@ -286,11 +365,11 @@ def verify_handoff(handoff: object) -> str:
     return identity
 
 
-def check_budgets(token_budget: object, byte_budget: object) -> None:
-    """Both explicit budgets are plain positive integers within the Core ceilings. Nothing is coerced."""
+def check_budgets(token_budget: object, byte_budget: object, *, byte_ceiling: int = MAX_BYTE_BUDGET) -> None:
+    """Both explicit budgets are plain positive integers within their ceilings. Nothing is coerced."""
     if not _is_plain_int(token_budget) or not 1 <= token_budget <= MAX_TOKEN_BUDGET:
         raise TaskContextRefused(REFUSED_BUDGET_INVALID, "the token budget is outside its bounds")
-    if not _is_plain_int(byte_budget) or not 1 <= byte_budget <= MAX_BYTE_BUDGET:
+    if not _is_plain_int(byte_budget) or not 1 <= byte_budget <= byte_ceiling:
         raise TaskContextRefused(REFUSED_BUDGET_INVALID, "the byte budget is outside its bounds")
 
 
@@ -396,6 +475,246 @@ def validate_objective(objective: object) -> str:
     return objective
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedAdmission:
+    """One structured admission whose shape, bounds, labels and claimed identity hold. Not yet admitted."""
+
+    summary: dict[str, Any]
+    identity: str
+    workspace_id: str
+    project_id: str
+    work_id: str
+    objective: str
+    source_target: str
+    source_revision: str
+    context_generation: int
+    owner: str
+    executor: str
+    reviewer: str
+    requested_scopes: tuple[str, ...]
+
+
+def _admission_invalid() -> TaskContextRefused:
+    return TaskContextRefused(
+        REFUSED_ADMISSION_INVALID, "the admission is outside its closed shape or does not verify"
+    )
+
+
+def _closed(value: object, keys: frozenset[str]) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise _admission_invalid()
+    return value
+
+
+def _utf8_size(value: str) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise _admission_invalid() from error
+
+
+def _identifier(value: object) -> str:
+    if not isinstance(value, str) or not is_identifier(value):
+        raise _admission_invalid()
+    return value
+
+
+def _source_target(value: object) -> str:
+    """Dev's rule for a source target: non-blank text of at most 512 bytes. Core matches it against its bindings."""
+    if not isinstance(value, str) or not value.strip() or _utf8_size(value) > MAX_ADMISSION_TEXT_BYTES:
+        raise _admission_invalid()
+    return value
+
+
+def _admitted_texts(assumptions: object, constraints: object) -> None:
+    """Dev's list bounds, across both lists together: a count and an item size each, and one aggregate size."""
+    total = 0
+    for value in (assumptions, constraints):
+        if not isinstance(value, list) or len(value) > MAX_ADMISSION_LIST:
+            raise _admission_invalid()
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise _admission_invalid()
+            size = _utf8_size(item)
+            if size > MAX_ADMISSION_TEXT_BYTES:
+                raise _admission_invalid()
+            total += size
+    if total > MAX_ADMISSION_LIST_TOTAL_BYTES:
+        raise _admission_invalid()
+
+
+def _scopes(value: object) -> tuple[str, ...]:
+    """Dev's scope set in the order Dev emits it: one to three distinct scopes from the closed vocabulary, ascending."""
+    if not isinstance(value, list) or not 1 <= len(value) <= len(SCOPES):
+        raise _admission_invalid()
+    if not all(isinstance(scope, str) and scope in SCOPES for scope in value):
+        raise _admission_invalid()
+    if len(set(value)) != len(value) or tuple(value) != tuple(sorted(value)):
+        raise _admission_invalid()
+    return tuple(value)
+
+
+def _context_generation(value: object) -> int:
+    """The positive generation a `ctxgen-` token names. Anything else, including leading zeros, is invalid."""
+    match = _CONTEXT_TOKEN.fullmatch(value) if isinstance(value, str) else None
+    if match is None or int(match.group(1)) > MAX_CONTEXT_GENERATION:
+        raise _admission_invalid()
+    return int(match.group(1))
+
+
+def parse_admission(admission: object) -> ParsedAdmission:
+    """Check one structured admission against Dev's exact summary: its closed shape, labels, bounds, budgets and claimed identity.
+
+    The identity is SHA-256 over the canonical JSON of the summary, which is Dev's `canonical_dumps` for this shape. A
+    summary that is not canonical with its claimed identity is refused, and so is any extra or missing member at any
+    level. Nothing here decides whether the admission is admitted. That is `admit_structured`.
+    """
+    entry = _closed(plain_copy(admission), _ADMISSION_KEYS)
+    summary = _closed(entry["summary"], _SUMMARY_KEYS)
+    try:
+        canonical = to_canonical_json(summary)
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
+        raise _admission_invalid() from error
+    identity = entry["identity"]
+    size = _utf8_size(canonical)
+    if (
+        size > MAX_ADMISSION_SUMMARY_BYTES
+        or not isinstance(identity, str)
+        or _IDENTITY.fullmatch(identity) is None
+        or _digest(canonical) != identity
+    ):
+        raise _admission_invalid()
+    revision = summary["revision"]
+    if not _is_plain_int(revision) or revision < ADMISSION_REVISION_MINIMUM:
+        raise _admission_invalid()
+    for key, label in ADMISSION_LABELS.items():
+        if summary[key] != label:
+            raise _admission_invalid()
+    app = _closed(summary["appContext"], _APP_KEYS)
+    bindings = _closed(summary["declaredBindings"], _BINDING_KEYS)
+    roles = _closed(summary["declaredRoles"], _ROLE_KEYS)
+    budgets = _closed(summary["budgets"], _BUDGET_KEYS)
+    workspace_id = bindings["workspaceId"]
+    if not isinstance(workspace_id, str) or not is_workspace_id(workspace_id):
+        raise _admission_invalid()
+    _identifier(app["appId"])
+    _identifier(app["surfaceId"])
+    owner, executor, reviewer = (_identifier(roles[role]) for role in ("owner", "executor", "reviewer"))
+    if len({owner, executor, reviewer}) != 3:
+        raise _admission_invalid()
+    _admitted_texts(summary["assumptions"], summary["constraints"])
+    requested = _scopes(summary["requestedScopes"])
+    if budgets["tokenEstimator"] != TOKEN_ESTIMATOR:
+        raise _admission_invalid()
+    token_budget, byte_budget = budgets["tokenBudget"], budgets["byteBudget"]
+    check_budgets(token_budget, byte_budget, byte_ceiling=MAX_ADMISSION_BYTE_BUDGET)
+    if size > byte_budget or token_estimate(size) > token_budget:
+        raise TaskContextRefused(
+            REFUSED_BUDGET_INSUFFICIENT, "the summary does not fit its explicit budget"
+        )
+    return ParsedAdmission(
+        summary=dict(summary),
+        identity=identity,
+        workspace_id=workspace_id,
+        project_id=_identifier(bindings["projectId"]),
+        work_id=_identifier(bindings["workId"]),
+        objective=validate_objective(summary["outcomeObjective"]),
+        source_target=_source_target(bindings["sourceTarget"]),
+        source_revision=_identifier(bindings["sourceRevision"]),
+        context_generation=_context_generation(bindings["expectedContextGeneration"]),
+        owner=owner,
+        executor=executor,
+        reviewer=reviewer,
+        requested_scopes=requested,
+    )
+
+
+def check_standing(
+    admission: ParsedAdmission,
+    *,
+    principal: str,
+    authority: OutcomeAdmissionAuthority,
+    active: StoredProjectContext | None,
+) -> None:
+    """The caller is an owner or member of the declared Project, and it is the active context at the named generation.
+
+    The declared roles are claims a request makes, so they are never the caller's standing. This check runs before
+    storage, and again on a replay, so a stored answer is not served to a caller who has since lost standing.
+    """
+    try:
+        binding = authority.project(admission.project_id, ACTION_READ)
+    except OutcomeAdmissionRefused as refused:
+        raise TaskContextRefused(
+            REFUSED_ADMISSION_NOT_FOUND, "no such Project is bound for this Workspace"
+        ) from refused
+    if principal not in binding.owners | binding.members:
+        raise TaskContextRefused(
+            REFUSED_NOT_MEMBER, "the caller is not an owner or member of the Project"
+        )
+    if (
+        active is None
+        or active.project_id != admission.project_id
+        or active.context_generation != admission.context_generation
+    ):
+        raise TaskContextRefused(
+            REFUSED_CONTEXT_MISMATCH,
+            "the Project is not the active context at the generation the admission names",
+        )
+
+
+def admit_structured(
+    admission: ParsedAdmission,
+    *,
+    objective: str,
+    workspace_id: str,
+    principal: str,
+    export: StoredExport,
+    authority: OutcomeAdmissionAuthority,
+    active: StoredProjectContext | None,
+) -> None:
+    """Admit one structured request against its export and the composed authority, or refuse it.
+
+    Checked in order: the summary's objective is the request's; its Workspace is the caller's; the caller stands in
+    the declared Project and that Project is the active context at the named generation; the export names that same
+    Project, target and revision; and the composed authority admits the Work target for a submission.
+    """
+    if admission.objective != objective:
+        raise _admission_invalid()
+    if admission.workspace_id != workspace_id:
+        raise TaskContextRefused(
+            REFUSED_ADMISSION_NOT_FOUND, "the declared Workspace is not the caller's"
+        )
+    check_standing(admission, principal=principal, authority=authority, active=active)
+    content = export.document["content"]
+    if (
+        content.get("project") != admission.project_id
+        or content.get("target") != admission.source_target
+        or content.get("revision") != admission.source_revision
+    ):
+        raise TaskContextRefused(
+            REFUSED_EXPORT_MISMATCH, "the export does not describe the Project, target and revision named"
+        )
+    try:
+        authority.admit(
+            project_id=admission.project_id,
+            action=ACTION_SUBMIT,
+            work_id=admission.work_id,
+            target=admission.source_target,
+            revision=admission.source_revision,
+            scopes=admission.requested_scopes,
+            roles=DeclaredRoles(
+                owner=admission.owner,
+                executor=admission.executor,
+                reviewer=admission.reviewer,
+            ),
+        )
+    except OutcomeAdmissionRefused as refused:
+        raise TaskContextRefused(
+            _ADMISSION_REASON.get(refused.reason, REFUSED_ADMISSION_INVALID),
+            "the admission is not admitted by the Project bindings",
+        ) from refused
+
+
 def build_outcome_request(
     *,
     workspace_id: str,
@@ -404,12 +723,16 @@ def build_outcome_request(
     export: StoredExport,
     current_generation: int,
     created_at_us: int,
+    admission: ParsedAdmission | None = None,
+    authority: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
+    active: StoredProjectContext | None = None,
 ) -> StoredOutcomeRequest:
     """Receive one outcome request against a stored export, or refuse it.
 
-    The export must be in this workspace, recorded under the current fence, and produced under the policy
-    this build serves. A request names the export by identity and does not re-derive it. The workspace and
-    the requester are the authenticated caller's, supplied by the handler and never read from the payload.
+    The export must be in this workspace, recorded under the current fence, and produced under the policy this build
+    serves. A request names the export by identity and does not re-derive it. The workspace and the requester are the
+    authenticated caller's, supplied by the handler and never read from the payload. A structured request is also
+    admitted (`admit_structured`) and records its accepted admission with the generation it was accepted under.
     """
     objective = validate_objective(objective)
     columns = export.columns()
@@ -419,6 +742,25 @@ def build_outcome_request(
         raise TaskContextRefused(REFUSED_STALE_FENCE, "the export was recorded under an earlier fence")
     if columns["policy_digest"] != POLICY_DIGEST:
         raise TaskContextRefused(REFUSED_INELIGIBLE, "the export was produced under another policy")
+    if admission is None:
+        return StoredOutcomeRequest(
+            workspace_id=workspace_id,
+            requested_by=principal,
+            objective=objective,
+            export_id=columns["export_id"],
+            source_handoff_identity=columns["source_handoff_identity"],
+            fencing_generation=current_generation,
+            created_at_us=created_at_us,
+        )
+    admit_structured(
+        admission,
+        objective=objective,
+        workspace_id=workspace_id,
+        principal=principal,
+        export=export,
+        authority=authority,
+        active=active,
+    )
     return StoredOutcomeRequest(
         workspace_id=workspace_id,
         requested_by=principal,
@@ -427,10 +769,58 @@ def build_outcome_request(
         source_handoff_identity=columns["source_handoff_identity"],
         fencing_generation=current_generation,
         created_at_us=created_at_us,
+        project_id=admission.project_id,
+        admission_json=to_canonical_json(admission.summary),
+        context_generation=admission.context_generation,
+    )
+
+
+def decide_switch(
+    *,
+    workspace_id: str,
+    principal: str,
+    project_id: str,
+    current: StoredProjectContext | None,
+    authority: OutcomeAdmissionAuthority,
+    fencing_generation: int,
+    switched_at_us: int,
+) -> StoredProjectContext:
+    """The Workspace's active context after choosing `project_id`. Returns `current` itself when nothing changes.
+
+    The Project must be bound in the composed authority, and the caller must be an owner or member of it. The first
+    choice is generation one. A change to a different Project advances the generation by one. Choosing the Project
+    that is already active is a no-op that keeps its generation.
+    """
+    try:
+        binding = authority.project(project_id, ACTION_READ)
+    except OutcomeAdmissionRefused as refused:
+        raise TaskContextRefused(
+            REFUSED_ADMISSION_NOT_FOUND, "no such Project is bound for this Workspace"
+        ) from refused
+    if principal not in binding.owners | binding.members:
+        raise TaskContextRefused(
+            REFUSED_NOT_MEMBER, "the caller is not an owner or member of the Project"
+        )
+    if current is not None and current.project_id == project_id:
+        return current
+    generation = 1 if current is None else current.context_generation + 1
+    if generation > MAX_CONTEXT_GENERATION:
+        raise TaskContextRefused(
+            REFUSED_CONTEXT_MISMATCH, "the Project context generation cannot advance"
+        )
+    return StoredProjectContext(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        context_generation=generation,
+        fencing_generation=fencing_generation,
+        switched_by=principal,
+        switched_at_us=switched_at_us,
     )
 
 
 __all__ = [
+    "ADMISSION_LABELS",
+    "ADMISSION_REVISION_MINIMUM",
     "EXPORT_CONTENT_FIELDS",
     "HANDOFF_KEYS",
     "MAX_BYTE_BUDGET",
@@ -438,21 +828,32 @@ __all__ = [
     "MAX_TOKEN_BUDGET",
     "POLICY_DIGEST",
     "REDACTION_PATTERNS",
+    "REFUSED_ADMISSION_INVALID",
+    "REFUSED_ADMISSION_NOT_FOUND",
     "REFUSED_BUDGET_INSUFFICIENT",
     "REFUSED_BUDGET_INVALID",
+    "REFUSED_CONTEXT_MISMATCH",
+    "REFUSED_EXPORT_MISMATCH",
     "REFUSED_HANDOFF_INVALID",
     "REFUSED_HANDOFF_MISSING",
     "REFUSED_INELIGIBLE",
+    "REFUSED_LIFECYCLE_CLOSED",
     "REFUSED_NOT_FOUND",
+    "REFUSED_NOT_MEMBER",
     "REFUSED_OBJECTIVE_INVALID",
     "REFUSED_OBJECTIVE_UNBOUNDED",
     "REFUSED_SIZE_EXCEEDED",
     "REFUSED_STALE_FENCE",
+    "ParsedAdmission",
     "TaskContextRefused",
+    "admit_structured",
     "build_export",
     "build_outcome_request",
     "check_budgets",
+    "check_standing",
+    "decide_switch",
     "handoff_identity",
+    "parse_admission",
     "validate_objective",
     "verify_handoff",
 ]

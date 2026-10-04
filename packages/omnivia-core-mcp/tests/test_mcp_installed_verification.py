@@ -137,8 +137,8 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Installed]:
 
 
 def test_the_expected_inventory_is_the_requirement_s_own_two_numbers() -> None:
-    """The current manifest fixes 14 and 33; this catches inventory drift."""
-    assert server.EXPECTED_TOOL_COUNT == {"restricted": 14, "authoring": 33}
+    """The current manifest fixes 14 and 35; this catches inventory drift."""
+    assert server.EXPECTED_TOOL_COUNT == {"restricted": 14, "authoring": 35}
 
 
 def test_the_qualification_budget_outlasts_the_child_s_own_startup() -> None:
@@ -186,7 +186,7 @@ def test_an_authoring_inventory_qualifies_and_reports_twenty_five_tools(
         mutation_enabled=True,
         allowed_purposes=list(AUTHORING_PURPOSES),
     )
-    assert server.verify_installed_setup(path) == 33
+    assert server.verify_installed_setup(path) == 35
 
 
 def test_an_authoring_ceiling_the_protected_authority_will_not_raise_is_refused(

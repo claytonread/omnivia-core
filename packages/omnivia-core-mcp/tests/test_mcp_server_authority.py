@@ -118,6 +118,7 @@ AUTHORING_PURPOSES = [
     "task_context_export",
     "task_context_observation",
     "outcome_request",
+    "project_context",
 ]
 
 #: The smallest call each tool the authoring profile adds actually accepts.
@@ -293,6 +294,11 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
         "idempotency_key": "k-14",
     },
     "outcome_request_read": {"outcome_request_id": "outreq-1"},
+    "project_context_read": {},
+    "project_context_switch": {
+        "input": {"project_id": "project-1"},
+        "idempotency_key": "k-15",
+    },
 }
 
 
@@ -978,7 +984,7 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_fourteen_and_thirty_three() -> None:
+def test_the_two_inventories_are_the_frozen_fourteen_and_thirty_five() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
@@ -987,7 +993,7 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_thirty_three() -> None:
     """
     restricted, authoring = session(), authoring_session()
     assert len(listed(restricted)) == 14
-    assert len(listed(authoring)) == 33
+    assert len(listed(authoring)) == 35
     assert listed(authoring)[:14] == listed(restricted)
     assert listed(authoring)[14:] == [
         "memory_create",
@@ -1009,6 +1015,8 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_thirty_three() -> None:
         "task_context_export_read",
         "outcome_request_create",
         "outcome_request_read",
+        "project_context_read",
+        "project_context_switch",
     ]
 
 
@@ -1034,6 +1042,8 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_thirty_three() -> None:
         "task_context_export_read",
         "outcome_request_create",
         "outcome_request_read",
+        "project_context_read",
+        "project_context_switch",
     ],
 )
 def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) -> None:

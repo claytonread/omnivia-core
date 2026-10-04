@@ -1,17 +1,20 @@
-"""Task-context exports and outcome requests: persistence only (migration 0068).
+"""Task-context exports, outcome requests and the active Project context: persistence only (migration 0068).
 
-Shaped like `storage/knowledge_shares.py`. `record_export` and `record_outcome_request` expect their
-caller to be inside a `fenced_transaction`; the domain rules in `service/task_context.py` open that
-fence. Nothing here decides what a payload may contain or whether a row is current.
+Shaped like `storage/knowledge_shares.py`. The `record_*` functions expect their caller to be inside a
+`fenced_transaction`; the domain rules in `service/task_context.py` open that fence. Nothing here decides what a
+payload may contain or whether a row is current.
 
-Each record is derived from one value. An export is its canonical `document_json`: every column is read
-from that document, so `export_id` is `tcx-` plus the SHA-256 of the exact bytes it stores, and the byte
-and token estimates describe those bytes. An outcome request is identified by its canonical body, so
-`outreq-` plus that SHA-256 is its id. Replaying identical content returns the stored row, and different
-content can never occupy an existing id.
+Each record is derived from one value. An export is its canonical `document_json`: every column is read from that
+document, so `export_id` is `tcx-` plus the SHA-256 of the exact bytes it stores, and the byte and token estimates
+describe those bytes. An outcome request is identified by its canonical body, so `outreq-` plus that SHA-256 is its
+id. A structured request's admission is its canonical summary, and its identity is the SHA-256 of those exact bytes.
+Replaying identical content returns the stored row, and different content can never occupy an existing id.
 
-Reads rebuild the record from its stored document or fields and compare every column with the row. An
-altered row therefore reads as `TaskContextInvalid`, never as another export or request.
+The active Project context is one row per Workspace. It is the only mutable row here, and it changes only by the
+guarded write that advances its generation by one to a different Project.
+
+Reads rebuild the record from its stored document or fields and compare every column with the row. An altered row
+therefore reads as `TaskContextInvalid`, never as another export, request or context.
 """
 
 from __future__ import annotations
@@ -27,9 +30,11 @@ from omnivia_core.contracts.v1 import to_canonical_json
 EXPORT_PREFIX: Final = "tcx-"
 OUTCOME_PREFIX: Final = "outreq-"
 OUTCOME_STATUS_RECEIVED: Final = "received"
+CONTEXT_TOKEN_PREFIX: Final = "ctxgen-"
 
 _EXPORTS: Final = "omnivia_task_context_exports"
 _REQUESTS: Final = "omnivia_outcome_requests"
+_CONTEXTS: Final = "omnivia_project_contexts"
 _EXPORT_COLUMNS: Final = (
     "workspace_id",
     "export_id",
@@ -55,6 +60,18 @@ _REQUEST_COLUMNS: Final = (
     "status",
     "fencing_generation",
     "created_at_us",
+    "project_id",
+    "admission_identity",
+    "admission_json",
+    "context_generation",
+)
+_CONTEXT_COLUMNS: Final = (
+    "workspace_id",
+    "project_id",
+    "context_generation",
+    "fencing_generation",
+    "switched_by",
+    "switched_at_us",
 )
 _EXPORT_SELECT: Final = ", ".join(_EXPORT_COLUMNS)
 _EXPORT_INSERT: Final = (
@@ -65,6 +82,17 @@ _REQUEST_SELECT: Final = ", ".join(_REQUEST_COLUMNS)
 _REQUEST_INSERT: Final = (
     f"INSERT INTO {_REQUESTS} ({_REQUEST_SELECT}) "
     f"VALUES ({', '.join(':' + column for column in _REQUEST_COLUMNS)})"
+)
+_CONTEXT_SELECT: Final = ", ".join(_CONTEXT_COLUMNS)
+_CONTEXT_INSERT: Final = (
+    f"INSERT INTO {_CONTEXTS} ({_CONTEXT_SELECT}) "
+    f"VALUES ({', '.join(':' + column for column in _CONTEXT_COLUMNS)})"
+)
+_CONTEXT_ADVANCE: Final = (
+    f"UPDATE {_CONTEXTS} SET project_id = :project_id, "
+    "context_generation = :context_generation, fencing_generation = :fencing_generation, "
+    "switched_by = :switched_by, switched_at_us = :switched_at_us "
+    "WHERE workspace_id = :workspace_id AND context_generation = :previous_generation"
 )
 
 
@@ -130,7 +158,11 @@ class StoredExport:
 
 @dataclass(frozen=True, slots=True)
 class StoredOutcomeRequest:
-    """One received request for an outcome, naming exactly one export and carrying the objective verbatim."""
+    """One received request for an outcome, naming exactly one export and carrying the objective verbatim.
+
+    A structured request also carries its admission: the Project it names, the canonical summary that was accepted,
+    and the Project context generation it was accepted under. The three are all set or all absent.
+    """
 
     workspace_id: str
     requested_by: str
@@ -139,25 +171,41 @@ class StoredOutcomeRequest:
     source_handoff_identity: str
     fencing_generation: int
     created_at_us: int
+    project_id: str | None = None
+    admission_json: str | None = None
+    context_generation: int | None = None
 
     @property
     def status(self) -> str:
         return OUTCOME_STATUS_RECEIVED
 
     @property
+    def admission_identity(self) -> str | None:
+        return None if self.admission_json is None else _sha256_hex(self.admission_json)
+
+    @property
     def outcome_request_id(self) -> str:
-        body = to_canonical_json(
-            {
-                "workspaceId": self.workspace_id,
-                "requestedBy": self.requested_by,
-                "objective": self.objective,
-                "exportId": self.export_id,
-                "sourceHandoffIdentity": self.source_handoff_identity,
-            }
-        )
-        return OUTCOME_PREFIX + _sha256_hex(body)
+        body: dict[str, Any] = {
+            "workspaceId": self.workspace_id,
+            "requestedBy": self.requested_by,
+            "objective": self.objective,
+            "exportId": self.export_id,
+            "sourceHandoffIdentity": self.source_handoff_identity,
+        }
+        # A legacy request keeps the body it always had. Only a structured one adds its admission facts.
+        if self.admission_json is not None:
+            body["admissionIdentity"] = self.admission_identity
+            body["contextGeneration"] = self.context_generation
+        return OUTCOME_PREFIX + _sha256_hex(to_canonical_json(body))
 
     def columns(self) -> dict[str, Any]:
+        if self.admission_json is not None:
+            try:
+                canonical = to_canonical_json(json.loads(self.admission_json)) == self.admission_json
+            except (TypeError, ValueError) as error:
+                raise TaskContextInvalid("stored admission is malformed") from error
+            if not canonical:
+                raise TaskContextInvalid("stored admission is not canonical")
         return {
             "workspace_id": self.workspace_id,
             "outcome_request_id": self.outcome_request_id,
@@ -168,7 +216,28 @@ class StoredOutcomeRequest:
             "status": self.status,
             "fencing_generation": self.fencing_generation,
             "created_at_us": self.created_at_us,
+            "project_id": self.project_id,
+            "admission_identity": self.admission_identity,
+            "admission_json": self.admission_json,
+            "context_generation": self.context_generation,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class StoredProjectContext:
+    """The Workspace's active Core Project, at one context generation, as the fenced write that chose it recorded it."""
+
+    workspace_id: str
+    project_id: str
+    context_generation: int
+    fencing_generation: int
+    switched_by: str
+    switched_at_us: int
+
+    @property
+    def token(self) -> str:
+        """The opaque generation token a caller compares. It is never parsed back into a number by a caller."""
+        return CONTEXT_TOKEN_PREFIX + str(self.context_generation)
 
 
 def record_export(connection: sqlite3.Connection, export: StoredExport) -> StoredExport:
@@ -216,7 +285,7 @@ def record_outcome_request(
 def read_outcome_request(
     connection: sqlite3.Connection, *, workspace_id: str, outcome_request_id: str
 ) -> StoredOutcomeRequest | None:
-    """The stored request, with its id re-derived from the row, or `None`."""
+    """The stored request, with its id and its admission re-derived from the row, or `None`."""
     row = connection.execute(
         f"SELECT {_REQUEST_SELECT} FROM {_REQUESTS} WHERE workspace_id = ? AND outcome_request_id = ?",
         (workspace_id, outcome_request_id),
@@ -232,7 +301,64 @@ def read_outcome_request(
         source_handoff_identity=values["source_handoff_identity"],
         fencing_generation=values["fencing_generation"],
         created_at_us=values["created_at_us"],
+        project_id=values["project_id"],
+        admission_json=values["admission_json"],
+        context_generation=values["context_generation"],
     )
     if request.columns() != values:
         raise TaskContextInvalid("stored outcome request does not verify its identity")
     return request
+
+
+def read_project_context(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> StoredProjectContext | None:
+    """The Workspace's active Project context, or `None` when no Project has been chosen yet."""
+    row = connection.execute(
+        f"SELECT {_CONTEXT_SELECT} FROM {_CONTEXTS} WHERE workspace_id = ?",
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return StoredProjectContext(**dict(zip(_CONTEXT_COLUMNS, row, strict=True)))
+
+
+def record_project_context(
+    connection: sqlite3.Connection,
+    context: StoredProjectContext,
+    *,
+    previous: StoredProjectContext | None,
+) -> StoredProjectContext:
+    """Write the chosen context under the caller's fence: the first choice inserts, a change advances one generation.
+
+    `previous` is the row the domain decision read. An advance that finds another row, because the generation moved
+    under it, is a conflict rather than a silent overwrite.
+    """
+    if previous is None:
+        connection.execute(
+            _CONTEXT_INSERT,
+            {
+                "workspace_id": context.workspace_id,
+                "project_id": context.project_id,
+                "context_generation": context.context_generation,
+                "fencing_generation": context.fencing_generation,
+                "switched_by": context.switched_by,
+                "switched_at_us": context.switched_at_us,
+            },
+        )
+        return context
+    cursor = connection.execute(
+        _CONTEXT_ADVANCE,
+        {
+            "workspace_id": context.workspace_id,
+            "project_id": context.project_id,
+            "context_generation": context.context_generation,
+            "fencing_generation": context.fencing_generation,
+            "switched_by": context.switched_by,
+            "switched_at_us": context.switched_at_us,
+            "previous_generation": previous.context_generation,
+        },
+    )
+    if cursor.rowcount != 1:
+        raise sqlite3.IntegrityError("the active Project context moved under this write")
+    return context

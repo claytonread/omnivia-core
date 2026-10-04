@@ -63,7 +63,7 @@ bounded non-authoring profile, not a universal read-only claim.
 `scripts/run-mcp-authoring-qualification.py` runs beside the restricted journey
 from the same isolated installed-wheel environment. It configures explicit
 authoring authority through `omnivia mcp configure`, then proves the exact
-thirty-three-tool inventory: the restricted fourteen plus:
+thirty-five-tool inventory: the restricted fourteen plus:
 
 1. `memory_create`
 2. `evidence_capture`
@@ -84,6 +84,8 @@ thirty-three-tool inventory: the restricted fourteen plus:
 17. `task_context_export_read`
 18. `outcome_request_create`
 19. `outcome_request_read`
+20. `project_context_read`
+21. `project_context_switch`
 
 The qualification uses two isolated workspaces:
 
@@ -214,10 +216,10 @@ model's report:
   surface and no decision record.
 - **Excluded names:** the harness dispatches every name a profile does not expose
   through the proxy itself, so no model choice is involved. The restricted profile
-  has 81 such names and the authoring profile 62. Those sets comprise the 44
+  has 83 such names and the authoring profile 62. Those sets comprise the 44
   catalogue operations outside the authoring manifest, eighteen deterministic
   qualification sentinels spanning all nine section-7 administrative capability
-  categories, and (for restricted only) the nineteen authoring additions. Sentinels
+  categories, and (for restricted only) the twenty-one authoring additions. Sentinels
   are probe names, not catalogue operations. Each name must be answered
   `not_exposed`, and none may appear in the host's listed inventory. Restricted
   and authoring absence/dispatch results are retained as four separate booleans.

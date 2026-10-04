@@ -13394,6 +13394,169 @@
           "created_at": "2026-10-04T03:00:00.000000Z"
         }
       }
+    },
+    {
+      "id": "project.context.read/primary-success",
+      "operation": "project.context.read",
+      "description": "project.context.read observes the active Project and its opaque generation on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-project.context.read-primary-success",
+          "required_capabilities": [
+            {
+              "id": "project_context.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "project_context:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "project.context.read",
+        "input": {}
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-project.context.read-primary-success",
+          "audit_reference": "audit-project.context.read"
+        },
+        "result": {
+          "state": "active",
+          "project_id": "project-alpha",
+          "context_generation": "ctxgen-1"
+        }
+      }
+    },
+    {
+      "id": "project.context.switch/primary-success",
+      "operation": "project.context.switch",
+      "description": "project.context.switch makes one bound Project active in the Workspace and records its first generation on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-project.context.switch-primary-success",
+          "required_capabilities": [
+            {
+              "id": "project_context.switch",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "project_context:switch"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-project.context.switch"
+        },
+        "operation": "project.context.switch",
+        "input": {
+          "project_id": "project-alpha"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-project.context.switch-primary-success",
+          "audit_reference": "audit-project.context.switch"
+        },
+        "result": {
+          "state": "active",
+          "project_id": "project-alpha",
+          "context_generation": "ctxgen-1"
+        }
+      }
+    },
+    {
+      "id": "project.context.switch/honest-replay",
+      "operation": "project.context.switch",
+      "description": "project.context.switch repeated with the same idempotency key and the same input: the recorded state is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "project.context.switch/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-project.context.switch-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "project_context.switch",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "project_context:switch"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-project.context.switch"
+        },
+        "operation": "project.context.switch",
+        "input": {
+          "project_id": "project-alpha"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-project.context.switch-honest-replay",
+          "audit_reference": "audit-project.context.switch"
+        },
+        "result": {
+          "state": "active",
+          "project_id": "project-alpha",
+          "context_generation": "ctxgen-1"
+        }
+      }
+    },
+    {
+      "id": "project.context.switch/idempotency-conflict",
+      "operation": "project.context.switch",
+      "description": "project.context.switch reusing one idempotency key for a different Project: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "project.context.switch/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-project.context.switch-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "project_context.switch",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "project_context:switch"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-project.context.switch"
+        },
+        "operation": "project.context.switch",
+        "input": {
+          "project_id": "project-beta"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-project.context.switch-idempotency-conflict",
+          "audit_reference": "audit-project.context.switch"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

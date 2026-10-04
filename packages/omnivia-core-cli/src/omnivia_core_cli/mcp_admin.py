@@ -175,6 +175,7 @@ PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
                 "knowledge_sharing",
                 "memory_authoring",
                 "outcome_request",
+                "project_context",
                 "skill_authoring",
                 "task_context_export",
                 "task_context_observation",
