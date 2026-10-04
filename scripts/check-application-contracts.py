@@ -24,7 +24,7 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   semantic expectation (version/capability negotiation math, retry
   fail-safety, tolerant decode of an otherwise-invalid document, and so on);
 - the canonical ``x-omnivia-operation-catalogue`` annotation holds exactly the
-  frozen 61 application operations, in the frozen order, each strictly valid
+  frozen 73 application operations, in the frozen order, each strictly valid
   against ``OperationMetadata``, binding resolvable in-contract payload
   references, and carrying exactly the frozen scope, capability, completion,
   pagination, idempotency, precondition, audit and allowed-error posture -- with
@@ -1324,6 +1324,15 @@ _TRIGGER_INGEST: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 #: registry does not hold is `not_found`; a stale draft revision, a closed or already-published
 #: draft, a version already published or a state the registry refuses is a `conflict`.
 _SKILL_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
+#: Cross-Project knowledge sharing (DEV-REQ-081). A proposal names a governed record the server
+#: may not hold or a recipient Project it does not bind (`not_found`); a version that is not the
+#: record's sealed, canonical, unsuperseded one, a share the store holds differently, or a
+#: decision out of order is a `conflict`. A caller that is not a bound owner of the Project the
+#: share belongs to is refused as `authorization_denied`, which every profile already carries.
+_SHARE_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
+#: The recipient read adds `conflict` to a point read: a share whose source version has since
+#: changed is a state the caller re-reads, not a record it fails to find.
+_SHARE_READ: tuple[str, ...] = tuple(sorted((*_POINT_READ, "conflict")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1368,6 +1377,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "TRIGGER_CONFIGURE": _TRIGGER_CONFIGURE,
     "TRIGGER_INGEST": _TRIGGER_INGEST,
     "SKILL_MUT": _SKILL_MUT,
+    "SHARE_MUT": _SHARE_MUT,
+    "SHARE_READ": _SHARE_READ,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1402,7 +1413,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 69 application operations, in the frozen insertion order. Runtime
+#: The exact 73 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1705,6 +1716,25 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "skills.resolve": FrozenOperation(
         "workspace", ("skill:resolve",), "none", "skill.resolve",
         "runtime", "SkillResolve", "POINT_READ", False,
+    ),
+    # Cross-Project knowledge sharing (DEV-REQ-081). Owning a Project and reading what another
+    # Project shares with it are two grants, and neither is the workspace-wide `memory:*` scope:
+    # the Project authority is a server binding, and these scopes only say the session may ask.
+    "knowledge.share.propose": FrozenOperation(
+        "workspace", ("knowledge:share",), "create", "knowledge.share",
+        "knowledge", "KnowledgeSharePropose", "SHARE_MUT", False,
+    ),
+    "knowledge.share.decide": FrozenOperation(
+        "workspace", ("knowledge:share",), "update", "knowledge.share",
+        "knowledge", "KnowledgeShareDecide", "SHARE_MUT", False,
+    ),
+    "knowledge.share.read": FrozenOperation(
+        "workspace", ("knowledge:share_read",), "none", "knowledge.share_read",
+        "knowledge", "KnowledgeShareRead", "SHARE_READ", False,
+    ),
+    "knowledge.share.lineage": FrozenOperation(
+        "workspace", ("knowledge:share",), "none", "knowledge.share",
+        "knowledge", "KnowledgeShareLineage", "POINT_READ", False,
     ),
 }
 

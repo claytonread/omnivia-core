@@ -1720,6 +1720,61 @@ export function isContentChecksum(value: unknown): value is ContentChecksum {
 }
 
 /**
+ * The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for
+ * its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed:
+ * no third decision exists, and a revocation is only recorded against a share that was accepted.
+ */
+export type KnowledgeShareDecision = string;
+
+/**
+ * The closed `KnowledgeShareDecision` vocabulary, emitted from the schema's `enum`.
+ */
+export const KNOWLEDGE_SHARE_DECISION_VALUES = [
+  "accepted",
+  "revoked",
+] as const;
+
+/**
+ * Return whether a value is a declared `KnowledgeShareDecision`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isKnowledgeShareDecision(value: unknown): value is KnowledgeShareDecision {
+  return (
+    typeof value === "string" &&
+    (KNOWLEDGE_SHARE_DECISION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where one knowledge share stands, derived from its decisions on every read and never stored as
+ * a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible,
+ * and `revoked` was accepted and is no longer eligible.
+ */
+export type KnowledgeShareState = string;
+
+/**
+ * The closed `KnowledgeShareState` vocabulary, emitted from the schema's `enum`.
+ */
+export const KNOWLEDGE_SHARE_STATE_VALUES = [
+  "proposed",
+  "accepted",
+  "revoked",
+] as const;
+
+/**
+ * Return whether a value is a declared `KnowledgeShareState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isKnowledgeShareState(value: unknown): value is KnowledgeShareState {
+  return (
+    typeof value === "string" &&
+    (KNOWLEDGE_SHARE_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
  * or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add
  * record types without breaking existing decoders.
@@ -5213,6 +5268,201 @@ export interface GovernanceRationale {
    * Optional bounded human-readable elaboration. Not a stable interface.
    */
   readonly comment?: string;
+}
+
+/**
+ * One decision recorded against a share, kept after a later revocation so a source owner can
+ * still read how the share was authorised.
+ */
+export interface KnowledgeShareDecisionRecord {
+  /**
+   * The decision recorded.
+   */
+  readonly decision: KnowledgeShareDecision;
+  /**
+   * The principal that recorded the decision, as the server authenticated it.
+   */
+  readonly decided_by: Identifier;
+  /**
+   * When Core recorded the decision.
+   */
+  readonly decided_at: Timestamp;
+}
+
+/**
+ * Input for `knowledge.share.propose`. An owner of the Project that holds a governed record
+ * proposes sharing that record's current sealed, canonical version with one other Project. The
+ * source Project is never stated here: the server derives it from the record's own domain scope
+ * and the Project bindings it holds, and refuses a caller that is not a bound owner of that
+ * Project. Naming a recipient grants nothing; the share is eligible only after a different owner
+ * accepts it. Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface KnowledgeShareProposeInput {
+  /**
+   * The caller-chosen identity of this share. Proposing the same share again under the same
+   * identity is an honest replay; a different proposal under it is a conflict.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The governed record whose current canonical version is proposed for sharing.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The Project the share is addressed to. It must be a Project the server binds, and it must
+   * not be the source Project.
+   */
+  readonly recipient_project_id: Identifier;
+}
+
+/**
+ * Result of `knowledge.share.propose`: the share as recorded, still `proposed`. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface KnowledgeShareProposeResult {
+  /**
+   * The share this result describes.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The Project that owns the shared record, as the server's Project binding states it.
+   */
+  readonly source_project_id: Identifier;
+  /**
+   * The one Project the share is addressed to.
+   */
+  readonly recipient_project_id: Identifier;
+  /**
+   * The governed record shared.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The one sealed, canonical, accepted governed version the share is bound to.
+   */
+  readonly governed_record_version_id: Identifier;
+  /**
+   * The digest of that version's content, which a recipient read must still find unchanged.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * Always `proposed` on this result: proposing grants the recipient nothing.
+   */
+  readonly state: KnowledgeShareState;
+  /**
+   * When Core recorded the proposal.
+   */
+  readonly proposed_at: Timestamp;
+}
+
+/**
+ * Input for `knowledge.share.decide`. An owner of the share's source Project accepts it or
+ * revokes it. An acceptance must come from an owner other than the proposer and only while the
+ * shared version is still sealed, canonical, accepted and unsuperseded; a revocation is only
+ * recorded against an accepted share. The source Project is read from the share, never from this
+ * payload. Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface KnowledgeShareDecideInput {
+  /**
+   * The share to decide.
+   */
+  readonly share_id: Identifier;
+  /**
+   * Whether to accept or revoke the share.
+   */
+  readonly decision: KnowledgeShareDecision;
+}
+
+/**
+ * Result of `knowledge.share.decide`: the decision as recorded and the state the share now
+ * holds. A replay under the same idempotency key returns this result without a second write.
+ */
+export interface KnowledgeShareDecideResult {
+  /**
+   * The share decided.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The decision recorded.
+   */
+  readonly decision: KnowledgeShareDecision;
+  /**
+   * The state the share holds after the decision.
+   */
+  readonly state: KnowledgeShareState;
+  /**
+   * When Core recorded the decision.
+   */
+  readonly decided_at: Timestamp;
+}
+
+/**
+ * Input for `knowledge.share.read`. A member of the recipient Project reads the one governed
+ * version a share makes eligible. The recipient Project is never stated here: the server reads
+ * it from the share and requires the caller to be bound to it. Possessing a share identifier,
+ * holding a broad knowledge-read grant, belonging to the workspace, or having read the share
+ * before confers nothing: eligibility is re-derived from the accepted and revoked decisions and
+ * the shared version's currentness on every call. Workspace-scoped through the request
+ * envelope's selected workspace.
+ */
+export interface KnowledgeShareReadInput {
+  /**
+   * The share to read.
+   */
+  readonly share_id: Identifier;
+}
+
+/**
+ * Result of `knowledge.share.read`: the shared version's identity, its digest and its content,
+ * served only while the share is accepted, unrevoked and still points at the sealed version it
+ * was proposed under.
+ */
+export interface KnowledgeShareReadResult {
+  /**
+   * The share this result describes.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The Project that owns the shared record, as the server's Project binding states it.
+   */
+  readonly source_project_id: Identifier;
+  /**
+   * The one Project the share is addressed to.
+   */
+  readonly recipient_project_id: Identifier;
+  /**
+   * The governed record shared.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The one sealed, canonical, accepted governed version the share is bound to.
+   */
+  readonly governed_record_version_id: Identifier;
+  /**
+   * The digest of that version's content, which a recipient read must still find unchanged.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * The domain scope the shared record was created in, which the source Project's binding must
+   * still own.
+   */
+  readonly domain_scope: RecordDomainScope;
+  /**
+   * The sealed version's content, exactly as the governed record holds it; `content_digest` is
+   * the digest of this content.
+   */
+  readonly content: JsonObject;
+}
+
+/**
+ * Input for `knowledge.share.lineage`. An owner of the share's source Project reads the share
+ * and every decision recorded against it, revoked ones included. Historical lineage stays
+ * readable after revocation. A recipient is not a source owner and cannot read it. Workspace-
+ * scoped through the request envelope's selected workspace.
+ */
+export interface KnowledgeShareLineageInput {
+  /**
+   * The share whose lineage is read.
+   */
+  readonly share_id: Identifier;
 }
 
 /**
@@ -8802,6 +9052,49 @@ export interface CandidateRejectInput {
    * Reason this candidate was rejected.
    */
   readonly rationale: GovernanceRationale;
+}
+
+/**
+ * Result of `knowledge.share.lineage`: the share, the state its decisions currently derive, and
+ * every decision in the order it was recorded.
+ */
+export interface KnowledgeShareLineageResult {
+  /**
+   * The share this result describes.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The Project that owns the shared record, as the server's Project binding states it.
+   */
+  readonly source_project_id: Identifier;
+  /**
+   * The one Project the share is addressed to.
+   */
+  readonly recipient_project_id: Identifier;
+  /**
+   * The governed record shared.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The one sealed, canonical, accepted governed version the share is bound to.
+   */
+  readonly governed_record_version_id: Identifier;
+  /**
+   * The digest of that version's content, which a recipient read must still find unchanged.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * The state the recorded decisions derive.
+   */
+  readonly state: KnowledgeShareState;
+  /**
+   * The principal that proposed the share.
+   */
+  readonly proposed_by: Identifier;
+  /**
+   * Every decision recorded against the share, accepted and revoked, in the order recorded.
+   */
+  readonly decisions: readonly KnowledgeShareDecisionRecord[];
 }
 
 /**
@@ -14427,6 +14720,139 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult",
     required_capability: { id: "skill.resolve", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.propose",
+    scope: { required_scopes: ["knowledge:share"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeResult",
+    required_capability: { id: "knowledge.share", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.decide",
+    scope: { required_scopes: ["knowledge:share"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideResult",
+    required_capability: { id: "knowledge.share", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.read",
+    scope: {
+      required_scopes: ["knowledge:share_read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadResult",
+    required_capability: { id: "knowledge.share_read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.lineage",
+    scope: { required_scopes: ["knowledge:share"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageResult",
+    required_capability: { id: "knowledge.share", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },
     idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },

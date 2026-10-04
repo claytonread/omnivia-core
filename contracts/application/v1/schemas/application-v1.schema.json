@@ -528,6 +528,39 @@
     "RecordSupersedeResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/RecordSupersedeResult"
     },
+    "KnowledgeShareDecision": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision"
+    },
+    "KnowledgeShareState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState"
+    },
+    "KnowledgeShareDecisionRecord": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecisionRecord"
+    },
+    "KnowledgeShareProposeInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeInput"
+    },
+    "KnowledgeShareProposeResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeResult"
+    },
+    "KnowledgeShareDecideInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideInput"
+    },
+    "KnowledgeShareDecideResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideResult"
+    },
+    "KnowledgeShareReadInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadInput"
+    },
+    "KnowledgeShareReadResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadResult"
+    },
+    "KnowledgeShareLineageInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageInput"
+    },
+    "KnowledgeShareLineageResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageResult"
+    },
     "GraphDirection": {
       "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDirection"
     },

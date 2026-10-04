@@ -413,6 +413,17 @@ __all__ = [
     "KnowledgeProposeResult",
     "KnowledgeSearchInput",
     "KnowledgeSearchResult",
+    "KnowledgeShareDecideInput",
+    "KnowledgeShareDecideResult",
+    "KnowledgeShareDecision",
+    "KnowledgeShareDecisionRecord",
+    "KnowledgeShareLineageInput",
+    "KnowledgeShareLineageResult",
+    "KnowledgeShareProposeInput",
+    "KnowledgeShareProposeResult",
+    "KnowledgeShareReadInput",
+    "KnowledgeShareReadResult",
+    "KnowledgeShareState",
     "MediaType",
     "MemoryCreateInput",
     "MemoryCreateResult",
@@ -3653,6 +3664,18 @@ server token a client round-trips but a value the caller and the server must be 
 and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and
 one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm
 later is an additive widening of this pattern, not a redefinition of what a checksum means.
+"""
+
+KnowledgeShareDecision: TypeAlias = str
+"""The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its
+recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no
+third decision exists, and a revocation is only recorded against a share that was accepted.
+"""
+
+KnowledgeShareState: TypeAlias = str
+"""Where one knowledge share stands, derived from its decisions on every read and never stored as a
+flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and
+`revoked` was accepted and is no longer eligible.
 """
 
 GovernedRecordType: TypeAlias = str
@@ -8641,6 +8664,437 @@ class GovernanceRationale:
         return cls(
             reason_code=field_reason_code,
             comment=field_comment,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareDecisionRecord:
+    """One decision recorded against a share, kept after a later revocation so a source owner
+    can still read how the share was authorised.
+    """
+
+    decision: KnowledgeShareDecision
+    decided_by: Identifier
+    decided_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["decision"] = self.decision
+        wire["decided_by"] = self.decided_by
+        wire["decided_at"] = self.decided_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareDecisionRecord"
+    ) -> KnowledgeShareDecisionRecord:
+        """Decode a wire payload into a KnowledgeShareDecisionRecord.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_decision = _decode_str(_require_field(mapping, "decision", path), f"{path}.decision")
+        field_decided_by = _decode_str(
+            _require_field(mapping, "decided_by", path),
+            f"{path}.decided_by",
+        )
+        field_decided_at = _decode_str(
+            _require_field(mapping, "decided_at", path),
+            f"{path}.decided_at",
+        )
+        return cls(
+            decision=field_decision,
+            decided_by=field_decided_by,
+            decided_at=field_decided_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareProposeInput:
+    """Input for `knowledge.share.propose`. An owner of the Project that holds a governed record
+    proposes sharing that record's current sealed, canonical version with one other Project.
+    The source Project is never stated here: the server derives it from the record's own
+    domain scope and the Project bindings it holds, and refuses a caller that is not a bound
+    owner of that Project. Naming a recipient grants nothing; the share is eligible only
+    after a different owner accepts it. Workspace-scoped through the request envelope's
+    selected workspace.
+    """
+
+    share_id: Identifier
+    record_id: RecordId
+    recipient_project_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        wire["record_id"] = self.record_id
+        wire["recipient_project_id"] = self.recipient_project_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareProposeInput"
+    ) -> KnowledgeShareProposeInput:
+        """Decode a wire payload into a KnowledgeShareProposeInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_recipient_project_id = _decode_str(
+            _require_field(mapping, "recipient_project_id", path),
+            f"{path}.recipient_project_id",
+        )
+        return cls(
+            share_id=field_share_id,
+            record_id=field_record_id,
+            recipient_project_id=field_recipient_project_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareProposeResult:
+    """Result of `knowledge.share.propose`: the share as recorded, still `proposed`. A replay
+    under the same idempotency key returns this result without a second write.
+    """
+
+    share_id: Identifier
+    source_project_id: Identifier
+    recipient_project_id: Identifier
+    record_id: RecordId
+    governed_record_version_id: Identifier
+    content_digest: ContentChecksum
+    state: KnowledgeShareState
+    proposed_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        wire["source_project_id"] = self.source_project_id
+        wire["recipient_project_id"] = self.recipient_project_id
+        wire["record_id"] = self.record_id
+        wire["governed_record_version_id"] = self.governed_record_version_id
+        wire["content_digest"] = self.content_digest
+        wire["state"] = self.state
+        wire["proposed_at"] = self.proposed_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareProposeResult"
+    ) -> KnowledgeShareProposeResult:
+        """Decode a wire payload into a KnowledgeShareProposeResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        field_source_project_id = _decode_str(
+            _require_field(mapping, "source_project_id", path),
+            f"{path}.source_project_id",
+        )
+        field_recipient_project_id = _decode_str(
+            _require_field(mapping, "recipient_project_id", path),
+            f"{path}.recipient_project_id",
+        )
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_governed_record_version_id = _decode_str(
+            _require_field(mapping, "governed_record_version_id", path),
+            f"{path}.governed_record_version_id",
+        )
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        field_state = _decode_str(_require_field(mapping, "state", path), f"{path}.state")
+        field_proposed_at = _decode_str(
+            _require_field(mapping, "proposed_at", path),
+            f"{path}.proposed_at",
+        )
+        return cls(
+            share_id=field_share_id,
+            source_project_id=field_source_project_id,
+            recipient_project_id=field_recipient_project_id,
+            record_id=field_record_id,
+            governed_record_version_id=field_governed_record_version_id,
+            content_digest=field_content_digest,
+            state=field_state,
+            proposed_at=field_proposed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareDecideInput:
+    """Input for `knowledge.share.decide`. An owner of the share's source Project accepts it or
+    revokes it. An acceptance must come from an owner other than the proposer and only while
+    the shared version is still sealed, canonical, accepted and unsuperseded; a revocation is
+    only recorded against an accepted share. The source Project is read from the share, never
+    from this payload. Workspace-scoped through the request envelope's selected workspace.
+    """
+
+    share_id: Identifier
+    decision: KnowledgeShareDecision
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        wire["decision"] = self.decision
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareDecideInput"
+    ) -> KnowledgeShareDecideInput:
+        """Decode a wire payload into a KnowledgeShareDecideInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        field_decision = _decode_str(_require_field(mapping, "decision", path), f"{path}.decision")
+        return cls(
+            share_id=field_share_id,
+            decision=field_decision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareDecideResult:
+    """Result of `knowledge.share.decide`: the decision as recorded and the state the share now
+    holds. A replay under the same idempotency key returns this result without a second
+    write.
+    """
+
+    share_id: Identifier
+    decision: KnowledgeShareDecision
+    state: KnowledgeShareState
+    decided_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        wire["decision"] = self.decision
+        wire["state"] = self.state
+        wire["decided_at"] = self.decided_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareDecideResult"
+    ) -> KnowledgeShareDecideResult:
+        """Decode a wire payload into a KnowledgeShareDecideResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        field_decision = _decode_str(_require_field(mapping, "decision", path), f"{path}.decision")
+        field_state = _decode_str(_require_field(mapping, "state", path), f"{path}.state")
+        field_decided_at = _decode_str(
+            _require_field(mapping, "decided_at", path),
+            f"{path}.decided_at",
+        )
+        return cls(
+            share_id=field_share_id,
+            decision=field_decision,
+            state=field_state,
+            decided_at=field_decided_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareReadInput:
+    """Input for `knowledge.share.read`. A member of the recipient Project reads the one
+    governed version a share makes eligible. The recipient Project is never stated here: the
+    server reads it from the share and requires the caller to be bound to it. Possessing a
+    share identifier, holding a broad knowledge-read grant, belonging to the workspace, or
+    having read the share before confers nothing: eligibility is re-derived from the accepted
+    and revoked decisions and the shared version's currentness on every call. Workspace-
+    scoped through the request envelope's selected workspace.
+    """
+
+    share_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareReadInput"
+    ) -> KnowledgeShareReadInput:
+        """Decode a wire payload into a KnowledgeShareReadInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        return cls(
+            share_id=field_share_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareReadResult:
+    """Result of `knowledge.share.read`: the shared version's identity, its digest and its
+    content, served only while the share is accepted, unrevoked and still points at the
+    sealed version it was proposed under.
+    """
+
+    share_id: Identifier
+    source_project_id: Identifier
+    recipient_project_id: Identifier
+    record_id: RecordId
+    governed_record_version_id: Identifier
+    content_digest: ContentChecksum
+    domain_scope: RecordDomainScope
+    content: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        wire["source_project_id"] = self.source_project_id
+        wire["recipient_project_id"] = self.recipient_project_id
+        wire["record_id"] = self.record_id
+        wire["governed_record_version_id"] = self.governed_record_version_id
+        wire["content_digest"] = self.content_digest
+        wire["domain_scope"] = self.domain_scope
+        wire["content"] = _encode_json_object(self.content)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareReadResult"
+    ) -> KnowledgeShareReadResult:
+        """Decode a wire payload into a KnowledgeShareReadResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        field_source_project_id = _decode_str(
+            _require_field(mapping, "source_project_id", path),
+            f"{path}.source_project_id",
+        )
+        field_recipient_project_id = _decode_str(
+            _require_field(mapping, "recipient_project_id", path),
+            f"{path}.recipient_project_id",
+        )
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_governed_record_version_id = _decode_str(
+            _require_field(mapping, "governed_record_version_id", path),
+            f"{path}.governed_record_version_id",
+        )
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        field_domain_scope = _decode_str(
+            _require_field(mapping, "domain_scope", path),
+            f"{path}.domain_scope",
+        )
+        field_content = _decode_json_object(
+            _require_field(mapping, "content", path),
+            f"{path}.content",
+        )
+        return cls(
+            share_id=field_share_id,
+            source_project_id=field_source_project_id,
+            recipient_project_id=field_recipient_project_id,
+            record_id=field_record_id,
+            governed_record_version_id=field_governed_record_version_id,
+            content_digest=field_content_digest,
+            domain_scope=field_domain_scope,
+            content=field_content,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareLineageInput:
+    """Input for `knowledge.share.lineage`. An owner of the share's source Project reads the
+    share and every decision recorded against it, revoked ones included. Historical lineage
+    stays readable after revocation. A recipient is not a source owner and cannot read it.
+    Workspace-scoped through the request envelope's selected workspace.
+    """
+
+    share_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareLineageInput"
+    ) -> KnowledgeShareLineageInput:
+        """Decode a wire payload into a KnowledgeShareLineageInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        return cls(
+            share_id=field_share_id,
         )
 
 
@@ -17067,6 +17521,97 @@ class CandidateRejectInput:
         return cls(
             record_id=field_record_id,
             rationale=field_rationale,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeShareLineageResult:
+    """Result of `knowledge.share.lineage`: the share, the state its decisions currently derive,
+    and every decision in the order it was recorded.
+    """
+
+    share_id: Identifier
+    source_project_id: Identifier
+    recipient_project_id: Identifier
+    record_id: RecordId
+    governed_record_version_id: Identifier
+    content_digest: ContentChecksum
+    state: KnowledgeShareState
+    proposed_by: Identifier
+    decisions: tuple[KnowledgeShareDecisionRecord, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["share_id"] = self.share_id
+        wire["source_project_id"] = self.source_project_id
+        wire["recipient_project_id"] = self.recipient_project_id
+        wire["record_id"] = self.record_id
+        wire["governed_record_version_id"] = self.governed_record_version_id
+        wire["content_digest"] = self.content_digest
+        wire["state"] = self.state
+        wire["proposed_by"] = self.proposed_by
+        wire["decisions"] = [item.to_wire() for item in self.decisions]
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeShareLineageResult"
+    ) -> KnowledgeShareLineageResult:
+        """Decode a wire payload into a KnowledgeShareLineageResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
+        field_source_project_id = _decode_str(
+            _require_field(mapping, "source_project_id", path),
+            f"{path}.source_project_id",
+        )
+        field_recipient_project_id = _decode_str(
+            _require_field(mapping, "recipient_project_id", path),
+            f"{path}.recipient_project_id",
+        )
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_governed_record_version_id = _decode_str(
+            _require_field(mapping, "governed_record_version_id", path),
+            f"{path}.governed_record_version_id",
+        )
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        field_state = _decode_str(_require_field(mapping, "state", path), f"{path}.state")
+        field_proposed_by = _decode_str(
+            _require_field(mapping, "proposed_by", path),
+            f"{path}.proposed_by",
+        )
+        field_decisions_items = _decode_sequence(
+            _require_field(mapping, "decisions", path),
+            f"{path}.decisions",
+        )
+        field_decisions = tuple(
+            KnowledgeShareDecisionRecord.from_wire(item, f"{path}.decisions[{index}]")
+            for index, item in enumerate(field_decisions_items)
+        )
+        return cls(
+            share_id=field_share_id,
+            source_project_id=field_source_project_id,
+            recipient_project_id=field_recipient_project_id,
+            record_id=field_record_id,
+            governed_record_version_id=field_governed_record_version_id,
+            content_digest=field_content_digest,
+            state=field_state,
+            proposed_by=field_proposed_by,
+            decisions=field_decisions,
         )
 
 
@@ -27395,6 +27940,219 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         ),
         required_capability=CapabilityRequirement(
             id="skill.resolve",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.share.propose",
+        scope=OperationScope(
+            required_scopes=("knowledge:share",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareProposeInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareProposeResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.share",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.share.decide",
+        scope=OperationScope(
+            required_scopes=("knowledge:share",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareDecideInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareDecideResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.share",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.share.read",
+        scope=OperationScope(
+            required_scopes=("knowledge:share_read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareReadInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareReadResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.share_read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.share.lineage",
+        scope=OperationScope(
+            required_scopes=("knowledge:share",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareLineageInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeShareLineageResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.share",
             minimum_version="1.0",
             required=True,
         ),

@@ -121,6 +121,10 @@ from omnivia_core_runtime.service.handlers.knowledge import (
     knowledge_search,
     memory_search,
 )
+from omnivia_core_runtime.service.handlers.knowledge_sharing import (
+    KNOWLEDGE_SHARING_FAMILY_OPERATIONS,
+    KnowledgeSharingHandlers,
+)
 from omnivia_core_runtime.service.handlers.memory import (
     MEMORY_CREATE_OPERATION,
     MEMORY_FAMILY_OPERATIONS,
@@ -169,6 +173,22 @@ from omnivia_core_runtime.service.installation import (
     WORKSPACE_LIST_PURPOSE,
     InstallationApplicationService,
     InstallationOperationContext,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    NO_PROJECTS,
+    ProjectAuthority,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_DECIDE as KNOWLEDGE_SHARE_DECIDE_OPERATION,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_LINEAGE as KNOWLEDGE_SHARE_LINEAGE_OPERATION,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_PROPOSE as KNOWLEDGE_SHARE_PROPOSE_OPERATION,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_READ as KNOWLEDGE_SHARE_READ_OPERATION,
 )
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
@@ -1552,6 +1572,104 @@ def build_trigger_registry(handlers: TriggerHandlers) -> ApplicationOperationReg
     return registry
 
 
+#: Cross-Project knowledge sharing (DEV-REQ-081): the four `knowledge.share.*` operations, one
+#: session and one binding. Proposing and deciding are served under the mutation table's
+#: `knowledge_sharing` purpose; the recipient read and the owner's lineage read are observations,
+#: which no sharing grant carries. This table is deliberately not part of `OPERATION_PURPOSES`: that
+#: map feeds the read-only local-owner session, which must never be able to grant a share.
+KNOWLEDGE_SHARE_OBSERVATION_PURPOSE: Final = "knowledge_share_observation"
+KNOWLEDGE_SHARING_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        KNOWLEDGE_SHARE_PROPOSE_OPERATION: MUTATION_PURPOSES[
+            KNOWLEDGE_SHARE_PROPOSE_OPERATION
+        ],
+        KNOWLEDGE_SHARE_DECIDE_OPERATION: MUTATION_PURPOSES[
+            KNOWLEDGE_SHARE_DECIDE_OPERATION
+        ],
+        KNOWLEDGE_SHARE_READ_OPERATION: KNOWLEDGE_SHARE_OBSERVATION_PURPOSE,
+        KNOWLEDGE_SHARE_LINEAGE_OPERATION: KNOWLEDGE_SHARE_OBSERVATION_PURPOSE,
+    }
+)
+
+
+def knowledge_sharing_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The ceiling for one workspace's sharing surface.
+
+    Holding these four operations says only that a session may ask. Whether it may share or read a
+    given record is the `ProjectAuthority` the family is composed with, decided for the principal the
+    authorization seam returns.
+    """
+    return _contributor_family_session(
+        operations=KNOWLEDGE_SHARING_FAMILY_OPERATIONS,
+        purposes=KNOWLEDGE_SHARING_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_knowledge_sharing_registry(
+    handlers: KnowledgeSharingHandlers,
+) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    for operation, handler in (
+        (KNOWLEDGE_SHARE_PROPOSE_OPERATION, handlers.knowledge_share_propose),
+        (KNOWLEDGE_SHARE_DECIDE_OPERATION, handlers.knowledge_share_decide),
+        (KNOWLEDGE_SHARE_READ_OPERATION, handlers.knowledge_share_read),
+        (KNOWLEDGE_SHARE_LINEAGE_OPERATION, handlers.knowledge_share_lineage),
+    ):
+        registry.register(operation, cast(OperationHandler, handler))
+    return registry
+
+
+def build_knowledge_sharing_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    projects: ProjectAuthority = NO_PROJECTS,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the four sharing operations around the existing router.
+
+    `projects` is the server's own Project binding. It has no default other than empty, which
+    refuses every sharing operation, and no request, session or grant can add to it.
+    """
+    session = knowledge_sharing_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_knowledge_sharing_registry(
+        KnowledgeSharingHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+            allocate_identifier=allocate_identifier,
+            projects=projects,
+        )
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -1712,7 +1830,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 69/69 complete.
+    is anything other than 73/73 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1731,9 +1849,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 12:
+        if len(distinct_routes) != 13:
             raise ValueError(
-                "the production surface requires exactly twelve authority families"
+                "the production surface requires exactly thirteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -1802,6 +1920,7 @@ def compose_production_application_surface(
     skill: ApplicationDispatcher,
     skill_resolution: ApplicationDispatcher,
     engineering: ApplicationDispatcher,
+    knowledge_sharing: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -1819,6 +1938,7 @@ def compose_production_application_surface(
         skill,
         skill_resolution,
         engineering,
+        knowledge_sharing,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}

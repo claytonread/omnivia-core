@@ -219,6 +219,313 @@
       },
       "required": ["previous_record", "updated_record"],
       "unevaluatedProperties": false
+    },
+    "KnowledgeShareDecision": {
+      "title": "KnowledgeShareDecision",
+      "description": "The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no third decision exists, and a revocation is only recorded against a share that was accepted.",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "revoked"
+      ]
+    },
+    "KnowledgeShareState": {
+      "title": "KnowledgeShareState",
+      "description": "Where one knowledge share stands, derived from its decisions on every read and never stored as a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and `revoked` was accepted and is no longer eligible.",
+      "type": "string",
+      "enum": [
+        "proposed",
+        "accepted",
+        "revoked"
+      ]
+    },
+    "KnowledgeShareDecisionRecord": {
+      "title": "KnowledgeShareDecisionRecord",
+      "description": "One decision recorded against a share, kept after a later revocation so a source owner can still read how the share was authorised.",
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision",
+          "description": "The decision recorded."
+        },
+        "decided_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that recorded the decision, as the server authenticated it."
+        },
+        "decided_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the decision."
+        }
+      },
+      "required": [
+        "decision",
+        "decided_by",
+        "decided_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareProposeInput": {
+      "title": "KnowledgeShareProposeInput",
+      "description": "Input for `knowledge.share.propose`. An owner of the Project that holds a governed record proposes sharing that record's current sealed, canonical version with one other Project. The source Project is never stated here: the server derives it from the record's own domain scope and the Project bindings it holds, and refuses a caller that is not a bound owner of that Project. Naming a recipient grants nothing; the share is eligible only after a different owner accepts it. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The caller-chosen identity of this share. Proposing the same share again under the same identity is an honest replay; a different proposal under it is a conflict."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record whose current canonical version is proposed for sharing."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project the share is addressed to. It must be a Project the server binds, and it must not be the source Project."
+        }
+      },
+      "required": [
+        "share_id",
+        "record_id",
+        "recipient_project_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareProposeResult": {
+      "title": "KnowledgeShareProposeResult",
+      "description": "Result of `knowledge.share.propose`: the share as recorded, still `proposed`. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share this result describes."
+        },
+        "source_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project that owns the shared record, as the server's Project binding states it."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one Project the share is addressed to."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record shared."
+        },
+        "governed_record_version_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one sealed, canonical, accepted governed version the share is bound to."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest of that version's content, which a recipient read must still find unchanged."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState",
+          "description": "Always `proposed` on this result: proposing grants the recipient nothing."
+        },
+        "proposed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the proposal."
+        }
+      },
+      "required": [
+        "share_id",
+        "source_project_id",
+        "recipient_project_id",
+        "record_id",
+        "governed_record_version_id",
+        "content_digest",
+        "state",
+        "proposed_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareDecideInput": {
+      "title": "KnowledgeShareDecideInput",
+      "description": "Input for `knowledge.share.decide`. An owner of the share's source Project accepts it or revokes it. An acceptance must come from an owner other than the proposer and only while the shared version is still sealed, canonical, accepted and unsuperseded; a revocation is only recorded against an accepted share. The source Project is read from the share, never from this payload. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share to decide."
+        },
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision",
+          "description": "Whether to accept or revoke the share."
+        }
+      },
+      "required": [
+        "share_id",
+        "decision"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareDecideResult": {
+      "title": "KnowledgeShareDecideResult",
+      "description": "Result of `knowledge.share.decide`: the decision as recorded and the state the share now holds. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share decided."
+        },
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision",
+          "description": "The decision recorded."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState",
+          "description": "The state the share holds after the decision."
+        },
+        "decided_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the decision."
+        }
+      },
+      "required": [
+        "share_id",
+        "decision",
+        "state",
+        "decided_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareReadInput": {
+      "title": "KnowledgeShareReadInput",
+      "description": "Input for `knowledge.share.read`. A member of the recipient Project reads the one governed version a share makes eligible. The recipient Project is never stated here: the server reads it from the share and requires the caller to be bound to it. Possessing a share identifier, holding a broad knowledge-read grant, belonging to the workspace, or having read the share before confers nothing: eligibility is re-derived from the accepted and revoked decisions and the shared version's currentness on every call. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share to read."
+        }
+      },
+      "required": [
+        "share_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareReadResult": {
+      "title": "KnowledgeShareReadResult",
+      "description": "Result of `knowledge.share.read`: the shared version's identity, its digest and its content, served only while the share is accepted, unrevoked and still points at the sealed version it was proposed under.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share this result describes."
+        },
+        "source_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project that owns the shared record, as the server's Project binding states it."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one Project the share is addressed to."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record shared."
+        },
+        "governed_record_version_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one sealed, canonical, accepted governed version the share is bound to."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest of that version's content, which a recipient read must still find unchanged."
+        },
+        "domain_scope": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/RecordDomainScope",
+          "description": "The domain scope the shared record was created in, which the source Project's binding must still own."
+        },
+        "content": {
+          "type": "object",
+          "description": "The sealed version's content, exactly as the governed record holds it; `content_digest` is the digest of this content."
+        }
+      },
+      "required": [
+        "share_id",
+        "source_project_id",
+        "recipient_project_id",
+        "record_id",
+        "governed_record_version_id",
+        "content_digest",
+        "domain_scope",
+        "content"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareLineageInput": {
+      "title": "KnowledgeShareLineageInput",
+      "description": "Input for `knowledge.share.lineage`. An owner of the share's source Project reads the share and every decision recorded against it, revoked ones included. Historical lineage stays readable after revocation. A recipient is not a source owner and cannot read it. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share whose lineage is read."
+        }
+      },
+      "required": [
+        "share_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareLineageResult": {
+      "title": "KnowledgeShareLineageResult",
+      "description": "Result of `knowledge.share.lineage`: the share, the state its decisions currently derive, and every decision in the order it was recorded.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share this result describes."
+        },
+        "source_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project that owns the shared record, as the server's Project binding states it."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one Project the share is addressed to."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record shared."
+        },
+        "governed_record_version_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one sealed, canonical, accepted governed version the share is bound to."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest of that version's content, which a recipient read must still find unchanged."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState",
+          "description": "The state the recorded decisions derive."
+        },
+        "proposed_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that proposed the share."
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecisionRecord"
+          },
+          "description": "Every decision recorded against the share, accepted and revoked, in the order recorded."
+        }
+      },
+      "required": [
+        "share_id",
+        "source_project_id",
+        "recipient_project_id",
+        "record_id",
+        "governed_record_version_id",
+        "content_digest",
+        "state",
+        "proposed_by",
+        "decisions"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

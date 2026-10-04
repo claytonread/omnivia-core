@@ -124,6 +124,13 @@ from omnivia_core.contracts.v1.semantics import (
 )
 from omnivia_core.contracts.v1.semantics_evidence import validate_evidence_artifact
 
+#: The two owner decisions a knowledge share carries and the three states they derive
+#: (DEV-REQ-081). The schema's `KnowledgeShareDecision` and `KnowledgeShareState` enums are
+#: closed; these are the contract's own copy, held equal to the schema by the vocabulary test.
+KNOWLEDGE_SHARE_DECISIONS: Final[tuple[str, ...]] = ("accepted", "revoked")
+KNOWLEDGE_SHARE_STATES: Final[tuple[str, ...]] = ("proposed", "accepted", "revoked")
+
+
 __all__ = [
     "CONTEXT_PACK_ARTIFACT_CANONICALIZATION",
     "CONTEXT_PACK_AUTHORIZED_CANDIDATE_SET_FORMAT",
@@ -173,6 +180,8 @@ __all__ = [
     "KNOWLEDGE_SEARCH_ORDERS",
     "KNOWLEDGE_SEARCH_ORDER_RECENCY",
     "KNOWLEDGE_SEARCH_ORDER_RELEVANCE",
+    "KNOWLEDGE_SHARE_DECISIONS",
+    "KNOWLEDGE_SHARE_STATES",
     "compute_authorized_candidate_set_checksum",
     "compute_context_pack_artifact_digest",
     "decode_candidate_approve_input",

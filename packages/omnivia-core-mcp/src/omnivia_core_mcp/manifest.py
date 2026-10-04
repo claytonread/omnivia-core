@@ -1,7 +1,7 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds sixty-nine operations. This module names fourteen of them in the
+holds seventy-three operations. This module names fourteen of them in the
 ``restricted`` profile and twenty-five in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability

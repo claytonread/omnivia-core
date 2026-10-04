@@ -228,7 +228,11 @@
         "skills.version.deprecate",
         "skills.install",
         "skills.remove",
-        "skills.resolve"
+        "skills.resolve",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
+        "knowledge.share.read",
+        "knowledge.share.lineage"
       ]
     },
     {
@@ -367,7 +371,9 @@
         "skills.version.publish",
         "skills.version.deprecate",
         "skills.install",
-        "skills.remove"
+        "skills.remove",
+        "knowledge.share.propose",
+        "knowledge.share.decide"
       ]
     },
     {
@@ -415,7 +421,9 @@
         "skills.version.publish",
         "skills.version.deprecate",
         "skills.install",
-        "skills.remove"
+        "skills.remove",
+        "knowledge.share.propose",
+        "knowledge.share.decide"
       ]
     },
     {
@@ -520,7 +528,11 @@
         "skills.version.deprecate",
         "skills.install",
         "skills.remove",
-        "skills.resolve"
+        "skills.resolve",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
+        "knowledge.share.read",
+        "knowledge.share.lineage"
       ]
     },
     {
@@ -598,7 +610,11 @@
         "skills.version.deprecate",
         "skills.install",
         "skills.remove",
-        "skills.resolve"
+        "skills.resolve",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
+        "knowledge.share.read",
+        "knowledge.share.lineage"
       ]
     },
     {
