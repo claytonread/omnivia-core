@@ -22,24 +22,32 @@ The claims below are the plan's exit criterion, made concrete:
 - outcomes are append-only with provenance, and a correction can supersede
   exactly one earlier outcome of its own evaluation (§14.4, AT-53);
 - disabling the definition or the capability stops new admissions without
-  touching history (§28.3).
+  touching history (§28.3);
+- the result-use gate answers the bare catalogue result at the handler's one
+  clock reading, refuses with distinct fixed-message typed codes, and lets a
+  programmer error surface rather than passing it off as a request refusal.
 """
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
 import test_application_audit_idempotency_migration as m1
-from omnivia_core_runtime.ownership.identity import SystemClock
+from jsonschema import Draft202012Validator
+from omnivia_core_runtime.ownership.identity import FakeClock, SystemClock
 from omnivia_core_runtime.service.application import (
     build_decision_application_dispatcher,
 )
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.handlers import decisions
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
+from referencing import Registry, Resource
 from test_application_audit_idempotency_migration import (
     bootstrap_and_migrate,
     materialise_phase0_baseline,
@@ -51,14 +59,21 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_CAPABILITY_NOT_GRANTED,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
+    ERROR_CODE_INCOMPATIBLE_VERSION,
+    ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
+    ERROR_CODE_UNSUPPORTED_MINOR_VERSION,
     OPERATION_CATALOGUE,
     CapabilityRequirement,
     ClientIdentity,
+    ErrorResponseEnvelope,
     MutationPrecondition,
     RequestEnvelope,
     RequestMetadata,
+    decode_request,
+    encode_request,
+    encode_response,
 )
 
 WORKSPACE_ID = m1.WORKSPACE_ID
@@ -176,6 +191,8 @@ def environment(tmp_path: Path) -> Any:
         owned=owned,
         dispatcher=dispatcher,
         connection=owned.connection,
+        started=started,
+        probe=probe,
     )
     owned.connection.close()
 
@@ -677,3 +694,218 @@ def test_the_decision_surface_is_exactly_the_sixteen_catalogue_operations() -> N
         for entry in OPERATION_CATALOGUE
         if entry.name.startswith("decision.")
     )
+
+
+# --- the result-use gate --------------------------------------------------------------
+
+_RESULT_USE = "decision.result_use.evaluate"
+_SCHEMA_DIR = (
+    Path(__file__).resolve().parents[5] / "contracts" / "application" / "v1" / "schemas"
+)
+_RESULT_USE_RESULT = Draft202012Validator(
+    {"$ref": _ENTRY[_RESULT_USE].result_schema_ref},
+    registry=Registry().with_resources(
+        (document["$id"], Resource.from_contents(document))
+        for document in (
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(_SCHEMA_DIR.glob("*.schema.json"))
+        )
+    ),
+    format_checker=Draft202012Validator.FORMAT_CHECKER,
+)
+#: The injected wall time: ten hours east of UTC, with microseconds.
+_WALL = datetime(2026, 10, 4, 21, 30, 15, 123456, tzinfo=timezone(timedelta(hours=10)))
+_WALL_WIRE = "2026-10-04T11:30:15.123456Z"
+_INVALID = "the result-use request payload is invalid"
+
+
+class _CountingClock(FakeClock):
+    """A fixed wall clock that counts its readings."""
+
+    def __init__(self, wall: datetime) -> None:
+        super().__init__(wall=wall)
+        self.reads = 0
+
+    def wall_time(self) -> datetime:
+        self.reads += 1
+        return super().wall_time()
+
+
+def _gate(environment: Any, clock: Any) -> Any:
+    """The decision family's dispatcher, composed as `serve` composes it, on `clock`."""
+    return build_decision_application_dispatcher(
+        service=environment.started,
+        principal_id=PRINCIPAL,
+        installation_id="inst-decision-test-01",
+        workspace_id=WORKSPACE_ID,
+        fallback=environment.probe,
+        clock=clock,
+    )
+
+
+def _result_use_input(**overrides: Any) -> dict[str, Any]:
+    return {
+        "request_version": "1.0",
+        "use_class": "current_publication",
+        "subject_digest": "result-digest-1",
+        "completeness": "complete",
+        "continuity": "verified",
+        "freshness_ok": True,
+        "schema_compatible": True,
+        "evidence_available": True,
+        "policy_permits_partial_or_stale": False,
+        "authority_epoch": "epoch-1",
+        **overrides,
+    }
+
+
+def test_result_use_answers_the_bare_result_at_the_injected_instant(
+    environment: Any,
+) -> None:
+    clock = _CountingClock(_WALL)
+    writes = environment.connection.total_changes
+    response = _gate(environment, clock).dispatch(
+        _request(_RESULT_USE, _result_use_input())
+    )
+    payload = _payload(response)
+    assert payload == {
+        "outcome": "allow",
+        "reasons": [],
+        "subject_digest": "result-digest-1",
+        "authority_epoch": "epoch-1",
+        "valid_until": _WALL_WIRE,
+    }
+    assert "decision" not in payload
+    assert not list(_RESULT_USE_RESULT.iter_errors(payload))
+    assert not list(_RESULT_USE_RESULT.iter_errors(encode_response(response)["result"]))
+    # One reading, and that exact instant -- microseconds included -- serialized.
+    assert clock.reads == 1
+    assert datetime.fromisoformat(payload["valid_until"]) == _WALL
+    # Evaluation grants and records nothing.
+    assert environment.connection.total_changes == writes
+
+
+def test_result_use_accepts_the_read_only_input_a_wire_transport_delivers(
+    environment: Any,
+) -> None:
+    envelope = decode_request(
+        encode_request(
+            _request(_RESULT_USE, _result_use_input(use_class="exploration"))
+        )
+    )
+    assert isinstance(envelope.input, MappingProxyType)
+    payload = _payload(_gate(environment, FakeClock(wall=_WALL)).dispatch(envelope))
+    assert (payload["outcome"], payload["reasons"]) == (
+        "allow_with_warning",
+        ["exploration_non_certifying"],
+    )
+    assert not list(_RESULT_USE_RESULT.iter_errors(payload))
+
+
+@pytest.mark.parametrize(
+    ("version", "code", "message"),
+    [
+        ("1.0.0", ERROR_CODE_INVALID_REQUEST, _INVALID),
+        (
+            "2.0",
+            ERROR_CODE_INCOMPATIBLE_VERSION,
+            "the result-use request payload major version is incompatible",
+        ),
+        (
+            "1.7",
+            ERROR_CODE_UNSUPPORTED_MINOR_VERSION,
+            "the result-use request payload minor version is unsupported",
+        ),
+    ],
+    ids=["malformed", "incompatible-major", "unsupported-minor"],
+)
+def test_result_use_version_refusals_stay_distinct_and_non_retryable(
+    environment: Any, version: str, code: str, message: str
+) -> None:
+    clock = _CountingClock(_WALL)
+    response = _gate(environment, clock).dispatch(
+        _request(_RESULT_USE, _result_use_input(request_version=version))
+    )
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert (
+        response.error.code,
+        response.error.message,
+        response.error.retry_class,
+    ) == (code, message, "non_retryable")
+    assert clock.reads == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"freshness_ok": "false"},
+        {"schema_compatible": "true"},
+        {"evidence_available": 1},
+        {"policy_permits_partial_or_stale": 0},
+        {"freshness_ok": None},
+        {"use_class": "marker-use-class"},
+        {"completeness": "marker-completeness"},
+        {"continuity": ["marker-continuity"]},
+    ],
+)
+def test_result_use_invalid_booleans_and_enums_are_fixed_message_invalid_request(
+    environment: Any, overrides: dict[str, Any]
+) -> None:
+    response = _gate(environment, FakeClock(wall=_WALL)).dispatch(
+        _request(_RESULT_USE, _result_use_input(**overrides))
+    )
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert (
+        response.error.code,
+        response.error.message,
+        response.error.retry_class,
+    ) == (ERROR_CODE_INVALID_REQUEST, _INVALID, "non_retryable")
+    assert "marker" not in json.dumps(encode_response(response))
+
+
+def test_result_use_naive_clock_is_a_visible_wiring_defect(environment: Any) -> None:
+    gate = _gate(
+        environment,
+        FakeClock(wall=datetime(2026, 10, 4, 11, 30)),  # noqa: DTZ001 - naive is the case under test
+    )
+    for payload in (
+        _result_use_input(),
+        _result_use_input(request_version="1.7"),
+        _result_use_input(freshness_ok="false"),
+    ):
+        with pytest.raises(TypeError):
+            gate.dispatch(_request(_RESULT_USE, payload))
+
+
+@pytest.mark.parametrize("defect", [ValueError, TypeError, RuntimeError])
+def test_result_use_evaluator_defects_are_not_request_refusals(
+    environment: Any, monkeypatch: pytest.MonkeyPatch, defect: type[Exception]
+) -> None:
+    def broken(document: object, *, evaluation_instant: datetime) -> dict[str, Any]:
+        raise defect("evaluator defect")
+
+    monkeypatch.setattr(decisions, "evaluate_result_use", broken)
+    with pytest.raises(defect, match="evaluator defect") as raised:
+        _gate(environment, FakeClock(wall=_WALL)).dispatch(
+            _request(_RESULT_USE, _result_use_input())
+        )
+    assert type(raised.value) is defect
+
+
+def test_result_use_handlers_with_different_clocks_stay_isolated(
+    environment: Any,
+) -> None:
+    early = _CountingClock(datetime(2026, 1, 1, tzinfo=UTC))
+    late = _CountingClock(datetime(2027, 6, 30, 23, 59, 59, 999999, tzinfo=UTC))
+    first, second = _gate(environment, early), _gate(environment, late)
+    request = _request(_RESULT_USE, _result_use_input())
+    observed = [
+        _payload(gate.dispatch(request))["valid_until"]
+        for gate in (first, second, first)
+    ]
+    assert observed == [
+        "2026-01-01T00:00:00Z",
+        "2027-06-30T23:59:59.999999Z",
+        "2026-01-01T00:00:00Z",
+    ]
+    assert (early.reads, late.reads) == (2, 1)
