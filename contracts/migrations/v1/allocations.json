@@ -544,7 +544,7 @@
       "state": "candidate",
       "predecessor": 65,
       "sha256": "630a8e8d28ad66d5f93b2eaeca9758f3aab888faf2cacaafd49c7bf64f06e93a",
-      "introduced_commit": null,
+      "introduced_commit": "de6724f0bbad1209c8c0af035d662f697db278b7",
       "accepted_commit": null
     }
   ]
