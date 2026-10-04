@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/distribution/mcp-authoring-qualification-record-v1.schema.json",
+  "title": "OmniVia MCP authoring qualification record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "verdict",
+    "profile",
+    "protocol_version",
+    "tool_count",
+    "tools",
+    "sdk_versions",
+    "environment",
+    "journeys",
+    "redaction"
+  ],
+  "properties": {
+    "format": {"const": "omnivia.mcp-authoring-qualification.v1"},
+    "verdict": {"const": "pass"},
+    "profile": {"const": "authoring"},
+    "protocol_version": {"const": "2025-06-18"},
+    "tool_count": {"const": 25},
+    "tools": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "workspace_inspect"},
+        {"const": "evidence_search"},
+        {"const": "knowledge_search"},
+        {"const": "memory_search"},
+        {"const": "graph_traverse"},
+        {"const": "context_pack_build"},
+        {"const": "engineering_search"},
+        {"const": "engineering_expand"},
+        {"const": "engineering_context_build"},
+        {"const": "decision_evaluate"},
+        {"const": "decision_record_get"},
+        {"const": "decision_record_list"},
+        {"const": "decision_status"},
+        {"const": "trigger_health"},
+        {"const": "memory_create"},
+        {"const": "evidence_capture"},
+        {"const": "import_start"},
+        {"const": "trigger_declare"},
+        {"const": "trigger_lifecycle"},
+        {"const": "trigger_ingest"},
+        {"const": "job_get"},
+        {"const": "job_events"},
+        {"const": "skills_draft_create"},
+        {"const": "skills_draft_update"},
+        {"const": "skills_proposal_submit"}
+      ],
+      "items": false,
+      "minItems": 25,
+      "maxItems": 25
+    },
+    "sdk_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mcp", "mcp-types"],
+      "properties": {
+        "mcp": {"const": "2.0.0"},
+        "mcp-types": {"const": "2.0.0"}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "machine", "release", "python"],
+      "properties": {
+        "system": {"type": "string", "minLength": 1, "maxLength": 64},
+        "machine": {"type": "string", "minLength": 1, "maxLength": 64},
+        "release": {"type": "string", "minLength": 1, "maxLength": 256},
+        "python": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+      }
+    },
+    "journeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["empty_workspace", "import"],
+      "properties": {
+        "empty_workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "empty_workspace",
+            "tool_discovery",
+            "capture_and_search",
+            "proposed_memory",
+            "candidate_visibility",
+            "replay_and_conflict",
+            "core_restart_recovery",
+            "revocation_fail_closed",
+            "service_healthy"
+          ],
+          "properties": {
+            "empty_workspace": {"const": true},
+            "tool_discovery": {"const": true},
+            "capture_and_search": {"const": true},
+            "proposed_memory": {"const": true},
+            "candidate_visibility": {"const": true},
+            "replay_and_conflict": {"const": true},
+            "core_restart_recovery": {"const": true},
+            "revocation_fail_closed": {"const": true},
+            "service_healthy": {"const": true}
+          }
+        },
+        "import": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trusted_staging",
+            "import_start",
+            "job_observation",
+            "import_replay_and_conflict",
+            "revocation_preserved_job",
+            "service_healthy"
+          ],
+          "properties": {
+            "trusted_staging": {"const": true},
+            "import_start": {"const": true},
+            "job_observation": {"const": true},
+            "import_replay_and_conflict": {"const": true},
+            "revocation_preserved_job": {"const": true},
+            "service_healthy": {"const": true}
+          }
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "credentials_recorded",
+        "private_paths_recorded",
+        "private_identifiers_recorded",
+        "submitted_content_recorded",
+        "prompts_or_transcripts_recorded",
+        "endpoints_or_processes_recorded",
+        "stdio_recorded",
+        "model_responses_recorded"
+      ],
+      "properties": {
+        "credentials_recorded": {"const": false},
+        "private_paths_recorded": {"const": false},
+        "private_identifiers_recorded": {"const": false},
+        "submitted_content_recorded": {"const": false},
+        "prompts_or_transcripts_recorded": {"const": false},
+        "endpoints_or_processes_recorded": {"const": false},
+        "stdio_recorded": {"const": false},
+        "model_responses_recorded": {"const": false}
+      }
+    }
+  }
+}

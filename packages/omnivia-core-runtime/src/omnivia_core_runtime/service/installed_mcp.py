@@ -18,10 +18,10 @@ the day the catalogue moves, and no copy of it can go stale in between.
 **Least privilege is the shape of the data, not a rule about it.** The rights are
 stored one row per right and read back the same way; there is no pattern, no
 prefix, no "all of namespace x", and the schema refuses a `*` or a `?` in a
-granted value outright. A `restricted` principal holds thirteen operations, six
-scopes, nine capabilities, eight purposes and one role, and an `authoring` one
-holds those plus exactly five operations, two scopes, four capabilities and
-three purposes. It gains no additional role.
+granted value outright. A `restricted` principal holds fourteen operations, seven
+scopes, ten capabilities, nine purposes and one role, and an `authoring` one
+holds those plus exactly eleven operations, five scopes, seven capabilities and
+six purposes. It gains no additional role.
 
 **The one role is a grant, not an inference.** R004 section 9.1 requires an
 authoring setup to hold "workspace contributor authority sufficient for

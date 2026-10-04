@@ -35,6 +35,14 @@ from typing import Any, Final
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 CONSTRAINTS: Final = REPO_ROOT / "scripts" / "mcp-wheelhouse-constraints.txt"
 JOURNEY: Final = REPO_ROOT / "scripts" / "run-standard-journey.py"
+AUTHORING_JOURNEY: Final = REPO_ROOT / "scripts" / "run-mcp-authoring-qualification.py"
+AUTHORING_SCHEMA: Final = (
+    REPO_ROOT
+    / "docs"
+    / "distribution"
+    / "schemas"
+    / "mcp-authoring-qualification-record-v1.schema.json"
+)
 LIFECYCLE: Final = REPO_ROOT / "scripts" / "run-standard-lifecycle.py"
 FIRST_PARTY_PROJECTS: Final = (
     ("omnivia-core", REPO_ROOT),
@@ -630,9 +638,36 @@ def _require_core_only_installation(freeze: Sequence[str]) -> None:
         )
 
 
+def _require_authoring_qualification(result: object) -> dict[str, Any]:
+    """Validate the closed redacted authoring record against its public schema."""
+    try:
+        import jsonschema
+    except ImportError as error:
+        raise CandidateError(
+            "the MCP authoring qualification validator is unavailable"
+        ) from error
+
+    try:
+        schema = json.loads(AUTHORING_SCHEMA.read_text(encoding="utf-8"))
+        validator_class = jsonschema.validators.validator_for(schema)
+        validator_class.check_schema(schema)
+        validator_class(schema).validate(result)
+    except (OSError, ValueError, jsonschema.exceptions.SchemaError) as error:
+        raise CandidateError(
+            "the MCP authoring qualification schema is unavailable or invalid"
+        ) from error
+    except jsonschema.exceptions.ValidationError as error:
+        raise CandidateError(
+            "the MCP authoring qualification record is not the accepted redacted shape"
+        ) from error
+    if not isinstance(result, dict):  # held by the schema, retained for typing
+        raise CandidateError("the MCP authoring qualification record is not an object")
+    return result
+
+
 def _offline_qualification(
     wheelhouse: Path, evidence: Path, temporary: Path
-) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
     virtual_environment = temporary / "standard-environment"
     venv.EnvBuilder(with_pip=True, clear=True).create(virtual_environment)
     environment = _wheel_environment(virtual_environment)
@@ -677,6 +712,21 @@ def _offline_qualification(
     if result.get("verdict") != "pass":
         raise CandidateError("the standalone journey did not pass")
     _require_host_interoperability(result)
+    authoring_output = evidence / "mcp-authoring"
+    _run(
+        [str(python), str(AUTHORING_JOURNEY), "--output", str(authoring_output)],
+        cwd=temporary,
+        environment=environment,
+        timeout=900,
+    )
+    authoring_path = authoring_output / "mcp-authoring-qualification.json"
+    try:
+        authoring = json.loads(authoring_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CandidateError(
+            "the MCP authoring qualification record is absent or malformed"
+        ) from error
+    authoring = _require_authoring_qualification(authoring)
     lifecycle_path = evidence / "standard-lifecycle-result.json"
     _run(
         [str(python), str(LIFECYCLE), "--output", str(lifecycle_path)],
@@ -690,7 +740,7 @@ def _offline_qualification(
         raise CandidateError("the Standard lifecycle result is absent or malformed") from error
     if lifecycle.get("verdict") != "pass":
         raise CandidateError("the Standard lifecycle qualification did not pass")
-    return result, lifecycle, freeze
+    return result, authoring, lifecycle, freeze
 
 
 def _package_document(package: WheelPackage) -> dict[str, object]:
@@ -728,6 +778,7 @@ def _write_metadata(
     packages: Sequence[WheelPackage],
     licenses: Sequence[dict[str, Any]],
     journey: Mapping[str, Any],
+    authoring: Mapping[str, Any],
     lifecycle: Mapping[str, Any],
     freeze: Sequence[str],
 ) -> None:
@@ -869,6 +920,7 @@ def _write_metadata(
         "offline_install": True,
         "installed_distributions": list(freeze),
         "standalone_journey": journey,
+        "mcp_authoring": authoring,
         "lifecycle": lifecycle,
         "skips": 0,
         "xfails": 0,
@@ -947,6 +999,7 @@ def _write_metadata(
         "wheels": wheel_entries,
         "evidence": [
             f"{EVIDENCE_DIRECTORY}/standalone-journey-result.json",
+            f"{EVIDENCE_DIRECTORY}/mcp-authoring/mcp-authoring-qualification.json",
             f"{EVIDENCE_DIRECTORY}/standard-lifecycle-result.json",
         ],
         "metadata": [f"{METADATA_DIRECTORY}/{name}" for name in METADATA_FILES],
@@ -1016,10 +1069,12 @@ def build_candidate(output: Path, *, allow_dirty: bool = False) -> None:
     packages = _inspect_closure(wheelhouse)
     licenses = _extract_licenses(wheelhouse, packages, license_root)
     with tempfile.TemporaryDirectory(prefix="omnivia-standard-candidate-") as temporary:
-        journey, lifecycle, freeze = _offline_qualification(
+        journey, authoring, lifecycle, freeze = _offline_qualification(
             wheelhouse, evidence, Path(temporary)
         )
-    _write_metadata(output, source, packages, licenses, journey, lifecycle, freeze)
+    _write_metadata(
+        output, source, packages, licenses, journey, authoring, lifecycle, freeze
+    )
     write_checksums(output)
 
 

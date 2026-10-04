@@ -127,7 +127,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 TRACEABILITY = _load_json(FIXTURE_PATH)
 CATALOGUE_BY_NAME = {entry.name: entry for entry in OPERATION_CATALOGUE}
 #: ``(operation name, fixture entry)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of sixty-one.
+#: failure names the operation rather than an index into a list of sixty-nine.
 FIXTURE_OPERATIONS: list[dict[str, Any]] = TRACEABILITY["operations"]
 FIXTURE_NAMES = [op["contract"]["name"] for op in FIXTURE_OPERATIONS]
 FIXTURE_CASES = list(zip(FIXTURE_NAMES, FIXTURE_OPERATIONS))

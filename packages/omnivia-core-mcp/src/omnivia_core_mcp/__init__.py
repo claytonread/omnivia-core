@@ -1,7 +1,12 @@
 """omnivia-core-mcp: the Model Context Protocol server for OmniVia Core.
 
-A stdio MCP server that gives an AI host read-only access to one local OmniVia
-Core workspace, over the official Model Context Protocol Python SDK v2.
+A stdio MCP server that gives an AI host bounded, allow-listed access to one
+local OmniVia Core workspace, over the official Model Context Protocol Python
+SDK v2. The default ``restricted`` profile is a bounded non-authoring surface:
+allow-listed reads and one allow-listed advisory decision evaluation, which
+records a durable evaluation and changes no business record. The ``authoring``
+profile, admitted only by explicit owner configuration, adds evidence capture,
+import start, proposed-only memory creation and job observation.
 
 **Three MCP modules, three separable decisions:**
 

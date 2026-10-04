@@ -43,6 +43,7 @@ from omnivia_core_runtime.service.transport import (
     LocalSocketServer,
     LocalSocketTransport,
     TransportError,
+    _SocketChannel,
     probe_endpoint,
 )
 
@@ -611,6 +612,23 @@ def test_shutdown_closes_a_partial_client_promptly_and_is_idempotent(
         server.stop()
     finally:
         client.close()
+
+
+def test_socket_channel_shutdown_precedes_close_and_shutdown_failure_is_bounded() -> None:
+    calls: list[object] = []
+
+    class RecordingSocket:
+        def shutdown(self, how: int) -> None:
+            calls.append(("shutdown", how))
+            raise OSError("already disconnected")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    channel = _SocketChannel(RecordingSocket())  # type: ignore[arg-type]
+    channel.close()
+
+    assert calls == [("shutdown", socket.SHUT_RDWR), "close"]
 
 
 @pytest.mark.skipif(

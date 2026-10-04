@@ -176,6 +176,8 @@ EXPECTED_ALLOCATION = (
         "candidate",
     ),
     (64, "0064_managed_skills_registry.sql", "Agent Runtime", "candidate"),
+    (65, "0065_review_finding_quarantine.sql", "Agent Runtime", "candidate"),
+    (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -252,6 +254,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0064 was introduced by 29ae6c85 and repinned to its binding-generations
     # repair cecb879b, which is where its current content lives.
     64: "cecb879bda649e8323d218d0c7927a50cc299b9e",
+    # 0065 and 0066 are the C13 review-finding quarantine and completion-decision
+    # candidates, each pinned to the commit that introduced its SQL.
+    65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
+    66: "de6724f0bbad1209c8c0af035d662f697db278b7",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

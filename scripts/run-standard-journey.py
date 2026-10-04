@@ -558,7 +558,7 @@ def _restrict(path: Path) -> None:
 #: The installed-administration host and profile this journey provisions. Fixed
 #: to `claude-code`/`restricted`: the protected configuration `configure` writes
 #: is the one file every client family below then reads through its own launch
-#: form, and `restricted` is the fourteen-tool, read-only profile the Standard
+#: form, and `restricted` is the fourteen-tool, non-authoring profile the Standard
 #: distribution ships -- this journey does not exercise `authoring` and must
 #: not broaden mutation authority for this distribution.
 _ADMIN_HOST: Final = "claude-code"

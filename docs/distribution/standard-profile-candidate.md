@@ -31,8 +31,8 @@ installed executables beside its interpreter. It performs this sequence:
    `claude_desktop`, `claude_code`, `codex` and `official_python_sdk` — and
    start the installed MCP server from the launch each one yields, driving one
    fresh stdio session per profile with the official Python SDK as the client,
-   verifying the exact six-tool manifest and calling every advertised tool end
-   to end each time;
+   verifying the exact restricted fourteen-tool manifest and calling every
+   advertised tool end to end each time;
 7. kill the original service without cleanup and prove the next CLI call retires
    its stale descriptor, starts a new owner, and returns healthy.
 
@@ -47,11 +47,27 @@ so the configuration mechanism itself is under test. The Claude Desktop, Claude
 Code and Codex applications are not installed and do not run: the client is
 always the official Python SDK, and what each profile proves is that its
 host-native configuration shape round-trips to the accepted launch and that the
-server that launch starts answers identically. Every profile must
-advertise the identical six-tool manifest, and each of the six must return a
-populated result: the journey created the evidence, knowledge, memory, graph and
-context the six tools read, so an empty answer is a failure rather than an empty
-workspace.
+server that launch starts answers identically. Every profile must advertise the
+identical fourteen-tool restricted manifest, and all fourteen are discovered and
+exercised in every session.
+
+Six of the fourteen are populated reads: `workspace_inspect`, `evidence_search`,
+`knowledge_search`, `memory_search`, `graph_traverse` and `context_pack_build`.
+Each must return a non-empty result. The journey created the evidence, knowledge,
+memory, graph and context they read, so an empty answer is a failure rather than
+an empty workspace.
+
+The other eight are the Engineering Memory, decision and trigger tools. Each must
+answer with structured content, or refuse with the exact typed code the journey
+expects. `decision_status`, `decision_record_list`, `engineering_search`,
+`engineering_context_build` and `trigger_health` succeed. `decision_record_get` and
+`engineering_expand` refuse `not_found`. `decision_evaluate` refuses
+`capability_not_granted`, because the decision capability is off by default.
+None of the eight counts toward `tool_calls` or `result_counts`.
+
+The restricted profile is bounded and non-authoring, not read-only.
+`decision_evaluate` writes durable evaluation, job and audit records, but it
+cannot mutate business records or authorize an action.
 
 `mcp.hosts` in `standalone-journey-result.json` carries one object per profile:
 
@@ -61,10 +77,13 @@ workspace.
   "config_format": "codex_toml",
   "connected": true,
   "session_completed": true,
-  "tool_count": 6,
+  "tool_count": 14,
   "tool_calls": 6,
-  "tools": ["context_pack_build", "evidence_search", "graph_traverse",
-            "knowledge_search", "memory_search", "workspace_inspect"],
+  "tools": ["context_pack_build", "decision_evaluate", "decision_record_get",
+            "decision_record_list", "decision_status", "engineering_context_build",
+            "engineering_expand", "engineering_search", "evidence_search",
+            "graph_traverse", "knowledge_search", "memory_search", "trigger_health",
+            "workspace_inspect"],
   "result_counts": {
     "context_pack_build": 1,
     "evidence_search": 1,
@@ -76,6 +95,11 @@ workspace.
   "verdict": "pass"
 }
 ```
+
+`tool_count` is the advertised manifest size. `tool_calls` is the number of
+populated reads, so it is six, not fourteen. `result_counts` has exactly those six
+keys, each an integer of at least one; the values shown are illustrative. `tools`
+is the sorted fourteen-name manifest.
 
 Those keys are the whole of it. No executable, configuration path, endpoint,
 argument, stdout, stderr, credential, PID or free text is retained.
@@ -99,6 +123,8 @@ or source content.
 
 - the complete platform wheelhouse;
 - a standalone-journey result;
+- the installed-wheel MCP authoring qualification record, checked against its
+  closed schema;
 - an upgrade, failed-upgrade, rollback-boundary, and recovery result;
 - a release manifest and whole-candidate SHA-256 index;
 - SPDX 2.3 package SBOM;

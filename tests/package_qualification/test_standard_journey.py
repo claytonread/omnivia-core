@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -2158,3 +2159,93 @@ def test_visibility_wait_raises_with_the_elapsed_budget_after_the_deadline(
         "after waiting 32.0s (budget 30s)"
     )
     assert len(attempts) == 2
+
+
+DOCS = REPO_ROOT / "docs" / "distribution"
+CANDIDATE_GUIDE = DOCS / "standard-profile-candidate.md"
+INSTALLATION_GUIDE = DOCS / "shared-core-installation.md"
+HOST_GUIDE = DOCS / "mcp-host-interoperability.md"
+CLI_README = REPO_ROOT / "packages" / "omnivia-core-cli" / "README.md"
+MCP_README = REPO_ROOT / "packages" / "omnivia-core-mcp" / "README.md"
+CANDIDATE_BUILDER = REPO_ROOT / "scripts" / "build-standard-candidate.py"
+
+#: A current-profile claim of the superseded six-tool server. A line that marks
+#: itself historical is the only exception, as the v1.3 and version notes do.
+_SIX_TOOL_CLAIM = re.compile(r"six[- ]tool|six read-only tools|tool_count\": 6")
+
+
+def _flat(path: Path) -> str:
+    """The file's text with every run of whitespace collapsed, so a phrase may
+    wrap across source lines without changing what the guide says."""
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def _candidate_builder() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "standard_candidate_builder", CANDIDATE_BUILDER
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("path", [CANDIDATE_GUIDE, JOURNEY])
+def test_no_current_profile_is_described_as_the_six_tool_server(path: Path) -> None:
+    stale = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if _SIX_TOOL_CLAIM.search(line) and "historical" not in line.lower()
+    ]
+    assert stale == []
+
+
+def test_the_candidate_guide_example_is_the_builder_pinned_fourteen_tool_record() -> None:
+    text = CANDIDATE_GUIDE.read_text(encoding="utf-8")
+    blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    assert len(blocks) == 1
+    example = json.loads(blocks[0])
+    pins = _candidate_builder()
+
+    assert set(example) == pins.HOST_FIELDS
+    assert example["tools"] == pins.HOST_TOOLS
+    assert len(pins.HOST_TOOLS) == 14
+    assert example["tool_count"] == pins.HOST_EVIDENCE["tool_count"] == 14
+    assert example["tool_calls"] == pins.HOST_EVIDENCE["tool_calls"] == 6
+    assert list(example["result_counts"]) == pins.HOST_READ_TOOLS
+
+
+@pytest.mark.parametrize(
+    ("path", "phrase"),
+    [
+        (CANDIDATE_GUIDE, "verifying the exact restricted fourteen-tool manifest"),
+        (CANDIDATE_GUIDE, "None of the eight counts toward"),
+        (CANDIDATE_GUIDE, "bounded and non-authoring, not read-only"),
+        (CANDIDATE_GUIDE, "not installed and do not run"),
+        (INSTALLATION_GUIDE, "## Headless service operation"),
+        (INSTALLATION_GUIDE, "Only `omnivia service stop` ends it"),
+        (INSTALLATION_GUIDE, "independent process"),
+        (INSTALLATION_GUIDE, "Read success from the `status` field"),
+        (INSTALLATION_GUIDE, "--capture-source FILE --source-id ID"),
+        (INSTALLATION_GUIDE, "staged_source_ref"),
+        (INSTALLATION_GUIDE, "accepts no path, URL, inline archive"),
+        (INSTALLATION_GUIDE, "so no MCP tool accepts one"),
+        (INSTALLATION_GUIDE, "Neither the installation nor the MCP server enumerates a user folder"),
+        (INSTALLATION_GUIDE, "Core and the MCP server request no Apple privacy entitlement"),
+        (INSTALLATION_GUIDE, "needs no Files and Folders or Full Disk Access permission"),
+        (INSTALLATION_GUIDE, "A grant of that kind does not widen MCP"),
+        (HOST_GUIDE, "## Operating the MCP server"),
+        (HOST_GUIDE, "reads its `--config` document once"),
+        (HOST_GUIDE, "applies to the next call"),
+        (HOST_GUIDE, "No MCP tool accepts a filesystem path or URL"),
+        (HOST_GUIDE, "shared-core-installation.md#headless-service-operation"),
+        (CLI_README, "shared-core-installation.md#headless-service-operation"),
+        (MCP_README, "shared-core-installation.md#headless-service-operation"),
+        (MCP_README, "`omnivia service stop`"),
+    ],
+)
+def test_operational_guidance_is_pinned_in_the_distribution_docs(
+    path: Path, phrase: str
+) -> None:
+    assert phrase in _flat(path)

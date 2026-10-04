@@ -1,7 +1,7 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds sixty-one operations. This module names fourteen of them in the
+holds sixty-nine operations. This module names fourteen of them in the
 ``restricted`` profile and twenty-five in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
@@ -36,11 +36,12 @@ the publisher and workspace operator roles, which this profile never holds.
 :mod:`omnivia_core_mcp.configuration`** -- never by a prompt or by a tool call's
 arguments. Every function here takes the profile as an argument and defaults it
 to ``restricted``, so a caller that has not been taught about profiles gets the
-read-only surface rather than the wider one.
+bounded non-authoring surface rather than the wider one. ``restricted`` is not
+read-only: it carries ``decision.evaluate``, which has durable effects.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
 any entry that is neither a catalogue read (``side_effect="none"`` *and*
-``audit_category="read"``) nor one of the named mutations. A future editor
+``audit_category="read"``) nor one of the ten named mutations. A future editor
 who adds ``record.supersede`` here does not ship a destructive tool with a wrong
 comment; the package fails to import.
 
@@ -182,9 +183,10 @@ class ExposedOperation:
     description: str
 
 
-#: The read-only allow-list, and the surface every profile starts from. Adding a
-#: line here is the whole act of exposing an operation, and it is the only one:
-#: nothing enumerates the catalogue.
+#: The restricted allow-list, and the surface every profile starts from: thirteen
+#: reads and ``decision.evaluate``, which is the one durable-effect mutation it
+#: carries. Adding a line here is the whole act of exposing an operation, and it
+#: is the only one: nothing enumerates the catalogue.
 RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
     ExposedOperation(
         tool_name="workspace_inspect",
@@ -727,7 +729,7 @@ def exposure_manifest(
 def tools(profile: str = RESTRICTED_PROFILE) -> tuple[types.Tool, ...]:
     """Every tool one profile advertises, in manifest order, identical on every
     call. Defaults to ``restricted``: a caller that names no profile gets the
-    read-only surface."""
+    bounded non-authoring surface, which is not read-only."""
     return _TOOLS[_profiled(profile)]
 
 
