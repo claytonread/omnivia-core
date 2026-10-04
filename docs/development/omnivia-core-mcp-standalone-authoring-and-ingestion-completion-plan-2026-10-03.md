@@ -656,8 +656,16 @@ records below remain pending; neither provider has passed.
    `--tools` are intentionally absent: `--safe-mode` disables explicitly
    configured MCP servers, and Claude Code 2.1.289 loads `--mcp-config`
    asynchronously, so any `--tools` filter is evaluated before the MCP tools
-   register and reports `host_initialize_missing`. Gate D has not
-   passed; this change only permits the source.
+   register and reports `host_initialize_missing`. Claude Code 2.1.289 also
+   launches the stdio server once and closes it before `initialize` to
+   negotiate the protocol version, then launches it again. The proxy therefore
+   creates its observation file lazily: it is made exclusively (`0600`,
+   `O_EXCL`, `O_NOFOLLOW`) immediately before the first validated event, which
+   is `proxy_started` on the first host frame, child frame or violation. A
+   launch that closes without emitting never creates the path, and nothing is
+   ever unlinked or replaced. An existing path of any kind refuses a launch that
+   emits an event and is left unchanged. Gate D has not passed; this change
+   only permits the source.
 4. Validate both records against the closed schema and confirm every I-1 through
    I-8 case and the restricted decision cases pass.
 5. Confirm temporary profiles, credentials, processes, roots and workspaces were

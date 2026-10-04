@@ -1509,24 +1509,47 @@ class _Observer:
     """Append-only private event stream; every event is validated against the closed shapes."""
 
     def __init__(self, path: Path) -> None:
-        self._descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        os.fchmod(self._descriptor, 0o600)
+        self._path = path
+        self._descriptor = -1
+        self._closed = False
         self._lock = threading.Lock()
         self._sequence = 0
 
+    def _write(self, event: str, **fields: object) -> None:
+        if self._closed:
+            raise OSError("observation closed")
+        record = validate_event({"event": event, "seq": self._sequence + 1, **fields})
+        line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        if self._descriptor < 0:
+            # Created only now, so a launch that never emits leaves nothing behind and
+            # nothing is ever removed.  An existing path of any kind refuses the launch.
+            self._descriptor = os.open(
+                self._path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            os.fchmod(self._descriptor, 0o600)
+        self._sequence += 1
+        os.write(self._descriptor, line.encode("ascii"))
+
     def emit(self, event: str, **fields: object) -> None:
         with self._lock:
-            self._sequence += 1
-            record = validate_event({"event": event, "seq": self._sequence, **fields})
-            line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-            os.write(self._descriptor, line.encode("ascii"))
+            self._write(event, **fields)
+
+    def start(self) -> None:
+        """Emit ``proxy_started`` once, before the first host frame or violation.
+
+        A launch that is closed before it sends anything, such as the host's own
+        protocol-version probe, therefore writes no event and creates no file.
+        """
+        with self._lock:
+            if self._sequence == 0:
+                self._write("proxy_started")
 
     def close(self) -> None:
-        descriptor, self._descriptor = self._descriptor, -1
+        with self._lock:
+            self._closed = True
+            descriptor, self._descriptor = self._descriptor, -1
         if descriptor >= 0:
             os.close(descriptor)
 
@@ -1790,6 +1813,7 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
 
     def observe_violation(kind: str) -> None:
         try:
+            observer.start()
             relay.violation(kind)
         except (OSError, QualificationError):
             failed.set()
@@ -1805,6 +1829,7 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
     def pump_host() -> None:
         try:
             while frame := _read_frame(sys.stdin.buffer):
+                observer.start()
                 relay.request(frame, stdin)
             relay.drain(DRAIN_TIMEOUT)
         except _Violation as violation:
@@ -1824,6 +1849,7 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
     withheld = False
     try:
         while frame := _read_frame(stdout):
+            observer.start()
             if relay.response(frame):
                 withheld = True
                 relay.finished.set()
@@ -1863,10 +1889,7 @@ def run_proxy(spec_path: Path) -> int:
     continuation token written to a private handoff, and nothing else of it is kept.
     """
     child_command, observation, interruption, pause_before, capture = _load_spec(spec_path)
-    try:
-        observer = _Observer(observation)
-    except OSError:
-        return 2
+    observer = _Observer(observation)
     child: subprocess.Popen[bytes] | None = None
     try:
         relay = _Relay(observer, interruption, pause_before, capture)
@@ -1874,10 +1897,6 @@ def run_proxy(spec_path: Path) -> int:
             child = subprocess.Popen(child_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         except OSError:
             return 2
-        try:
-            observer.emit("proxy_started")
-        except (OSError, QualificationError):
-            return PROXY_FAILED_EXIT
         return _relay_session(child, relay, observer)
     finally:
         if child is not None:
