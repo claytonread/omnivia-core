@@ -200,8 +200,6 @@ PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_T
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
-#: Read-only paged tools whose whole traversal may be repeated in a fresh session.
-PAGED_READ_TOOLS: Final = frozenset({"job_events"})
 #: The thirty-nine of the fifty-seven catalogue operations that the exposure
 #: manifest does not admit (v1.4 addendum, sections 1 and 5; the other eighteen
 #: are the authoring inventory), under their MCP-facing names.  The manifest
@@ -2923,21 +2921,6 @@ def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
     )
 
 
-def _traversal_prompt(tool: str, arguments: Mapping[str, Any], pages: int, marker: str) -> str:
-    payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
-    return (
-        "This is an isolated MCP qualification step. Use only the configured "
-        f"{SERVER_KEY} MCP server. Call the tool {tool} (displayed as "
-        f"{claude_tool_name(tool)}) exactly {pages} times, one call after another. "
-        "The first call uses exactly the JSON arguments below. Each later call uses "
-        "the same arguments and adds a page object whose continuation_token is copied "
-        "verbatim from the page field of the immediately previous result. Do not add, "
-        "remove, rewrite or infer any other value. Do not call another tool. Whether a "
-        f"call succeeds or returns an error, after the last call output exactly {marker} "
-        f"and nothing else.\nJSON:{payload}"
-    )
-
-
 def _outcomes(summary: ObservationSummary, tool: str) -> list[tuple[str, str]]:
     """The (refusal class, result digest) of each answered call to ``tool``, in order."""
     return [(refusal, digest) for name, refusal, digest in summary.outcomes if name == tool]
@@ -3068,17 +3051,12 @@ class HostDriver:
         tool: str,
         arguments: Mapping[str, Any],
         *,
-        pages: int = 1,
         interrupt: bool = False,
         on_withheld: Callable[[], None] = lambda: None,
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
     ) -> HostRunResult:
-        """Run one fresh host process: one call to ``tool``, or ``pages`` calls to it.
-
-        A paged traversal's later calls run in the same process, so they are admitted
-        by the launch that admitted the first.
-        """
+        """Run one fresh host process whose prompt asks for one call to ``tool``."""
         self.sequence += 1
         marker = f"OMNIVIA_MCP_QUALIFICATION_STEP_{self.sequence}_DONE"
         layout = host_layout(self.root / f"session-{self.sequence:02d}", self.host)
@@ -3093,10 +3071,6 @@ class HostDriver:
             on_paused()
             _write_private(release, "release\n")
 
-        if pages > 1:
-            prompt = _traversal_prompt(tool, arguments, pages, marker)
-        else:
-            prompt = _tool_prompt(tool, arguments, marker)
         result = run_host_session(
             host=self.host,
             binary=self.binary,
@@ -3104,7 +3078,7 @@ class HostDriver:
             installed=self.installed,
             core_config=self.core_config,
             auth=self.auth,
-            prompt=prompt,
+            prompt=_tool_prompt(tool, arguments, marker),
             marker=marker,
             tools=(tool,),
             timeout=HOST_TIMEOUT,
@@ -3260,63 +3234,37 @@ class HostDriver:
             raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
         return result
 
-    def traverse(
-        self,
-        tool: str,
-        arguments: Mapping[str, Any],
-        *,
-        expected: Sequence[Mapping[str, Any]],
-        _remaining_sequence_retries: int = 2,
-    ) -> HostRunResult:
-        """One host process pages ``tool`` once per owner page, each answered with that page's digest.
 
-        The exact request sequence is ``arguments``, then each later call carrying the
-        continuation token of the page before it.  Only a wrong request sequence (missing,
-        extra, reordered or wrong-argument calls) is retried in a fresh session, at most
-        twice, and only for a paged read.  Once the exact sequence was made, any tool
-        error, wrong success count, wrong page digest or bad host completion is refused
-        at once.  An attempt passes only when its whole sequence and every page digest
-        are exact, so a partial traversal is never accepted.
-        """
-        pages = len(expected)
-        expected_requests = [(tool, arguments_digest(arguments))]
-        for page in expected[:-1]:
-            token = _continuation(page)
-            expected_requests.append(
-                (tool, arguments_digest({**arguments, "page": {"continuation_token": token}}))
-            )
-        result = self._run(tool, arguments, pages=pages)
+def host_read_pages(
+    driver: HostDriver,
+    tool: str,
+    arguments: Mapping[str, Any],
+    expected: Sequence[Mapping[str, Any]],
+) -> None:
+    """Read each owner page in order, with one fresh host session and one call per page.
+
+    Page one is requested with ``arguments``.  Each later page adds the continuation
+    token of the owner page before it.  Each call must be the only call its session
+    makes, must succeed, and must return exactly that owner page's digest.  A missing
+    target is retried by ``HostDriver.call`` within its bound; any other failure is
+    refused at once.
+    """
+    request: Mapping[str, Any] = arguments
+    for index, page in enumerate(expected):
+        if index:
+            token = _continuation(expected[index - 1])
+            if token is None:
+                raise QualificationError(ReasonCode.GATE_FAILED)
+            request = {**arguments, "page": {"continuation_token": token}}
+        result = driver.call(tool, request)
         summary = result.summary
         if (
-            not result.exited_cleanly
-            or not result.marker_seen
-            or result.paused
-            or summary.paused
-            or summary.withheld
+            tuple(summary.called) != (tool,)
+            or tuple(summary.requests) != ((tool, arguments_digest(request)),)
+            or _single_outcome(result, tool) != ("none", canonical_result_digest(page))
         ):
-            self.progress("host_traversal_mismatch")
+            driver.progress("host_page_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
-        if set(summary.called) != {tool} or tuple(summary.requests) != tuple(expected_requests):
-            # The model made the wrong calls: the only failure that may start a fresh session.
-            self.progress("host_traversal_sequence_mismatch")
-            if tool in PAGED_READ_TOOLS and _remaining_sequence_retries > 0:
-                return self.traverse(
-                    tool,
-                    arguments,
-                    expected=expected,
-                    _remaining_sequence_retries=_remaining_sequence_retries - 1,
-                )
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        # The exact sequence was made, so the host or tool is at fault: never retried.
-        if summary.tool_errors or summary.succeeded.count(tool) != pages:
-            self.progress("host_traversal_mismatch")
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        if [digest for _, digest in _outcomes(summary, tool)] != [
-            canonical_result_digest(page) for page in expected
-        ]:
-            self.progress("host_traversal_mismatch")
-            raise QualificationError(ReasonCode.GATE_FAILED)
-        return result
 
 
 def _capture_arguments(source: str, key: str, text: str) -> dict[str, Any]:
@@ -3626,7 +3574,7 @@ def _import_journey(
         _require(len(pages) > 1)
         unpaged = owner_call(installed, context, ("job", "events"), {"job_id": job_id}).get("events")
         _require(unpaged == events)
-        driver.traverse("job_events", {"job_id": job_id, "limit": IMPORT_PAGE_SIZE}, expected=pages)
+        host_read_pages(driver, "job_events", {"job_id": job_id, "limit": IMPORT_PAGE_SIZE}, pages)
         _record_true(ledger, "i5", "job_events_paged", "job_events_match_owner")
 
         # The staged source's kind matches the staging capture and the import's own

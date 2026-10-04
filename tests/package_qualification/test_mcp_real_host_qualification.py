@@ -3266,141 +3266,184 @@ def _owner_pages(count: int) -> list[dict[str, Any]]:
     ]
 
 
-def _attempt(kind: str, pages: list[dict[str, Any]]) -> Any:
-    """One host session's traversal of ``pages``; ``kind`` names the way it can be wrong."""
-    tool, arguments = _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS
-    requests = [(tool, q.arguments_digest(arguments))]
-    requests += [
-        (tool, q.arguments_digest({**arguments, "page": {"continuation_token": f"t{n}"}}))
-        for n in range(len(pages) - 1)
-    ]
-    outcomes = [(tool, "none", q.canonical_result_digest(page)) for page in pages]
-    if kind == "short":
-        requests, outcomes = requests[:1], outcomes[:1]
+def _page_request(index: int) -> dict[str, Any]:
+    """The exact arguments of owner page ``index``: the base arguments, then the prior token."""
+    if index == 0:
+        return dict(_TRAVERSAL_ARGUMENTS)
+    return {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": f"t{index - 1}"}}
+
+
+def _page_session(index: int, page: dict[str, Any], kind: str = "exact") -> Any:
+    """One host session that makes the single call for owner page ``index``.
+
+    ``kind`` names the way that session can be wrong.
+    """
+    tool = _TRAVERSAL_TOOL
+    requests: tuple[tuple[str, str], ...] = ((tool, q.arguments_digest(_page_request(index))),)
+    outcomes: tuple[tuple[str, str, str], ...] = ((tool, "none", q.canonical_result_digest(page)),)
+    if kind == "wrong_token":
+        forged = {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": "forged"}}
+        requests = ((tool, q.arguments_digest(forged)),)
+    elif kind == "wrong_arguments":
+        requests = ((tool, q.arguments_digest({**_page_request(index), "limit": 2})),)
     elif kind == "extra":
-        requests, outcomes = [*requests, requests[-1]], [*outcomes, outcomes[-1]]
-    elif kind == "wrong_token":
-        forged = {**arguments, "page": {"continuation_token": "forged"}}
-        requests[1] = (tool, q.arguments_digest(forged))
-    elif kind == "failed_page":
-        outcomes[-1] = (tool, "idempotency_conflict", q.canonical_result_digest(None))
-    elif kind == "wrong_page":
-        outcomes[-1] = (tool, "none", q.canonical_result_digest({"events": [99]}))
-    return _outcome_result(tuple(requests), tuple(outcomes))
+        requests, outcomes = requests * 2, outcomes * 2
+    elif kind == "tool_error":
+        outcomes = ((tool, "idempotency_conflict", q.canonical_result_digest(None)),)
+    elif kind == "wrong_digest":
+        outcomes = ((tool, "none", q.canonical_result_digest({"events": [99]})),)
+    elif kind == "completion":
+        cut = _outcome_result(requests, outcomes)
+        return dataclasses.replace(cut, exited_cleanly=False, marker_seen=False)
+    return _outcome_result(requests, outcomes)
 
 
-def test_a_traversal_is_exactly_the_expected_ordered_pages(
+def _missing_session() -> Any:
+    """A host session whose one call never happened: the target is not among ``called``."""
+    return _outcome_result((), ())
+
+
+def test_each_owner_page_is_read_by_its_own_fresh_session_with_its_chained_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(3)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt("exact", pages))
-    driver = _driver(tmp_path)
-    result = driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
-    assert driver.sequence == 1
-    assert [digest for _, digest in q._outcomes(result.summary, _TRAVERSAL_TOOL)] == [
-        q.canonical_result_digest(page) for page in pages
-    ]
+    prompts: list[str] = []
+    sessions = iter([_page_session(index, page) for index, page in enumerate(pages)])
 
-
-@pytest.mark.parametrize("wrong", ["short", "extra", "wrong_token"])
-@pytest.mark.parametrize("bad_attempts", [1, 2])
-def test_a_wrong_paged_sequence_is_retried_in_a_fresh_session_until_one_attempt_is_exact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong: str, bad_attempts: int
-) -> None:
-    pages = _owner_pages(2)
-    sessions = iter([_attempt(wrong, pages)] * bad_attempts + [_attempt("exact", pages)])
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
-    driver = _driver(tmp_path)
-    driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
-    assert driver.sequence == bad_attempts + 1
-
-
-@pytest.mark.parametrize("wrong", ["short", "extra", "wrong_token"])
-def test_a_paged_read_is_refused_after_three_wrong_sequences(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong: str
-) -> None:
-    pages = _owner_pages(2)
-    sessions = iter([_attempt(wrong, pages)] * 3)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
-    log: list[str] = []
-    driver = _driver(tmp_path, progress=log.append)
-    with pytest.raises(q.QualificationError) as error:
-        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
-    assert _code(error) is Reason.GATE_FAILED
-    assert driver.sequence == 3
-    assert log == ["host_traversal_sequence_mismatch"] * 3
-
-
-@pytest.mark.parametrize("kind", ["failed_page", "wrong_page"])
-def test_a_wrong_page_result_is_refused_without_a_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
-) -> None:
-    pages = _owner_pages(2)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt(kind, pages))
-    log: list[str] = []
-    driver = _driver(tmp_path, progress=log.append)
-    with pytest.raises(q.QualificationError) as error:
-        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
-    assert _code(error) is Reason.GATE_FAILED
-    assert driver.sequence == 1
-    assert log == ["host_traversal_mismatch"]
-
-
-def test_a_traversal_that_does_not_exit_cleanly_is_refused_without_a_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pages = _owner_pages(2)
-    timed_out = dataclasses.replace(_attempt("short", pages), exited_cleanly=False, marker_seen=False)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: timed_out)
-    driver = _driver(tmp_path)
-    with pytest.raises(q.QualificationError) as error:
-        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
-    assert _code(error) is Reason.GATE_FAILED
-    assert driver.sequence == 1
-
-
-def test_a_non_read_traversal_is_never_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    pages = _owner_pages(2)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt("short", pages))
-    driver = _driver(tmp_path)
-    with pytest.raises(q.QualificationError) as error:
-        driver.traverse("evidence_capture", _TRAVERSAL_ARGUMENTS, expected=pages)
-    assert _code(error) is Reason.GATE_FAILED
-    assert driver.sequence == 1
-
-
-def test_core_health_is_read_after_each_host_exit_before_its_result_is_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tool = "workspace_inspect"
-    arguments: dict[str, Any] = {}
-    digest = q.arguments_digest(arguments)
-    order: list[str] = []
-
-    def run(**_kwargs: Any) -> Any:
-        order.append("host-exit")
-        return _outcome_result(((tool, digest),), ((tool, "none", q.canonical_result_digest(None)),))
-
-    def unhealthy() -> bool:
-        order.append("healthy-read")
-        return False
+    def run(**kwargs: Any) -> Any:
+        prompts.append(kwargs["prompt"])
+        return next(sessions)
 
     monkeypatch.setattr(q, "run_host_session", run)
+    q.host_read_pages(_driver(tmp_path), _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert len(prompts) == 3
+    for index, prompt in enumerate(prompts):
+        payload = json.dumps(_page_request(index), sort_keys=True, separators=(",", ":"))
+        assert "Call exactly one tool named job_events" in prompt
+        assert prompt.endswith(f"JSON:{payload}")
+    for index in range(1, len(pages)):
+        assert _page_request(index)["page"]["continuation_token"] == (
+            pages[index - 1]["page"]["continuation_token"]
+        )
+
+
+def test_a_page_without_a_token_cannot_be_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = [{"events": [0], "page": {}}, {"events": [1], "page": {}}]
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0]))
+    driver = _driver(tmp_path)
     with pytest.raises(q.QualificationError) as error:
-        _driver(tmp_path, healthy=unhealthy).call(tool, arguments)
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
     assert _code(error) is Reason.GATE_FAILED
-    assert order == ["host-exit", "healthy-read"]
+    assert driver.sequence == 1
 
 
-def test_core_health_is_checked_after_a_traversal_host_exits(
+@pytest.mark.parametrize("bad_attempts", [1, 2])
+def test_a_missing_target_is_retried_within_the_bound_for_one_page_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_attempts: int
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(0, pages[0])]
+        + [_missing_session()] * bad_attempts
+        + [_page_session(1, pages[1])]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert driver.sequence == bad_attempts + 2
+    assert log == ["host_target_call_missing"] * bad_attempts
+
+
+def test_a_missing_target_is_refused_after_three_sessions_without_the_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(2)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _attempt("exact", pages))
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _missing_session())
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 3
+    assert log == ["host_target_call_missing"] * 3
+
+
+@pytest.mark.parametrize("position", [0, 1])
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("wrong_token", Reason.GATE_FAILED),
+        ("wrong_arguments", Reason.GATE_FAILED),
+        ("extra", Reason.GATE_FAILED),
+        ("tool_error", Reason.GATE_FAILED),
+        ("wrong_digest", Reason.GATE_FAILED),
+        ("completion", Reason.HOST_OUTPUT_AMBIGUOUS),
+    ],
+)
+def test_a_wrong_page_call_fails_closed_without_a_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    position: int,
+    kind: str,
+    reason: Reason,
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(index, pages[index]) for index in range(position)]
+        + [_page_session(position, pages[position], kind)]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is reason
+    assert driver.sequence == position + 1
+    assert "host_target_call_missing" not in log
+
+
+def test_a_page_that_answers_with_the_wrong_digest_is_named_as_a_page_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(2)
+    monkeypatch.setattr(
+        q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0], "wrong_digest")
+    )
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert log == ["host_page_mismatch"]
+
+
+def test_core_health_is_checked_after_each_page_host_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(2)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0]))
     driver = _driver(tmp_path, healthy=lambda: False)
     with pytest.raises(q.QualificationError) as error:
-        driver.traverse(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, expected=pages)
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
     assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 1
+
+
+def test_core_health_failure_on_a_later_page_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(2)
+    health = iter([True, False])
+    sessions = iter([_page_session(0, pages[0]), _page_session(1, pages[1])])
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    driver = _driver(tmp_path, healthy=lambda: next(health))
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 2
 
 
 def _event(sequence: int) -> dict[str, Any]:
@@ -3662,7 +3705,7 @@ def _journey(
         }
         return cores[context.root].read(names[path], dict(payload or {}))
 
-    def run(self: Any, calls: Any, arguments: Any = None, *, pages: int = 1, interrupt: bool = False,
+    def run(self: Any, calls: Any, arguments: Any = None, *, interrupt: bool = False,
             on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None) -> Any:
         tool, first = calls, arguments
         steps = [(tool, first)]
@@ -3705,28 +3748,17 @@ def _journey(
             )
         requests: list[tuple[str, str]] = []
         outcomes: list[tuple[str, str, str]] = []
-        if pages > 1:
-            current = dict(first)
-            for _ in range(pages):
-                log.append(f"call:{tool}")
-                requests.append((tool, q.arguments_digest(current)))
-                refusal, structured = core.serve(tool, current)
-                if refusal == "none" and tool == "job_events" and core.tamper == "host_page_differs":
-                    structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
-                outcomes.append((tool, refusal, q.canonical_result_digest(structured)))
-                token = (structured or {}).get("page", {}).get("continuation_token")
-                if token:
-                    current = {**first, "page": {"continuation_token": token}}
-        else:
-            # Only the paused post-revocation request is tampered; earlier sessions are honest.
-            served = _tampered(core.tamper, steps) if pause_before else steps
-            for name, args in served:
-                log.append(f"call:{name}")
-                requests.append((name, q.arguments_digest(args)))
-                refusal, structured = core.serve(name, args)
-                if core.tamper == "wrong_refusal" and refusal == "credential_missing":
-                    refusal = "idempotency_conflict"
-                outcomes.append((name, refusal, q.canonical_result_digest(structured)))
+        # Only the paused post-revocation request is tampered; earlier sessions are honest.
+        served = _tampered(core.tamper, steps) if pause_before else steps
+        for name, args in served:
+            log.append(f"call:{name}")
+            requests.append((name, q.arguments_digest(args)))
+            refusal, structured = core.serve(name, args)
+            if core.tamper == "wrong_refusal" and refusal == "credential_missing":
+                refusal = "idempotency_conflict"
+            if refusal == "none" and name == "job_events" and core.tamper == "host_page_differs":
+                structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
+            outcomes.append((name, refusal, q.canonical_result_digest(structured)))
         if core.tamper == "core_replaced_unexpectedly" and tool == "evidence_capture":
             core.replace()  # Core exited mid-session; a managed-local client replaced it
         if not self.healthy():
