@@ -260,11 +260,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # its current content lives.
     62: "d54b3f447456534b4e436225233b0ab858eae49e",
     63: "2ed5e6a67763be23629eaaf392db70fd2b526084",
-    # 0064 and 0065 are pinned to a temporary, unreachable commit that only carries the
-    # two files at their reviewed content; re-pin both here and in allocations.json to
-    # the real introducing commit once it exists.
-    64: "f2ea07c1fd90b795605352dc5cc6a3832268652c",
-    65: "f2ea07c1fd90b795605352dc5cc6a3832268652c",
+    # 0064 and 0065 were introduced together by the follow-on implementation commit.
+    64: "72b25fb8e4369c18c7d350463587573a00c32090",
+    65: "72b25fb8e4369c18c7d350463587573a00c32090",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

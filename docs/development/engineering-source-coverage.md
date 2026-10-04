@@ -661,13 +661,9 @@ Allocations 64 (`0064_engineering_handoff_grants.sql`, predecessor 63) and 65
 (`0065_engineering_selector_attestations.sql`, predecessor 64) are candidates owned by
 Engineering Memory. Their normalized SHA-256 values are
 `e6f89df9b913b40bdf4d49e142c0f2ff625ff8fc53b98064d82d7046d66eaae5` and
-`00a6cee0288bcdb13ab9ba330a25d9b90f725c16f48e371d19f49458ac46f3a9`. Both follow the
-two-step pattern earlier migrations used: a migration's introducing commit has to exist
-before it can be pinned. This slice is uncommitted, so both entries in
-`contracts/migrations/v1/allocations.json` (and `CANDIDATE_INTRODUCED_COMMITS` in
-`tests/test_migration_allocations.py`) currently name a temporary, unreachable commit that
-only carries the two files; they must be re-pinned to the real introducing commit before the
-pull request is opened. `accepted_commit` stays null.
+`00a6cee0288bcdb13ab9ba330a25d9b90f725c16f48e371d19f49458ac46f3a9`. Both were
+introduced by commit `72b25fb8e4369c18c7d350463587573a00c32090`, which is pinned in the
+allocation ledger and conformance test. `accepted_commit` stays null until landing.
 
 ## Producer → consumer map
 
