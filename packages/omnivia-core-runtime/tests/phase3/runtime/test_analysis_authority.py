@@ -10,7 +10,9 @@ exactly that query and must echo it back by identity, and that every refusal is 
 one fixed reason with no caller, resolver or timezone text reachable from it.
 
 Hostile values are built from a `str` subclass whose equality answers True and
-records that it ran. A guard fixture fails any test that let that equality run. The
+records that it ran. A guard fixture fails any test that let that equality, or any
+other recorded hostile hook, run. The resolver is also shown unable to rebind the
+query it was handed by writing through `object.__setattr__` while it runs. The
 payloads are never printed or compared, so a leak shows up as an absent assertion
 rather than as a message that repeats the secret.
 """
@@ -24,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from typing import Any, cast
 
 import pytest
+from omnivia_core_runtime.analysis import authority as authority_module
 from omnivia_core_runtime.analysis.authority import (
     REFUSE_ANALYSIS_USE_AUTHORITY,
     AnalysisUseAuthorityQuery,
@@ -36,6 +39,7 @@ from omnivia_core_runtime.analysis.authority import (
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    AuthorizedApplicationContext,
     ServiceBinding,
     authorize_application_request,
 )
@@ -65,7 +69,7 @@ from omnivia_core.contracts.v1.semantics_result_use import (
 #: it cannot be mistaken for an accepted value.
 SENTINEL = "do not echo: 5b1d"
 
-#: Every equality the hostile `str` subclass was asked to run, across one test.
+#: Every hostile equality, hash or attribute hook that ran, across one test.
 EQUALITY_CALLS: list[str] = []
 
 OPERATION = "memory.get"
@@ -122,6 +126,14 @@ class _CapabilitySubclass(CapabilityRef):
 
 class _SubjectSubclass(AnalysisUseAuthoritySubject):
     """A subject subclass with valid values, to show the exact-type gate."""
+
+
+class _AuthoritySubclass(GrantedAuthority):
+    """A `GrantedAuthority` subclass with valid values, to show the exact-type gate."""
+
+
+class _IntSubclass(int):
+    """An `int` subclass that compares equal to the same plain int."""
 
 
 class _SnapshotSubclass(AnalysisUseAuthoritySnapshot):
@@ -534,15 +546,40 @@ def test_a_one_sided_mismatch_on_any_binding_refuses(binding: str, side: int) ->
         pytest.param(lambda c: replace(c, purpose=cast(Any, 1)), id="purpose-not-str"),
         pytest.param(lambda c: replace(c, authorization=cast(Any, object())), id="authorization-foreign"),
         pytest.param(lambda c: _with_metadata_request_none(c), id="request-none"),
+        pytest.param(lambda c: replace(c, request=cast(Any, object())), id="request-foreign"),
+        pytest.param(lambda c: replace(c, request=_copy_as(_RequestSubclass, c.request)), id="request-subclass"),
+        pytest.param(lambda c: replace(c, authorization=_copy_as(_AuthorizationSubclass, c.authorization)), id="authorization-subclass"),
+        pytest.param(lambda c: replace(c, authority=cast(Any, object())), id="authority-foreign"),
+        pytest.param(lambda c: replace(c, scopes=_ScopesSubclass(c.scopes or ())), id="scopes-subclass"),
+        pytest.param(lambda c: replace(c, purpose=None, authorization=replace(c.authorization, purpose=cast(Any, 1))), id="purpose-int-both-sides"),
     ],
 )
 def test_legacy_none_and_wrong_shapes_refuse(change: Callable[[OperationContext], OperationContext]) -> None:
     resolver = _Resolver()
     context = change(_valid_context())
+    with pytest.raises(AnalysisUseAuthorityRefused) as direct:
+        analysis_use_authority_subject_from_context(context)
+    _assert_plain_refusal(direct.value)
     with pytest.raises(AnalysisUseAuthorityRefused) as raised:
         _resolve(context, resolver)
     _assert_plain_refusal(raised.value)
     assert not resolver.queries
+
+
+class _RequestSubclass(RequestEnvelope):
+    """A `RequestEnvelope` subclass with valid values, to show the exact-type gate."""
+
+
+class _AuthorizationSubclass(AuthorizedApplicationContext):
+    """An authorization subclass with valid values, to show the exact-type gate."""
+
+
+class _ScopesSubclass(tuple):  # type: ignore[type-arg]
+    """A tuple subclass holding valid scopes, to show the exact-type gate."""
+
+
+def _copy_as(cls: type[Any], value: Any) -> Any:
+    return cls(**{f.name: getattr(value, f.name) for f in fields(value)})
 
 
 def _authority_subclass(context: OperationContext) -> GrantedAuthority:
@@ -1245,14 +1282,6 @@ def test_an_answer_that_matches_the_observed_epoch_is_still_its_own_fact() -> No
     assert snapshot.authority_epoch == resolver.queries[0].observed_authority_epoch == EPOCH_OBSERVED
 
 
-def test_the_query_is_immutable_after_it_is_built() -> None:
-    resolver = _Resolver()
-    _resolve(_valid_context(), resolver)
-    query = resolver.queries[0]
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        query.observed_authority_epoch = EPOCH_CURRENT  # type: ignore[misc]
-
-
 # ---------------------------------------------------------------------------
 # The subject-level entry point checks a hand-built subject just as strictly.
 # ---------------------------------------------------------------------------
@@ -1336,3 +1365,610 @@ def test_a_subject_that_is_not_an_exact_subject_refuses(subject: Any) -> None:
         _resolve_subject(subject, resolver)
     _assert_plain_refusal(raised.value)
     assert not resolver.queries
+
+
+# ---------------------------------------------------------------------------
+# 14. The resolver cannot rebind the query it was handed, even by mutating it.
+#
+# Frozen and slotted dataclasses stop ordinary assignment only. `object.__setattr__`
+# still writes through, so each matrix below rewrites one field of the very query
+# object the resolver was given and echoes that same object back. Identity alone
+# would accept it; the deep binding taken before the resolver ran must refuse it.
+# ---------------------------------------------------------------------------
+
+
+def _rich_subject() -> AnalysisUseAuthoritySubject:
+    """Two roles, scopes and capabilities, so a non-first item can be rewritten.
+
+    Built fresh on every call: the mutation tests write into these very objects.
+    """
+    return _subject(
+        scopes=(SCOPE, OTHER_SCOPE),
+        authority=GrantedAuthority(
+            principal_id=PRINCIPAL,
+            roles=("reader", "writer"),
+            capabilities=(
+                CapabilityRef(id="memory.read", version="1.4"),
+                CapabilityRef(id="memory.write", version="1.5"),
+            ),
+        ),
+    )
+
+
+OTHER_SUBJECT = AnalysisUseAuthoritySubject(
+    operation=OTHER_OPERATION,
+    workspace_id=WORKSPACE,
+    authority=GrantedAuthority(principal_id=PRINCIPAL, roles=("reader",), capabilities=()),
+    scopes=(SCOPE,),
+    purpose=PURPOSE,
+)
+
+#: One individually canonical replacement per field, in declaration order.
+QUERY_MUTATIONS: dict[str, Any] = {
+    "subject": OTHER_SUBJECT,
+    "dataset_id": "dataset-2",
+    "dataset_revision": "rev-2",
+    "dataset_incarnation": "inc-2",
+    "state_generation": 4,
+    "manifest_id": "manifest-2",
+    "manifest_revision": "manifest-rev-2",
+    "manifest_digest": "sha256:" + "a" * 64,
+    "scope_digest": "sha256:" + "b" * 64,
+    "observed_authority_epoch": "epoch-observed-9",
+    "subject_digest": "subject-2",
+    "use_class": USE_EXPLORATION,
+    "evaluation_instant": INSTANT + timedelta(hours=1),
+}
+SUBJECT_MUTATIONS: dict[str, Any] = {
+    "operation": OTHER_OPERATION,
+    "workspace_id": OTHER_WORKSPACE,
+    "authority": GrantedAuthority(principal_id=OTHER_PRINCIPAL, roles=("reader",), capabilities=()),
+    "scopes": (SCOPE, "memory:delete"),
+    "purpose": OTHER_PURPOSE,
+}
+AUTHORITY_MUTATIONS: dict[str, Any] = {
+    "principal_id": OTHER_PRINCIPAL,
+    "roles": ("reader", "auditor"),
+    "capabilities": (
+        CapabilityRef(id="memory.read", version="1.4"),
+        CapabilityRef(id="memory.write", version="1.6"),
+    ),
+}
+#: Applied to the second capability, never the first.
+CAPABILITY_MUTATIONS: dict[str, Any] = {
+    "id": "memory.delete",
+    "version": "1.6",
+}
+#: Each one valid exact-UTC instant differs from `INSTANT` in exactly one component.
+INSTANT_COMPONENT_MUTATIONS: dict[str, datetime] = {
+    "year": INSTANT.replace(year=2027),
+    "month": INSTANT.replace(month=11),
+    "day": INSTANT.replace(day=5),
+    "hour": INSTANT.replace(hour=2),
+    "minute": INSTANT.replace(minute=1),
+    "second": INSTANT.replace(second=1),
+    "microsecond": INSTANT.replace(microsecond=1),
+    "fold": INSTANT.replace(fold=1),
+}
+_READ, _WRITE = CapabilityRef(id="memory.read", version="1.4"), CapabilityRef(id="memory.write", version="1.5")
+#: Structural rewrites of the `_rich_subject` capability pair, items otherwise valid.
+CAPABILITIES_REORDERED = (_WRITE, _READ)
+CAPABILITIES_TRUNCATED = (_READ,)
+CAPABILITIES_EXTENDED = (_READ, _WRITE, CapabilityRef(id="memory.delete", version="1.5"))
+
+
+def test_each_instant_mutation_changes_exactly_one_component() -> None:
+    components = ("year", "month", "day", "hour", "minute", "second", "microsecond", "fold")
+    assert tuple(INSTANT_COMPONENT_MUTATIONS) == components
+    for name, instant in INSTANT_COMPONENT_MUTATIONS.items():
+        assert instant.tzinfo is UTC
+        assert [c for c in components if getattr(instant, c) != getattr(INSTANT, c)] == [name]
+
+
+def _at_query(query: AnalysisUseAuthorityQuery) -> object:
+    return query
+
+
+def _at_subject(query: AnalysisUseAuthorityQuery) -> object:
+    return query.subject
+
+
+def _at_authority(query: AnalysisUseAuthorityQuery) -> object:
+    return query.subject.authority
+
+
+def _at_first_capability(query: AnalysisUseAuthorityQuery) -> object:
+    return query.subject.authority.capabilities[0]
+
+
+def _at_second_capability(query: AnalysisUseAuthorityQuery) -> object:
+    return query.subject.authority.capabilities[1]
+
+
+@pytest.mark.parametrize(
+    "cls, matrix",
+    [
+        pytest.param(AnalysisUseAuthorityQuery, QUERY_MUTATIONS, id="query"),
+        pytest.param(AnalysisUseAuthoritySubject, SUBJECT_MUTATIONS, id="subject"),
+        pytest.param(GrantedAuthority, AUTHORITY_MUTATIONS, id="authority"),
+        pytest.param(CapabilityRef, CAPABILITY_MUTATIONS, id="capability"),
+    ],
+)
+def test_each_mutation_matrix_covers_every_field_in_order(cls: type[Any], matrix: dict[str, Any]) -> None:
+    assert tuple(matrix) == tuple(f.name for f in fields(cls))
+
+
+MUTATIONS = [
+    *(pytest.param(_at_query, {name: value}, id=f"query-{name}") for name, value in QUERY_MUTATIONS.items()),
+    pytest.param(_at_query, dict.fromkeys(("manifest_id", "manifest_revision", "manifest_digest")), id="query-manifest-all-none"),
+    pytest.param(_at_query, {"manifest_revision": None}, id="query-manifest-mixed"),
+    pytest.param(_at_query, {"manifest_id": "bad id"}, id="query-manifest-malformed"),
+    *(
+        pytest.param(_at_query, {"evaluation_instant": instant}, id=f"query-instant-{component}")
+        for component, instant in INSTANT_COMPONENT_MUTATIONS.items()
+    ),
+    *(pytest.param(_at_subject, {name: value}, id=f"subject-{name}") for name, value in SUBJECT_MUTATIONS.items()),
+    pytest.param(_at_subject, {"scopes": (OTHER_SCOPE, SCOPE)}, id="subject-scopes-reordered"),
+    pytest.param(_at_subject, {"scopes": (SCOPE,)}, id="subject-scopes-truncated"),
+    *(pytest.param(_at_authority, {name: value}, id=f"authority-{name}") for name, value in AUTHORITY_MUTATIONS.items()),
+    pytest.param(_at_authority, {"roles": ("writer", "reader")}, id="authority-roles-reordered"),
+    pytest.param(_at_authority, {"roles": ("reader", "writer", "auditor")}, id="authority-roles-extended"),
+    pytest.param(_at_authority, {"capabilities": CAPABILITIES_REORDERED}, id="authority-capabilities-reordered"),
+    pytest.param(_at_authority, {"capabilities": CAPABILITIES_TRUNCATED}, id="authority-capabilities-truncated"),
+    pytest.param(_at_authority, {"capabilities": CAPABILITIES_EXTENDED}, id="authority-capabilities-extended"),
+    *(pytest.param(_at_second_capability, {name: value}, id=f"capability-{name}") for name, value in CAPABILITY_MUTATIONS.items()),
+]
+
+
+def _mutating_resolver(locate: Callable[[AnalysisUseAuthorityQuery], object], changes: dict[str, Any]) -> tuple[_Resolver, list[object]]:
+    """A resolver that rewrites `changes` into the object `locate` finds, then echoes the query."""
+    targets: list[object] = []
+
+    def answer(query: AnalysisUseAuthorityQuery) -> AnalysisUseAuthoritySnapshot:
+        target = locate(query)
+        for name, value in changes.items():
+            object.__setattr__(target, name, value)
+        targets.append(target)
+        return _snapshot(query)
+
+    return _Resolver(answer), targets
+
+
+@pytest.mark.parametrize("locate, changes", MUTATIONS)
+def test_mutating_the_echoed_query_during_resolve_refuses(
+    locate: Callable[[AnalysisUseAuthorityQuery], object], changes: dict[str, Any]
+) -> None:
+    resolver, targets = _mutating_resolver(locate, changes)
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve_subject(_rich_subject(), resolver)
+    _assert_plain_refusal(raised.value)
+    assert len(resolver.queries) == 1
+    # The write really landed on the object the resolver was handed.
+    assert len(targets) == 1
+    for name, value in changes.items():
+        assert getattr(targets[0], name) is value
+
+
+class _Hostile(str):
+    """A `str` whose equality and hash record a call and raise a secret."""
+
+    def __eq__(self, other: object) -> bool:
+        EQUALITY_CALLS.append("hostile-eq")
+        raise RuntimeError(SENTINEL)
+
+    def __ne__(self, other: object) -> bool:
+        EQUALITY_CALLS.append("hostile-ne")
+        raise RuntimeError(SENTINEL)
+
+    def __hash__(self) -> int:
+        EQUALITY_CALLS.append("hostile-hash")
+        raise RuntimeError(SENTINEL)
+
+
+def _hostile_leaf(
+    locate: Callable[[AnalysisUseAuthorityQuery], object], name: str, current: Any, index: int | None = None
+) -> Any:
+    """One matrix row: a fresh `_Hostile` copy of `current`, or of its item at `index`."""
+
+    def changes() -> dict[str, Any]:
+        if index is None:
+            return {name: _Hostile(current)}
+        items = list(current)
+        items[index] = _Hostile(items[index])
+        return {name: tuple(items)}
+
+    place = "" if index is None else f"-{('first', 'second')[index]}"
+    return pytest.param(locate, changes, id=f"{locate.__name__[4:]}-{name}{place}")
+
+
+#: Every exact-string leaf the binding reads, each rewritten to an equal-valued `_Hostile`.
+#: `_rich_subject` and `_record` supply the current values.
+HOSTILE_LEAVES = [
+    _hostile_leaf(_at_query, "dataset_id", DATASET_ID),
+    _hostile_leaf(_at_query, "dataset_revision", "rev-1"),
+    _hostile_leaf(_at_query, "dataset_incarnation", "inc-1"),
+    _hostile_leaf(_at_query, "manifest_id", MANIFEST_ID),
+    _hostile_leaf(_at_query, "manifest_revision", MANIFEST_REVISION),
+    _hostile_leaf(_at_query, "manifest_digest", MANIFEST_DIGEST),
+    _hostile_leaf(_at_query, "scope_digest", SCOPE_DIGEST),
+    _hostile_leaf(_at_query, "observed_authority_epoch", EPOCH_OBSERVED),
+    _hostile_leaf(_at_query, "subject_digest", SUBJECT_DIGEST),
+    _hostile_leaf(_at_query, "use_class", USE_CURRENT_PUBLICATION),
+    _hostile_leaf(_at_subject, "operation", OPERATION),
+    _hostile_leaf(_at_subject, "workspace_id", WORKSPACE),
+    _hostile_leaf(_at_subject, "purpose", PURPOSE),
+    _hostile_leaf(_at_subject, "scopes", (SCOPE, OTHER_SCOPE), 0),
+    _hostile_leaf(_at_subject, "scopes", (SCOPE, OTHER_SCOPE), 1),
+    _hostile_leaf(_at_authority, "principal_id", PRINCIPAL),
+    _hostile_leaf(_at_authority, "roles", ("reader", "writer"), 0),
+    _hostile_leaf(_at_authority, "roles", ("reader", "writer"), 1),
+    _hostile_leaf(_at_first_capability, "id", "memory.read"),
+    _hostile_leaf(_at_first_capability, "version", "1.4"),
+    _hostile_leaf(_at_second_capability, "id", "memory.write"),
+    _hostile_leaf(_at_second_capability, "version", "1.5"),
+]
+
+
+@pytest.mark.parametrize("locate, changes", HOSTILE_LEAVES)
+def test_a_hostile_str_written_in_during_resolve_refuses_without_any_hook(
+    locate: Callable[[AnalysisUseAuthorityQuery], object], changes: Callable[[], dict[str, Any]]
+) -> None:
+    written = changes()
+    resolver, targets = _mutating_resolver(locate, written)
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve_subject(_rich_subject(), resolver)
+    _assert_plain_refusal(raised.value)
+    # Refused after the resolver ran, not before it: it ran once, and the write landed
+    # on the exact target, so a pre-resolver refusal cannot satisfy this.
+    assert len(resolver.queries) == 1
+    assert len(targets) == 1
+    for name, value in written.items():
+        assert getattr(targets[0], name) is value
+    assert EQUALITY_CALLS == []
+
+
+def _flat(value: Any) -> Any:
+    """Field values only, with no type or `__eq__` of any dataclass, tuple or datetime in play."""
+    if dataclasses.is_dataclass(value):
+        return tuple(_flat(getattr(value, f.name)) for f in fields(value))
+    if isinstance(value, tuple):
+        return tuple(_flat(item) for item in value)
+    return value
+
+
+def _first_capability_wrong_type(capabilities: tuple[CapabilityRef, ...]) -> tuple[CapabilityRef, ...]:
+    return (_copy_as(_CapabilitySubclass, capabilities[0]), capabilities[1])
+
+
+def _second_capability_wrong_type(capabilities: tuple[CapabilityRef, ...]) -> tuple[CapabilityRef, ...]:
+    return (capabilities[0], _copy_as(_CapabilitySubclass, capabilities[1]))
+
+
+def _instant_wrong_type(i: datetime) -> datetime:
+    return _Instant(
+        i.year, i.month, i.day, i.hour, i.minute, i.second, i.microsecond, tzinfo=i.tzinfo, fold=i.fold
+    )
+
+
+#: (id, locate, field, equal-valued wrong-exact-type copy of the field, state generation).
+SUBSTITUTIONS = [
+    pytest.param(_at_query, "state_generation", _IntSubclass, 3, id="state-generation-int"),
+    pytest.param(_at_query, "state_generation", bool, 1, id="state-generation-bool"),
+    pytest.param(_at_query, "subject", lambda s: _copy_as(_SubjectSubclass, s), 3, id="subject"),
+    pytest.param(_at_subject, "authority", lambda a: _copy_as(_AuthoritySubclass, a), 3, id="subject-authority"),
+    pytest.param(_at_authority, "capabilities", _first_capability_wrong_type, 3, id="first-capability"),
+    pytest.param(_at_authority, "capabilities", _second_capability_wrong_type, 3, id="second-capability"),
+    pytest.param(_at_authority, "roles", _ScopesSubclass, 3, id="roles"),
+    pytest.param(_at_subject, "scopes", _ScopesSubclass, 3, id="scopes"),
+    pytest.param(_at_authority, "capabilities", _ScopesSubclass, 3, id="capabilities"),
+    pytest.param(_at_query, "evaluation_instant", _instant_wrong_type, 3, id="evaluation-instant"),
+]
+
+
+@pytest.mark.parametrize("locate, name, substitute, generation", SUBSTITUTIONS)
+def test_an_equal_valued_wrong_exact_type_written_in_during_resolve_refuses(
+    locate: Callable[[AnalysisUseAuthorityQuery], object],
+    name: str,
+    substitute: Callable[[Any], Any],
+    generation: int,
+) -> None:
+    swaps: list[tuple[Any, Any]] = []
+
+    def answer(query: AnalysisUseAuthorityQuery) -> AnalysisUseAuthoritySnapshot:
+        target = locate(query)
+        before = getattr(target, name)
+        after = substitute(before)
+        object.__setattr__(target, name, after)
+        swaps.append((before, after))
+        return _snapshot(query)
+
+    resolver = _Resolver(answer)
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        resolve_analysis_use_authority_for_subject(
+            _rich_subject(),
+            dataset=_record(state_generation=generation),
+            subject_digest=SUBJECT_DIGEST,
+            use_class=USE_CURRENT_PUBLICATION,
+            evaluation_instant=INSTANT,
+            resolver=resolver,
+        )
+    _assert_plain_refusal(raised.value)
+    # The query passed the first bind and reached the resolver, so this is the second.
+    assert len(resolver.queries) == 1
+    ((before, after),) = swaps
+    assert after is not before
+    # Nothing but an exact type differs: every field value is equal, so value inequality
+    # cannot be what refused it.
+    assert _flat(after) == _flat(before)
+    assert type(after) is not type(before) or any(
+        type(a) is not type(b) for a, b in zip(after, before, strict=True)
+    )
+
+
+class _RecordingZone(tzinfo):
+    """A zone that records and raises from every method a comparison could reach."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        self.calls.append("utcoffset")
+        raise RuntimeError(SENTINEL)
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        self.calls.append("dst")
+        raise RuntimeError(SENTINEL)
+
+    def tzname(self, dt: datetime | None) -> str:
+        self.calls.append("tzname")
+        raise RuntimeError(SENTINEL)
+
+    def fromutc(self, dt: datetime) -> datetime:
+        self.calls.append("fromutc")
+        raise RuntimeError(SENTINEL)
+
+    def __eq__(self, other: object) -> bool:
+        self.calls.append("eq")
+        raise RuntimeError(SENTINEL)
+
+    def __ne__(self, other: object) -> bool:
+        self.calls.append("ne")
+        raise RuntimeError(SENTINEL)
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        raise RuntimeError(SENTINEL)
+
+
+def test_an_instant_with_a_hostile_zone_written_in_during_resolve_refuses_without_any_hook() -> None:
+    zone = _RecordingZone()
+    # The same wall-clock fields as the bound instant: only the zone differs.
+    instant = datetime(INSTANT.year, INSTANT.month, INSTANT.day, INSTANT.hour, tzinfo=zone)
+    resolver, _ = _mutating_resolver(_at_query, {"evaluation_instant": instant})
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve_subject(_rich_subject(), resolver)
+    _assert_plain_refusal(raised.value)
+    # No offset, name, conversion, equality or hash hook: the zone is checked by identity.
+    assert zone.calls == []
+
+
+class _RewritingZone(_FixedZero):
+    """A valid zero-offset zone that runs `rewrite` from inside normalization."""
+
+    def __init__(self, rewrite: Callable[[], None]) -> None:
+        self.rewrite = rewrite
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        self.rewrite()
+        return timedelta(0)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        pytest.param("roles", ("auditor", "writer"), id="roles"),
+        pytest.param("capabilities", (CapabilityRef(id="memory.read", version="9.9"),), id="capabilities"),
+    ],
+)
+def test_an_authority_rewritten_by_the_timezone_hook_refuses_before_the_resolver(
+    field_name: str, value: Any
+) -> None:
+    subject = _rich_subject()
+    zone = _RewritingZone(lambda: object.__setattr__(subject.authority, field_name, value))
+    instant = datetime(2026, 10, 4, 1, 0, tzinfo=zone)
+    resolver = _Resolver()
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        resolve_analysis_use_authority_for_subject(
+            subject,
+            dataset=_record(),
+            subject_digest=SUBJECT_DIGEST,
+            use_class=USE_CURRENT_PUBLICATION,
+            evaluation_instant=instant,
+            resolver=resolver,
+        )
+    _assert_plain_refusal(raised.value)
+    assert getattr(subject.authority, field_name) == value  # the hook did run
+    assert not resolver.queries
+
+
+#: The eight observation values the query carries under the same name.
+OBSERVATION_QUERY_FIELDS = (
+    "dataset_id",
+    "dataset_revision",
+    "dataset_incarnation",
+    "manifest_id",
+    "manifest_revision",
+    "manifest_digest",
+    "scope_digest",
+    "observed_authority_epoch",
+)
+OTHER_GENERATION = 4
+
+
+def _dataset_values(record: DatasetStateRecord) -> dict[str, Any]:
+    """Every dataset-derived query value, read straight off the record."""
+    values: dict[str, Any] = {"state_generation": record.state_generation}
+    values.update({name: getattr(record.observation, name) for name in OBSERVATION_QUERY_FIELDS})
+    return values
+
+
+def _rewrite_generation(record: DatasetStateRecord) -> None:
+    object.__setattr__(record, "state_generation", OTHER_GENERATION)
+
+
+def _rewrite_observation_field(name: str) -> Callable[[DatasetStateRecord], None]:
+    def rewrite(record: DatasetStateRecord) -> None:
+        object.__setattr__(record.observation, name, QUERY_MUTATIONS[name])
+
+    return rewrite
+
+
+def _rewrite_observation(record: DatasetStateRecord) -> None:
+    values = {name: QUERY_MUTATIONS[name] for name in OBSERVATION_QUERY_FIELDS}
+    coverage = {"scope_digest": values["scope_digest"], "proof_kind": "complete_enumeration"}
+    object.__setattr__(record, "observation", _observation(coverage=coverage, **values))
+
+
+#: (rewrite, names whose record value changes, whether the observation object is replaced).
+DATASET_REWRITES = [
+    pytest.param(_rewrite_generation, {"state_generation"}, False, id="state-generation"),
+    *(
+        pytest.param(_rewrite_observation_field(name), {name}, False, id=f"observation-{name}")
+        for name in OBSERVATION_QUERY_FIELDS
+    ),
+    pytest.param(_rewrite_observation, set(OBSERVATION_QUERY_FIELDS), True, id="observation-replaced"),
+]
+
+
+@pytest.mark.parametrize(("rewrite", "changed", "replaced"), DATASET_REWRITES)
+def test_a_dataset_rewritten_by_the_timezone_hook_does_not_reach_the_query(
+    rewrite: Callable[[DatasetStateRecord], None], changed: set[str], replaced: bool
+) -> None:
+    """Dataset values are held before `_utc`, so a still-canonical rewrite inside it is not read."""
+    record = _record()
+    observation = record.observation
+    before = _dataset_values(record)
+    zone = _RewritingZone(lambda: rewrite(record))
+    issued: list[AnalysisUseAuthoritySnapshot] = []
+
+    def answer(query: AnalysisUseAuthorityQuery) -> AnalysisUseAuthoritySnapshot:
+        issued.append(_snapshot(query))
+        return issued[0]
+
+    resolver = _Resolver(answer)
+    result = resolve_analysis_use_authority_for_subject(
+        _rich_subject(),
+        dataset=record,
+        subject_digest=SUBJECT_DIGEST,
+        use_class=USE_CURRENT_PUBLICATION,
+        evaluation_instant=datetime(2026, 10, 4, 1, 0, tzinfo=zone),
+        resolver=resolver,
+    )
+    # The hook ran and moved exactly the intended values, on the exact intended object.
+    after = _dataset_values(record)
+    assert {name for name in before if after[name] != before[name]} == changed
+    assert (record.observation is not observation) is replaced
+    assert len(resolver.queries) == 1
+    query = resolver.queries[0]
+    assert {name: getattr(query, name) for name in before} == before
+    assert result is issued[0]
+    assert result.query is query
+
+
+def test_an_unchanged_query_returns_the_exact_resolver_issued_snapshot() -> None:
+    issued: list[AnalysisUseAuthoritySnapshot] = []
+
+    def answer(query: AnalysisUseAuthorityQuery) -> AnalysisUseAuthoritySnapshot:
+        issued.append(_snapshot(query))
+        return issued[0]
+
+    resolver = _Resolver(answer)
+    result = _resolve_subject(_rich_subject(), resolver)
+    assert len(resolver.queries) == 1
+    assert result is issued[0]
+    assert result.query is resolver.queries[0]
+
+
+def test_a_query_that_fails_to_bind_refuses_before_the_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The binding is the last check before the resolver, not only the one after it."""
+    build = authority_module._build_query
+
+    def build_then_corrupt(*args: Any, **kwargs: Any) -> AnalysisUseAuthorityQuery:
+        query = build(*args, **kwargs)
+        object.__setattr__(query, "dataset_id", _Hostile(DATASET_ID))
+        return query
+
+    monkeypatch.setattr(authority_module, "_build_query", build_then_corrupt)
+    resolver = _Resolver()
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve_subject(_rich_subject(), resolver)
+    _assert_plain_refusal(raised.value)
+    assert not resolver.queries
+    assert EQUALITY_CALLS == []
+
+
+def test_the_seam_values_are_frozen_slotted_dataclasses() -> None:
+    """Shape only: `object.__setattr__` still writes through, as the matrices show."""
+    snapshot = _resolve(_valid_context(), _Resolver())
+    for value in (snapshot.query.subject, snapshot.query, snapshot):
+        cls: type[Any] = type(value)
+        names = tuple(f.name for f in fields(cls))
+        assert dataclasses.is_dataclass(value)
+        assert cls.__dataclass_params__.frozen
+        assert cls.__slots__ == names
+        assert not hasattr(value, "__dict__")
+        for name in names:
+            with pytest.raises(dataclasses.FrozenInstanceError):
+                setattr(value, name, getattr(value, name))
+
+
+# ---------------------------------------------------------------------------
+# 15. A dataset or observation of the wrong exact type refuses before the resolver.
+# ---------------------------------------------------------------------------
+
+
+class _RecordSubclass(DatasetStateRecord):
+    """A `DatasetStateRecord` subclass with valid values, to show the exact-type gate."""
+
+
+class _ObservationSubclass(DatasetStateObservation):
+    """A `DatasetStateObservation` subclass with valid values, to show the exact-type gate."""
+
+
+class _NoAttributes:
+    """Records and raises on any attribute read."""
+
+    def __getattribute__(self, name: str) -> Any:
+        EQUALITY_CALLS.append("getattr")
+        raise RuntimeError(SENTINEL)
+
+
+@pytest.mark.parametrize(
+    "dataset",
+    [
+        pytest.param(lambda: _copy_as(_RecordSubclass, _record()), id="record-subclass"),
+        pytest.param(lambda: {"workspace_id": WORKSPACE, "observation": _observation()}, id="record-mapping"),
+        pytest.param(object, id="record-object"),
+        pytest.param(lambda: None, id="record-none"),
+        pytest.param(_NoAttributes, id="record-no-attribute-access"),
+        pytest.param(lambda: _record(observation=_copy_as(_ObservationSubclass, _observation())), id="observation-subclass"),
+        pytest.param(lambda: _record(observation={"dataset_id": DATASET_ID}), id="observation-mapping"),
+        pytest.param(lambda: _record(observation=object()), id="observation-object"),
+        pytest.param(lambda: _record(observation=None), id="observation-none"),
+        pytest.param(lambda: _record(observation=_NoAttributes()), id="observation-no-attribute-access"),
+    ],
+)
+def test_a_dataset_or_observation_of_the_wrong_exact_type_refuses(dataset: Callable[[], Any]) -> None:
+    resolver = _Resolver()
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        resolve_analysis_use_authority_for_subject(
+            _rich_subject(),
+            dataset=dataset(),
+            subject_digest=SUBJECT_DIGEST,
+            use_class=USE_CURRENT_PUBLICATION,
+            evaluation_instant=INSTANT,
+            resolver=resolver,
+        )
+    _assert_plain_refusal(raised.value)
+    assert not resolver.queries
+    assert EQUALITY_CALLS == []

@@ -11,6 +11,12 @@ pairs agree by value. Legacy `None` authority fields refuse rather than widen. T
 dataset observation is flattened into the query, and `observed_authority_epoch` is
 recorded as evidence only: the current epoch is whatever the resolver answers.
 
+Just before the resolver runs, every query value is bound by hand into a tuple of
+exact built-in values. The resolver must echo that query object by identity, and
+the binding rebuilt afterwards must equal the first. That closes a synchronous
+rewrite of the query, through `object.__setattr__`, during `resolve`. It says
+nothing about concurrent writers or about the query once it has been returned.
+
 Every refusal is one fixed reason with no caller or resolver text in it. A failing
 resolver is caught and dropped before the refusal is raised, so nothing it quoted
 reaches `__context__`.
@@ -203,10 +209,13 @@ def resolve_analysis_use_authority_for_subject(
         use_class=use_class,
         evaluation_instant=evaluation_instant,
     )
+    binding = _bind_query(query)
+    if binding is None:
+        raise AnalysisUseAuthorityRefused()
     snapshot: AnalysisUseAuthoritySnapshot | None = None
     try:
         snapshot = resolver.resolve(query)
-        answered = _answers(snapshot, query)
+        answered = _answers(snapshot, query, binding)
     except Exception:  # noqa: BLE001 - any failure to answer is a refusal
         answered = False
     if snapshot is None or not answered:
@@ -247,46 +256,58 @@ def _build_query(
     observation = dataset.observation
     if type(observation) is not DatasetStateObservation:
         raise AnalysisUseAuthorityRefused()
+    # Every value is read once, validated, and held before `_utc` runs a caller-owned
+    # timezone hook. The query is built from these locals, never from a reread.
+    workspace_id = dataset.workspace_id
+    generation = dataset.state_generation
+    dataset_id = observation.dataset_id
+    dataset_revision = observation.dataset_revision
+    dataset_incarnation = observation.dataset_incarnation
     manifest = (
         observation.manifest_id,
         observation.manifest_revision,
         observation.manifest_digest,
     )
+    scope_digest = observation.scope_digest
+    epoch = observation.observed_authority_epoch
     manifest_absent = all(value is None for value in manifest)
     manifest_present = (
         _canonical_str(manifest[0], is_identifier)
         and _canonical_str(manifest[1], is_identifier)
         and _canonical_str(manifest[2], is_content_checksum)
     )
-    instant = _utc(evaluation_instant)
     if not (
-        _canonical_str(dataset.workspace_id, is_workspace_id)
-        and dataset.workspace_id == subject.workspace_id
-        and type(dataset.state_generation) is int
-        and dataset.state_generation >= 1
-        and _canonical_str(observation.dataset_id, is_identifier)
-        and _canonical_str(observation.dataset_revision, is_identifier)
-        and _canonical_str(observation.dataset_incarnation, is_identifier)
+        _canonical_str(workspace_id, is_workspace_id)
+        and workspace_id == subject.workspace_id
+        and type(generation) is int
+        and generation >= 1
+        and _canonical_str(dataset_id, is_identifier)
+        and _canonical_str(dataset_revision, is_identifier)
+        and _canonical_str(dataset_incarnation, is_identifier)
         and (manifest_absent or manifest_present)
-        and _canonical_str(observation.scope_digest, is_content_checksum)
-        and _canonical_str(observation.observed_authority_epoch, is_identifier)
+        and _canonical_str(scope_digest, is_content_checksum)
+        and _canonical_str(epoch, is_identifier)
         and _canonical_str(subject_digest, is_identifier)
         and type(use_class) is str
         and use_class in _USE_CLASSES
-        and instant is not None
     ):
+        raise AnalysisUseAuthorityRefused()
+    subject_binding = _bind_subject(subject)
+    instant = _utc(evaluation_instant)
+    # The hook may have rewritten the subject. Only exact built-in values compare.
+    if instant is None or subject_binding is None or _bind_subject(subject) != subject_binding:
         raise AnalysisUseAuthorityRefused()
     return AnalysisUseAuthorityQuery(
         subject=subject,
-        dataset_id=observation.dataset_id,
-        dataset_revision=observation.dataset_revision,
-        dataset_incarnation=observation.dataset_incarnation,
-        state_generation=dataset.state_generation,
+        dataset_id=dataset_id,
+        dataset_revision=dataset_revision,
+        dataset_incarnation=dataset_incarnation,
+        state_generation=generation,
         manifest_id=manifest[0],
         manifest_revision=manifest[1],
         manifest_digest=manifest[2],
-        scope_digest=observation.scope_digest,
-        observed_authority_epoch=observation.observed_authority_epoch,
+        scope_digest=scope_digest,
+        observed_authority_epoch=epoch,
         subject_digest=subject_digest,
         use_class=use_class,
         evaluation_instant=instant,
@@ -346,12 +367,92 @@ def _utc(value: object) -> datetime | None:
     return normalized
 
 
-def _answers(snapshot: object, query: AnalysisUseAuthorityQuery) -> bool:
-    # Identity, not `==`: a resolver-supplied query may carry spoofed equality.
+def _bind_query(query: object) -> tuple[object, ...] | None:
+    """Every query value as exact built-in str, int, None and tuple, in field order.
+
+    `None` if any value is not of its exact shape. Comparing two bindings therefore
+    runs only built-in equality: never a subclass hook, a dataclass `__eq__` or a
+    timezone method. Frozen dataclasses do not stop `object.__setattr__`, so this is
+    what proves the query was not rewritten while the resolver held it.
+    """
+    if type(query) is not AnalysisUseAuthorityQuery:
+        return None
+    subject = _bind_subject(query.subject)
+    dataset = (query.dataset_id, query.dataset_revision, query.dataset_incarnation)
+    generation = query.state_generation
+    manifest = (query.manifest_id, query.manifest_revision, query.manifest_digest)
+    rest = (
+        query.scope_digest,
+        query.observed_authority_epoch,
+        query.subject_digest,
+        query.use_class,
+    )
+    instant = _bind_instant(query.evaluation_instant)
+    if not (
+        subject is not None
+        and _strs(dataset)
+        and type(generation) is int
+        and all(value is None or type(value) is str for value in manifest)
+        and _strs(rest)
+        and instant is not None
+    ):
+        return None
+    return (subject, *dataset, generation, *manifest, *rest, instant)
+
+
+def _bind_subject(subject: object) -> tuple[object, ...] | None:
+    if type(subject) is not AnalysisUseAuthoritySubject:
+        return None
+    authority = subject.authority
+    if type(authority) is not GrantedAuthority:
+        return None
+    capabilities = authority.capabilities
+    if type(capabilities) is not tuple or not all(
+        type(item) is CapabilityRef for item in capabilities
+    ):
+        return None
+    # Every capability, not just the first, flattened to its own (id, version) pair.
+    pairs = tuple((item.id, item.version) for item in capabilities)
+    names = (subject.operation, subject.workspace_id, subject.purpose, authority.principal_id)
+    roles = authority.roles
+    scopes = subject.scopes
+    if not (_strs(names) and _strs(roles) and _strs(scopes) and all(_strs(pair) for pair in pairs)):
+        return None
+    operation, workspace_id, purpose, principal_id = names
+    return (operation, workspace_id, (principal_id, roles, pairs), scopes, purpose)
+
+
+def _bind_instant(value: object) -> tuple[int, ...] | None:
+    # Zone by identity, then the plain integer fields of an exact `datetime`. No
+    # offset, name or conversion call can reach a resolver-supplied tzinfo.
+    if type(value) is not datetime or value.tzinfo is not UTC:
+        return None
+    return (
+        value.year,
+        value.month,
+        value.day,
+        value.hour,
+        value.minute,
+        value.second,
+        value.microsecond,
+        value.fold,
+    )
+
+
+def _strs(values: object) -> bool:
+    return type(values) is tuple and all(type(value) is str for value in values)
+
+
+def _answers(
+    snapshot: object, query: AnalysisUseAuthorityQuery, binding: tuple[object, ...]
+) -> bool:
+    # Identity, not `==`: a resolver-supplied query may carry spoofed equality. The
+    # rebuilt binding then shows the resolver did not rewrite the query it echoed.
     return (
         type(snapshot) is AnalysisUseAuthoritySnapshot
         and type(snapshot.query) is AnalysisUseAuthorityQuery
         and snapshot.query is query
+        and _bind_query(query) == binding
         and _canonical_str(snapshot.authority_epoch, is_identifier)
         and type(snapshot.evidence_access_permitted) is bool
         and type(snapshot.policy_permits_partial_or_stale) is bool
