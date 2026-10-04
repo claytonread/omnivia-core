@@ -661,8 +661,9 @@ records below remain pending; neither provider has passed.
    negotiate the protocol version, then launches it again. The proxy therefore
    creates its observation file lazily: it is made exclusively (`0600`,
    `O_EXCL`, `O_NOFOLLOW`) immediately before the first validated event, which
-   is `proxy_started` on the first host frame, child frame or violation. A
-   launch that closes without emitting never creates the path, and nothing is
+   is `proxy_started`, emitted automatically before the first closed-vocabulary
+   event. An unobserved discovery probe (empty, or `server/discover` with its
+   response, relayed byte for byte) never creates the path, and nothing is
    ever unlinked or replaced. An existing path of any kind refuses a launch that
    emits an event and is left unchanged. Gate D has not passed; this change
    only permits the source.

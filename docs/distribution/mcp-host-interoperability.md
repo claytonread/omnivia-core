@@ -355,9 +355,11 @@ again on the selected path. The observation file is created exclusively, so the
 probe must not leave one behind: the second launch could not create it and the
 run would report `host_initialize_missing`. The proxy therefore creates the
 file lazily, with mode `0600` and `O_EXCL`/`O_NOFOLLOW`, immediately before it
-writes the first validated event, and it writes `proxy_started` only when the
-first host frame, child frame or violation arrives. A probe emits no event and
-never creates the path. The proxy never deletes or replaces an observation
+writes the first validated event, and it writes `proxy_started` automatically,
+once, immediately before its first closed-vocabulary event. An unobserved
+discovery probe (an empty launch, or a `server/discover` request and its
+response, which are relayed byte for byte) emits no event and never creates
+the path. The proxy never deletes or replaces an observation
 path. A launch that emits an event fails closed if any file, symlink or other
 entry already exists at the path, and leaves that entry unchanged. No event
 content, token or path is added to the stream.

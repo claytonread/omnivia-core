@@ -1533,18 +1533,15 @@ class _Observer:
         os.write(self._descriptor, line.encode("ascii"))
 
     def emit(self, event: str, **fields: object) -> None:
-        with self._lock:
-            self._write(event, **fields)
+        """Write one event, preceded by ``proxy_started`` when it is the launch's first.
 
-    def start(self) -> None:
-        """Emit ``proxy_started`` once, before the first host frame or violation.
-
-        A launch that is closed before it sends anything, such as the host's own
-        protocol-version probe, therefore writes no event and creates no file.
+        A launch that only relays frames it does not observe, such as the host's own
+        protocol-version discovery probe, therefore writes no event and creates no file.
         """
         with self._lock:
-            if self._sequence == 0:
+            if self._sequence == 0 and event != "proxy_started":
                 self._write("proxy_started")
+            self._write(event, **fields)
 
     def close(self) -> None:
         with self._lock:
@@ -1813,7 +1810,6 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
 
     def observe_violation(kind: str) -> None:
         try:
-            observer.start()
             relay.violation(kind)
         except (OSError, QualificationError):
             failed.set()
@@ -1829,7 +1825,6 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
     def pump_host() -> None:
         try:
             while frame := _read_frame(sys.stdin.buffer):
-                observer.start()
                 relay.request(frame, stdin)
             relay.drain(DRAIN_TIMEOUT)
         except _Violation as violation:
@@ -1849,7 +1844,6 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
     withheld = False
     try:
         while frame := _read_frame(stdout):
-            observer.start()
             if relay.response(frame):
                 withheld = True
                 relay.finished.set()

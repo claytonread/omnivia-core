@@ -1481,6 +1481,35 @@ def test_a_pre_initialize_probe_leaves_no_observation_for_the_real_launch(tmp_pa
 
 
 @posix_only
+def test_a_server_discover_probe_is_relayed_unobserved_and_leaves_the_real_launch_its_path(
+    tmp_path: Path,
+) -> None:
+    """Claude Code 2.1.289 sends ``server/discover`` before it closes the probe and re-launches."""
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    discover = _frame({"jsonrpc": "2.0", "id": "server-discover-probe-1", "method": "server/discover"})
+    probe = _run_proxy(spec, discover)
+    assert probe.returncode == 0
+    assert probe.stdout == _frame({"jsonrpc": "2.0", "id": "server-discover-probe-1", "result": {}})
+    assert not os.path.lexists(observation)
+    launch = _run_proxy(spec, _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    assert launch.returncode == 0
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events][:2] == ["proxy_started", "initialize_request"]
+    assert q.summarize_observation(events).initialized
+
+
+@posix_only
+def test_a_violation_still_observes_proxy_started_first(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    assert _run_proxy(spec, b"not json\n").returncode == q.PROXY_VIOLATION_EXIT
+    assert [event["event"] for event in q.read_observation(observation)] == ["proxy_started", "protocol_violation"]
+
+
+@posix_only
 def test_a_launch_that_emitted_an_event_keeps_its_observation(tmp_path: Path) -> None:
     spec = tmp_path / "spec"
     observation = tmp_path / "events"
@@ -1522,16 +1551,16 @@ def test_the_observer_creates_its_file_only_for_the_first_event_and_never_remove
     observer.close()
     assert not os.path.lexists(path)
     observer = q._Observer(path)
-    observer.start()
-    observer.start()
+    observer.emit("proxy_started")
+    observer.emit("initialize_request")
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     observer.close()
-    assert [event["event"] for event in q.read_observation(path)] == ["proxy_started"]
+    assert [event["event"] for event in q.read_observation(path)] == ["proxy_started", "initialize_request"]
     with pytest.raises(OSError):
         observer.emit("initialize_request")
     with pytest.raises(FileExistsError):
-        q._Observer(path).start()
-    assert [event["event"] for event in q.read_observation(path)] == ["proxy_started"]
+        q._Observer(path).emit("initialize_request")
+    assert [event["event"] for event in q.read_observation(path)] == ["proxy_started", "initialize_request"]
 
 
 @posix_only
@@ -1540,7 +1569,7 @@ def test_the_observer_refuses_a_symlink_without_following_it(tmp_path: Path) -> 
     path = tmp_path / "events"
     path.symlink_to(target)
     with pytest.raises(OSError):
-        q._Observer(path).start()
+        q._Observer(path).emit("initialize_request")
     assert not target.exists() and path.is_symlink()
 
 
