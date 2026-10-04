@@ -112,6 +112,21 @@ EXPECTED_COMMANDS = (
         "decision.result_use.evaluate",
         "decision_result_use",
     ),
+    (
+        ("continuity", "grant"),
+        "continuity.handoff.grant",
+        "continuity_handoff_grant",
+    ),
+    (
+        ("continuity", "revoke"),
+        "continuity.handoff.revoke",
+        "continuity_handoff_grant",
+    ),
+    (
+        ("engineering", "attest"),
+        "engineering.selector.attest",
+        "engineering_source",
+    ),
 )
 
 EXPECTED_PROBES = (
@@ -167,7 +182,7 @@ def test_the_fifty_six_application_commands_are_declared_in_order() -> None:
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 58
+    assert len(APPLICATION_COMMANDS) == 61
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

@@ -1282,6 +1282,20 @@ _ENG_CONTINUITY_APPEND: tuple[str, ...] = tuple(
     sorted({*_GOV_MUT, "not_found", "size_limit_exceeded"})
 )
 _ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: A handoff grant or revocation names one exact checkpoint or grant the caller
+#: must own: one that does not resolve for the caller (missing, not theirs, or
+#: naming no existing grantee) is `not_found`, and a second live grant for the
+#: same checkpoint and grantee is a `conflict`.
+_ENG_HANDOFF_GRANT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "not_found"))
+)
+#: A selector attestation names a stream the caller must own, a recorded
+#: snapshot and a captured whole-file digest. A foreign stream is
+#: `authorization_denied`, an unknown stream or snapshot is `not_found`, and a
+#: different statement for an attested selector is a `conflict`.
+_ENG_SELECTOR_ATTEST: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "not_found"))
+)
 #: `engineering.source.record` appends one immutable event to a source stream the
 #: caller owns: reusing a sequence or snapshot identity for different content, or
 #: naming a stream bound to another repository, is a `conflict`, and the bounded
@@ -1346,6 +1360,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENG_CONTINUITY_MUT": _ENG_CONTINUITY_MUT,
     "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
     "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
+    "ENG_HANDOFF_GRANT": _ENG_HANDOFF_GRANT,
+    "ENG_SELECTOR_ATTEST": _ENG_SELECTOR_ATTEST,
     "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
     "ENG_CAPTURE_MUT": _ENG_CAPTURE_MUT,
     "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
@@ -1637,6 +1653,24 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "engineering.source.capture.hint": FrozenOperation(
         "workspace", ("engineering:source",), "none", "engineering.source",
         "engineering", "EngineeringSourceCaptureHint", "WORKSPACE_READ", False,
+    ),
+    # Cross-principal continuity handoff: the checkpoint owner's own act, under the
+    # same `engineering:write` grant as every other continuity write. Neither is
+    # model-facing, and a grantee holds no row it could write, so the grant cannot
+    # be delegated.
+    "continuity.handoff.grant": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuityHandoffGrant", "ENG_HANDOFF_GRANT", False,
+    ),
+    "continuity.handoff.revoke": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContinuityHandoffRevoke", "ENG_HANDOFF_GRANT", False,
+    ),
+    # A trusted Dev adapter's selector coverage, ingested by the authenticated
+    # stream owner under the source producer's own grant. Core never parses source.
+    "engineering.selector.attest": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "engineering", "EngineeringSelectorAttest", "ENG_SELECTOR_ATTEST", False,
     ),
 }
 

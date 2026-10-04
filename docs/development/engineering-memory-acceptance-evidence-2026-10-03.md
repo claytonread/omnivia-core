@@ -70,7 +70,7 @@ the recorded qualification reports and CI/OS evidence named below.
 | AC-055 | verified | `test_engineering_dependency_carry.py::test_approval_and_review_never_qualify_an_unqualified_observation`. |
 | AC-056 | verified | `test_engineering_source_coverage.py::test_priority_and_review_never_reveal_or_touch_a_hidden_target`; priority applicability tests. |
 | AC-057 | verified | `test_engineering_invalidation.py::test_the_new_head_and_coverage_are_durable_before_the_worker_ever_runs`; current-safe pending/refusal tests. |
-| AC-058 | verified | `test_engineering_invalidation.py::test_changed_deleted_incomplete_renamed_and_reverted_paths_each_score_correctly`. Symbol selectors outside whole-file v1 remain a documented unsupported profile. |
+| AC-058 | verified | `test_engineering_invalidation.py::test_changed_deleted_incomplete_renamed_and_reverted_paths_each_score_correctly`. Symbol selectors outside whole-file v1 remain a documented unsupported profile here; the later attestation slice (migration 0065) evaluates `symbol` and `source_span` only through trusted adapter attestations. |
 | AC-059 | verified | dirty working-tree test plus changed/reverted per-target invalidation matrix. |
 | AC-060 | verified | incomplete capture/dependency manifests remain `unknown`; unknown temporal/applicability boundaries never widen validity. |
 | AC-061 | verified | `test_engineering_invalidation.py::test_out_of_order_gap_then_recovery_resumes_from_the_durable_cursor`; duplicate/convergence tests. |
@@ -81,9 +81,11 @@ the recorded qualification reports and CI/OS evidence named below.
 ## Supported limitations
 
 - v1 evaluates whole-file digest selectors. Other stored selector kinds remain fail-closed
-  and are not claimed as supported evaluation profiles.
+  and are not claimed as supported evaluation profiles. (Later, outside this register:
+  `symbol` and `source_span` through trusted adapter attestations, migration 0065.)
 - Cross-stream ancestry/equivalence inference and cross-principal continuity sharing are
-  outside the supported v1 profile.
+  outside the supported v1 profile. (Later, outside this register: an explicit, trusted
+  handoff grant, migration 0064.)
 - The portable format accepts the current canonical schema. Older portable artifacts need
   an explicit migration step before restore.
 - Performance targets are reported measurements. A configuration is claimed only when its

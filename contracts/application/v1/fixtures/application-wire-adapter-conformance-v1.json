@@ -9316,6 +9316,275 @@
       }
     },
     {
+      "id": "continuity.handoff.grant/primary-success",
+      "operation": "continuity.handoff.grant",
+      "description": "continuity.handoff.grant lets one other existing principal read one owned checkpoint's redacted handoff by exact checkpoint identity, pinned to its digest, for a bounded time.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.grant-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.handoff.grant"
+        },
+        "operation": "continuity.handoff.grant",
+        "input": {
+          "checkpoint_id": "ck-2",
+          "checkpoint_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "grantee_principal_id": "user-43",
+          "ttl_seconds": 3600
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.grant-success",
+          "audit_reference": "audit-continuity.handoff.grant"
+        },
+        "result": {
+          "grant": {
+            "grant_id": "ehg-1",
+            "checkpoint_id": "ck-2",
+            "checkpoint_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "grantee_principal_id": "user-43",
+            "granted_at": "2026-09-26T00:00:00Z",
+            "expires_at": "2026-09-26T01:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.handoff.grant/honest-replay",
+      "operation": "continuity.handoff.grant",
+      "description": "continuity.handoff.grant repeated with the same idempotency key and the same input: the recorded grant is returned without a second grant.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "continuity.handoff.grant/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.grant-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.handoff.grant"
+        },
+        "operation": "continuity.handoff.grant",
+        "input": {
+          "checkpoint_id": "ck-2",
+          "checkpoint_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "grantee_principal_id": "user-43",
+          "ttl_seconds": 3600
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.grant-replay",
+          "audit_reference": "audit-continuity.handoff.grant"
+        },
+        "result": {
+          "grant": {
+            "grant_id": "ehg-1",
+            "checkpoint_id": "ck-2",
+            "checkpoint_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+            "grantee_principal_id": "user-43",
+            "granted_at": "2026-09-26T00:00:00Z",
+            "expires_at": "2026-09-26T01:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "continuity.handoff.grant/idempotency-conflict",
+      "operation": "continuity.handoff.grant",
+      "description": "continuity.handoff.grant reusing one idempotency key for a different grantee lifetime: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "continuity.handoff.grant/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.grant-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.handoff.grant"
+        },
+        "operation": "continuity.handoff.grant",
+        "input": {
+          "checkpoint_id": "ck-2",
+          "checkpoint_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "grantee_principal_id": "user-43",
+          "ttl_seconds": 7200
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.grant-conflict",
+          "audit_reference": "audit-continuity.handoff.grant"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "continuity.handoff.revoke/primary-success",
+      "operation": "continuity.handoff.revoke",
+      "description": "continuity.handoff.revoke ends one handoff grant its grantor issued; the grantee loses access on its next read.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.revoke-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.handoff.revoke"
+        },
+        "operation": "continuity.handoff.revoke",
+        "input": {
+          "grant_id": "ehg-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.revoke-success",
+          "audit_reference": "audit-continuity.handoff.revoke"
+        },
+        "result": {
+          "grant_id": "ehg-1",
+          "revoked_at": "2026-09-26T00:30:00Z"
+        }
+      }
+    },
+    {
+      "id": "continuity.handoff.revoke/honest-replay",
+      "operation": "continuity.handoff.revoke",
+      "description": "continuity.handoff.revoke repeated with the same idempotency key and the same input: the recorded revocation is returned.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "continuity.handoff.revoke/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.revoke-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.handoff.revoke"
+        },
+        "operation": "continuity.handoff.revoke",
+        "input": {
+          "grant_id": "ehg-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.revoke-replay",
+          "audit_reference": "audit-continuity.handoff.revoke"
+        },
+        "result": {
+          "grant_id": "ehg-1",
+          "revoked_at": "2026-09-26T00:30:00Z"
+        }
+      }
+    },
+    {
+      "id": "continuity.handoff.revoke/idempotency-conflict",
+      "operation": "continuity.handoff.revoke",
+      "description": "continuity.handoff.revoke reusing one idempotency key for a different grant: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "continuity.handoff.revoke/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.revoke-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-continuity.handoff.revoke"
+        },
+        "operation": "continuity.handoff.revoke",
+        "input": {
+          "grant_id": "ehg-2"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-continuity.handoff.revoke-conflict",
+          "audit_reference": "audit-continuity.handoff.revoke"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
       "id": "engineering.search/primary-success",
       "operation": "engineering.search",
       "description": "engineering.search returns one bounded, authorised preview page on the success branch.",
@@ -10274,6 +10543,163 @@
         },
         "result": {
           "acknowledged": true
+        }
+      }
+    },
+    {
+      "id": "engineering.selector.attest/primary-success",
+      "operation": "engineering.selector.attest",
+      "description": "engineering.selector.attest stores one installed Dev adapter's complete symbol coverage for one sealed snapshot, bound to the stream owner and the snapshot's captured whole-file digest.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.selector.attest-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.selector.attest"
+        },
+        "operation": "engineering.selector.attest",
+        "input": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "snapshot_id": "esnap-1",
+          "path": "src/auth.py",
+          "file_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "selector_type": "symbol",
+          "selector": "src/auth.py::login",
+          "file_coverage": "complete",
+          "selector_state": "present",
+          "selector_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "adapter_id": "omnivia.dev.python",
+          "adapter_version": "1.0.0"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.selector.attest-success",
+          "audit_reference": "audit-engineering.selector.attest"
+        },
+        "result": {
+          "attestation_id": "esat-1",
+          "disposition": "recorded"
+        }
+      }
+    },
+    {
+      "id": "engineering.selector.attest/honest-replay",
+      "operation": "engineering.selector.attest",
+      "description": "engineering.selector.attest repeated with the same idempotency key and the same input: the stored attestation identity is returned without storing again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "engineering.selector.attest/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.selector.attest-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.selector.attest"
+        },
+        "operation": "engineering.selector.attest",
+        "input": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "snapshot_id": "esnap-1",
+          "path": "src/auth.py",
+          "file_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "selector_type": "symbol",
+          "selector": "src/auth.py::login",
+          "file_coverage": "complete",
+          "selector_state": "present",
+          "selector_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "adapter_id": "omnivia.dev.python",
+          "adapter_version": "1.0.0"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.selector.attest-replay",
+          "audit_reference": "audit-engineering.selector.attest"
+        },
+        "result": {
+          "attestation_id": "esat-1",
+          "disposition": "recorded"
+        }
+      }
+    },
+    {
+      "id": "engineering.selector.attest/idempotency-conflict",
+      "operation": "engineering.selector.attest",
+      "description": "engineering.selector.attest reusing one idempotency key for a different selector digest: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "engineering.selector.attest/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.selector.attest-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-engineering.selector.attest"
+        },
+        "operation": "engineering.selector.attest",
+        "input": {
+          "repository_id": "erepo-1",
+          "stream_id": "estream-1",
+          "snapshot_id": "esnap-1",
+          "path": "src/auth.py",
+          "file_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "selector_type": "symbol",
+          "selector": "src/auth.py::login",
+          "file_coverage": "complete",
+          "selector_state": "present",
+          "selector_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "adapter_id": "omnivia.dev.python",
+          "adapter_version": "1.0.0"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.selector.attest-conflict",
+          "audit_reference": "audit-engineering.selector.attest"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
         }
       }
     },

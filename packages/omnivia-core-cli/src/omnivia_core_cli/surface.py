@@ -255,6 +255,21 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("decisions", "result-use"), "decision.result_use.evaluate", "decision_result_use"
     ),
+    ApplicationCommand(
+        ("continuity", "grant"),
+        "continuity.handoff.grant",
+        "continuity_handoff_grant",
+    ),
+    ApplicationCommand(
+        ("continuity", "revoke"),
+        "continuity.handoff.revoke",
+        "continuity_handoff_grant",
+    ),
+    ApplicationCommand(
+        ("engineering", "attest"),
+        "engineering.selector.attest",
+        "engineering_source",
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

@@ -1000,7 +1000,7 @@ def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
 ) -> ApplicationOperationRegistry:
-    """The thirteen engineering-memory operations, one registry, catalogue-complete.
+    """The sixteen engineering-memory operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
     plan's PR-B producer; retrieval, the pack builder, priorities, reviews, the
@@ -1023,6 +1023,14 @@ def build_engineering_registry(
     registry.register(
         "continuity.handoff.read",
         cast(OperationHandler, continuity.continuity_handoff_read),
+    )
+    registry.register(
+        "continuity.handoff.grant",
+        cast(OperationHandler, continuity.continuity_handoff_grant),
+    )
+    registry.register(
+        "continuity.handoff.revoke",
+        cast(OperationHandler, continuity.continuity_handoff_revoke),
     )
     registry.register(
         "engineering.search", cast(OperationHandler, refusals.engineering_search)
@@ -1054,6 +1062,10 @@ def build_engineering_registry(
         cast(OperationHandler, refusals.engineering_source_record),
     )
     registry.register(
+        "engineering.selector.attest",
+        cast(OperationHandler, refusals.engineering_selector_attest),
+    )
+    registry.register(
         "engineering.repository.register",
         cast(OperationHandler, refusals.engineering_repository_register),
     )
@@ -1073,7 +1085,7 @@ def build_engineering_application_dispatcher(
     local_continuity_association: TrustedContinuityAssociation | None = None,
     source_capture_hint: Callable[[str, str], None] | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the thirteen-operation S-engineering family around the existing router."""
+    """Compose the sixteen-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,

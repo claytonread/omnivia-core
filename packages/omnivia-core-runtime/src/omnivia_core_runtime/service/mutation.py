@@ -116,6 +116,9 @@ DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
 #: they write durable L0 evidence, not session bookkeeping.
 CONTINUITY_SESSION_PURPOSE: Final = "continuity_session"
 CONTINUITY_CHECKPOINT_PURPOSE: Final = "continuity_checkpoint"
+#: Granting or revoking another principal's read of one checkpoint's handoff view.
+#: Its own purpose, so a grant to append or read continuity never covers it.
+CONTINUITY_HANDOFF_GRANT_PURPOSE: Final = "continuity_handoff_grant"
 CONTEXT_PRIORITY_PURPOSE: Final = "context_priority"
 ENGINEERING_REVIEW_PURPOSE: Final = "engineering_review"
 #: A trusted source producer recording source state. Its own purpose, like its own
@@ -156,10 +159,13 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "continuity.session.register": CONTINUITY_SESSION_PURPOSE,
         "continuity.checkpoint.append": CONTINUITY_CHECKPOINT_PURPOSE,
         "continuity.session.close": CONTINUITY_SESSION_PURPOSE,
+        "continuity.handoff.grant": CONTINUITY_HANDOFF_GRANT_PURPOSE,
+        "continuity.handoff.revoke": CONTINUITY_HANDOFF_GRANT_PURPOSE,
         "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
         "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
         "engineering.source.capture.commit": ENGINEERING_SOURCE_PURPOSE,
         "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
+        "engineering.selector.attest": ENGINEERING_SOURCE_PURPOSE,
         "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
     }
 )
@@ -213,12 +219,17 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "continuity.session.register": WORKSPACE_CONTRIBUTOR_ROLE,
         "continuity.checkpoint.append": WORKSPACE_CONTRIBUTOR_ROLE,
         "continuity.session.close": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Sharing one's own checkpoint is contributor work like writing it; the
+        # owner check lives in the storage trigger, not in this role.
+        "continuity.handoff.grant": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.handoff.revoke": WORKSPACE_CONTRIBUTOR_ROLE,
         "context.priority.set": WORKSPACE_CONTRIBUTOR_ROLE,
         "engineering.review.record": KNOWLEDGE_REVIEWER_ROLE,
         # The contributor role, plus the operation's own `engineering:source` scope and
         # `engineering.source` capability, which only a source producer's grant holds.
         "engineering.source.capture.commit": WORKSPACE_CONTRIBUTOR_ROLE,
         "engineering.source.record": WORKSPACE_CONTRIBUTOR_ROLE,
+        "engineering.selector.attest": WORKSPACE_CONTRIBUTOR_ROLE,
         # Binding a local checkout to a repository identity is contributor work in the
         # same sense authoring content is: it reviews nothing and administers nothing.
         # Its own `engineering:repository` scope and `engineering.repository` capability

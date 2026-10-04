@@ -18,8 +18,11 @@ A session belongs to the principal that registered it. Every read here names
 that principal in its SQL, and append and close re-read the session that way
 inside their fenced transaction before writing. Another principal's session or
 checkpoint is indistinguishable from a missing one: `SessionNotFound` or `None`,
-never a payload, id, count or position. There is no sharing grant yet, so
-continuity is same-principal only.
+never a payload, id, count or position. The single exception is migration 0064's
+handoff grant: the owner of one exact checkpoint may name one other existing
+principal who can then read that checkpoint's redacted handoff by checkpoint id,
+while the grant is unexpired, unrevoked and pinned to the checkpoint's unchanged
+digest. A grant is never a session, a write or a further grant.
 
 A stored checkpoint is evidence, not accepted knowledge: nothing here writes
 governed records, governance state, or anything the retrieval surfaces would
@@ -45,6 +48,12 @@ _SESSIONS_TABLE: Final = "omnivia_engineering_sessions"
 _CHECKPOINTS_TABLE: Final = "omnivia_engineering_checkpoints"
 _LIFECYCLE_TABLE: Final = "omnivia_engineering_session_lifecycle"
 _AUTHORITY_TABLE: Final = "omnivia_engineering_session_authority"
+_GRANTS_TABLE: Final = "omnivia_engineering_handoff_grants"
+_REVOCATIONS_TABLE: Final = "omnivia_engineering_handoff_grant_revocations"
+
+#: A grant lives at least a minute and at most a week; migration 0064 holds the same bounds.
+HANDOFF_GRANT_MIN_TTL_SECONDS: Final = 60
+HANDOFF_GRANT_MAX_TTL_SECONDS: Final = 604800
 
 #: Checkpoints whose session belongs to one principal; binds (workspace, principal).
 #: Every checkpoint read goes through it, so another principal's payload is never
@@ -91,6 +100,14 @@ class ParentCheckpointMismatch(RuntimeError):
 
 class PayloadTooLarge(RuntimeError):
     """The canonical checkpoint payload exceeds the 256 KiB cap."""
+
+
+class HandoffGrantNotFound(LookupError):
+    """No such checkpoint, grantee or grant for this principal: one answer for all."""
+
+
+class HandoffGrantConflict(RuntimeError):
+    """A live grant already covers this checkpoint and grantee."""
 
 
 @dataclass(frozen=True)
@@ -1360,3 +1377,154 @@ def read_selected_checkpoints(
     for row, entry in zip(ordered, selected, strict=True):
         payload_budget.consume(str(row[2]), entry.payload_byte_length)
     return ordered
+
+
+def grant_handoff(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    grant_id: str,
+    checkpoint_id: str,
+    checkpoint_digest: str,
+    grantee_principal_id: str,
+    ttl_seconds: int,
+) -> dict[str, Any]:
+    """Record one handoff grant for a checkpoint `principal_id` owns.
+
+    Ownership and the pinned digest are decided by the same SQL: another principal's
+    checkpoint, a missing one and a stale digest are all `HandoffGrantNotFound`.
+    The grantee must already be a continuity principal in this workspace. A live
+    grant for the same checkpoint and grantee is a `HandoffGrantConflict`, so a
+    revocation always ends everything the grantee could read. Migration 0064's
+    insert trigger decides all of this a second time.
+    """
+    row = connection.execute(
+        f"SELECT c.session_id {_OWNED_CHECKPOINTS} "
+        "AND c.checkpoint_id = ? AND c.content_digest = ?",
+        (workspace_id, principal_id, checkpoint_id, checkpoint_digest),
+    ).fetchone()
+    if row is None or grantee_principal_id == principal_id:
+        raise HandoffGrantNotFound(checkpoint_id)
+    known = connection.execute(
+        f"SELECT 1 FROM {_SESSIONS_TABLE} WHERE workspace_id = ? AND principal_id = ? LIMIT 1",
+        (workspace_id, grantee_principal_id),
+    ).fetchone()
+    if known is None:
+        raise HandoffGrantNotFound(checkpoint_id)
+    granted_at_us = int(settlement.settled_at_us)
+    live = connection.execute(
+        f"SELECT 1 FROM {_GRANTS_TABLE} g "
+        "WHERE g.workspace_id = ? AND g.checkpoint_id = ? AND g.grantee_principal_id = ? "
+        "AND g.expires_at_us > ? AND NOT EXISTS ("
+        f"SELECT 1 FROM {_REVOCATIONS_TABLE} r "
+        "WHERE r.workspace_id = g.workspace_id AND r.grant_id = g.grant_id)",
+        (workspace_id, checkpoint_id, grantee_principal_id, granted_at_us),
+    ).fetchone()
+    if live is not None:
+        raise HandoffGrantConflict(checkpoint_id)
+    expires_at_us = granted_at_us + int(ttl_seconds) * 1_000_000
+    connection.execute(
+        f"INSERT INTO {_GRANTS_TABLE} "
+        "(workspace_id, grant_id, checkpoint_id, session_id, grantor_principal_id, "
+        "grantee_principal_id, checkpoint_digest, granted_at_us, expires_at_us, audit_ref) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            workspace_id,
+            grant_id,
+            checkpoint_id,
+            row[0],
+            principal_id,
+            grantee_principal_id,
+            checkpoint_digest,
+            granted_at_us,
+            expires_at_us,
+            settlement.audit_ref,
+        ),
+    )
+    return {
+        "grant_id": grant_id,
+        "checkpoint_id": checkpoint_id,
+        "checkpoint_digest": checkpoint_digest,
+        "grantee_principal_id": grantee_principal_id,
+        "granted_at_us": granted_at_us,
+        "expires_at_us": expires_at_us,
+    }
+
+
+def revoke_handoff(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    grant_id: str,
+) -> dict[str, Any]:
+    """End one handoff grant `principal_id` issued; a repeat reports the first revocation.
+
+    Another principal's grant and a missing one are both `HandoffGrantNotFound`.
+    """
+    granted = connection.execute(
+        f"SELECT 1 FROM {_GRANTS_TABLE} "
+        "WHERE workspace_id = ? AND grant_id = ? AND grantor_principal_id = ?",
+        (workspace_id, grant_id, principal_id),
+    ).fetchone()
+    if granted is None:
+        raise HandoffGrantNotFound(grant_id)
+    existing = connection.execute(
+        f"SELECT revoked_at_us FROM {_REVOCATIONS_TABLE} "
+        "WHERE workspace_id = ? AND grant_id = ?",
+        (workspace_id, grant_id),
+    ).fetchone()
+    if existing is not None:
+        return {"grant_id": grant_id, "revoked_at_us": int(existing[0])}
+    revoked_at_us = int(settlement.settled_at_us)
+    connection.execute(
+        f"INSERT INTO {_REVOCATIONS_TABLE} "
+        "(workspace_id, grant_id, revoked_at_us, audit_ref) VALUES (?, ?, ?, ?)",
+        (workspace_id, grant_id, revoked_at_us, settlement.audit_ref),
+    )
+    return {"grant_id": grant_id, "revoked_at_us": revoked_at_us}
+
+
+def read_granted_checkpoint(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    grantee_principal_id: str,
+    checkpoint_id: str,
+    now_us: int,
+) -> dict[str, Any] | None:
+    """The checkpoint a live grant names for `grantee_principal_id`, else `None`.
+
+    One statement joins the grant to the checkpoint and loads the payload only when
+    the grant is unexpired, unrevoked and still pinned to the checkpoint's current
+    digest. A wrong grantee, no grant, an expired or revoked one and a changed digest
+    all load nothing and read as `None`. The caller establishes the grantee's own
+    binding before calling.
+    """
+    row = connection.execute(
+        "SELECT c.checkpoint_id, c.session_id, c.sequence, c.parent_checkpoint_id, "
+        "c.checkpoint_kind, c.payload_json, c.content_digest, c.recorded_at_us "
+        f"FROM {_GRANTS_TABLE} g JOIN {_CHECKPOINTS_TABLE} c "
+        "ON c.workspace_id = g.workspace_id AND c.checkpoint_id = g.checkpoint_id "
+        "WHERE g.workspace_id = ? AND g.grantee_principal_id = ? AND g.checkpoint_id = ? "
+        "AND g.expires_at_us > ? AND g.checkpoint_digest = c.content_digest "
+        f"AND NOT EXISTS (SELECT 1 FROM {_REVOCATIONS_TABLE} r "
+        "WHERE r.workspace_id = g.workspace_id AND r.grant_id = g.grant_id) "
+        "LIMIT 1",
+        (workspace_id, grantee_principal_id, checkpoint_id, int(now_us)),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "checkpoint_id": row[0],
+        "session_id": row[1],
+        "sequence": row[2],
+        "parent_checkpoint_id": row[3],
+        "checkpoint_kind": row[4],
+        "payload": json.loads(row[5]),
+        "content_digest": row[6],
+        "recorded_at_us": row[7],
+    }

@@ -199,12 +199,13 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Fifty-six are workspace-scoped:
+Fifty-nine are workspace-scoped:
 
 ```text
 analysis.start          candidate.approve   candidate.reject    chat.command
 chat.events             chat.snapshot       context_pack.build
-continuity.checkpoint.append                continuity.handoff.read
+continuity.checkpoint.append                continuity.handoff.grant
+continuity.handoff.read                     continuity.handoff.revoke
 continuity.session.close
 continuity.session.register                 context.priority.set
 decision.definition.disable                decision.definition.get
@@ -216,7 +217,8 @@ decision.result_use.evaluate               decision.settings.update
 decision.status
 engineering.context.build                  engineering.expand
 engineering.repository.register            engineering.review.record
-engineering.search      engineering.source.capture.commit
+engineering.search      engineering.selector.attest
+engineering.source.capture.commit
 engineering.source.capture.hint            engineering.source.record
 evidence.capture        evidence.search     graph.traverse      import.start
 job.cancel              job.events          job.get             job.retry

@@ -120,6 +120,8 @@ from omnivia_core.contracts.v1 import (
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
+    EngineeringSelectorAttestInput,
+    EngineeringSelectorAttestResult,
     EngineeringSourceCaptureCommitInput,
     EngineeringSourceCaptureCommitResult,
     EngineeringSourceCaptureHintInput,
@@ -371,6 +373,12 @@ _MESSAGE_CAPTURE_FOREIGN: Final = (
 )
 _MESSAGE_CAPTURE_PRECONDITION: Final = (
     "the sealed source capture does not match the expected manifest digest"
+)
+_MESSAGE_ATTESTATION_INVALID: Final = (
+    "the selector attestation is outside its bounded, validated shape"
+)
+_MESSAGE_ATTESTATION_NOT_FOUND: Final = (
+    "the source stream or snapshot named by the selector attestation was not found"
 )
 _CAPTURE_COMMIT_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -867,6 +875,10 @@ class EngineeringHandlers:
         except source_storage.CapturedSourceNotFound as error:
             raise application_refusal(
                 ERROR_CODE_NOT_FOUND, _MESSAGE_CAPTURE_NOT_FOUND
+            ) from error
+        except source_storage.SelectorAttestationNotFound as error:
+            raise application_refusal(
+                ERROR_CODE_NOT_FOUND, _MESSAGE_ATTESTATION_NOT_FOUND
             ) from error
         except source_storage.CapturedSourcePreconditionFailed as error:
             raise application_refusal(
@@ -1586,6 +1598,69 @@ class EngineeringHandlers:
             guard,
             workspace_id=context.workspace_id,
             stream_id=record.stream_id,
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
+    def engineering_selector_attest(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Store one installed Dev adapter's `symbol` or `source_span` coverage.
+
+        Core never parses source. Stream ownership comes from the authenticated
+        principal and the installation from this service's own trusted identity,
+        never from the payload. The contract decoder tolerates unknown keys, so the
+        raw payload is validated strictly first; the adapter's selector digest is
+        stored only after the stream owner, repository, snapshot and whole-file
+        digest all validate against Core's own records.
+        """
+        try:
+            decoded = EngineeringSelectorAttestInput.from_wire(context.request.input)
+            request = source_storage.parse_selector_attestation(context.request.input)
+        except (
+            ContractDecodeError,
+            ContractSemanticError,
+            source_storage.SourceRecordInvalid,
+        ) as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_ATTESTATION_INVALID
+            ) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import read_guard as _read_guard
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        if identity is None or guard is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            decoded.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            return source_storage.record_selector_attestation(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                installation_id=identity.installation_id,
+                request=request,
+                allocate_identifier=self.allocate_identifier,
+            )
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringSelectorAttestResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, guard, equivalence, mutate, valid_result
         )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 

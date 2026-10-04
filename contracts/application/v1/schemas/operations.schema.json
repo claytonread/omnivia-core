@@ -3292,6 +3292,180 @@
         "workspace_migration_required",
         "workspace_not_granted"
       ]
+    },
+    {
+      "name": "continuity.handoff.grant",
+      "scope": {
+        "required_scopes": [
+          "engineering:write"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrantInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrantResult",
+      "required_capability": {
+        "id": "engineering.write",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "continuity.handoff.revoke",
+      "scope": {
+        "required_scopes": [
+          "engineering:write"
+        ],
+        "side_effect": "update",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffRevokeInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffRevokeResult",
+      "required_capability": {
+        "id": "engineering.write",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "engineering.selector.attest",
+      "scope": {
+        "required_scopes": [
+          "engineering:source"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSelectorAttestInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSelectorAttestResult",
+      "required_capability": {
+        "id": "engineering.source",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
     }
   ],
   "$defs": {

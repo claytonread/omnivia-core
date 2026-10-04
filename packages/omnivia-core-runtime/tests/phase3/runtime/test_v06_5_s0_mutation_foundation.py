@@ -775,15 +775,18 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "continuity.session.register",
         "continuity.checkpoint.append",
         "continuity.session.close",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
         "context.priority.set",
         "engineering.review.record",
         "engineering.source.capture.commit",
         "engineering.source.record",
+        "engineering.selector.attest",
         "engineering.repository.register",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 29
+    assert len(MUTATION_PURPOSES) == 32
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -810,8 +813,8 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # job family's own control. Engineering memory adds six of its own: the
     # session act, the checkpoint append, the preference write, the review
     # attestation, the trusted source record and the repository registration
-    # (SPEC-CORE-ENGMEM-001).
-    assert len(set(MUTATION_PURPOSES.values())) == 16
+    # (SPEC-CORE-ENGMEM-001), and a seventh for granting or revoking a handoff.
+    assert len(set(MUTATION_PURPOSES.values())) == 17
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1780,10 +1783,13 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "continuity.session.register": "workspace_contributor",
         "continuity.checkpoint.append": "workspace_contributor",
         "continuity.session.close": "workspace_contributor",
+        "continuity.handoff.grant": "workspace_contributor",
+        "continuity.handoff.revoke": "workspace_contributor",
         "context.priority.set": "workspace_contributor",
         "engineering.review.record": "knowledge_reviewer",
         "engineering.source.capture.commit": "workspace_contributor",
         "engineering.source.record": "workspace_contributor",
+        "engineering.selector.attest": "workspace_contributor",
         "engineering.repository.register": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
