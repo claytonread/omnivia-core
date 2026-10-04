@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -338,8 +338,8 @@ def verify_fingerprint(
     return actual
 
 
-def expected_trigger_names() -> tuple[str, ...]:
-    """Guard trigger names declared by the migration, read from the migration itself.
+def expected_trigger_names(applied: Collection[int] | None = None) -> tuple[str, ...]:
+    """Guard trigger names declared by the migrations, read from the migration itself.
 
     Derived rather than hard-coded so the expectation cannot drift from the SQL that
     creates them: adding a guard to a migration automatically makes its absence a
@@ -347,27 +347,55 @@ def expected_trigger_names() -> tuple[str, ...]:
 
     Read from *every* migration, not just the one that introduced the guard. Scanning
     only `0002` meant a guard added later was never checked for -- the same shape of
-    defect as the hand-written table list, one level up.
+    defect as the hand-written table list, one level up. `applied`, when given, limits
+    the reading to those migration versions; omitted, it is the whole catalogue.
     """
     from omnivia_core_runtime.storage.migrations import load_migrations
 
     names: set[str] = set()
     for migration in load_migrations():
-        names.update(
-            re.findall(r"CREATE TRIGGER IF NOT EXISTS\s+(omnivia_guard_\w+)", migration.sql)
-        )
+        if applied is None or migration.version in applied:
+            names.update(
+                re.findall(
+                    r"CREATE TRIGGER IF NOT EXISTS\s+(omnivia_guard_\w+)", migration.sql
+                )
+            )
     return tuple(sorted(names))
 
 
 def assert_guards_intact(connection: sqlite3.Connection) -> None:
-    """Every declared guard trigger must be present, by exact name.
+    """Every guard trigger declared by an applied migration must be present, by exact name.
+
+    The expectation is the database's own ledger, not the whole catalogue. A workspace
+    upgraded only through 0062 has not earned the guards that 0064 and 0065 add later,
+    and a fully migrated one is still held to every current guard. Two states are
+    refused rather than passed: no migration recorded, which would make the check
+    vacuous, and a recorded migration this catalogue does not hold, whose guards
+    therefore cannot be checked.
 
     Exact-set comparison rather than "at least one trigger per table". A per-table
     check would pass while a DELETE guard was missing and its INSERT sibling
     survived, which is precisely the drift that would let unguarded deletes through.
     """
+    from omnivia_core_runtime.storage.migrations import (
+        applied_migrations,
+        load_migrations,
+    )
+
+    recorded = applied_migrations(connection)
+    if not recorded:
+        raise SchemaDrift(
+            "no migrations are recorded, so there is no guard set to check"
+        )
+    catalogued = {migration.version for migration in load_migrations()}
+    unknown = sorted(set(recorded) - catalogued)
+    if unknown:
+        raise SchemaDrift(
+            "recorded migrations are not in this catalogue, so their guards cannot be "
+            f"checked: {unknown}"
+        )
     present = set(trigger_names(connection))
-    expected = set(expected_trigger_names())
+    expected = set(expected_trigger_names(recorded.keys()))
     missing = sorted(expected - present)
     unexpected = sorted(present - expected)
     if missing:

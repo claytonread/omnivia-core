@@ -261,8 +261,8 @@ CANDIDATE_INTRODUCED_COMMITS = {
     62: "d54b3f447456534b4e436225233b0ab858eae49e",
     63: "2ed5e6a67763be23629eaaf392db70fd2b526084",
     # 0064 and 0065 were introduced together by the follow-on implementation commit.
-    64: "72b25fb8e4369c18c7d350463587573a00c32090",
-    65: "72b25fb8e4369c18c7d350463587573a00c32090",
+    64: "8efab26e83d137736f229f84745c2e535390980e",
+    65: "8efab26e83d137736f229f84745c2e535390980e",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
