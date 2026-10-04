@@ -243,6 +243,35 @@ def test_a_period_may_not_end_before_it_starts() -> None:
     assert code == ERROR_CODE_INVALID_REQUEST
 
 
+_NON_STRING_USE_CLASSES = [
+    pytest.param(None, id="null"),
+    pytest.param(True, id="bool"),
+    pytest.param(7, id="int"),
+    pytest.param(1.5, id="float"),
+    pytest.param([], id="empty-list"),
+    pytest.param(["exploration"], id="list-of-admitted-name"),
+    pytest.param({}, id="empty-object"),
+    pytest.param({"use_class": "exploration"}, id="object-of-admitted-name"),
+    pytest.param(MappingProxyType({}), id="mappingproxy"),
+    pytest.param(MappingProxyType({"k": 1}), id="mappingproxy-with-keys"),
+    pytest.param((), id="empty-tuple"),
+    pytest.param(("exploration",), id="tuple-of-admitted-name"),
+    pytest.param((["exploration"],), id="tuple-holding-unhashable"),
+    pytest.param(_CustomMapping({}), id="custom-mapping"),
+    pytest.param(_CustomSequence(["exploration"]), id="custom-sequence"),
+]
+
+
+@pytest.mark.parametrize("use_class", _NON_STRING_USE_CLASSES)
+def test_a_non_string_use_class_is_invalid_request_not_a_hash_error(
+    use_class: Any,
+) -> None:
+    # Set membership hashes its operand; an unhashable JSON container must be
+    # refused by the type guard, never raise TypeError out of the classifier.
+    code, _ = classify_analysis_start_request(_valid_request(use_class=use_class))
+    assert code == ERROR_CODE_INVALID_REQUEST
+
+
 _OTHER_JSON_VALUES = [
     pytest.param(7, id="int"),
     pytest.param(1.5, id="float"),

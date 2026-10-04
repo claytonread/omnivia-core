@@ -271,7 +271,7 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     use_class = document.get("use_class")
-    if use_class not in ADMITTED_ANALYSIS_USE_CLASSES:
+    if not isinstance(use_class, str) or use_class not in ADMITTED_ANALYSIS_USE_CLASSES:
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     if not _target_ok(document.get("target")):
