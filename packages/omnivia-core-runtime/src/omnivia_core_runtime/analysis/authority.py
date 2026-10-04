@@ -21,6 +21,7 @@ the network, the clock or credentials.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, Protocol
@@ -33,7 +34,9 @@ from omnivia_core.contracts.v1 import (
     Purpose,
     RequestEnvelope,
     Scope,
+    is_capability_id,
     is_content_checksum,
+    is_contract_version,
     is_identifier,
     is_operation_name,
     is_purpose,
@@ -151,8 +154,22 @@ def analysis_use_authority_subject_from_context(
         or type(purpose) is not str
     ):
         raise AnalysisUseAuthorityRefused()
+    # Both sides are proven canonical before any `==` runs, so no equality here
+    # dispatches to a subclass or a spoofed value.
     if not (
-        request.operation == authorization.operation
+        _canonical_str(request.operation, is_operation_name)
+        and _canonical_str(authorization.operation, is_operation_name)
+        and _canonical_str(context.principal, is_identifier)
+        and _canonical_str(authorization.principal_id, is_identifier)
+        and _canonical_str(context.workspace_id, is_workspace_id)
+        and _canonical_str(authorization.workspace_id, is_workspace_id)
+        and _valid_authority(authority)
+        and _valid_authority(authorization.authority)
+        and _canonical_tuple(scopes, is_scope)
+        and _canonical_tuple(authorization.scopes, is_scope)
+        and _canonical_str(purpose, is_purpose)
+        and _canonical_str(authorization.purpose, is_purpose)
+        and request.operation == authorization.operation
         and context.principal == authorization.principal_id
         and context.workspace_id == authorization.workspace_id
         and authority == authorization.authority
@@ -189,9 +206,10 @@ def resolve_analysis_use_authority_for_subject(
     snapshot: AnalysisUseAuthoritySnapshot | None = None
     try:
         snapshot = resolver.resolve(query)
+        answered = _answers(snapshot, query)
     except Exception:  # noqa: BLE001 - any failure to answer is a refusal
-        snapshot = None
-    if snapshot is None or not _answers(snapshot, query):
+        answered = False
+    if snapshot is None or not answered:
         raise AnalysisUseAuthorityRefused()
     return snapshot
 
@@ -236,23 +254,23 @@ def _build_query(
     )
     manifest_absent = all(value is None for value in manifest)
     manifest_present = (
-        is_identifier(manifest[0])
-        and is_identifier(manifest[1])
-        and is_content_checksum(manifest[2])
+        _canonical_str(manifest[0], is_identifier)
+        and _canonical_str(manifest[1], is_identifier)
+        and _canonical_str(manifest[2], is_content_checksum)
     )
     instant = _utc(evaluation_instant)
     if not (
-        is_workspace_id(dataset.workspace_id)
+        _canonical_str(dataset.workspace_id, is_workspace_id)
         and dataset.workspace_id == subject.workspace_id
         and type(dataset.state_generation) is int
         and dataset.state_generation >= 1
-        and is_identifier(observation.dataset_id)
-        and is_identifier(observation.dataset_revision)
-        and is_identifier(observation.dataset_incarnation)
+        and _canonical_str(observation.dataset_id, is_identifier)
+        and _canonical_str(observation.dataset_revision, is_identifier)
+        and _canonical_str(observation.dataset_incarnation, is_identifier)
         and (manifest_absent or manifest_present)
-        and is_content_checksum(observation.scope_digest)
-        and is_identifier(observation.observed_authority_epoch)
-        and is_identifier(subject_digest)
+        and _canonical_str(observation.scope_digest, is_content_checksum)
+        and _canonical_str(observation.observed_authority_epoch, is_identifier)
+        and _canonical_str(subject_digest, is_identifier)
         and type(use_class) is str
         and use_class in _USE_CLASSES
         and instant is not None
@@ -275,43 +293,68 @@ def _build_query(
     )
 
 
+def _canonical_str(value: object, check: Callable[[object], bool]) -> bool:
+    # The exact type is proven before `check` runs, so a str subclass never reaches
+    # the validator or any later comparison.
+    return type(value) is str and check(value)
+
+
+def _canonical_tuple(value: object, check: Callable[[object], bool]) -> bool:
+    return type(value) is tuple and all(_canonical_str(item, check) for item in value)
+
+
 def _valid_subject(subject: object) -> bool:
     return (
         type(subject) is AnalysisUseAuthoritySubject
-        and is_operation_name(subject.operation)
-        and is_workspace_id(subject.workspace_id)
+        and _canonical_str(subject.operation, is_operation_name)
+        and _canonical_str(subject.workspace_id, is_workspace_id)
         and _valid_authority(subject.authority)
-        and type(subject.scopes) is tuple
-        and all(is_scope(scope) for scope in subject.scopes)
-        and is_purpose(subject.purpose)
+        and _canonical_tuple(subject.scopes, is_scope)
+        and _canonical_str(subject.purpose, is_purpose)
     )
 
 
 def _valid_authority(authority: object) -> bool:
     return (
         type(authority) is GrantedAuthority
-        and is_identifier(authority.principal_id)
-        and type(authority.roles) is tuple
-        and all(is_identifier(role) for role in authority.roles)
+        and _canonical_str(authority.principal_id, is_identifier)
+        and _canonical_tuple(authority.roles, is_identifier)
         and type(authority.capabilities) is tuple
-        and all(type(item) is CapabilityRef for item in authority.capabilities)
+        and all(_valid_capability(item) for item in authority.capabilities)
+    )
+
+
+def _valid_capability(item: object) -> bool:
+    return (
+        type(item) is CapabilityRef
+        and _canonical_str(item.id, is_capability_id)
+        and _canonical_str(item.version, is_contract_version)
     )
 
 
 def _utc(value: object) -> datetime | None:
-    if type(value) is not datetime or value.utcoffset() is None:
+    if type(value) is not datetime:
         return None
-    return value.astimezone(UTC)
+    # A hostile tzinfo can raise from either call. The failure is dropped here, so
+    # no timezone text reaches the refusal's cause or context.
+    try:
+        normalized = None if value.utcoffset() is None else value.astimezone(UTC)
+    except Exception:  # noqa: BLE001 - any timezone failure is a refusal
+        normalized = None
+    if type(normalized) is not datetime or normalized.tzinfo is not UTC:
+        return None
+    return normalized
 
 
 def _answers(snapshot: object, query: AnalysisUseAuthorityQuery) -> bool:
+    # Identity, not `==`: a resolver-supplied query may carry spoofed equality.
     return (
         type(snapshot) is AnalysisUseAuthoritySnapshot
         and type(snapshot.query) is AnalysisUseAuthorityQuery
-        and snapshot.query == query
-        and is_identifier(snapshot.authority_epoch)
+        and snapshot.query is query
+        and _canonical_str(snapshot.authority_epoch, is_identifier)
         and type(snapshot.evidence_access_permitted) is bool
         and type(snapshot.policy_permits_partial_or_stale) is bool
-        and is_identifier(snapshot.policy_ref)
-        and is_content_checksum(snapshot.policy_digest)
+        and _canonical_str(snapshot.policy_ref, is_identifier)
+        and _canonical_str(snapshot.policy_digest, is_content_checksum)
     )
