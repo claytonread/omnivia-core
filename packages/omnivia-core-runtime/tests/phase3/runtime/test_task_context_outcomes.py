@@ -688,7 +688,7 @@ def test_the_0068_allocation_pins_its_filename_predecessor_owner_and_state() -> 
         "state": "candidate",
         "predecessor": 67,
         "sha256": _migration_file_digest(),
-        "introduced_commit": None,
+        "introduced_commit": "c42e41d17adbbee6b1c17684912b0dfc027d3537",
         "accepted_commit": None,
     }
 

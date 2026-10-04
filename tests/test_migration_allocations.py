@@ -262,6 +262,8 @@ CANDIDATE_INTRODUCED_COMMITS = {
     66: "de6724f0bbad1209c8c0af035d662f697db278b7",
     # 0067 is the DEV-REQ-081 knowledge-share candidate, pinned to its introducing commit.
     67: "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
+    # 0068 is the governed task-context outcomes candidate, pinned to its introducing commit.
+    68: "c42e41d17adbbee6b1c17684912b0dfc027d3537",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
