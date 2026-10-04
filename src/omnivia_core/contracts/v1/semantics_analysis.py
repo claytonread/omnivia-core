@@ -192,30 +192,41 @@ def _target_ok(target: Any) -> bool:
 
 
 def _parameters_ok(parameters: Any) -> bool:
-    if parameters is None:
-        return True
+    """A present ``parameters`` value: an array of exact ``{name, value}`` pairs.
+
+    Callers check presence first, so an explicit null is refused here as a
+    non-array, matching the generated decoder.
+    """
     if not _is_array(parameters):
         return False
     names: set[str] = set()
     for parameter in parameters:
         if not isinstance(parameter, Mapping) or set(parameter) != _PARAMETER_FIELDS:
             return False
-        name = parameter.get("name")
+        name = parameter["name"]
         if not isinstance(name, str) or name in names:
             return False
-        if not _identifier_ok(name) or not _json_data(parameter.get("value")):
+        value = parameter["value"]
+        # A parameter value is a JSON object (the generated ``JsonObject``), so
+        # its top level must be a Mapping before the nested JSON data is checked.
+        if not _identifier_ok(name) or not isinstance(value, Mapping):
+            return False
+        if not _json_data(value):
             return False
         names.add(name)
     return True
 
 
 def _output_bounds_ok(bounds: Any) -> bool:
-    if bounds is None:
-        return True
+    """A present ``output_bounds`` value: an object whose ``max_rows``, when
+    present, is a positive integer. An omitted ``max_rows`` is valid; a present
+    null is not."""
     if not isinstance(bounds, Mapping) or not set(bounds) <= _OUTPUT_BOUNDS_FIELDS:
         return False
-    max_rows = bounds.get("max_rows")
-    return max_rows is None or (
+    if "max_rows" not in bounds:
+        return True
+    max_rows = bounds["max_rows"]
+    return (
         isinstance(max_rows, int) and not isinstance(max_rows, bool) and max_rows >= 1
     )
 
@@ -289,9 +300,11 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     if not _timezone_ok(document.get("business_timezone")):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
-    if not _parameters_ok(document.get("parameters")):
+    # Optional fields: omitted is valid, but a present value (including null)
+    # must satisfy its schema, so presence is tested rather than ``.get()``.
+    if "parameters" in document and not _parameters_ok(document["parameters"]):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
-    if not _output_bounds_ok(document.get("output_bounds")):
+    if "output_bounds" in document and not _output_bounds_ok(document["output_bounds"]):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     purpose = document.get("purpose_reference")

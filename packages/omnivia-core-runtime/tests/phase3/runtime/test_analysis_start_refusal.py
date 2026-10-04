@@ -123,6 +123,21 @@ def _valid_input() -> dict[str, Any]:
             ERROR_CODE_INVALID_REQUEST,
             "non_retryable",
         ),
+        (
+            dict(_valid_input(), parameters=None),
+            ERROR_CODE_INVALID_REQUEST,
+            "non_retryable",
+        ),
+        (
+            dict(_valid_input(), output_bounds={"max_rows": None}),
+            ERROR_CODE_INVALID_REQUEST,
+            "non_retryable",
+        ),
+        (
+            dict(_valid_input(), parameters=[{"name": "p", "value": None}]),
+            ERROR_CODE_INVALID_REQUEST,
+            "non_retryable",
+        ),
     ],
     ids=[
         "valid-shape-refuses-dependency",
@@ -131,6 +146,9 @@ def _valid_input() -> dict[str, Any]:
         "unknown-major-is-incompatible",
         "action-input-is-invalid-request",
         "unknown-field-is-invalid-request",
+        "null-parameters-is-invalid-request",
+        "null-max-rows-is-invalid-request",
+        "null-parameter-value-is-invalid-request",
     ],
 )
 def test_the_handler_renders_exactly_the_classified_outcome(

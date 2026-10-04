@@ -30,7 +30,12 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_UNSUPPORTED_MINOR_VERSION,
     FROZEN_ERROR_CODES,
+    AnalysisStartInput,
+    ClientIdentity,
+    ContractDecodeError,
     OperationMetadata,
+    RequestEnvelope,
+    RequestMetadata,
     get_operation_metadata,
 )
 from omnivia_core.contracts.v1.semantics_analysis import (
@@ -323,7 +328,7 @@ def test_abstract_containers_reach_the_same_refusal_at_every_level(
     request = _valid_request(
         parameters=[
             {"name": "p", "value": {"k": [1, {"deep": [None, 1.5, "x", True]}]}},
-            {"name": "q", "value": []},
+            {"name": "q", "value": {"items": []}},
         ],
         output_bounds={"max_rows": 10},
     )
@@ -566,3 +571,130 @@ def test_the_supported_version_constant_is_the_only_admitted_payload_version() -
         _valid_request(request_version="1.0-beta")
     )
     assert code == ERROR_CODE_INVALID_REQUEST
+
+
+# ---------------------------------------------------------------------------
+# Optional-field presence and parameter value shape (generated codec parity)
+# ---------------------------------------------------------------------------
+
+
+def _decoded(request: Mapping[str, Any]) -> Any:
+    """The request as it arrives after the generated envelope decoder."""
+    envelope = RequestEnvelope(
+        operation="analysis.start",
+        metadata=RequestMetadata(
+            request_id="req-analysis-1",
+            correlation_id="cor-analysis-1",
+            trace_id="trc-analysis-1",
+            api_version="1.0",
+            client=ClientIdentity(id="omnivia.cli", version="1.0.0"),
+            scopes=(),
+            purpose="insights_analysis_request",
+            required_capabilities=(),
+        ),
+        input=dict(request),
+    )
+    return RequestEnvelope.from_wire(envelope.to_wire()).input
+
+
+_ACCEPTED_OPTIONAL: list[dict[str, Any]] = [
+    {},
+    {"parameters": []},
+    {"parameters": [{"name": "p", "value": {}}]},
+    {
+        "parameters": [
+            {
+                "name": "p",
+                "value": {"n": None, "i": 1, "s": "x", "b": True, "l": [1, "a", None]},
+            }
+        ]
+    },
+    {"output_bounds": {}},
+    {"output_bounds": {"max_rows": 1}},
+]
+
+
+@pytest.mark.parametrize("override", _ACCEPTED_OPTIONAL)
+def test_omitted_and_empty_optional_values_are_accepted(
+    override: dict[str, Any],
+) -> None:
+    request = _valid_request(**override)
+    AnalysisStartInput.from_wire(request)
+    assert classify_analysis_start_request(request)[0] == (
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    )
+    assert classify_analysis_start_request(_decoded(request))[0] == (
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    )
+
+
+_REJECTED_PRESENT_NULL: list[dict[str, Any]] = [
+    {"parameters": None},
+    {"output_bounds": None},
+    {"output_bounds": {"max_rows": None}},
+    {"request_version": None},
+    {"target": None},
+    {"target": {"kind": "metric", "metric_revision_id": None}},
+    {"target": {"kind": "data_view", "data_view_revision_id": None}},
+    {"parameters": [{"name": None, "value": {}}]},
+    {"as_of_date": None},
+    {"business_timezone": None},
+    {"use_class": None},
+    {"purpose_reference": None},
+    {"as_of_date": _ABSENT, "period_start": None, "period_end": "2026-09-30"},
+    {"as_of_date": _ABSENT, "period_start": "2026-09-01", "period_end": None},
+]
+
+
+@pytest.mark.parametrize("override", _REJECTED_PRESENT_NULL)
+def test_a_present_null_is_invalid_request_not_an_omitted_field(
+    override: dict[str, Any],
+) -> None:
+    request = _valid_request(**override)
+    assert classify_analysis_start_request(request)[0] == ERROR_CODE_INVALID_REQUEST
+    assert classify_analysis_start_request(_decoded(request))[0] == (
+        ERROR_CODE_INVALID_REQUEST
+    )
+    with pytest.raises(ContractDecodeError):
+        AnalysisStartInput.from_wire(request)
+
+
+_NON_OBJECT_VALUES: list[Any] = [
+    pytest.param(None, id="null"),
+    pytest.param(True, id="bool"),
+    pytest.param(1, id="int"),
+    pytest.param(1.5, id="float"),
+    pytest.param("text", id="string"),
+    pytest.param([], id="list"),
+    pytest.param([1, "a"], id="list-of-scalars"),
+    pytest.param((), id="tuple"),
+    pytest.param(_CustomSequence([1]), id="custom-sequence"),
+]
+
+
+@pytest.mark.parametrize("value", _NON_OBJECT_VALUES)
+def test_a_parameter_value_must_be_a_json_object(value: Any) -> None:
+    request = _valid_request(parameters=[{"name": "p", "value": value}])
+    assert classify_analysis_start_request(request)[0] == ERROR_CODE_INVALID_REQUEST
+    assert classify_analysis_start_request(_decoded(request))[0] == (
+        ERROR_CODE_INVALID_REQUEST
+    )
+    with pytest.raises(ContractDecodeError):
+        AnalysisStartInput.from_wire(request)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(MappingProxyType({"k": (1, "a")}), id="mappingproxy-value"),
+        pytest.param(_CustomMapping({"k": [None]}), id="custom-mapping-value"),
+    ],
+)
+def test_an_abstract_mapping_value_is_a_json_object(value: Any) -> None:
+    request = _valid_request(parameters=[{"name": "p", "value": value}])
+    assert classify_analysis_start_request(request)[0] == (
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    )
+    assert classify_analysis_start_request(_decoded(request))[0] == (
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    )
