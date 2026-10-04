@@ -505,11 +505,13 @@ def claude_command(
 ) -> list[str]:
     """One non-interactive run with named MCP calls pre-authorized and no prompts.
 
-    An existing login also disables every built-in tool with ``--tools ""``,
-    because the host's own tools are not ours to trust.  It adds neither
-    ``--safe-mode`` nor ``--restricted``: ``--safe-mode`` disables every MCP
-    server, and with ``--restricted`` Claude Code 2.1.289 never reports the
-    host initialize (``host_initialize_missing``).
+    An existing login also passes ``--tools`` with the same exact MCP tool names
+    as ``--allowedTools``, so the qualified MCP surface is the only available and
+    the only pre-authorized tool set and no built-in is offered, because the
+    host's own tools are not ours to trust.  It adds neither ``--safe-mode`` nor
+    ``--restricted``, and never ``--tools ""``: ``--safe-mode`` disables every MCP
+    server, and with ``--restricted`` or an empty ``--tools`` Claude Code 2.1.289
+    never reports the host initialize (``host_initialize_missing``).
     """
     allowed = ",".join(claude_tool_name(tool) for tool in tools)
     command = [
@@ -532,7 +534,7 @@ def claude_command(
         "project",
     ]
     if existing_login:
-        command.extend(["--tools", ""])
+        command.extend(["--tools", allowed])
     return command
 
 
