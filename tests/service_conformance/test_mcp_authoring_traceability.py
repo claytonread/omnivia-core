@@ -18,8 +18,11 @@ offline from the source tree:
 * no row that is short of its evidence claims to have it. A ``pending-phase-8``
   or ``partial`` row may not use completion language, and a row whose evidence
   type is ``HOST`` -- a session driven by an installed Claude Code or Codex
-  binary -- may not be green, because this repository holds no such record and
-  the SDK-driven journeys are not one.
+  binary -- may be green only when the two committed real-host records exist and
+  pass the host-pair guard: exact directory, both approved hosts, one clean
+  candidate, every gate true, and the bindings' ``harness_sha256`` and
+  ``schema_sha256`` equal the digests of the current qualification script and
+  record schema. The SDK-driven journeys are not such a session and never count.
 
 Standard library only, like its two neighbours here: nothing in this module may
 import a Runtime, Client, MCP or CLI package, and a green row's own evidence is
@@ -35,6 +38,7 @@ classification and version claims cannot drift from the code they describe.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -351,11 +355,11 @@ def test_no_row_short_of_its_evidence_uses_completion_language() -> None:
 
 
 _QUALIFICATION = REPO_ROOT / "docs" / "development" / "qualification"
-_RECORD_SCHEMA = json.loads(
-    (
-        REPO_ROOT / "docs" / "distribution" / "schemas" / "mcp-real-host-qualification-record-v1.schema.json"
-    ).read_text(encoding="utf-8")
+_HARNESS = REPO_ROOT / "scripts" / "run-mcp-real-host-qualification.py"
+_RECORD_SCHEMA_PATH = (
+    REPO_ROOT / "docs" / "distribution" / "schemas" / "mcp-real-host-qualification-record-v1.schema.json"
 )
+_RECORD_SCHEMA = json.loads(_RECORD_SCHEMA_PATH.read_text(encoding="utf-8"))
 #: The two approved installed hosts, and where each one's closed record lives.
 HOST_RECORDS = {
     ("claude-code", "2.1.289"): _QUALIFICATION / "mcp-real-host-claude-code-2.1.289.json",
@@ -387,6 +391,14 @@ def _require_host_pair(records: dict[tuple[str, str], dict[str, object]]) -> Non
     assert first["source"] == second["source"]
     for field in _BOUND_FIELDS:
         assert first[field] == second[field], field
+    # Agreement alone would accept a pair bound to stale bytes: pin both digests to the files as they are now.
+    bindings = first["bindings"]
+    assert bindings["harness_sha256"] == _sha256(_HARNESS), "harness_sha256"  # type: ignore[index]
+    assert bindings["schema_sha256"] == _sha256(_RECORD_SCHEMA_PATH), "schema_sha256"  # type: ignore[index]
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _require_exact_directory(names: list[str]) -> None:
@@ -480,6 +492,15 @@ def test_the_host_row_guard_rejects_partial_green_and_green_without_evidence() -
     ):
         with pytest.raises(AssertionError):
             _require_host_rows_follow_evidence(complete, statuses, host_rows)
+
+
+def test_the_host_pair_guard_rejects_agreeing_but_stale_bindings() -> None:
+    for field in ("harness_sha256", "schema_sha256"):
+        records = _load_host_records()
+        for record in records.values():
+            record["bindings"][field] = "0" * 64  # type: ignore[index]
+        with pytest.raises(AssertionError, match=field):
+            _require_host_pair(records)
 
 
 def test_host_rows_are_green_only_with_the_complete_host_pair() -> None:
