@@ -12,6 +12,8 @@ itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Final
 
 import pytest
@@ -121,6 +123,21 @@ def _valid_input() -> dict[str, Any]:
             ERROR_CODE_INVALID_REQUEST,
             "non_retryable",
         ),
+        (
+            dict(_valid_input(), parameters=None),
+            ERROR_CODE_INVALID_REQUEST,
+            "non_retryable",
+        ),
+        (
+            dict(_valid_input(), output_bounds={"max_rows": None}),
+            ERROR_CODE_INVALID_REQUEST,
+            "non_retryable",
+        ),
+        (
+            dict(_valid_input(), parameters=[{"name": "p", "value": None}]),
+            ERROR_CODE_INVALID_REQUEST,
+            "non_retryable",
+        ),
     ],
     ids=[
         "valid-shape-refuses-dependency",
@@ -129,6 +146,9 @@ def _valid_input() -> dict[str, Any]:
         "unknown-major-is-incompatible",
         "action-input-is-invalid-request",
         "unknown-field-is-invalid-request",
+        "null-parameters-is-invalid-request",
+        "null-max-rows-is-invalid-request",
+        "null-parameter-value-is-invalid-request",
     ],
 )
 def test_the_handler_renders_exactly_the_classified_outcome(
@@ -170,6 +190,173 @@ def test_accepting_the_literal_current_publication_grants_nothing() -> None:
     assert not hasattr(raised.value, "result")
 
 
+class _CustomMapping(Mapping[str, Any]):
+    def __init__(self, data: Mapping[str, Any]) -> None:
+        self._data = dict(data)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+@pytest.mark.parametrize("mapping", [MappingProxyType, _CustomMapping])
+def test_an_abstract_mapping_request_reaches_the_same_refusal(mapping: Any) -> None:
+    """Wire transports hand the handler a read-only mapping, not a dict."""
+    plain = dict(
+        _valid_input(),
+        target=mapping({"kind": "metric", "metric_revision_id": "metric-overdue-r1"}),
+        parameters=(
+            mapping({"name": "currency", "value": mapping({"codes": ("AUD", "NZD")})}),
+        ),
+    )
+    request_input = mapping(plain)
+    assert not isinstance(request_input, dict)
+    before = repr(sorted(request_input.items()))
+    context, _ = _context(request_input)  # type: ignore[arg-type]
+    with pytest.raises(OperationError) as raised:
+        analysis_start(context)
+    assert raised.value.code == ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    assert raised.value.retry_class == "retryable_after_delay"
+    assert raised.value.job_reference is None
+    assert raised.value.audit_reference is None
+    assert raised.value.__dict__.get("authorization") is None
+    assert not hasattr(raised.value, "result")
+    assert context.request.input is request_input
+    assert repr(sorted(request_input.items())) == before
+
+
 def test_the_handler_name_matches_the_catalogue_operation() -> None:
     assert ANALYSIS_START_OPERATION == "analysis.start"
     assert get_operation_metadata(ANALYSIS_START_OPERATION).name == "analysis.start"
+
+
+_OPERATOR_SECRET: Final = "hostile-operator-secret-must-not-surface"
+
+
+class _HashBombStr(str):
+    def __hash__(self) -> int:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _EqBombStr(str):
+    # Hashable on purpose, so only the equality path can fire.
+    __hash__ = str.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _GeBombInt(int):
+    def __ge__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+@pytest.mark.parametrize(
+    "request_input",
+    [
+        pytest.param(
+            dict(_valid_input(), use_class=_EqBombStr("exploration")), id="use-class"
+        ),
+        pytest.param(
+            dict(
+                _valid_input(),
+                target={"kind": _EqBombStr("metric"), "metric_revision_id": "m-1"},
+            ),
+            id="target-kind",
+        ),
+        pytest.param(
+            dict(_valid_input(), parameters=[{"name": _HashBombStr("p"), "value": {}}]),
+            id="parameter-name",
+        ),
+        pytest.param(
+            dict(_valid_input(), output_bounds={"max_rows": _GeBombInt(5)}),
+            id="max-rows",
+        ),
+    ],
+)
+def test_hostile_scalars_render_a_fixed_non_retryable_refusal(
+    request_input: dict[str, Any],
+) -> None:
+    context, _ = _context(request_input)
+    with pytest.raises(OperationError) as raised:
+        analysis_start(context)
+    assert raised.value.code == ERROR_CODE_INVALID_REQUEST
+    assert raised.value.retry_class == "non_retryable"
+    # No job, audit or result side effect, and no operator text in the error.
+    assert raised.value.job_reference is None
+    assert raised.value.audit_reference is None
+    assert raised.value.__dict__.get("authorization") is None
+    assert not hasattr(raised.value, "result")
+    assert raised.value.__cause__ is None
+    assert _OPERATOR_SECRET not in f"{raised.value}{raised.value!r}"
+
+
+# Scalar/byte-like hybrids that also mix in a container ABC. Every container
+# method records its call before raising, so the handler must not enter one.
+_HYBRID_CALLS: list[str] = []
+
+
+def _hostile_protocol(self: Any, *args: Any, **kwargs: Any) -> Any:
+    _HYBRID_CALLS.append(type(self).__name__)
+    raise RuntimeError(_OPERATOR_SECRET)
+
+
+def _hybrid(scalar: type, container: type) -> type:
+    namespace = {
+        name: _hostile_protocol
+        for name in ("__iter__", "__len__", "__getitem__", "__contains__", "keys")
+    }
+    return type(
+        f"_{scalar.__name__}_{container.__name__}", (scalar, container), namespace
+    )
+
+
+_HybridStrMapping = _hybrid(str, Mapping)
+_HybridIntSequence = _hybrid(int, Sequence)
+_HybridFloatMapping = _hybrid(float, Mapping)
+_HybridBytesSequence = _hybrid(bytes, Sequence)
+_HybridBytearrayMapping = _hybrid(bytearray, Mapping)
+
+
+@pytest.mark.parametrize(
+    "request_input",
+    [
+        pytest.param(_HybridStrMapping(), id="root-str-mapping"),
+        pytest.param(_HybridBytesSequence(), id="root-bytes-sequence"),
+        pytest.param(
+            dict(_valid_input(), use_class=_HybridFloatMapping()), id="use-class"
+        ),
+        pytest.param(
+            dict(_valid_input(), purpose_reference=_HybridBytearrayMapping()),
+            id="purpose-reference",
+        ),
+        pytest.param(
+            dict(
+                _valid_input(),
+                parameters=[{"name": "p", "value": {"k": _HybridIntSequence()}}],
+            ),
+            id="nested-parameter-value",
+        ),
+    ],
+)
+def test_scalar_container_hybrids_render_the_fixed_non_retryable_refusal(
+    request_input: Any,
+) -> None:
+    _HYBRID_CALLS.clear()
+    context, _ = _context(request_input)
+    with pytest.raises(OperationError) as raised:
+        analysis_start(context)
+    assert raised.value.code == ERROR_CODE_INVALID_REQUEST
+    assert raised.value.retry_class == "non_retryable"
+    assert raised.value.job_reference is None
+    assert raised.value.audit_reference is None
+    assert raised.value.__dict__.get("authorization") is None
+    assert not hasattr(raised.value, "result")
+    assert raised.value.__cause__ is None
+    assert _OPERATOR_SECRET not in f"{raised.value}{raised.value!r}"
+    assert _HYBRID_CALLS == []
