@@ -646,11 +646,14 @@ records below remain pending; neither provider has passed.
    `HOME` and `USER` so it selects the same login; it sets no `CLAUDE_CONFIG_DIR`
    and injects no token. The Claude MCP child is redirected to the harness-owned
    home and config directories with an empty token, so Core never sees the real
-   profile, but the login itself is not isolated per run. Guardrails: `--safe-mode`, `--restricted`, a private
-   per-run `TMPDIR` and empty workspace, strict MCP config, a bounded tool
-   allowlist, `dontAsk` with no prompts, no session persistence, an
-   `auth status --json` preflight, and no read, copy, print or deletion of the
-   real profile. Gate D has not passed; this change only permits the source.
+   profile, but the login itself is not isolated per run. Guardrails:
+   `--restricted`, a private per-run `TMPDIR` and empty workspace, exact strict
+   MCP config, a bounded tool allowlist, project-only setting sources, `dontAsk`
+   with no prompts, no session persistence, an `auth status --json` preflight,
+   and no read, copy, print or deletion of the real profile. `--safe-mode` is
+   intentionally absent because Claude Code 2.1.289 disables explicitly
+   configured MCP servers in that mode. Gate D has not passed; this change only
+   permits the source.
 4. Validate both records against the closed schema and confirm every I-1 through
    I-8 case and the restricted decision cases pass.
 5. Confirm temporary profiles, credentials, processes, roots and workspaces were

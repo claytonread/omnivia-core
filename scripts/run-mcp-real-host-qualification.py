@@ -505,8 +505,9 @@ def claude_command(
 ) -> list[str]:
     """One non-interactive run with named MCP calls pre-authorized and no prompts.
 
-    An existing login runs with ``--safe-mode`` and ``--restricted`` too, because
-    the host's own customizations and built-in tools are not ours to trust.
+    An existing login also runs with ``--restricted``, because the host's own
+    built-in tools are not ours to trust.  It does not add ``--safe-mode``: that
+    flag disables every MCP server, including the explicit ``--mcp-config``.
     """
     allowed = ",".join(claude_tool_name(tool) for tool in tools)
     command = [
@@ -529,7 +530,7 @@ def claude_command(
         "project",
     ]
     if existing_login:
-        command.extend(["--safe-mode", "--restricted"])
+        command.append("--restricted")
     return command
 
 
