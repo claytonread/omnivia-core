@@ -58,9 +58,17 @@ from omnivia_core.contracts.v1.semantics_result_use import (
 from omnivia_core_runtime.service.authorization import AuthorizedApplicationContext
 from omnivia_core_runtime.service.operations import OperationContext
 from omnivia_core_runtime.storage.dataset_state import (
+    COMPLETENESS,
+    CONTINUITY,
+    EVIDENCE_AVAILABILITY,
+    INITIAL_READINESS,
+    SCHEMA_COMPATIBILITY,
     DatasetStateObservation,
     DatasetStateRecord,
 )
+
+#: The largest value a bounded microsecond field may carry: a signed 64-bit integer.
+_MAX_US: Final = 2**63 - 1
 
 #: Every result-use class the shared evaluator admits. Deliberately the full set,
 #: `action_input` included, not the narrower admitted-analysis list.
@@ -109,6 +117,16 @@ class AnalysisUseAuthorityQuery:
     manifest_digest: ContentChecksum | None
     scope_digest: ContentChecksum
     observed_authority_epoch: str
+    initial_readiness: str
+    completeness: str
+    continuity: str
+    schema_compatibility: str
+    evidence_availability: str
+    freshness_deadline_at_us: int | None
+    verified_at_us: int
+    coverage_digest: ContentChecksum
+    source_observation_digest: ContentChecksum
+    recorded_at_us: int
     subject_digest: Identifier
     use_class: str
     evaluation_instant: datetime
@@ -118,12 +136,13 @@ class AnalysisUseAuthorityQuery:
 class AnalysisUseAuthoritySnapshot:
     """The resolver's answer to one query, with the current authority epoch.
 
-    False permission and policy flags are valid facts, not refusals.
+    False permission, freshness and policy flags are valid facts, not refusals.
     """
 
     query: AnalysisUseAuthorityQuery
     authority_epoch: str
     evidence_access_permitted: bool
+    freshness_ok: bool
     policy_permits_partial_or_stale: bool
     policy_ref: str
     policy_digest: ContentChecksum
@@ -270,6 +289,16 @@ def _build_query(
     )
     scope_digest = observation.scope_digest
     epoch = observation.observed_authority_epoch
+    initial_readiness = observation.initial_readiness
+    completeness = observation.completeness
+    continuity = observation.continuity
+    schema_compatibility = observation.schema_compatibility
+    evidence_availability = observation.evidence_availability
+    freshness_deadline = observation.freshness_deadline_at_us
+    verified_at = observation.verified_at_us
+    coverage_digest = dataset.coverage_digest
+    source_observation_digest = dataset.source_observation_digest
+    recorded_at = dataset.recorded_at_us
     manifest_absent = all(value is None for value in manifest)
     manifest_present = (
         _canonical_str(manifest[0], is_identifier)
@@ -287,6 +316,16 @@ def _build_query(
         and (manifest_absent or manifest_present)
         and _canonical_str(scope_digest, is_content_checksum)
         and _canonical_str(epoch, is_identifier)
+        and _canonical_str(initial_readiness, INITIAL_READINESS.__contains__)
+        and _canonical_str(completeness, COMPLETENESS.__contains__)
+        and _canonical_str(continuity, CONTINUITY.__contains__)
+        and _canonical_str(schema_compatibility, SCHEMA_COMPATIBILITY.__contains__)
+        and _canonical_str(evidence_availability, EVIDENCE_AVAILABILITY.__contains__)
+        and (freshness_deadline is None or _bounded_us(freshness_deadline))
+        and _bounded_us(verified_at)
+        and _canonical_str(coverage_digest, is_content_checksum)
+        and _canonical_str(source_observation_digest, is_content_checksum)
+        and _bounded_us(recorded_at)
         and _canonical_str(subject_digest, is_identifier)
         and type(use_class) is str
         and use_class in _USE_CLASSES
@@ -308,6 +347,16 @@ def _build_query(
         manifest_digest=manifest[2],
         scope_digest=scope_digest,
         observed_authority_epoch=epoch,
+        initial_readiness=initial_readiness,
+        completeness=completeness,
+        continuity=continuity,
+        schema_compatibility=schema_compatibility,
+        evidence_availability=evidence_availability,
+        freshness_deadline_at_us=freshness_deadline,
+        verified_at_us=verified_at,
+        coverage_digest=coverage_digest,
+        source_observation_digest=source_observation_digest,
+        recorded_at_us=recorded_at,
         subject_digest=subject_digest,
         use_class=use_class,
         evaluation_instant=instant,
@@ -322,6 +371,11 @@ def _canonical_str(value: object, check: Callable[[object], bool]) -> bool:
 
 def _canonical_tuple(value: object, check: Callable[[object], bool]) -> bool:
     return type(value) is tuple and all(_canonical_str(item, check) for item in value)
+
+
+def _bounded_us(value: object) -> bool:
+    # Exact `int` only: `bool` and every subclass fail the proof before any comparison.
+    return type(value) is int and 1 <= value <= _MAX_US
 
 
 def _valid_subject(subject: object) -> bool:
@@ -368,36 +422,50 @@ def _utc(value: object) -> datetime | None:
 
 
 def _bind_query(query: object) -> tuple[object, ...] | None:
-    """Every query value as exact built-in str, int, None and tuple, in field order.
+    """Every query value as an exact built-in str, int or None, in field order.
 
-    `None` if any value is not of its exact shape. Comparing two bindings therefore
-    runs only built-in equality: never a subclass hook, a dataclass `__eq__` or a
-    timezone method. Frozen dataclasses do not stop `object.__setattr__`, so this is
-    what proves the query was not rewritten while the resolver held it.
+    The subject and instant are bound by their own helpers, so the query's own fields
+    are the only thing read here. `None` if any value is not of an exact built-in type.
+    Comparing two bindings therefore runs only built-in equality: never a subclass
+    hook, a dataclass `__eq__` or a timezone method. Frozen dataclasses do not stop
+    `object.__setattr__`, so this is what proves the query was not rewritten while the
+    resolver held it.
     """
     if type(query) is not AnalysisUseAuthorityQuery:
         return None
     subject = _bind_subject(query.subject)
-    dataset = (query.dataset_id, query.dataset_revision, query.dataset_incarnation)
-    generation = query.state_generation
-    manifest = (query.manifest_id, query.manifest_revision, query.manifest_digest)
-    rest = (
+    instant = _bind_instant(query.evaluation_instant)
+    flat = (
+        query.dataset_id,
+        query.dataset_revision,
+        query.dataset_incarnation,
+        query.state_generation,
+        query.manifest_id,
+        query.manifest_revision,
+        query.manifest_digest,
         query.scope_digest,
         query.observed_authority_epoch,
+        query.initial_readiness,
+        query.completeness,
+        query.continuity,
+        query.schema_compatibility,
+        query.evidence_availability,
+        query.freshness_deadline_at_us,
+        query.verified_at_us,
+        query.coverage_digest,
+        query.source_observation_digest,
+        query.recorded_at_us,
         query.subject_digest,
         query.use_class,
     )
-    instant = _bind_instant(query.evaluation_instant)
-    if not (
-        subject is not None
-        and _strs(dataset)
-        and type(generation) is int
-        and all(value is None or type(value) is str for value in manifest)
-        and _strs(rest)
-        and instant is not None
-    ):
+    if subject is None or instant is None or not all(_exact_scalar(value) for value in flat):
         return None
-    return (subject, *dataset, generation, *manifest, *rest, instant)
+    return (subject, *flat, instant)
+
+
+def _exact_scalar(value: object) -> bool:
+    # Identity tests only: a subclass, `bool`, or any other type is not bound.
+    return type(value) is str or type(value) is int or value is None
 
 
 def _bind_subject(subject: object) -> tuple[object, ...] | None:
@@ -455,6 +523,7 @@ def _answers(
         and _bind_query(query) == binding
         and _canonical_str(snapshot.authority_epoch, is_identifier)
         and type(snapshot.evidence_access_permitted) is bool
+        and type(snapshot.freshness_ok) is bool
         and type(snapshot.policy_permits_partial_or_stale) is bool
         and _canonical_str(snapshot.policy_ref, is_identifier)
         and _canonical_str(snapshot.policy_digest, is_content_checksum)

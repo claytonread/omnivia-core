@@ -45,6 +45,11 @@ from omnivia_core_runtime.service.authorization import (
 )
 from omnivia_core_runtime.service.operations import OperationContext
 from omnivia_core_runtime.storage.dataset_state import (
+    COMPLETENESS,
+    CONTINUITY,
+    EVIDENCE_AVAILABILITY,
+    INITIAL_READINESS,
+    SCHEMA_COMPATIBILITY,
     DatasetStateObservation,
     DatasetStateRecord,
 )
@@ -300,6 +305,7 @@ def _snapshot(query: AnalysisUseAuthorityQuery, **overrides: Any) -> AnalysisUse
         "query": query,
         "authority_epoch": EPOCH_CURRENT,
         "evidence_access_permitted": True,
+        "freshness_ok": True,
         "policy_permits_partial_or_stale": False,
         "policy_ref": POLICY_REF,
         "policy_digest": POLICY_DIGEST,
@@ -700,21 +706,7 @@ def test_a_valid_dataset_state_is_flattened_exactly_into_the_query() -> None:
     query = resolver.queries[0]
     assert type(query) is AnalysisUseAuthorityQuery
     assert snapshot.query is query
-    assert {f.name for f in fields(query)} == {
-        "subject",
-        "dataset_id",
-        "dataset_revision",
-        "dataset_incarnation",
-        "state_generation",
-        "manifest_id",
-        "manifest_revision",
-        "manifest_digest",
-        "scope_digest",
-        "observed_authority_epoch",
-        "subject_digest",
-        "use_class",
-        "evaluation_instant",
-    }
+    assert tuple(f.name for f in fields(query)) == QUERY_FIELD_ORDER
     assert query.subject == _expected_subject(context)
     assert query.dataset_id == DATASET_ID
     assert query.dataset_revision == "rev-1"
@@ -725,6 +717,16 @@ def test_a_valid_dataset_state_is_flattened_exactly_into_the_query() -> None:
     assert query.manifest_digest == MANIFEST_DIGEST
     assert query.scope_digest == SCOPE_DIGEST
     assert query.observed_authority_epoch == EPOCH_OBSERVED
+    assert query.initial_readiness == "ready"
+    assert query.completeness == "complete"
+    assert query.continuity == "verified"
+    assert query.schema_compatibility == "compatible"
+    assert query.evidence_availability == "available"
+    assert query.freshness_deadline_at_us is None
+    assert query.verified_at_us == 1_790_000_000_000_000
+    assert query.coverage_digest == "sha256:" + "8" * 64
+    assert query.source_observation_digest == "sha256:" + "9" * 64
+    assert query.recorded_at_us == 1_790_000_000_000_001
     assert query.subject_digest == SUBJECT_DIGEST
     assert query.use_class == USE_CURRENT_PUBLICATION
     assert query.evaluation_instant == INSTANT
@@ -927,6 +929,231 @@ def test_every_use_class_passes(use_class: str) -> None:
     snapshot = _resolve(_valid_context(), resolver, use_class=use_class)
     assert resolver.queries[0].use_class == use_class
     assert snapshot.query is resolver.queries[0]
+
+
+# ---------------------------------------------------------------------------
+# 6b. DatasetState evidence: vocabularies, digests, bounded instants, the deadline
+# and the freshness flag. Every value is exact-typed before any hook can run.
+# ---------------------------------------------------------------------------
+
+#: The query's fields in declaration order. Pinned, so a reorder is a visible change.
+QUERY_FIELD_ORDER = (
+    "subject",
+    "dataset_id",
+    "dataset_revision",
+    "dataset_incarnation",
+    "state_generation",
+    "manifest_id",
+    "manifest_revision",
+    "manifest_digest",
+    "scope_digest",
+    "observed_authority_epoch",
+    "initial_readiness",
+    "completeness",
+    "continuity",
+    "schema_compatibility",
+    "evidence_availability",
+    "freshness_deadline_at_us",
+    "verified_at_us",
+    "coverage_digest",
+    "source_observation_digest",
+    "recorded_at_us",
+    "subject_digest",
+    "use_class",
+    "evaluation_instant",
+)
+
+#: Every (field, word) pair the observation vocabularies admit.
+VALID_EVIDENCE_WORDS = [
+    ("initial_readiness", "not_started"),
+    ("initial_readiness", "initialising"),
+    ("initial_readiness", "catching_up"),
+    ("initial_readiness", "ready"),
+    ("initial_readiness", "blocked"),
+    ("completeness", "complete"),
+    ("completeness", "partial"),
+    ("completeness", "unknown"),
+    ("continuity", "verified"),
+    ("continuity", "gap_detected"),
+    ("continuity", "unknown"),
+    ("continuity", "not_applicable"),
+    ("schema_compatibility", "compatible"),
+    ("schema_compatibility", "requires_review"),
+    ("schema_compatibility", "incompatible"),
+    ("schema_compatibility", "unknown"),
+    ("evidence_availability", "available"),
+    ("evidence_availability", "limited"),
+    ("evidence_availability", "unavailable"),
+]
+
+#: Integers that no microsecond field may carry: outside `1..2**63-1`, or not exact `int`.
+NOT_A_MICROSECOND = [
+    pytest.param(0, id="zero"),
+    pytest.param(-1, id="negative"),
+    pytest.param(2**63, id="overflow"),
+    pytest.param(True, id="true"),
+    pytest.param(False, id="false"),
+    pytest.param(1.0, id="float"),
+    pytest.param("1790000000000000", id="string"),
+    pytest.param(_IntSubclass(1_790_000_000_000_000), id="int-subclass"),
+]
+
+
+def _refuse_on(dataset: DatasetStateRecord) -> None:
+    """Assert the seam refuses `dataset` plainly, before the resolver is ever asked."""
+    resolver = _Resolver()
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve(_valid_context(), resolver, dataset=dataset)
+    _assert_plain_refusal(raised.value)
+    assert not resolver.queries
+    assert EQUALITY_CALLS == []
+
+
+def test_the_valid_word_list_covers_each_vocabulary_exactly() -> None:
+    vocabularies = {
+        "initial_readiness": INITIAL_READINESS,
+        "completeness": COMPLETENESS,
+        "continuity": CONTINUITY,
+        "schema_compatibility": SCHEMA_COMPATIBILITY,
+        "evidence_availability": EVIDENCE_AVAILABILITY,
+    }
+    for field_name, vocabulary in vocabularies.items():
+        assert {word for name, word in VALID_EVIDENCE_WORDS if name == field_name} == vocabulary
+
+
+@pytest.mark.parametrize(("field_name", "word"), VALID_EVIDENCE_WORDS)
+def test_every_listed_evidence_word_is_carried_through_exactly(field_name: str, word: str) -> None:
+    resolver = _Resolver()
+    _resolve(_valid_context(), resolver, dataset=_record(observation=_observation(**{field_name: word})))
+    assert getattr(resolver.queries[0], field_name) == word
+    assert type(getattr(resolver.queries[0], field_name)) is str
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad"),
+    [
+        pytest.param("initial_readiness", "Ready", id="readiness-case"),
+        pytest.param("initial_readiness", "ready ", id="readiness-trailing-space"),
+        pytest.param("initial_readiness", "done", id="readiness-unlisted"),
+        pytest.param("initial_readiness", None, id="readiness-none"),
+        pytest.param("initial_readiness", _Spoof("ready"), id="readiness-spoof"),
+        pytest.param("completeness", "Complete", id="completeness-case"),
+        pytest.param("completeness", _Spoof("complete"), id="completeness-spoof"),
+        pytest.param("continuity", "gap-detected", id="continuity-hyphenated"),
+        pytest.param("continuity", 0, id="continuity-int"),
+        pytest.param("continuity", _Spoof("verified"), id="continuity-spoof"),
+        pytest.param("schema_compatibility", "compatible_ish", id="schema-unlisted"),
+        pytest.param("schema_compatibility", None, id="schema-none"),
+        pytest.param("schema_compatibility", _Spoof("compatible"), id="schema-spoof"),
+        pytest.param("evidence_availability", "full", id="evidence-unlisted"),
+        pytest.param("evidence_availability", b"available", id="evidence-bytes"),
+        pytest.param("evidence_availability", _Spoof("available"), id="evidence-spoof"),
+    ],
+)
+def test_an_evidence_word_outside_its_vocabulary_refuses(field_name: str, bad: Any) -> None:
+    _refuse_on(_record(observation=_observation(**{field_name: bad})))
+
+
+@pytest.mark.parametrize("field_name", ["coverage_digest", "source_observation_digest"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param("sha256:" + "A" * 64, id="uppercase"),
+        pytest.param("sha256:" + "a" * 63, id="short"),
+        pytest.param("sha256:" + "a" * 65, id="long"),
+        pytest.param("sha1:" + "a" * 64, id="algorithm"),
+        pytest.param("a" * 64, id="bare-hex"),
+        pytest.param("sha256:" + "a" * 64 + "\n", id="trailing-newline"),
+        pytest.param(None, id="none"),
+        pytest.param(_Spoof("sha256:" + "a" * 64), id="spoof"),
+    ],
+)
+def test_an_invalid_evidence_digest_refuses(field_name: str, bad: Any) -> None:
+    _refuse_on(_record(**{field_name: bad}))
+
+
+@pytest.mark.parametrize("bad", [*NOT_A_MICROSECOND, pytest.param(None, id="none")])
+def test_an_invalid_verified_instant_refuses(bad: Any) -> None:
+    _refuse_on(_record(observation=_observation(verified_at_us=bad)))
+
+
+@pytest.mark.parametrize("bad", [*NOT_A_MICROSECOND, pytest.param(None, id="none")])
+def test_an_invalid_recorded_instant_refuses(bad: Any) -> None:
+    _refuse_on(_record(recorded_at_us=bad))
+
+
+@pytest.mark.parametrize("bad", NOT_A_MICROSECOND)
+def test_an_invalid_freshness_deadline_refuses(bad: Any) -> None:
+    _refuse_on(_record(observation=_observation(freshness_deadline_at_us=bad)))
+
+
+@pytest.mark.parametrize(
+    "deadline",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param(1, id="smallest"),
+        pytest.param(1_790_000_000_500_000, id="typical"),
+        pytest.param(2**63 - 1, id="largest"),
+    ],
+)
+def test_a_freshness_deadline_that_is_none_or_bounded_is_carried_through(deadline: int | None) -> None:
+    resolver = _Resolver()
+    _resolve(_valid_context(), resolver, dataset=_record(observation=_observation(freshness_deadline_at_us=deadline)))
+    assert resolver.queries[0].freshness_deadline_at_us == deadline
+    assert type(resolver.queries[0].freshness_deadline_at_us) is type(deadline)
+
+
+@pytest.mark.parametrize("bound", [1, 2**63 - 1])
+def test_the_microsecond_bounds_are_inclusive_for_both_instants(bound: int) -> None:
+    resolver = _Resolver()
+    dataset = _record(observation=_observation(verified_at_us=bound), recorded_at_us=bound)
+    _resolve(_valid_context(), resolver, dataset=dataset)
+    query = resolver.queries[0]
+    assert (query.verified_at_us, query.recorded_at_us) == (bound, bound)
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_freshness_true_and_false_are_both_accepted(fresh: bool) -> None:
+    resolver = _Resolver(lambda q: _snapshot(q, freshness_ok=fresh))
+    snapshot = _resolve(_valid_context(), resolver)
+    assert snapshot.freshness_ok is fresh
+    assert type(snapshot.freshness_ok) is bool
+
+
+@pytest.mark.parametrize(
+    "freshness",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(1, id="one"),
+        pytest.param(0, id="zero"),
+        pytest.param("True", id="string"),
+        pytest.param(_IntSubclass(1), id="int-subclass"),
+    ],
+)
+def test_a_non_bool_freshness_flag_refuses(freshness: Any) -> None:
+    resolver = _Resolver(lambda q: _snapshot(q, freshness_ok=freshness))
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve(_valid_context(), resolver)
+    _assert_plain_refusal(raised.value)
+    assert EQUALITY_CALLS == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(_IntSubclass(1_790_000_000_500_000), id="int-subclass"),
+        pytest.param(True, id="true"),
+        pytest.param(1.0, id="float"),
+    ],
+)
+def test_a_deadline_written_in_during_resolve_as_a_non_exact_int_refuses(value: Any) -> None:
+    resolver, targets = _mutating_resolver(_at_query, {"freshness_deadline_at_us": value})
+    with pytest.raises(AnalysisUseAuthorityRefused) as raised:
+        _resolve_subject(_rich_subject(), resolver)
+    _assert_plain_refusal(raised.value)
+    assert len(resolver.queries) == 1
+    assert targets[0].freshness_deadline_at_us is value
+    assert EQUALITY_CALLS == []
 
 
 # ---------------------------------------------------------------------------
@@ -1415,6 +1642,16 @@ QUERY_MUTATIONS: dict[str, Any] = {
     "manifest_digest": "sha256:" + "a" * 64,
     "scope_digest": "sha256:" + "b" * 64,
     "observed_authority_epoch": "epoch-observed-9",
+    "initial_readiness": "blocked",
+    "completeness": "partial",
+    "continuity": "gap_detected",
+    "schema_compatibility": "requires_review",
+    "evidence_availability": "limited",
+    "freshness_deadline_at_us": 1_790_000_000_500_000,
+    "verified_at_us": 1_790_000_000_000_500,
+    "coverage_digest": "sha256:" + "c" * 64,
+    "source_observation_digest": "sha256:" + "d" * 64,
+    "recorded_at_us": 1_790_000_000_000_002,
     "subject_digest": "subject-2",
     "use_class": USE_EXPLORATION,
     "evaluation_instant": INSTANT + timedelta(hours=1),
@@ -1594,6 +1831,13 @@ HOSTILE_LEAVES = [
     _hostile_leaf(_at_query, "observed_authority_epoch", EPOCH_OBSERVED),
     _hostile_leaf(_at_query, "subject_digest", SUBJECT_DIGEST),
     _hostile_leaf(_at_query, "use_class", USE_CURRENT_PUBLICATION),
+    _hostile_leaf(_at_query, "initial_readiness", "ready"),
+    _hostile_leaf(_at_query, "completeness", "complete"),
+    _hostile_leaf(_at_query, "continuity", "verified"),
+    _hostile_leaf(_at_query, "schema_compatibility", "compatible"),
+    _hostile_leaf(_at_query, "evidence_availability", "available"),
+    _hostile_leaf(_at_query, "coverage_digest", "sha256:" + "8" * 64),
+    _hostile_leaf(_at_query, "source_observation_digest", "sha256:" + "9" * 64),
     _hostile_leaf(_at_subject, "operation", OPERATION),
     _hostile_leaf(_at_subject, "workspace_id", WORKSPACE),
     _hostile_leaf(_at_subject, "purpose", PURPOSE),
@@ -1662,6 +1906,8 @@ SUBSTITUTIONS = [
     pytest.param(_at_subject, "scopes", _ScopesSubclass, 3, id="scopes"),
     pytest.param(_at_authority, "capabilities", _ScopesSubclass, 3, id="capabilities"),
     pytest.param(_at_query, "evaluation_instant", _instant_wrong_type, 3, id="evaluation-instant"),
+    pytest.param(_at_query, "verified_at_us", _IntSubclass, 3, id="verified-at-us-int"),
+    pytest.param(_at_query, "recorded_at_us", _IntSubclass, 3, id="recorded-at-us-int"),
 ]
 
 
@@ -1791,7 +2037,7 @@ def test_an_authority_rewritten_by_the_timezone_hook_refuses_before_the_resolver
     assert not resolver.queries
 
 
-#: The eight observation values the query carries under the same name.
+#: The observation values the query carries under the same name.
 OBSERVATION_QUERY_FIELDS = (
     "dataset_id",
     "dataset_revision",
@@ -1801,19 +2047,36 @@ OBSERVATION_QUERY_FIELDS = (
     "manifest_digest",
     "scope_digest",
     "observed_authority_epoch",
+    "initial_readiness",
+    "completeness",
+    "continuity",
+    "schema_compatibility",
+    "evidence_availability",
+    "freshness_deadline_at_us",
+    "verified_at_us",
 )
+#: The record values the query carries under the same name.
+RECORD_QUERY_FIELDS = ("coverage_digest", "source_observation_digest", "recorded_at_us")
 OTHER_GENERATION = 4
 
 
 def _dataset_values(record: DatasetStateRecord) -> dict[str, Any]:
     """Every dataset-derived query value, read straight off the record."""
     values: dict[str, Any] = {"state_generation": record.state_generation}
+    values.update({name: getattr(record, name) for name in RECORD_QUERY_FIELDS})
     values.update({name: getattr(record.observation, name) for name in OBSERVATION_QUERY_FIELDS})
     return values
 
 
 def _rewrite_generation(record: DatasetStateRecord) -> None:
     object.__setattr__(record, "state_generation", OTHER_GENERATION)
+
+
+def _rewrite_record_field(name: str) -> Callable[[DatasetStateRecord], None]:
+    def rewrite(record: DatasetStateRecord) -> None:
+        object.__setattr__(record, name, QUERY_MUTATIONS[name])
+
+    return rewrite
 
 
 def _rewrite_observation_field(name: str) -> Callable[[DatasetStateRecord], None]:
@@ -1836,6 +2099,7 @@ DATASET_REWRITES = [
         pytest.param(_rewrite_observation_field(name), {name}, False, id=f"observation-{name}")
         for name in OBSERVATION_QUERY_FIELDS
     ),
+    *(pytest.param(_rewrite_record_field(name), {name}, False, id=f"record-{name}") for name in RECORD_QUERY_FIELDS),
     pytest.param(_rewrite_observation, set(OBSERVATION_QUERY_FIELDS), True, id="observation-replaced"),
 ]
 
