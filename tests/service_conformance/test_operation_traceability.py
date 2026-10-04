@@ -10,7 +10,7 @@ claiming a result.
 
 MCP and CLI are not service adapters here. Each is a single top-level
 client-surface decision, never a per-operation applicability claim. Format
-``v1.1`` records the accepted MCP mapping: the twenty-five operations the curated
+``v1.1`` records the accepted MCP mapping: the twenty-nine operations the curated
 MCP exposure manifest allow-lists, each with its tool name, and every other
 catalogue operation as an intentional omission with its reason. The CLI
 mapping is still not decided, and neither surface's evidence is evaluated
@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.5",
+    "manifest_version": "2.6",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -102,6 +102,10 @@ MCP_EXPOSED = (
     ("skills.draft.create", "skills_draft_create"),
     ("skills.draft.update", "skills_draft_update"),
     ("skills.proposal.submit", "skills_proposal_submit"),
+    ("knowledge.share.propose", "knowledge_share_propose"),
+    ("knowledge.share.decide", "knowledge_share_decide"),
+    ("knowledge.share.read", "knowledge_share_read"),
+    ("knowledge.share.lineage", "knowledge_share_lineage"),
 )
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
@@ -288,8 +292,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 25
-    assert len(omitted) == 48
+    assert len(exposed) == 29
+    assert len(omitted) == 44
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -307,12 +311,13 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
             # (audit/evaluation records); the tool description states this.
             # The authoring additions (`memory.create`, `evidence.capture`,
             # `import.start`, the three trigger mutations and the three skill authoring
-            # mutations) are mutation-bearing.
+            # mutations, and the two knowledge sharing mutations) are mutation-bearing.
             assert entry["operation"] in (
                 "decision.evaluate",
                 "memory.create", "evidence.capture", "import.start",
                 "trigger.declare", "trigger.lifecycle", "trigger.ingest",
                 "skills.draft.create", "skills.draft.update", "skills.proposal.submit",
+                "knowledge.share.propose", "knowledge.share.decide",
             )
         else:
             assert op.scope.side_effect == "none"
@@ -342,8 +347,6 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         "decision.result_use.evaluate",
         "workspace.list",
         "skills.resolve",
-        "knowledge.share.read",
-        "knowledge.share.lineage",
     }
 
 

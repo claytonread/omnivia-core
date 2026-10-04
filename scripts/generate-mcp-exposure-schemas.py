@@ -107,6 +107,10 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "skills.draft.create",
     "skills.draft.update",
     "skills.proposal.submit",
+    "knowledge.share.propose",
+    "knowledge.share.decide",
+    "knowledge.share.read",
+    "knowledge.share.lineage",
 )
 
 #: Advertised schemas that belong to no operation. One entry: the canonical

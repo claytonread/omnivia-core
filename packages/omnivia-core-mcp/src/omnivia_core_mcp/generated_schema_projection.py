@@ -7903,6 +7903,527 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareDecideInput",
+        "description": "Input for `knowledge.share.decide`. An owner of the share's source Project accepts it or revokes it. An acceptance must come from an owner other than the proposer and only while the shared version is still sealed, canonical, accepted and unsuperseded; a revocation is only recorded against an accepted share. The source Project is read from the share, never from this payload. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share to decide.",
+            },
+            "decision": {
+                "$ref": "#/$defs/knowledge__KnowledgeShareDecision",
+                "description": "Whether to accept or revoke the share.",
+            },
+        },
+        "required": [
+            "share_id",
+            "decision",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "knowledge__KnowledgeShareDecision": {
+                "title": "KnowledgeShareDecision",
+                "description": "The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no third decision exists, and a revocation is only recorded against a share that was accepted.",
+                "type": "string",
+                "enum": [
+                    "accepted",
+                    "revoked",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareDecideResult",
+        "description": "Result of `knowledge.share.decide`: the decision as recorded and the state the share now holds. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share decided.",
+            },
+            "decision": {
+                "$ref": "#/$defs/knowledge__KnowledgeShareDecision",
+                "description": "The decision recorded.",
+            },
+            "state": {
+                "$ref": "#/$defs/knowledge__KnowledgeShareState",
+                "description": "The state the share holds after the decision.",
+            },
+            "decided_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the decision.",
+            },
+        },
+        "required": [
+            "share_id",
+            "decision",
+            "state",
+            "decided_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "knowledge__KnowledgeShareDecision": {
+                "title": "KnowledgeShareDecision",
+                "description": "The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no third decision exists, and a revocation is only recorded against a share that was accepted.",
+                "type": "string",
+                "enum": [
+                    "accepted",
+                    "revoked",
+                ],
+            },
+            "knowledge__KnowledgeShareState": {
+                "title": "KnowledgeShareState",
+                "description": "Where one knowledge share stands, derived from its decisions on every read and never stored as a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and `revoked` was accepted and is no longer eligible.",
+                "type": "string",
+                "enum": [
+                    "proposed",
+                    "accepted",
+                    "revoked",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareLineageInput",
+        "description": "Input for `knowledge.share.lineage`. An owner of the share's source Project reads the share and every decision recorded against it, revoked ones included. Historical lineage stays readable after revocation. A recipient is not a source owner and cannot read it. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share whose lineage is read.",
+            },
+        },
+        "required": [
+            "share_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareLineageResult",
+        "description": "Result of `knowledge.share.lineage`: the share, the state its decisions currently derive, and every decision in the order it was recorded.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share this result describes.",
+            },
+            "source_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project that owns the shared record, as the server's Project binding states it.",
+            },
+            "recipient_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one Project the share is addressed to.",
+            },
+            "record_id": {
+                "$ref": "#/$defs/records__RecordId",
+                "description": "The governed record shared.",
+            },
+            "governed_record_version_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one sealed, canonical, accepted governed version the share is bound to.",
+            },
+            "content_digest": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "The digest of that version's content, which a recipient read must still find unchanged.",
+            },
+            "state": {
+                "$ref": "#/$defs/knowledge__KnowledgeShareState",
+                "description": "The state the recorded decisions derive.",
+            },
+            "proposed_by": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The principal that proposed the share.",
+            },
+            "decisions": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/knowledge__KnowledgeShareDecisionRecord",
+                },
+                "description": "Every decision recorded against the share, accepted and revoked, in the order recorded.",
+            },
+        },
+        "required": [
+            "share_id",
+            "source_project_id",
+            "recipient_project_id",
+            "record_id",
+            "governed_record_version_id",
+            "content_digest",
+            "state",
+            "proposed_by",
+            "decisions",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "knowledge__KnowledgeShareDecision": {
+                "title": "KnowledgeShareDecision",
+                "description": "The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no third decision exists, and a revocation is only recorded against a share that was accepted.",
+                "type": "string",
+                "enum": [
+                    "accepted",
+                    "revoked",
+                ],
+            },
+            "knowledge__KnowledgeShareDecisionRecord": {
+                "title": "KnowledgeShareDecisionRecord",
+                "description": "One decision recorded against a share, kept after a later revocation so a source owner can still read how the share was authorised.",
+                "type": "object",
+                "properties": {
+                    "decision": {
+                        "$ref": "#/$defs/knowledge__KnowledgeShareDecision",
+                        "description": "The decision recorded.",
+                    },
+                    "decided_by": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The principal that recorded the decision, as the server authenticated it.",
+                    },
+                    "decided_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When Core recorded the decision.",
+                    },
+                },
+                "required": [
+                    "decision",
+                    "decided_by",
+                    "decided_at",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__KnowledgeShareState": {
+                "title": "KnowledgeShareState",
+                "description": "Where one knowledge share stands, derived from its decisions on every read and never stored as a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and `revoked` was accepted and is no longer eligible.",
+                "type": "string",
+                "enum": [
+                    "proposed",
+                    "accepted",
+                    "revoked",
+                ],
+            },
+            "records__RecordId": {
+                "title": "RecordId",
+                "description": "Stable identifier of a governed record, constant across every version of that record.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareProposeInput",
+        "description": "Input for `knowledge.share.propose`. An owner of the Project that holds a governed record proposes sharing that record's current sealed, canonical version with one other Project. The source Project is never stated here: the server derives it from the record's own domain scope and the Project bindings it holds, and refuses a caller that is not a bound owner of that Project. Naming a recipient grants nothing; the share is eligible only after a different owner accepts it. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The caller-chosen identity of this share. Proposing the same share again under the same identity is an honest replay; a different proposal under it is a conflict.",
+            },
+            "record_id": {
+                "$ref": "#/$defs/records__RecordId",
+                "description": "The governed record whose current canonical version is proposed for sharing.",
+            },
+            "recipient_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project the share is addressed to. It must be a Project the server binds, and it must not be the source Project.",
+            },
+        },
+        "required": [
+            "share_id",
+            "record_id",
+            "recipient_project_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "records__RecordId": {
+                "title": "RecordId",
+                "description": "Stable identifier of a governed record, constant across every version of that record.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareProposeResult",
+        "description": "Result of `knowledge.share.propose`: the share as recorded, still `proposed`. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share this result describes.",
+            },
+            "source_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project that owns the shared record, as the server's Project binding states it.",
+            },
+            "recipient_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one Project the share is addressed to.",
+            },
+            "record_id": {
+                "$ref": "#/$defs/records__RecordId",
+                "description": "The governed record shared.",
+            },
+            "governed_record_version_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one sealed, canonical, accepted governed version the share is bound to.",
+            },
+            "content_digest": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "The digest of that version's content, which a recipient read must still find unchanged.",
+            },
+            "state": {
+                "$ref": "#/$defs/knowledge__KnowledgeShareState",
+                "description": "Always `proposed` on this result: proposing grants the recipient nothing.",
+            },
+            "proposed_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the proposal.",
+            },
+        },
+        "required": [
+            "share_id",
+            "source_project_id",
+            "recipient_project_id",
+            "record_id",
+            "governed_record_version_id",
+            "content_digest",
+            "state",
+            "proposed_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "knowledge__KnowledgeShareState": {
+                "title": "KnowledgeShareState",
+                "description": "Where one knowledge share stands, derived from its decisions on every read and never stored as a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and `revoked` was accepted and is no longer eligible.",
+                "type": "string",
+                "enum": [
+                    "proposed",
+                    "accepted",
+                    "revoked",
+                ],
+            },
+            "records__RecordId": {
+                "title": "RecordId",
+                "description": "Stable identifier of a governed record, constant across every version of that record.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareReadInput",
+        "description": "Input for `knowledge.share.read`. A member of the recipient Project reads the one governed version a share makes eligible. The recipient Project is never stated here: the server reads it from the share and requires the caller to be bound to it. Possessing a share identifier, holding a broad knowledge-read grant, belonging to the workspace, or having read the share before confers nothing: eligibility is re-derived from the accepted and revoked decisions and the shared version's currentness on every call. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share to read.",
+            },
+        },
+        "required": [
+            "share_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "KnowledgeShareReadResult",
+        "description": "Result of `knowledge.share.read`: the shared version's identity, its digest and its content, served only while the share is accepted, unrevoked and still points at the sealed version it was proposed under.",
+        "type": "object",
+        "properties": {
+            "share_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The share this result describes.",
+            },
+            "source_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project that owns the shared record, as the server's Project binding states it.",
+            },
+            "recipient_project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one Project the share is addressed to.",
+            },
+            "record_id": {
+                "$ref": "#/$defs/records__RecordId",
+                "description": "The governed record shared.",
+            },
+            "governed_record_version_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one sealed, canonical, accepted governed version the share is bound to.",
+            },
+            "content_digest": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "The digest of that version's content, which a recipient read must still find unchanged.",
+            },
+            "domain_scope": {
+                "$ref": "#/$defs/memory__RecordDomainScope",
+                "description": "The domain scope the shared record was created in, which the source Project's binding must still own.",
+            },
+            "content": {
+                "type": "object",
+                "description": "The sealed version's content, exactly as the governed record holds it; `content_digest` is the digest of this content.",
+            },
+        },
+        "required": [
+            "share_id",
+            "source_project_id",
+            "recipient_project_id",
+            "record_id",
+            "governed_record_version_id",
+            "content_digest",
+            "domain_scope",
+            "content",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "memory__RecordDomainScope": {
+                "title": "RecordDomainScope",
+                "description": "Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the caller-authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or checks a permission, it only classifies what the record is about. Open by design so a compatible minor release can add classifications without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "records__RecordId": {
+                "title": "RecordId",
+                "description": "Stable identifier of a governed record, constant across every version of that record.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "MemoryCreateInput",

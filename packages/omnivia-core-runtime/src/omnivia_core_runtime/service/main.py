@@ -96,6 +96,10 @@ from omnivia_core_runtime.service.installation_bootstrap import (
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
 )
+from omnivia_core_runtime.service.knowledge_projects import (
+    KnowledgeProjectsRefused,
+    load_project_authorities,
+)
 from omnivia_core_runtime.service.knowledge_sharing import NO_PROJECTS, ProjectAuthority
 from omnivia_core_runtime.service.legacy_import import (
     LegacyImportRefused,
@@ -303,8 +307,9 @@ def _build_production_application_surface(
 
     `project_authority` is the server's Project binding for cross-Project knowledge sharing
     (DEV-REQ-081): who owns a Project's domain scope and who is a member of it. It is composition
-    state, not a request field, and the console script exposes no flag that supplies one, so a
-    service started from it binds no Project and every `knowledge.share.*` operation refuses.
+    state, not a request field. `serve` takes it from the installation's own Project document
+    (`service/knowledge_projects.py`), and a service with no document binds no Project, so every
+    `knowledge.share.*` operation refuses.
     """
     if started.workspace_id is None:
         raise ValueError("a production application surface needs a workspace")
@@ -958,6 +963,16 @@ def main(
         )
         return 2
 
+    # The Project bindings each served workspace is composed with. Read here, before anything can be
+    # advertised, and not for --check-only, which serves nothing. A refusal is a refusal to start.
+    project_authorities: Mapping[str, ProjectAuthority] = {}
+    if not args.check_only:
+        try:
+            project_authorities = load_project_authorities(settings.installation_root)
+        except KnowledgeProjectsRefused as refused:
+            sys.stderr.write(f"refusing to serve: {refused}\n")
+            return 2
+
     source_work: Callable[[], object] | None = None
 
     def serve(started: ServiceRunner) -> None:
@@ -1038,6 +1053,9 @@ def main(
             installation=installation,
             resolve_workflow_release=resolve_workflow_release,
             workflow_wait_policy=workflow_wait_policy,
+            project_authority=project_authorities.get(
+                started.workspace_id, NO_PROJECTS
+            ),
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

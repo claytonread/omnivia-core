@@ -50,7 +50,7 @@ def _record() -> dict[str, object]:
         "verdict": "pass",
         "profile": "authoring",
         "protocol_version": "2025-06-18",
-        "tool_count": 25,
+        "tool_count": 29,
         "tools": [
             "workspace_inspect",
             "evidence_search",
@@ -77,6 +77,10 @@ def _record() -> dict[str, object]:
             "skills_draft_create",
             "skills_draft_update",
             "skills_proposal_submit",
+            "knowledge_share_propose",
+            "knowledge_share_decide",
+            "knowledge_share_read",
+            "knowledge_share_lineage",
         ],
         "sdk_versions": {"mcp": "2.0.0", "mcp-types": "2.0.0"},
         "environment": {

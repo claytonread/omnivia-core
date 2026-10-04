@@ -20,7 +20,7 @@
       "mapping_source": {
         "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
         "symbol": "EXPOSURE_MANIFEST",
-        "manifest_version": "2.5"
+        "manifest_version": "2.6"
       },
       "exposed": [
         {
@@ -122,6 +122,22 @@
         {
           "operation": "skills.proposal.submit",
           "tool": "skills_proposal_submit"
+        },
+        {
+          "operation": "knowledge.share.propose",
+          "tool": "knowledge_share_propose"
+        },
+        {
+          "operation": "knowledge.share.decide",
+          "tool": "knowledge_share_decide"
+        },
+        {
+          "operation": "knowledge.share.read",
+          "tool": "knowledge_share_read"
+        },
+        {
+          "operation": "knowledge.share.lineage",
+          "tool": "knowledge_share_lineage"
         }
       ],
       "omitted": [
@@ -299,22 +315,6 @@
         },
         {
           "operation": "skills.resolve",
-          "reason": "read_not_allow_listed"
-        },
-        {
-          "operation": "knowledge.share.propose",
-          "reason": "mutation"
-        },
-        {
-          "operation": "knowledge.share.decide",
-          "reason": "mutation"
-        },
-        {
-          "operation": "knowledge.share.read",
-          "reason": "read_not_allow_listed"
-        },
-        {
-          "operation": "knowledge.share.lineage",
           "reason": "read_not_allow_listed"
         }
       ],
