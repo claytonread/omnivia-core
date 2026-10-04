@@ -45,6 +45,7 @@ import test_application_audit_idempotency_migration as m1
 import test_t0688_workflow_transition_bundle_repository as ip07
 import test_t0693_workflow_application as app
 import test_workflow_runs_migration as m27
+from _completion_gate_fixture import gate
 from omnivia_core_runtime.execution.workflow import (
     EXECUTION_CLASS_WAIT,
     ChildWorkflowDefinition,
@@ -183,6 +184,7 @@ def scheduler(holder: m1.Owned, *, clock: FakeClock | None = None) -> RuntimeSch
         workspace_id=WORKSPACE_ID,
         fencing_generation=holder.generation,
         clock=FakeClock(wall=WALL) if clock is None else clock,
+        completion=gate(),
     )
 
 
@@ -817,6 +819,7 @@ def test_a_claim_from_another_owner_cannot_be_settled_here(owned: m1.Owned) -> N
         workspace_id=WORKSPACE_ID,
         fencing_generation=owned.generation,
         clock=FakeClock(wall=WALL),
+        completion=gate(),
     )
     with pytest.raises(RuntimeSchedulingError):
         stranger.complete(claim, result_kind="runtime_completion", result={"ok": True})

@@ -12,6 +12,7 @@ import pytest
 import test_application_audit_idempotency_migration as m1
 import test_rt102_agent_runtime_migration as m18
 import test_rt102_agent_runtime_repository as rt102
+from _completion_gate_fixture import gate
 from omnivia_core_runtime.ownership.fencing import StaleGeneration
 from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.runtime_scheduler import (
@@ -125,6 +126,7 @@ def _scheduler(holder: m1.Owned) -> RuntimeScheduler:
         WORKSPACE_ID,
         holder.generation,
         m1.FakeClock(wall=datetime.fromtimestamp((BASE_US + 1_000) / 1_000_000, UTC)),
+        completion=gate(),
     )
 
 

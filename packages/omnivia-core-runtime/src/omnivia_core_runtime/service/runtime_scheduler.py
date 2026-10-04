@@ -59,6 +59,10 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
+from omnivia_core_runtime.service.completion_gate import (
+    CompletionGate,
+    settle_completion,
+)
 from omnivia_core_runtime.service.jobs import (
     JobState,
     _claim_application_job_locked,
@@ -246,6 +250,10 @@ class RuntimeScheduler:
     fencing_generation: int
     clock: Clock
     plan: RuntimeStepPlan | None = None
+    #: The Runtime's configured authority for final completion. Absent by default, and then no
+    #: run can terminalize as succeeded: the final settlement is refused, not accepted on the
+    #: caller's word. See :mod:`omnivia_core_runtime.service.completion_gate`.
+    completion: CompletionGate | None = None
 
     def claim_next(self) -> RuntimeClaim | None:
         """Atomically claim the oldest runnable runtime-bound durable job.
@@ -364,6 +372,14 @@ class RuntimeScheduler:
         transaction rolls back, this step is not recorded as succeeded, and the caller is
         told the run cannot proceed rather than left holding a claim over a run nothing
         will ever pick up.
+
+        **Final completion needs the Runtime's own proof.** Settling the last step as the run
+        succeeded is decided by :func:`~omnivia_core_runtime.service.completion_gate.settle_completion`
+        from accepted criteria and evidence read through the configured gate, never from
+        ``result_kind`` or ``result``, which are stored as the provider's record only. A refusal
+        there raises :class:`~omnivia_core_runtime.service.completion_gate.CompletionRefused`
+        and rolls back the whole final settlement, so the claim stays open and a later valid
+        proof can settle it. Intermediate steps are not affected.
         """
         self._require_scheduler_claim(claim)
         with fenced_transaction(
@@ -412,6 +428,17 @@ class RuntimeScheduler:
                     message="runtime scheduler advanced to the next ready step",
                     settled_step_id=claim.run_step_id,
                 )
+            decision = settle_completion(
+                self.connection,
+                self.completion,
+                workspace_id=self.workspace_id,
+                run_id=claim.run_id,
+                job_id=claim.job_id,
+                run_step_id=claim.run_step_id,
+                runtime_attempt_id=claim.runtime_attempt_id,
+                fencing_generation=self.fencing_generation,
+                decided_at_us=now_us,
+            )
             _terminalize_application_job(
                 self.connection,
                 self.identity,
@@ -430,6 +457,7 @@ class RuntimeScheduler:
                 event_kind=_EVENT_RUN_SUCCEEDED,
                 run_status=RUN_STATUS_SUCCEEDED,
                 message="runtime scheduler settled the run as succeeded",
+                completion_decision_digest=decision.decision_digest,
             )
         return None
 
@@ -812,6 +840,7 @@ class RuntimeScheduler:
         message: str,
         settled_step_id: str | None = None,
         failure: ApiError | None = None,
+        completion_decision_digest: str | None = None,
     ) -> None:
         """One entry on the run's stream, carrying the lineage this claim was made under."""
         event_sequence = (
@@ -835,6 +864,8 @@ class RuntimeScheduler:
             details["settled_run_step_id"] = settled_step_id
         if failure is not None:
             details["failure"] = dict(failure.to_wire())
+        if completion_decision_digest is not None:
+            details["completion_decision_digest"] = completion_decision_digest
         transaction_local_writer(
             self.connection, workspace_id=self.workspace_id
         ).append_run_event(
