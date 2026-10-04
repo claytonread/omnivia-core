@@ -273,9 +273,11 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     Returns ``(outcome_code, detail)`` where ``outcome_code`` is one of the
     four typed outcomes CO-3 fixes: ``invalid_request``,
     ``incompatible_version``, ``unsupported_minor_version`` or
-    ``dependency_unavailable``. The function never raises and never touches
-    storage, the network, credentials or a worker: classification is the whole
-    of milestone 1, and the caller's only job is to render the outcome.
+    ``dependency_unavailable``. It never raises for JSON-origin documents or the
+    guarded hostile scalar/key cases; arbitrary hostile Mapping/Sequence protocol
+    implementations are outside that guarantee. It never touches storage, the
+    network, credentials or a worker: classification is the whole of milestone
+    1, and the caller's only job is to render the outcome.
     """
     # The document must be a JSON object: a non-Mapping, or a Mapping with any
     # non-str key, is refused before its keys are looked up or compared.
