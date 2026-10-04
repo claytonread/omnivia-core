@@ -561,6 +561,30 @@
     "KnowledgeShareLineageResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageResult"
     },
+    "TaskContextExportInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportInput"
+    },
+    "TaskContextExportResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportResult"
+    },
+    "TaskContextExportReadInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadInput"
+    },
+    "TaskContextExportReadResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadResult"
+    },
+    "OutcomeRequestCreateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateInput"
+    },
+    "OutcomeRequestCreateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateResult"
+    },
+    "OutcomeRequestReadInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadInput"
+    },
+    "OutcomeRequestReadResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadResult"
+    },
     "GraphDirection": {
       "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDirection"
     },

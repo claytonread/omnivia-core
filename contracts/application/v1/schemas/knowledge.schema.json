@@ -526,6 +526,330 @@
         "decisions"
       ],
       "unevaluatedProperties": false
+    },
+    "TaskContextExportInput": {
+      "title": "TaskContextExportInput",
+      "description": "Input for `task_context.export`. The caller hands over one assembled task-context handoff and the explicit budgets the export must fit. The handoff is data: Core verifies its recorded identity against its content and projects one fixed set of content sections under Core's redaction patterns. The workspace, the exporting principal, the fencing generation and the policy are the server's own and are never stated here. An export is never truncated: a handoff that does not fit its budgets is refused.",
+      "type": "object",
+      "properties": {
+        "handoff": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The assembled task-context handoff, carried verbatim as data. It must be in the closed handoff shape and recompute to its own recorded content identity."
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000,
+          "description": "The explicit token budget the export must fit, under the `utf8-ceil4-v1` estimator."
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576,
+          "description": "The explicit byte budget the canonical export document must fit."
+        }
+      },
+      "required": [
+        "handoff",
+        "token_budget",
+        "byte_budget"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportResult": {
+      "title": "TaskContextExportResult",
+      "description": "Result of `task_context.export`: one immutable export as recorded. `export_id` names exactly the canonical document carried in `document`, so the identity can be checked by any holder of the result. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The content identity of the handoff this export projects, as the handoff recorded and Core recomputed it."
+        },
+        "exported_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the export, as the authenticated caller."
+        },
+        "policy_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The digest of the one export policy this build serves."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the export was recorded under."
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The token budget the export was checked against."
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The byte budget the export was checked against."
+        },
+        "token_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The token estimate of the canonical document, under `utf8-ceil4-v1`."
+        },
+        "byte_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The byte length of the canonical document."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the export settled."
+        },
+        "document": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The canonical export document: the allowlisted content sections after redaction, the withheld field names and the redaction counts."
+        }
+      },
+      "required": [
+        "export_id",
+        "source_handoff_identity",
+        "exported_by",
+        "policy_digest",
+        "fencing_generation",
+        "token_budget",
+        "byte_budget",
+        "token_estimate",
+        "byte_estimate",
+        "created_at",
+        "document"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportReadInput": {
+      "title": "TaskContextExportReadInput",
+      "description": "Input for `task_context.export.read`. The caller names one export by its identifier and nothing else. The workspace is the request envelope's selected workspace, and an export recorded in another workspace reads as not found.",
+      "type": "object",
+      "properties": {
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export to read."
+        }
+      },
+      "required": [
+        "export_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestCreateInput": {
+      "title": "OutcomeRequestCreateInput",
+      "description": "Input for `outcome.request.create`. The caller asks for an outcome against one stored task-context export, carrying a bounded natural-language objective verbatim. The export is named by identifier only. The workspace and the requesting principal are the authenticated caller's, and the export must be in this workspace, recorded under the current fencing generation and produced under the policy this build serves.",
+      "type": "object",
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, kept verbatim. It must not be empty and must fit the Core byte bound."
+        },
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export this request is made against."
+        }
+      },
+      "required": [
+        "objective",
+        "export_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestReadInput": {
+      "title": "OutcomeRequestReadInput",
+      "description": "Input for `outcome.request.read`. The caller names one outcome request by its identifier and nothing else. A request recorded in another workspace reads as not found.",
+      "type": "object",
+      "properties": {
+        "outcome_request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The outcome request to read."
+        }
+      },
+      "required": [
+        "outcome_request_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportReadResult": {
+      "title": "TaskContextExportReadResult",
+      "description": "Result of `task_context.export.read`: one immutable export as recorded, read back by its identifier. Its identity is re-derived from the stored document before it is served.",
+      "type": "object",
+      "properties": {
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The content identity of the handoff this export projects, as the handoff recorded and Core recomputed it."
+        },
+        "exported_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the export, as the authenticated caller."
+        },
+        "policy_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The digest of the one export policy this build serves."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the export was recorded under."
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The token budget the export was checked against."
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The byte budget the export was checked against."
+        },
+        "token_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The token estimate of the canonical document, under `utf8-ceil4-v1`."
+        },
+        "byte_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The byte length of the canonical document."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the export settled."
+        },
+        "document": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The canonical export document: the allowlisted content sections after redaction, the withheld field names and the redaction counts."
+        }
+      },
+      "required": [
+        "export_id",
+        "source_handoff_identity",
+        "exported_by",
+        "policy_digest",
+        "fencing_generation",
+        "token_budget",
+        "byte_budget",
+        "token_estimate",
+        "byte_estimate",
+        "created_at",
+        "document"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestCreateResult": {
+      "title": "OutcomeRequestCreateResult",
+      "description": "Result of `outcome.request.create`: one received outcome request as recorded. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "outcome_request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body."
+        },
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export the request names."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The source handoff identity the named export records."
+        },
+        "requested_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the request, as the authenticated caller."
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, verbatim."
+        },
+        "status": {
+          "type": "string",
+          "description": "Where the request stands. `received` is the only value this build records."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the request was recorded under."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the request settled."
+        }
+      },
+      "required": [
+        "outcome_request_id",
+        "export_id",
+        "source_handoff_identity",
+        "requested_by",
+        "objective",
+        "status",
+        "fencing_generation",
+        "created_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestReadResult": {
+      "title": "OutcomeRequestReadResult",
+      "description": "Result of `outcome.request.read`: one received outcome request as recorded, re-derived from its stored fields before it is served.",
+      "type": "object",
+      "properties": {
+        "outcome_request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body."
+        },
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export the request names."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The source handoff identity the named export records."
+        },
+        "requested_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the request, as the authenticated caller."
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, verbatim."
+        },
+        "status": {
+          "type": "string",
+          "description": "Where the request stands. `received` is the only value this build records."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the request was recorded under."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the request settled."
+        }
+      },
+      "required": [
+        "outcome_request_id",
+        "export_id",
+        "source_handoff_identity",
+        "requested_by",
+        "objective",
+        "status",
+        "fencing_generation",
+        "created_at"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

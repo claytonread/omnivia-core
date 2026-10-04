@@ -4148,6 +4148,232 @@
         "workspace_migration_required",
         "workspace_not_granted"
       ]
+    },
+    {
+      "name": "task_context.export",
+      "scope": {
+        "required_scopes": [
+          "task_context:export"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportResult",
+      "required_capability": {
+        "id": "task_context.export",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "size_limit_exceeded",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "task_context.export.read",
+      "scope": {
+        "required_scopes": [
+          "task_context:export_read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadResult",
+      "required_capability": {
+        "id": "task_context.export_read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "outcome.request.create",
+      "scope": {
+        "required_scopes": [
+          "outcome:request"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateResult",
+      "required_capability": {
+        "id": "outcome.request",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "size_limit_exceeded",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "outcome.request.read",
+      "scope": {
+        "required_scopes": [
+          "outcome:request_read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadResult",
+      "required_capability": {
+        "id": "outcome.request_read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
     }
   ]
 }

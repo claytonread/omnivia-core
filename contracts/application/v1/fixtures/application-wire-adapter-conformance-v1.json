@@ -12884,6 +12884,516 @@
           ]
         }
       }
+    },
+    {
+      "id": "task_context.export/primary-success",
+      "operation": "task_context.export",
+      "description": "task_context.export projects one verified handoff into a bounded, content-addressed export on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-task_context.export-primary-success",
+          "required_capabilities": [
+            {
+              "id": "task_context.export",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "task_context:export"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-task_context.export"
+        },
+        "operation": "task_context.export",
+        "input": {
+          "handoff": {
+            "adapter": "task-context-handoff",
+            "operation": "task_context.assemble",
+            "project": "project-alpha",
+            "target": "service/core",
+            "revision": "r1",
+            "objective": "Ship the export projection",
+            "constraints": "",
+            "plan": "Step one.",
+            "completedChanges": "",
+            "currentResults": "",
+            "generationId": null,
+            "assembledAt": "2026-10-04T03:00:00.000000Z",
+            "omissions": [],
+            "omissionOverflow": 0,
+            "tokenBudget": 4000,
+            "byteBudget": 16000,
+            "tokenEstimator": "utf8-ceil4-v1",
+            "contentIdentity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "tokenEstimate": 10,
+            "byteEstimate": 40,
+            "sourceReferences": [],
+            "truncated": false
+          },
+          "token_budget": 4000,
+          "byte_budget": 16000
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-task_context.export-primary-success",
+          "audit_reference": "audit-task_context.export"
+        },
+        "result": {
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_handoff_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exported_by": "user-42",
+          "policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "fencing_generation": 1,
+          "token_budget": 4000,
+          "byte_budget": 16000,
+          "token_estimate": 10,
+          "byte_estimate": 40,
+          "created_at": "2026-10-04T03:00:00.000000Z",
+          "document": {
+            "adapter": "canonical-export",
+            "operation": "task_context.export",
+            "exportKind": "task-context-handoff",
+            "workspaceId": "ws-1",
+            "exportedBy": "user-42",
+            "sourceHandoffIdentity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policyDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "fencingGeneration": 1,
+            "tokenBudget": 4000,
+            "byteBudget": 16000,
+            "tokenEstimator": "utf8-ceil4-v1",
+            "withheldFields": [
+              "adapter"
+            ],
+            "redactions": [],
+            "truncated": false,
+            "content": {
+              "project": "project-alpha",
+              "objective": "Ship the export projection"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task_context.export/honest-replay",
+      "operation": "task_context.export",
+      "description": "task_context.export repeated with the same idempotency key and the same input: the recorded export is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "task_context.export/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-task_context.export-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "task_context.export",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "task_context:export"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-task_context.export"
+        },
+        "operation": "task_context.export",
+        "input": {
+          "handoff": {
+            "adapter": "task-context-handoff",
+            "operation": "task_context.assemble",
+            "project": "project-alpha",
+            "target": "service/core",
+            "revision": "r1",
+            "objective": "Ship the export projection",
+            "constraints": "",
+            "plan": "Step one.",
+            "completedChanges": "",
+            "currentResults": "",
+            "generationId": null,
+            "assembledAt": "2026-10-04T03:00:00.000000Z",
+            "omissions": [],
+            "omissionOverflow": 0,
+            "tokenBudget": 4000,
+            "byteBudget": 16000,
+            "tokenEstimator": "utf8-ceil4-v1",
+            "contentIdentity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "tokenEstimate": 10,
+            "byteEstimate": 40,
+            "sourceReferences": [],
+            "truncated": false
+          },
+          "token_budget": 4000,
+          "byte_budget": 16000
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-task_context.export-honest-replay",
+          "audit_reference": "audit-task_context.export"
+        },
+        "result": {
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_handoff_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exported_by": "user-42",
+          "policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "fencing_generation": 1,
+          "token_budget": 4000,
+          "byte_budget": 16000,
+          "token_estimate": 10,
+          "byte_estimate": 40,
+          "created_at": "2026-10-04T03:00:00.000000Z",
+          "document": {
+            "adapter": "canonical-export",
+            "operation": "task_context.export",
+            "exportKind": "task-context-handoff",
+            "workspaceId": "ws-1",
+            "exportedBy": "user-42",
+            "sourceHandoffIdentity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policyDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "fencingGeneration": 1,
+            "tokenBudget": 4000,
+            "byteBudget": 16000,
+            "tokenEstimator": "utf8-ceil4-v1",
+            "withheldFields": [
+              "adapter"
+            ],
+            "redactions": [],
+            "truncated": false,
+            "content": {
+              "project": "project-alpha",
+              "objective": "Ship the export projection"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task_context.export/idempotency-conflict",
+      "operation": "task_context.export",
+      "description": "task_context.export reusing one idempotency key for a different handoff: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "task_context.export/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-task_context.export-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "task_context.export",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "task_context:export"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-task_context.export"
+        },
+        "operation": "task_context.export",
+        "input": {
+          "handoff": {
+            "adapter": "task-context-handoff",
+            "operation": "task_context.assemble",
+            "project": "project-alpha",
+            "target": "service/core",
+            "revision": "r1",
+            "objective": "Ship the export projection",
+            "constraints": "",
+            "plan": "Step one.",
+            "completedChanges": "",
+            "currentResults": "",
+            "generationId": null,
+            "assembledAt": "2026-10-04T03:00:00.000000Z",
+            "omissions": [],
+            "omissionOverflow": 0,
+            "tokenBudget": 4000,
+            "byteBudget": 16000,
+            "tokenEstimator": "utf8-ceil4-v1",
+            "contentIdentity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "tokenEstimate": 10,
+            "byteEstimate": 40,
+            "sourceReferences": [],
+            "truncated": false
+          },
+          "token_budget": 3000,
+          "byte_budget": 16000
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-task_context.export-idempotency-conflict",
+          "audit_reference": "audit-task_context.export"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "task_context.export.read/primary-success",
+      "operation": "task_context.export.read",
+      "description": "task_context.export.read returns one stored export by its identifier on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-task_context.export.read-primary-success",
+          "required_capabilities": [
+            {
+              "id": "task_context.export_read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "task_context:export_read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "task_context.export.read",
+        "input": {
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-task_context.export.read-primary-success",
+          "audit_reference": "audit-task_context.export.read"
+        },
+        "result": {
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_handoff_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exported_by": "user-42",
+          "policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "fencing_generation": 1,
+          "token_budget": 4000,
+          "byte_budget": 16000,
+          "token_estimate": 10,
+          "byte_estimate": 40,
+          "created_at": "2026-10-04T03:00:00.000000Z",
+          "document": {
+            "adapter": "canonical-export",
+            "operation": "task_context.export",
+            "exportKind": "task-context-handoff",
+            "workspaceId": "ws-1",
+            "exportedBy": "user-42",
+            "sourceHandoffIdentity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policyDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "fencingGeneration": 1,
+            "tokenBudget": 4000,
+            "byteBudget": 16000,
+            "tokenEstimator": "utf8-ceil4-v1",
+            "withheldFields": [
+              "adapter"
+            ],
+            "redactions": [],
+            "truncated": false,
+            "content": {
+              "project": "project-alpha",
+              "objective": "Ship the export projection"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "outcome.request.create/primary-success",
+      "operation": "outcome.request.create",
+      "description": "outcome.request.create receives one objective against a stored export on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-outcome.request.create-primary-success",
+          "required_capabilities": [
+            {
+              "id": "outcome.request",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "outcome:request"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-outcome.request.create"
+        },
+        "operation": "outcome.request.create",
+        "input": {
+          "objective": "Summarise the open risks",
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-outcome.request.create-primary-success",
+          "audit_reference": "audit-outcome.request.create"
+        },
+        "result": {
+          "outcome_request_id": "outreq-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_handoff_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "requested_by": "user-42",
+          "objective": "Summarise the open risks",
+          "status": "received",
+          "fencing_generation": 1,
+          "created_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "outcome.request.create/honest-replay",
+      "operation": "outcome.request.create",
+      "description": "outcome.request.create repeated with the same idempotency key and the same input: the recorded request is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "outcome.request.create/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-outcome.request.create-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "outcome.request",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "outcome:request"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-outcome.request.create"
+        },
+        "operation": "outcome.request.create",
+        "input": {
+          "objective": "Summarise the open risks",
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-outcome.request.create-honest-replay",
+          "audit_reference": "audit-outcome.request.create"
+        },
+        "result": {
+          "outcome_request_id": "outreq-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_handoff_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "requested_by": "user-42",
+          "objective": "Summarise the open risks",
+          "status": "received",
+          "fencing_generation": 1,
+          "created_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "outcome.request.create/idempotency-conflict",
+      "operation": "outcome.request.create",
+      "description": "outcome.request.create reusing one idempotency key for a different objective: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "outcome.request.create/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-outcome.request.create-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "outcome.request",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "outcome:request"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-outcome.request.create"
+        },
+        "operation": "outcome.request.create",
+        "input": {
+          "objective": "A different objective",
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-outcome.request.create-idempotency-conflict",
+          "audit_reference": "audit-outcome.request.create"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "outcome.request.read/primary-success",
+      "operation": "outcome.request.read",
+      "description": "outcome.request.read returns one received outcome request by its identifier on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-outcome.request.read-primary-success",
+          "required_capabilities": [
+            {
+              "id": "outcome.request_read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "outcome:request_read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "outcome.request.read",
+        "input": {
+          "outcome_request_id": "outreq-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-outcome.request.read-primary-success",
+          "audit_reference": "audit-outcome.request.read"
+        },
+        "result": {
+          "outcome_request_id": "outreq-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "export_id": "tcx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_handoff_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "requested_by": "user-42",
+          "objective": "Summarise the open risks",
+          "status": "received",
+          "fencing_generation": 1,
+          "created_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

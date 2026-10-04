@@ -24,7 +24,7 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   semantic expectation (version/capability negotiation math, retry
   fail-safety, tolerant decode of an otherwise-invalid document, and so on);
 - the canonical ``x-omnivia-operation-catalogue`` annotation holds exactly the
-  frozen 73 application operations, in the frozen order, each strictly valid
+  frozen 77 application operations, in the frozen order, each strictly valid
   against ``OperationMetadata``, binding resolvable in-contract payload
   references, and carrying exactly the frozen scope, capability, completion,
   pagination, idempotency, precondition, audit and allowed-error posture -- with
@@ -1333,6 +1333,11 @@ _SHARE_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found
 #: The recipient read adds `conflict` to a point read: a share whose source version has since
 #: changed is a state the caller re-reads, not a record it fails to find.
 _SHARE_READ: tuple[str, ...] = tuple(sorted((*_POINT_READ, "conflict")))
+#: Task-context writes (DEV-REQ-159, DEV-REQ-008). A handoff or objective that is malformed, or a budget
+#: outside its bounds, is `invalid_request`. An export that does not fit its budget, or an objective over
+#: its byte bound, is `size_limit_exceeded`. A stale or ineligible export is a `conflict`, and an export the
+#: workspace does not hold is `not_found`. `context_budget_insufficient` stays with engineering context.
+_TASK_CONTEXT_MUT: tuple[str, ...] = tuple(sorted((*_SHARE_MUT, "size_limit_exceeded")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1379,6 +1384,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "SKILL_MUT": _SKILL_MUT,
     "SHARE_MUT": _SHARE_MUT,
     "SHARE_READ": _SHARE_READ,
+    "TASK_CONTEXT_MUT": _TASK_CONTEXT_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1413,7 +1419,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 73 application operations, in the frozen insertion order. Runtime
+#: The exact 77 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1735,6 +1741,22 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "knowledge.share.lineage": FrozenOperation(
         "workspace", ("knowledge:share",), "none", "knowledge.share",
         "knowledge", "KnowledgeShareLineage", "POINT_READ", False,
+    ),
+    "task_context.export": FrozenOperation(
+        "workspace", ("task_context:export",), "create", "task_context.export",
+        "knowledge", "TaskContextExport", "TASK_CONTEXT_MUT", False,
+    ),
+    "task_context.export.read": FrozenOperation(
+        "workspace", ("task_context:export_read",), "none", "task_context.export_read",
+        "knowledge", "TaskContextExportRead", "POINT_READ", False,
+    ),
+    "outcome.request.create": FrozenOperation(
+        "workspace", ("outcome:request",), "create", "outcome.request",
+        "knowledge", "OutcomeRequestCreate", "TASK_CONTEXT_MUT", False,
+    ),
+    "outcome.request.read": FrozenOperation(
+        "workspace", ("outcome:request_read",), "none", "outcome.request_read",
+        "knowledge", "OutcomeRequestRead", "POINT_READ", False,
     ),
 }
 

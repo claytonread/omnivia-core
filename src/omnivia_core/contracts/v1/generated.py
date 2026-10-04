@@ -452,6 +452,10 @@ __all__ = [
     "OperationScope",
     "OperationScopeKind",
     "OperationSideEffect",
+    "OutcomeRequestCreateInput",
+    "OutcomeRequestCreateResult",
+    "OutcomeRequestReadInput",
+    "OutcomeRequestReadResult",
     "PageLimit",
     "PageMetadata",
     "PartialResult",
@@ -536,6 +540,10 @@ __all__ = [
     "SourceSpan",
     "SuccessResponseEnvelope",
     "SupersessionReference",
+    "TaskContextExportInput",
+    "TaskContextExportReadInput",
+    "TaskContextExportReadResult",
+    "TaskContextExportResult",
     "Timestamp",
     "TraceId",
     "TriggerDeclareInput",
@@ -9095,6 +9103,565 @@ class KnowledgeShareLineageInput:
         field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
         return cls(
             share_id=field_share_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskContextExportInput:
+    """Input for `task_context.export`. The caller hands over one assembled task-context handoff
+    and the explicit budgets the export must fit. The handoff is data: Core verifies its
+    recorded identity against its content and projects one fixed set of content sections
+    under Core's redaction patterns. The workspace, the exporting principal, the fencing
+    generation and the policy are the server's own and are never stated here. An export is
+    never truncated: a handoff that does not fit its budgets is refused.
+    """
+
+    handoff: JsonObject
+    token_budget: int
+    byte_budget: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["handoff"] = _encode_json_object(self.handoff)
+        wire["token_budget"] = self.token_budget
+        wire["byte_budget"] = self.byte_budget
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TaskContextExportInput"
+    ) -> TaskContextExportInput:
+        """Decode a wire payload into a TaskContextExportInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_handoff = _decode_json_object(
+            _require_field(mapping, "handoff", path),
+            f"{path}.handoff",
+        )
+        field_token_budget = _decode_int(
+            _require_field(mapping, "token_budget", path),
+            f"{path}.token_budget",
+        )
+        field_byte_budget = _decode_int(
+            _require_field(mapping, "byte_budget", path),
+            f"{path}.byte_budget",
+        )
+        return cls(
+            handoff=field_handoff,
+            token_budget=field_token_budget,
+            byte_budget=field_byte_budget,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskContextExportResult:
+    """Result of `task_context.export`: one immutable export as recorded. `export_id` names
+    exactly the canonical document carried in `document`, so the identity can be checked by
+    any holder of the result. A replay under the same idempotency key returns this result
+    without a second write.
+    """
+
+    export_id: Identifier
+    source_handoff_identity: Identifier
+    exported_by: Identifier
+    policy_digest: Identifier
+    fencing_generation: int
+    token_budget: int
+    byte_budget: int
+    token_estimate: int
+    byte_estimate: int
+    created_at: Timestamp
+    document: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["export_id"] = self.export_id
+        wire["source_handoff_identity"] = self.source_handoff_identity
+        wire["exported_by"] = self.exported_by
+        wire["policy_digest"] = self.policy_digest
+        wire["fencing_generation"] = self.fencing_generation
+        wire["token_budget"] = self.token_budget
+        wire["byte_budget"] = self.byte_budget
+        wire["token_estimate"] = self.token_estimate
+        wire["byte_estimate"] = self.byte_estimate
+        wire["created_at"] = self.created_at
+        wire["document"] = _encode_json_object(self.document)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TaskContextExportResult"
+    ) -> TaskContextExportResult:
+        """Decode a wire payload into a TaskContextExportResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_export_id = _decode_str(
+            _require_field(mapping, "export_id", path),
+            f"{path}.export_id",
+        )
+        field_source_handoff_identity = _decode_str(
+            _require_field(mapping, "source_handoff_identity", path),
+            f"{path}.source_handoff_identity",
+        )
+        field_exported_by = _decode_str(
+            _require_field(mapping, "exported_by", path),
+            f"{path}.exported_by",
+        )
+        field_policy_digest = _decode_str(
+            _require_field(mapping, "policy_digest", path),
+            f"{path}.policy_digest",
+        )
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_token_budget = _decode_int(
+            _require_field(mapping, "token_budget", path),
+            f"{path}.token_budget",
+        )
+        field_byte_budget = _decode_int(
+            _require_field(mapping, "byte_budget", path),
+            f"{path}.byte_budget",
+        )
+        field_token_estimate = _decode_int(
+            _require_field(mapping, "token_estimate", path),
+            f"{path}.token_estimate",
+        )
+        field_byte_estimate = _decode_int(
+            _require_field(mapping, "byte_estimate", path),
+            f"{path}.byte_estimate",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_document = _decode_json_object(
+            _require_field(mapping, "document", path),
+            f"{path}.document",
+        )
+        return cls(
+            export_id=field_export_id,
+            source_handoff_identity=field_source_handoff_identity,
+            exported_by=field_exported_by,
+            policy_digest=field_policy_digest,
+            fencing_generation=field_fencing_generation,
+            token_budget=field_token_budget,
+            byte_budget=field_byte_budget,
+            token_estimate=field_token_estimate,
+            byte_estimate=field_byte_estimate,
+            created_at=field_created_at,
+            document=field_document,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskContextExportReadInput:
+    """Input for `task_context.export.read`. The caller names one export by its identifier and
+    nothing else. The workspace is the request envelope's selected workspace, and an export
+    recorded in another workspace reads as not found.
+    """
+
+    export_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["export_id"] = self.export_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TaskContextExportReadInput"
+    ) -> TaskContextExportReadInput:
+        """Decode a wire payload into a TaskContextExportReadInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_export_id = _decode_str(
+            _require_field(mapping, "export_id", path),
+            f"{path}.export_id",
+        )
+        return cls(
+            export_id=field_export_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRequestCreateInput:
+    """Input for `outcome.request.create`. The caller asks for an outcome against one stored
+    task-context export, carrying a bounded natural-language objective verbatim. The export
+    is named by identifier only. The workspace and the requesting principal are the
+    authenticated caller's, and the export must be in this workspace, recorded under the
+    current fencing generation and produced under the policy this build serves.
+    """
+
+    objective: str
+    export_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["objective"] = self.objective
+        wire["export_id"] = self.export_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "OutcomeRequestCreateInput"
+    ) -> OutcomeRequestCreateInput:
+        """Decode a wire payload into a OutcomeRequestCreateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_objective = _decode_str(
+            _require_field(mapping, "objective", path),
+            f"{path}.objective",
+        )
+        field_export_id = _decode_str(
+            _require_field(mapping, "export_id", path),
+            f"{path}.export_id",
+        )
+        return cls(
+            objective=field_objective,
+            export_id=field_export_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRequestReadInput:
+    """Input for `outcome.request.read`. The caller names one outcome request by its identifier
+    and nothing else. A request recorded in another workspace reads as not found.
+    """
+
+    outcome_request_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["outcome_request_id"] = self.outcome_request_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "OutcomeRequestReadInput"
+    ) -> OutcomeRequestReadInput:
+        """Decode a wire payload into a OutcomeRequestReadInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_outcome_request_id = _decode_str(
+            _require_field(mapping, "outcome_request_id", path),
+            f"{path}.outcome_request_id",
+        )
+        return cls(
+            outcome_request_id=field_outcome_request_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskContextExportReadResult:
+    """Result of `task_context.export.read`: one immutable export as recorded, read back by its
+    identifier. Its identity is re-derived from the stored document before it is served.
+    """
+
+    export_id: Identifier
+    source_handoff_identity: Identifier
+    exported_by: Identifier
+    policy_digest: Identifier
+    fencing_generation: int
+    token_budget: int
+    byte_budget: int
+    token_estimate: int
+    byte_estimate: int
+    created_at: Timestamp
+    document: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["export_id"] = self.export_id
+        wire["source_handoff_identity"] = self.source_handoff_identity
+        wire["exported_by"] = self.exported_by
+        wire["policy_digest"] = self.policy_digest
+        wire["fencing_generation"] = self.fencing_generation
+        wire["token_budget"] = self.token_budget
+        wire["byte_budget"] = self.byte_budget
+        wire["token_estimate"] = self.token_estimate
+        wire["byte_estimate"] = self.byte_estimate
+        wire["created_at"] = self.created_at
+        wire["document"] = _encode_json_object(self.document)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "TaskContextExportReadResult"
+    ) -> TaskContextExportReadResult:
+        """Decode a wire payload into a TaskContextExportReadResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_export_id = _decode_str(
+            _require_field(mapping, "export_id", path),
+            f"{path}.export_id",
+        )
+        field_source_handoff_identity = _decode_str(
+            _require_field(mapping, "source_handoff_identity", path),
+            f"{path}.source_handoff_identity",
+        )
+        field_exported_by = _decode_str(
+            _require_field(mapping, "exported_by", path),
+            f"{path}.exported_by",
+        )
+        field_policy_digest = _decode_str(
+            _require_field(mapping, "policy_digest", path),
+            f"{path}.policy_digest",
+        )
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_token_budget = _decode_int(
+            _require_field(mapping, "token_budget", path),
+            f"{path}.token_budget",
+        )
+        field_byte_budget = _decode_int(
+            _require_field(mapping, "byte_budget", path),
+            f"{path}.byte_budget",
+        )
+        field_token_estimate = _decode_int(
+            _require_field(mapping, "token_estimate", path),
+            f"{path}.token_estimate",
+        )
+        field_byte_estimate = _decode_int(
+            _require_field(mapping, "byte_estimate", path),
+            f"{path}.byte_estimate",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_document = _decode_json_object(
+            _require_field(mapping, "document", path),
+            f"{path}.document",
+        )
+        return cls(
+            export_id=field_export_id,
+            source_handoff_identity=field_source_handoff_identity,
+            exported_by=field_exported_by,
+            policy_digest=field_policy_digest,
+            fencing_generation=field_fencing_generation,
+            token_budget=field_token_budget,
+            byte_budget=field_byte_budget,
+            token_estimate=field_token_estimate,
+            byte_estimate=field_byte_estimate,
+            created_at=field_created_at,
+            document=field_document,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRequestCreateResult:
+    """Result of `outcome.request.create`: one received outcome request as recorded. A replay
+    under the same idempotency key returns this result without a second write.
+    """
+
+    outcome_request_id: Identifier
+    export_id: Identifier
+    source_handoff_identity: Identifier
+    requested_by: Identifier
+    objective: str
+    status: str
+    fencing_generation: int
+    created_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["outcome_request_id"] = self.outcome_request_id
+        wire["export_id"] = self.export_id
+        wire["source_handoff_identity"] = self.source_handoff_identity
+        wire["requested_by"] = self.requested_by
+        wire["objective"] = self.objective
+        wire["status"] = self.status
+        wire["fencing_generation"] = self.fencing_generation
+        wire["created_at"] = self.created_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "OutcomeRequestCreateResult"
+    ) -> OutcomeRequestCreateResult:
+        """Decode a wire payload into a OutcomeRequestCreateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_outcome_request_id = _decode_str(
+            _require_field(mapping, "outcome_request_id", path),
+            f"{path}.outcome_request_id",
+        )
+        field_export_id = _decode_str(
+            _require_field(mapping, "export_id", path),
+            f"{path}.export_id",
+        )
+        field_source_handoff_identity = _decode_str(
+            _require_field(mapping, "source_handoff_identity", path),
+            f"{path}.source_handoff_identity",
+        )
+        field_requested_by = _decode_str(
+            _require_field(mapping, "requested_by", path),
+            f"{path}.requested_by",
+        )
+        field_objective = _decode_str(
+            _require_field(mapping, "objective", path),
+            f"{path}.objective",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        return cls(
+            outcome_request_id=field_outcome_request_id,
+            export_id=field_export_id,
+            source_handoff_identity=field_source_handoff_identity,
+            requested_by=field_requested_by,
+            objective=field_objective,
+            status=field_status,
+            fencing_generation=field_fencing_generation,
+            created_at=field_created_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRequestReadResult:
+    """Result of `outcome.request.read`: one received outcome request as recorded, re-derived
+    from its stored fields before it is served.
+    """
+
+    outcome_request_id: Identifier
+    export_id: Identifier
+    source_handoff_identity: Identifier
+    requested_by: Identifier
+    objective: str
+    status: str
+    fencing_generation: int
+    created_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["outcome_request_id"] = self.outcome_request_id
+        wire["export_id"] = self.export_id
+        wire["source_handoff_identity"] = self.source_handoff_identity
+        wire["requested_by"] = self.requested_by
+        wire["objective"] = self.objective
+        wire["status"] = self.status
+        wire["fencing_generation"] = self.fencing_generation
+        wire["created_at"] = self.created_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "OutcomeRequestReadResult"
+    ) -> OutcomeRequestReadResult:
+        """Decode a wire payload into a OutcomeRequestReadResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_outcome_request_id = _decode_str(
+            _require_field(mapping, "outcome_request_id", path),
+            f"{path}.outcome_request_id",
+        )
+        field_export_id = _decode_str(
+            _require_field(mapping, "export_id", path),
+            f"{path}.export_id",
+        )
+        field_source_handoff_identity = _decode_str(
+            _require_field(mapping, "source_handoff_identity", path),
+            f"{path}.source_handoff_identity",
+        )
+        field_requested_by = _decode_str(
+            _require_field(mapping, "requested_by", path),
+            f"{path}.requested_by",
+        )
+        field_objective = _decode_str(
+            _require_field(mapping, "objective", path),
+            f"{path}.objective",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        return cls(
+            outcome_request_id=field_outcome_request_id,
+            export_id=field_export_id,
+            source_handoff_identity=field_source_handoff_identity,
+            requested_by=field_requested_by,
+            objective=field_objective,
+            status=field_status,
+            fencing_generation=field_fencing_generation,
+            created_at=field_created_at,
         )
 
 
@@ -28153,6 +28720,220 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         ),
         required_capability=CapabilityRequirement(
             id="knowledge.share",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="task_context.export",
+        scope=OperationScope(
+            required_scopes=("task_context:export",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/TaskContextExportInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/TaskContextExportResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="task_context.export",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="task_context.export.read",
+        scope=OperationScope(
+            required_scopes=("task_context:export_read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/TaskContextExportReadInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/TaskContextExportReadResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="task_context.export_read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="outcome.request.create",
+        scope=OperationScope(
+            required_scopes=("outcome:request",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/OutcomeRequestCreateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/OutcomeRequestCreateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="outcome.request",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="outcome.request.read",
+        scope=OperationScope(
+            required_scopes=("outcome:request_read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/OutcomeRequestReadInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/OutcomeRequestReadResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="outcome.request_read",
             minimum_version="1.0",
             required=True,
         ),

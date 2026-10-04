@@ -50,6 +50,7 @@ from omnivia_core_runtime.service.application import (
     build_memory_application_dispatcher,
     build_skill_application_dispatcher,
     build_skill_resolution_application_dispatcher,
+    build_task_context_application_dispatcher,
     build_trigger_application_dispatcher,
     build_workflow_application_dispatcher,
     compose_production_application_surface,
@@ -462,6 +463,16 @@ def _build_production_application_surface(
         projects=project_authority,
         clock=started.clock,
     )
+    # The task-context family sits beside knowledge sharing: an export and an outcome request are the
+    # routine-flow writes, and their reads are observations under their own purpose.
+    task_context = build_task_context_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=knowledge_sharing,
+        clock=started.clock,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -476,6 +487,7 @@ def _build_production_application_surface(
         skill_resolution=skill_resolution,
         engineering=engineering,
         knowledge_sharing=knowledge_sharing,
+        task_context=task_context,
         probe=probe,
     )
 

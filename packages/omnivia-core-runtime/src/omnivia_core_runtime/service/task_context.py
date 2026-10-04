@@ -164,12 +164,12 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _plain(value: object) -> Any:
+def plain_copy(value: object) -> Any:
     """A JSON-shaped copy of a decoded value. Wire mappings are read-only, so a copy is what gets hashed."""
     if isinstance(value, Mapping):
-        return {str(key): _plain(item) for key, item in value.items()}
+        return {str(key): plain_copy(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
+        return [plain_copy(item) for item in value]
     return value
 
 
@@ -273,7 +273,7 @@ def verify_handoff(handoff: object) -> str:
     """
     if not isinstance(handoff, Mapping) or not handoff or handoff.get("refused") is True:
         raise TaskContextRefused(REFUSED_HANDOFF_MISSING, "no usable handoff was supplied")
-    plain = _plain(handoff)
+    plain = plain_copy(handoff)
     _check_handoff_shape(plain)
     try:
         identity = handoff_identity(plain)
@@ -344,7 +344,7 @@ def build_export(
     """
     check_budgets(token_budget, byte_budget)
     source_identity = verify_handoff(handoff)
-    plain = _plain(handoff)
+    plain = plain_copy(handoff)
 
     counts: dict[str, int] = {}
     content = {name: _redact(plain[name], counts) for name in sorted(EXPORT_CONTENT_FIELDS)}

@@ -142,6 +142,10 @@ SKILL_INSTALLATION_PURPOSE: Final = "skill_installation"
 #: owner's two acts on one share, so one purpose. Which Project the caller owns is a server binding
 #: and is not decided by this purpose or by the role below.
 KNOWLEDGE_SHARING_PURPOSE: Final = "knowledge_sharing"
+#: Task-context exports (DEV-REQ-159) and outcome requests (DEV-REQ-008) are separate acts: a grant to
+#: export a handoff never carries the authority to request an outcome against the export.
+TASK_CONTEXT_EXPORT_PURPOSE: Final = "task_context_export"
+OUTCOME_REQUEST_PURPOSE: Final = "outcome_request"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -190,6 +194,8 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "skills.remove": SKILL_INSTALLATION_PURPOSE,
         "knowledge.share.propose": KNOWLEDGE_SHARING_PURPOSE,
         "knowledge.share.decide": KNOWLEDGE_SHARING_PURPOSE,
+        "task_context.export": TASK_CONTEXT_EXPORT_PURPOSE,
+        "outcome.request.create": OUTCOME_REQUEST_PURPOSE,
     }
 )
 
@@ -277,6 +283,10 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # role here can state or widen.
         "knowledge.share.propose": WORKSPACE_CONTRIBUTOR_ROLE,
         "knowledge.share.decide": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Exporting a handoff and requesting an outcome against it write one workspace's records and
+        # reach nothing outside it, so both are contributor work.
+        "task_context.export": WORKSPACE_CONTRIBUTOR_ROLE,
+        "outcome.request.create": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 
