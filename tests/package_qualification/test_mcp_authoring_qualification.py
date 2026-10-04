@@ -50,7 +50,7 @@ def _record() -> dict[str, object]:
         "verdict": "pass",
         "profile": "authoring",
         "protocol_version": "2025-06-18",
-        "tool_count": 29,
+        "tool_count": 33,
         "tools": [
             "workspace_inspect",
             "evidence_search",
@@ -81,6 +81,10 @@ def _record() -> dict[str, object]:
             "knowledge_share_decide",
             "knowledge_share_read",
             "knowledge_share_lineage",
+            "task_context_export",
+            "task_context_export_read",
+            "outcome_request_create",
+            "outcome_request_read",
         ],
         "sdk_versions": {"mcp": "2.0.0", "mcp-types": "2.0.0"},
         "environment": {
@@ -173,8 +177,8 @@ def test_closed_schema_and_builder_accept_the_exact_redacted_record() -> None:
 def test_retained_18_tool_record_is_closed_historical_and_expired_for_current_candidates() -> None:
     """The 2026-10-03 Phase 8 run is immutable evidence of an 18-tool inventory.
 
-    It is closed and bound to the historical inventory, an ordered subset of the live
-    25-tool list. The current builder refuses it only because the tool inventory has
+    It is closed and bound to the historical inventory, an ordered subset of the current
+    33-tool list. The current builder refuses it only because the tool inventory has
     advanced; the refusal is the fixed, payload-free message.
     """
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))

@@ -20,8 +20,8 @@ stored one row per right and read back the same way; there is no pattern, no
 prefix, no "all of namespace x", and the schema refuses a `*` or a `?` in a
 granted value outright. A `restricted` principal holds fourteen operations, seven
 scopes, ten capabilities, nine purposes and one role, and an `authoring` one
-holds those plus exactly fifteen operations, seven scopes, nine capabilities and
-eight purposes. It gains no additional role.
+holds those plus exactly nineteen operations, eleven scopes, thirteen capabilities and
+eleven purposes. It gains no additional role.
 
 **The one role is a grant, not an inference.** R004 section 9.1 requires an
 authoring setup to hold "workspace contributor authority sufficient for
@@ -162,6 +162,10 @@ _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("knowledge.share.decide", "knowledge_sharing"),
     ("knowledge.share.read", "knowledge_share_observation"),
     ("knowledge.share.lineage", "knowledge_share_observation"),
+    ("task_context.export", "task_context_export"),
+    ("task_context.export.read", "task_context_observation"),
+    ("outcome.request.create", "outcome_request"),
+    ("outcome.request.read", "task_context_observation"),
 )
 
 
@@ -226,7 +230,7 @@ RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
 )
 
-#: The authoring grant: the restricted rights, exactly the fifteen additions, and
+#: The authoring grant: the restricted rights, exactly the nineteen additions, and
 #: the one role both profiles' mutations need. Publication and installation are not
 #: additions: they need the publisher and operator roles, which no profile here grants.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(

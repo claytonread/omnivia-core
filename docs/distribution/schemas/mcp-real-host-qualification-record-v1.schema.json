@@ -266,7 +266,7 @@
           ],
           "properties": {
             "tool_count": {
-              "const": 29
+              "const": 33
             },
             "tools": {
               "type": "array",
@@ -357,11 +357,23 @@
                 },
                 {
                   "const": "knowledge_share_lineage"
+                },
+                {
+                  "const": "task_context_export"
+                },
+                {
+                  "const": "task_context_export_read"
+                },
+                {
+                  "const": "outcome_request_create"
+                },
+                {
+                  "const": "outcome_request_read"
                 }
               ],
               "items": false,
-              "minItems": 29,
-              "maxItems": 29
+              "minItems": 33,
+              "maxItems": 33
             }
           }
         }

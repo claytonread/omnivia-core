@@ -111,6 +111,10 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "knowledge.share.decide",
     "knowledge.share.read",
     "knowledge.share.lineage",
+    "task_context.export",
+    "task_context.export.read",
+    "outcome.request.create",
+    "outcome.request.read",
 )
 
 #: Advertised schemas that belong to no operation. One entry: the canonical

@@ -498,7 +498,7 @@ def test_every_advertised_tool_is_read_only_and_closed(
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.6"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.7"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -923,7 +923,7 @@ SKILL_MANIFEST: dict[str, Any] = {
 
 
 def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """The fifteen additions' calls, bound to the dedicated principal the installation issued.
+    """The nineteen additions' calls, bound to the dedicated principal the installation issued.
 
     A function rather than a constant because one of them names an actor, and the
     only actor an installed session may name is the principal its bearer resolves
@@ -1098,6 +1098,32 @@ def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
         ),
         ("knowledge_share_read", {"share_id": "share-not-in-this-workspace"}),
         ("knowledge_share_lineage", {"share_id": "share-not-in-this-workspace"}),
+        (
+            "task_context_export",
+            {
+                "input": {
+                    "handoff": {"handoff_identity": "handoff-not-in-this-workspace"},
+                    "token_budget": 4000,
+                    "byte_budget": 65536,
+                },
+                "idempotency_key": "mcp-authoring-task-context-export-001",
+            },
+        ),
+        (
+            "task_context_export_read",
+            {"export_id": "tcx-not-in-this-workspace"},
+        ),
+        (
+            "outcome_request_create",
+            {
+                "input": {
+                    "objective": "summarise the handoff",
+                    "export_id": "tcx-not-in-this-workspace",
+                },
+                "idempotency_key": "mcp-authoring-outcome-request-001",
+            },
+        ),
+        ("outcome_request_read", {"outcome_request_id": "outreq-not-in-this-workspace"}),
     ]
 
 
@@ -1186,7 +1212,7 @@ def test_an_admitted_authoring_session_lists_twenty_five_and_calls_every_new_too
 
     What each call proves, in one session:
 
-    * the listing is the twenty-nine, in manifest order, and the twelve authoring
+    * the listing is the thirty-three, in manifest order, and the fourteen authoring
       mutations advertise the closed wrapper with the read hints inverted;
     * `evidence_capture` writes -- the content travels in the call, with no path,
       URL or credential anywhere in it -- and the artifact is then findable

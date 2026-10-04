@@ -19,7 +19,9 @@ mutations and two job-observation reads. `2.4` adds the trigger operations: the
 restricted fourteen, with the `trigger_health` read, and the authoring
 twenty-two, with three trigger mutations. `2.5` adds the three skill authoring
 mutations: the authoring twenty-five. `2.6` adds the four knowledge sharing
-operations, two mutations and two reads: the authoring twenty-nine.
+operations, two mutations and two reads: the authoring twenty-nine. `2.7` adds
+the four task-context operations, two mutations and two reads: the authoring
+thirty-three.
 Everything below that reads as new coverage rather than as a rewrite is the
 difference between those facts.
 """
@@ -88,6 +90,10 @@ EXPECTED_AUTHORING = EXPECTED_RESTRICTED + (
         "knowledge.share.lineage",
         "knowledge_share_observation",
     ),
+    ("task_context_export", "task_context.export", "task_context_export"),
+    ("task_context_export_read", "task_context.export.read", "task_context_observation"),
+    ("outcome_request_create", "outcome.request.create", "outcome_request"),
+    ("outcome_request_read", "outcome.request.read", "task_context_observation"),
 )
 
 EXPECTED_SURFACES = {
@@ -95,7 +101,7 @@ EXPECTED_SURFACES = {
     "authoring": EXPECTED_AUTHORING,
 }
 
-# The twelve mutations the profiles admit, and the only side-effecting operations
+# The fourteen mutations the profiles admit, and the only side-effecting operations
 # any profile may name.
 EXPECTED_MUTATIONS = frozenset(
     {
@@ -111,6 +117,8 @@ EXPECTED_MUTATIONS = frozenset(
         "skills.proposal.submit",
         "knowledge.share.propose",
         "knowledge.share.decide",
+        "task_context.export",
+        "outcome.request.create",
     }
 )
 
@@ -199,9 +207,9 @@ def test_the_two_profiles_are_exactly_fourteen_and_twenty_five_tools() -> None:
     """The counts the requirements fix, asserted as counts as well as names: a
     listing that gained a tool and lost one would satisfy neither line."""
     assert len(manifest.exposure_manifest("restricted")) == 14
-    assert len(manifest.exposure_manifest("authoring")) == 29
+    assert len(manifest.exposure_manifest("authoring")) == 33
     assert len(manifest.tools("restricted")) == 14
-    assert len(manifest.tools("authoring")) == 29
+    assert len(manifest.tools("authoring")) == 33
 
 
 # The name keeps its original figures because the dated traceability ledger cites it.
@@ -219,6 +227,8 @@ def test_the_authoring_profile_is_the_restricted_fourteen_plus_eleven() -> None:
         "skills_draft_create", "skills_draft_update", "skills_proposal_submit",
         "knowledge_share_propose", "knowledge_share_decide",
         "knowledge_share_read", "knowledge_share_lineage",
+        "task_context_export", "task_context_export_read",
+        "outcome_request_create", "outcome_request_read",
     ]
 
 
@@ -226,7 +236,7 @@ def test_restricted_is_the_safe_default_for_a_caller_that_names_no_profile() -> 
     """`EXPOSURE_MANIFEST`, `tools()` and `exposed_by_tool_name()` all answer with
     the bounded non-authoring surface when nobody says otherwise. A caller
     written before profiles existed -- the server's `tools/list` handler among
-    them -- advertises fourteen tools rather than twenty-nine, which is the failure
+    them -- advertises fourteen tools rather than thirty-three, which is the failure
     mode this default should have."""
     assert manifest.EXPOSURE_MANIFEST == manifest.exposure_manifest("restricted")
     assert manifest.tools() is manifest.tools("restricted")
@@ -291,7 +301,7 @@ def test_the_manifest_version_names_this_surface() -> None:
     minor one: a cached `1.1` listing is not a subset of what this advertises,
     it is the whole of one of two answers.
     """
-    assert manifest.MANIFEST_VERSION == "2.6"
+    assert manifest.MANIFEST_VERSION == "2.7"
 
 
 def test_captured_source_commit_is_explicitly_omitted_from_model_facing_mcp() -> None:
@@ -308,7 +318,7 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
     """The purpose is a claim the request states and the service checks against
     its own grant, so the claim has to be the one the grant allows -- a purpose
     invented here would be refused at the first call rather than caught by
-    review. Seventeen purposes across twenty-nine tools, not one per operation."""
+    review. Twenty purposes across thirty-three tools, not one per operation."""
     purposes = {
         entry.operation: entry.purpose
         for entry in manifest.exposure_manifest("authoring")
@@ -343,6 +353,10 @@ def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
         "knowledge.share.decide": "knowledge_sharing",
         "knowledge.share.read": "knowledge_share_observation",
         "knowledge.share.lineage": "knowledge_share_observation",
+        "task_context.export": "task_context_export",
+        "task_context.export.read": "task_context_observation",
+        "outcome.request.create": "outcome_request",
+        "outcome.request.read": "task_context_observation",
     }
 
 
@@ -364,11 +378,11 @@ def test_the_restricted_profile_admits_only_reads_and_the_decision_mutation() ->
             assert catalogue.audit.audit_category == "read", entry.operation
 
 
-def test_the_authoring_profile_has_twelve_mutations_and_seventeen_reads() -> None:
+def test_the_authoring_profile_has_fourteen_mutations_and_nineteen_reads() -> None:
     """The exit criterion, read off the catalogue rather than off the tool names.
 
-    Seventeen of the twenty-nine declare no side effect and audit as reads; the other
-    twelve are exactly the named mutations, each of which the catalogue agrees is
+    Nineteen of the thirty-three declare no side effect and audit as reads; the other
+    fourteen are exactly the named mutations, each of which the catalogue agrees is
     audited as a `mutation` (`decision.evaluate`, `trigger.lifecycle`,
     `skills.draft.update` and `knowledge.share.decide` update, the rest create).
     """
@@ -383,7 +397,7 @@ def test_the_authoring_profile_has_twelve_mutations_and_seventeen_reads() -> Non
             assert catalogue.audit.audit_category == "mutation", entry.operation
             mutations.add(entry.operation)
     assert mutations == EXPECTED_MUTATIONS
-    assert len(reads) == 17
+    assert len(reads) == 19
     assert manifest.ADMITTED_MUTATIONS == EXPECTED_MUTATIONS
 
 
@@ -447,7 +461,7 @@ def test_an_operation_outside_the_catalogue_cannot_be_admitted() -> None:
 @pytest.mark.parametrize("profile", ["restricted", "authoring"])
 def test_the_never_exposed_operations_are_absent(profile: str, operation: str) -> None:
     """Absent from both inventories and unreachable by tool name in either: the
-    widest profile is still a curated twenty-nine, not "everything but the worst"."""
+    widest profile is still a curated thirty-three, not "everything but the worst"."""
     exposed = manifest.exposure_manifest(profile)
     assert operation not in {entry.operation for entry in exposed}
     assert manifest.exposed_by_tool_name(operation.replace(".", "_"), profile) is None
@@ -560,7 +574,7 @@ def test_every_read_tool_advertises_the_canonical_input_schema_unwrapped() -> No
 
     The path is the entry's own `input_schema_ref` -> the generated projection
     keyed by that exact reference. A contract renamed upstream therefore fails
-    here rather than advertising a stale shape. The seventeen reads -- `job_get` and
+    here rather than advertising a stale shape. The nineteen reads -- `job_get` and
     `job_events` among them -- advertise that document directly: there is no
     wrapper on a read, because there is no idempotency key on one.
 
@@ -834,10 +848,10 @@ def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
     """Every hint derived, none asserted.
 
     `readOnlyHint` is the catalogue's `side_effect == "none"` rather than a
-    constant, so the twelve mutations say so. `destructiveHint` is false for all
-    twenty-nine, and truthfully: nothing exposed deletes, and supersession and
+    constant, so the fourteen mutations say so. `destructiveHint` is false for all
+    thirty-three, and truthfully: nothing exposed deletes, and supersession and
     cancellation are not exposed at all. `idempotentHint` is the catalogue's
-    proven `safe_to_retry` -- true for the seventeen reads, false for the twelve
+    proven `safe_to_retry` -- true for the nineteen reads, false for the fourteen
     mutations, whose repeat is settled by the idempotency key rather than by the
     call being idempotent. The world is closed because this server is attached to
     exactly one local workspace it cannot be told to leave.
@@ -856,8 +870,8 @@ def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
 
 def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
     """The same facts as literals, because "derived from the catalogue" is only
-    reassuring if the values it derives are the reviewed ones: twelve mutations
-    marked not read-only and not idempotent, seventeen reads marked read-only and
+    reassuring if the values it derives are the reviewed ones: fourteen mutations
+    marked not read-only and not idempotent, nineteen reads marked read-only and
     idempotent, and nothing marked destructive."""
     hints = {
         tool.name: (
@@ -868,7 +882,7 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         for tool in manifest.tools("authoring")
         if tool.annotations is not None
     }
-    assert len(hints) == 29
+    assert len(hints) == 33
     mutations = {
         "memory_create", "evidence_capture", "import_start",
         "decision_evaluate", "trigger_declare", "trigger_lifecycle",
@@ -876,6 +890,8 @@ def test_the_annotations_land_where_the_requirements_say_they_must() -> None:
         "skills_proposal_submit",
         "knowledge_share_propose",
         "knowledge_share_decide",
+        "task_context_export",
+        "outcome_request_create",
     }
     for mutation in mutations:
         assert hints[mutation] == (False, False, False), mutation
@@ -926,7 +942,7 @@ def test_the_generator_projects_the_wrapper_key_the_manifest_names() -> None:
 
 
 def test_the_generated_projection_covers_every_advertised_reference() -> None:
-    """Nothing the twenty-nine tools advertise is missing from the committed module,
+    """Nothing the thirty-three tools advertise is missing from the committed module,
     and nothing in it is advertised by no tool: a stale entry is as much a
     review problem as an absent one."""
     advertised = {manifest.IDEMPOTENCY_KEY_SCHEMA_REF}
