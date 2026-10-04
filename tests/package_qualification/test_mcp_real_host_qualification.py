@@ -5533,13 +5533,13 @@ def test_the_mcp_child_redirects_the_profile_only_for_an_existing_login(tmp_path
     assert AMBIENT_HOME not in existing_text and AMBIENT_USER not in existing_text
 
 
-def test_the_existing_login_command_adds_only_the_restricted_flag(tmp_path: Path) -> None:
+def test_the_existing_login_command_adds_only_the_empty_tools_list(tmp_path: Path) -> None:
     arguments = {"mcp_config": tmp_path / "m.json", "prompt": "p", "tools": q.RESTRICTED_TOOLS}
     token = q.claude_command(_claude_binary(tmp_path), **arguments)
     existing = q.claude_command(_claude_binary(tmp_path), **arguments, existing_login=True)
     assert "--safe-mode" not in token and "--restricted" not in token
-    assert "--safe-mode" not in existing
-    assert existing == [*token, "--restricted"]
+    assert "--safe-mode" not in existing and "--restricted" not in existing
+    assert existing == [*token, "--tools", ""]
 
 
 def test_the_token_mode_keeps_its_redirects_and_its_command_without_the_hardening_flags(
@@ -5589,9 +5589,10 @@ def test_an_existing_login_session_runs_hardened_with_no_token_and_no_profile_re
     }
     assert "CLAUDE_CONFIG_DIR" not in seen["env"]
     command = seen["command"]
-    for flag in ("--restricted", "--strict-mcp-config", "--no-session-persistence"):
+    for flag in ("--strict-mcp-config", "--no-session-persistence"):
         assert flag in command
-    assert "--safe-mode" not in command
+    assert "--safe-mode" not in command and "--restricted" not in command
+    assert command[-2:] == ["--tools", ""]
     assert command[command.index("--setting-sources") + 1] == "project"
     assert command[command.index("--allowedTools") + 1]
     assert command[command.index("--permission-mode") + 1] == "dontAsk"

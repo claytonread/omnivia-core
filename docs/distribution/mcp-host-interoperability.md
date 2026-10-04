@@ -339,10 +339,11 @@ MCP server process is pointed at the harness-owned home and configuration
 directories with an empty `CLAUDE_CODE_OAUTH_TOKEN`, so Core never sees the real
 profile. This mode is less isolated than file mode, the login is not isolated
 per run, and it runs only when the operator passes the flag. Its guardrails are
-`--restricted`, a private per-run `TMPDIR`, strict MCP config with the exact
-`--mcp-config`, the bounded tool allowlist, `dontAsk` permissions, project-only
-setting sources, and no session persistence. It does not pass `--safe-mode`,
-which disables all MCP servers, including explicitly configured ones.
+`--tools ""` (all built-in tools disabled), a private per-run `TMPDIR`, strict
+MCP config with the exact `--mcp-config`, the MCP-only tool allowlist, `dontAsk`
+permissions, project-only setting sources, and no session persistence. It passes
+neither `--safe-mode`, which disables all MCP servers, nor `--restricted`, with
+which Claude Code 2.1.289 reports `host_initialize_missing`.
 
 Before Core starts, the harness provisions the credential and asks that host's
 own authentication-status command to prove it works in the session environment.
