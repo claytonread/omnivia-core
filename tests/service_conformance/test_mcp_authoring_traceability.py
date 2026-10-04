@@ -37,8 +37,10 @@ from __future__ import annotations
 import ast
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -348,17 +350,141 @@ def test_no_row_short_of_its_evidence_uses_completion_language() -> None:
             assert not _completion_claims(row), row
 
 
-def test_no_row_claims_a_real_host_pass_this_repository_does_not_hold() -> None:
+_QUALIFICATION = REPO_ROOT / "docs" / "development" / "qualification"
+_RECORD_SCHEMA = json.loads(
+    (
+        REPO_ROOT / "docs" / "distribution" / "schemas" / "mcp-real-host-qualification-record-v1.schema.json"
+    ).read_text(encoding="utf-8")
+)
+#: The two approved installed hosts, and where each one's closed record lives.
+HOST_RECORDS = {
+    ("claude-code", "2.1.289"): _QUALIFICATION / "mcp-real-host-claude-code-2.1.289.json",
+    ("codex-cli", "0.146.0"): _QUALIFICATION / "mcp-real-host-codex-cli-0.146.0.json",
+}
+_BOUND_FIELDS = ("wheels", "bindings")  # identical across hosts: one candidate, one closure
+HOST_GATES = tuple(f"I-{number}" for number in range(1, 9))
+
+
+def _require_host_pair(records: dict[tuple[str, str], dict[str, object]]) -> None:
+    """Assert ``records`` is exactly the complete, agreeing, passing host pair."""
+    assert set(records) == set(HOST_RECORDS), sorted(records)
+    for identity, record in records.items():
+        jsonschema.Draft202012Validator(_RECORD_SCHEMA).validate(record)
+        host = record.get("host")
+        assert isinstance(host, dict), identity
+        assert (host.get("name"), host.get("version")) == identity, identity
+        assert record.get("verdict") == "pass" and record.get("reason_code") == "none", identity
+        for field in ("source", *_BOUND_FIELDS, "gates"):
+            assert field in record, (identity, field)  # the schema leaves these optional
+        source = record["source"]
+        assert isinstance(source, dict) and source["clean"] is True and source["revision"], identity
+        gates = record["gates"]
+        assert isinstance(gates, dict) and set(gates) == {f"i{n}" for n in range(1, 9)}, identity
+        for name, gate in gates.items():
+            assert isinstance(gate, dict) and gate, (identity, name)
+            assert all(value is True for value in gate.values()), (identity, name)
+    first, second = records.values()
+    assert first["source"] == second["source"]
+    for field in _BOUND_FIELDS:
+        assert first[field] == second[field], field
+
+
+def _require_exact_directory(names: list[str]) -> None:
+    """The qualification directory holds exactly the two canonical host records, no more and no less."""
+    assert sorted(names) == sorted(path.name for path in HOST_RECORDS.values()), sorted(names)
+
+
+def _load_host_records() -> dict[tuple[str, str], dict[str, object]]:
+    """Every committed record that exists; a missing one is left for the pair check to reject."""
+    return {
+        identity: json.loads(path.read_text(encoding="utf-8"))
+        for identity, path in HOST_RECORDS.items()
+        if path.is_file()
+    }
+
+
+def _host_evidence_is_complete() -> bool:
+    """True for the full valid pair; False only when no record exists; anything else fails."""
+    names = [path.name for path in _QUALIFICATION.glob("mcp-real-host-*.json")]
+    if not names:
+        return False
+    _require_exact_directory(names)
+    records = _load_host_records()
+    _require_host_pair(records)
+    return True
+
+
+def _gate_statuses(rows: list[list[str]]) -> list[str]:
+    gate_rows = [row for row in rows if re.match(r"I-\d ", row[0])]
+    assert [row[0].split()[0] for row in gate_rows] == list(HOST_GATES)
+    return [row[-1] for row in gate_rows]
+
+
+def _require_host_rows_follow_evidence(complete: bool, statuses: list[str], host_rows: list[str]) -> None:
+    """All of I-1..I-8 green with the complete pair; no HOST row green without it."""
+    if complete:
+        assert set(statuses) == {GREEN}, statuses
+    else:
+        assert GREEN not in statuses, statuses
+        assert GREEN not in host_rows, host_rows
+
+
+def test_the_host_pair_is_the_two_approved_hosts_on_one_clean_candidate() -> None:
     """``HOST`` is an installed Claude Code or Codex binary driving the server.
 
-    Nothing in this tree is one: the journeys drive a real child process with
-    the official SDK's ``stdio_client``, which is a client, not a host. So a
-    ``HOST`` row may not be green until a recorded qualification exists, and
-    this is the guard that keeps an SDK simulation from being relabelled.
+    The journeys drive a child process with the official SDK's ``stdio_client``,
+    which is a client, not a host, so only the two committed records can make a
+    ``HOST`` row green.
     """
-    for status, evidence_types, row in STATED_ROWS:
-        if "HOST" in evidence_types:
-            assert status != GREEN, row
+    assert _host_evidence_is_complete()
+
+
+def _break(mutate: Callable[[dict[tuple[str, str], dict[str, object]]], object]) -> None:
+    records = _load_host_records()
+    mutate(records)
+    with pytest.raises((AssertionError, jsonschema.ValidationError)):
+        _require_host_pair(records)
+
+
+def test_the_host_pair_guard_rejects_a_missing_extra_failed_or_mismatched_record() -> None:
+    claude, codex = list(HOST_RECORDS)
+    canonical_names = [path.name for path in HOST_RECORDS.values()]
+    _require_exact_directory(canonical_names)
+    with pytest.raises(AssertionError):
+        _require_exact_directory([*canonical_names, "mcp-real-host-unapproved-1.0.0.json"])
+    _require_host_pair(_load_host_records())
+    _break(lambda records: records.pop(codex))
+    _break(lambda records: records.update({("gemini", "1"): records[claude]}))
+    _break(lambda records: records[claude].update(unknown=1))
+    _break(lambda records: records[claude].update(verdict="fail"))
+    _break(lambda records: records[claude].update(host={"name": "codex-cli", "version": "0.146.0"}))
+    _break(lambda records: records[codex].update(host={"name": "codex-cli", "version": "0.145.0"}))
+    _break(lambda records: records[codex]["source"].update(revision="0" * 40))  # type: ignore[attr-defined]
+    _break(lambda records: records[codex]["source"].update(clean=False))  # type: ignore[attr-defined]
+    _break(lambda records: records[codex]["wheels"].update({"omnivia-core": "0" * 64}))  # type: ignore[attr-defined]
+    _break(lambda records: records[codex]["bindings"].update(schema_sha256="0" * 64))  # type: ignore[attr-defined]
+    _break(lambda records: records[codex]["gates"]["i3"].update(initialize_verified=False))  # type: ignore[index]
+    _break(lambda records: records[codex].pop("gates"))
+
+
+def test_the_host_row_guard_rejects_partial_green_and_green_without_evidence() -> None:
+    all_green = [GREEN] * 8
+    none_green = ["pending-phase-8"] * 8
+    _require_host_rows_follow_evidence(True, all_green, [GREEN])
+    _require_host_rows_follow_evidence(False, none_green, ["partial"])
+    for complete, statuses, host_rows in (
+        (True, [GREEN] * 7 + ["partial"], [GREEN]),
+        (True, none_green, ["partial"]),
+        (False, all_green, [GREEN]),
+        (False, none_green, [GREEN]),
+    ):
+        with pytest.raises(AssertionError):
+            _require_host_rows_follow_evidence(complete, statuses, host_rows)
+
+
+def test_host_rows_are_green_only_with_the_complete_host_pair() -> None:
+    host_rows = [status for status, types, _ in STATED_ROWS if "HOST" in types]
+    _require_host_rows_follow_evidence(_host_evidence_is_complete(), _gate_statuses(TABLE_ROWS), host_rows)
 
 
 def test_every_stated_row_names_at_least_one_evidence_type() -> None:
@@ -679,15 +805,11 @@ def test_the_addendum_declares_no_completion_and_marks_no_gate_green() -> None:
     assert "does not mark any gate green" in ADDENDUM
 
 
-def test_no_plan_declares_completion_while_a_real_host_gate_is_pending() -> None:
-    gate_rows = [row for row in TABLE_ROWS if re.match(r"I-\d ", row[0])]
-    assert [row[0].split()[0] for row in gate_rows] == [
-        f"I-{number}" for number in range(1, 9)
-    ]
-    assert {row[-1] for row in gate_rows} == {"pending-phase-8"}
+def test_the_plan_declares_completion_only_with_the_complete_host_pair() -> None:
     completion_status = re.search(r"^\*\*Status:\*\* (.*)$", COMPLETION_PLAN, re.MULTILINE)
     assert completion_status is not None
-    assert not _completion_claims(completion_status.group(1))
+    claimed = bool(_completion_claims(completion_status.group(1)))
+    assert claimed == _host_evidence_is_complete()
 
 
 def test_the_matrix_is_the_frozen_baseline_and_every_host_gate_is_pending() -> None:
