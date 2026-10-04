@@ -1,19 +1,20 @@
 # OmniVia Core MCP authoring Phase 8 completion plan
 
 **Date:** 2026-10-03
-**Status:** In progress
+**Status:** Runtime and real-host evidence complete; exact-head acceptance pending
 **Owner:** Codex (orchestration, review, acceptance); Claude Code (bounded implementation)
 **Target repository:** `omnivia-core`
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
 **Reviewed predecessor checkpoint:** `9022e2aa` (the independent-review hardening
 of the harness, checkpointed on the working branch)
-**Final candidate:** not frozen. The reviewed PID-reuse teardown repair is pushed
-at `84b1510b2e5e8803803cec30ae625d3731510eb4`, and Gate A is complete at that
-checkpoint. A behavior-neutral review closeout adds one race regression, an
-invariant comment and current status prose; it must be committed and pushed
-before Gate C builds a new Standard candidate from the resulting clean tip.
-`ffa1b36c` and its candidate are historical and superseded. No commit is the
-final qualification candidate, and no exact-tip acceptance is claimed.
+**Qualified runtime commit:**
+`0d8cf362d15b43077a744542974b6160c283e1dc`.
+**Candidate key:**
+`857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`.
+The exact candidate passed its restricted, authoring and lifecycle journeys and
+both pinned real hosts produced schema-valid passing records. The current work
+is the evidence-only closeout; full preflight and hosted checks remain before
+exact-head acceptance.
 
 ## 1. Objective
 
@@ -70,7 +71,7 @@ At execution start the approved replacement baseline is:
 
 | Component | Qualification value |
 |---|---|
-| Claude Code | `2.1.288` |
+| Claude Code | `2.1.289` |
 | Codex CLI | `0.146.0` |
 | macOS | `27.0` build `26A428`, arm64 |
 | MCP SDK | `mcp==2.0.0`, `mcp-types==2.0.0` from `scripts/mcp-wheelhouse-constraints.txt` |
@@ -269,15 +270,24 @@ existing closed, redacted schema:
    installs and a wrong hash is refused. The retained record binds the full
    normalized closure by count and digest and binds the exact harness and
    closed-schema bytes by SHA-256 through the bootstrap receipt.
-7. `initialize` must negotiate `2025-06-18`. An initialize error, missing or
-   malformed version, or version mismatch is a protocol violation.
+7. Two lifecycles are pinned. Legacy `initialize` must negotiate `2025-06-18`;
+   an initialize error, missing or malformed version, or version mismatch is a
+   protocol violation. Modern: a valid `server/discover` result for `2026-07-28`
+   stands for `initialize`, and a malformed one that claims `2026-07-28` is a
+   protocol violation. An error or non-modern discovery is relayed unobserved so
+   the host can fall back to legacy. Claude Code 2.1.289 uses modern discovery,
+   then `tools/list` and `tools/call`, with no `initialize`.
 8. A paginated `tools/list` (`nextCursor` present) is refused.
 9. The canonical digest masks only the value of `page.continuation_token`,
    because that token is bound to the principal that issued it. Whether a
    non-empty token was present stays in the digest as a marker, so a continuing
    page and an exhausted page digest differently while two principals' non-empty
    tokens digest the same. Every other field, including the other `page`
-   fields, stays in the digest, with drift tests.
+   fields, stays in the digest, with drift tests. Pagination chains the token
+   returned by the host's preceding successful call, not the owner's token,
+   through a private, bounded handoff that is removed on every path. Token
+   values do not enter observations, qualification records, durable logs or
+   final output.
 10. Runtime cleanup is verified, not silent. A root that cannot be removed, or
     that still exists after a deletion reports a vanished nested entry, fails
     the run as `cleanup_incomplete` before any pass record is written.
@@ -394,19 +404,16 @@ longer satisfy I-8. A focused read-only review of the final two-file hardening
 found no code defect; its three test-coverage observations were added. A full
 exact-tip independent review is still required before candidate freeze.
 
-No exact-tip Claude or Codex real-host record exists yet, so no I row is green.
-WP3 remains open for both final host records. Claude qualification still
-requires the owner-only token file produced outside the repository by
-`claude setup-token`. Both host runs also require explicit user authorization
-for the external data flow: fixed qualification prompts and bounded,
-service-derived results are sent through the selected host/provider. The
-implementation request, a local login, or the token file does not imply that
-authorization. The execution-policy reviewer rejected the attempted host-side
-diagnostic on that basis; it must not be retried or routed around without the
-specific approval.
-The real-host part of WP5 and final WP6 closeout therefore remain open. This
-documentation edit creates a new candidate commit, so both hosts must be run
-against the later frozen tip rather than any historical candidate.
+Exact-tip Claude and Codex records now exist for qualified runtime commit
+`0d8cf362d15b43077a744542974b6160c283e1dc`. The operator authorized the fixed
+qualification prompts and bounded service-derived results for both providers.
+Claude Code 2.1.289 used the selected existing-login mode and the modern MCP
+`server/discover` lifecycle; Codex CLI 0.146.0 used the isolated copied
+credential and legacy lifecycle. Both records validate under the same closed
+schema, bind the same 35-wheel closure and report every I-1 through I-8 field as
+`true`. WP3 and the real-host part of WP5 are complete. WP6 remains open only
+for the evidence-only closeout, exact-head preflight, hosted checks and final
+review.
 
 ### Checks
 
@@ -482,24 +489,17 @@ with the full base-to-head Git diff before a disposition map is accepted.
 
 ### Improvements Needed
 
-Portable token support is implemented. The remaining Claude action is external:
-provision the token-only file outside the repository, then rerun both hosts at
-the new frozen tip. Keep the separate Windows named-pipe hardening follow-up
-from section 9. The delegation workflow also needs a single-writer qualification
-freeze: concurrent background lanes repeatedly committed and pushed while an
-exact-tip candidate was being prepared. A connector/process follow-up should
-serialize same-worktree writers, prohibit autonomous commit/push while a
-candidate is frozen, and use renewable monitor leases without spawning a second
-writer.
+Keep the separate Windows named-pipe hardening follow-up from section 9. The
+delegation workflow also needs a single-writer qualification freeze: concurrent
+background lanes repeatedly committed and pushed while an exact-tip candidate
+was being prepared. A connector/process follow-up should serialize
+same-worktree writers, prohibit autonomous commit/push while a candidate is
+frozen, and use renewable monitor leases without spawning a second writer.
 
 ### Next Step
 
-Review and checkpoint the section 10 repair round, freeze that exact tip, build
-one clean candidate, and rerun the installed restricted, authoring and lifecycle
-journeys. Then rerun the real-host harness for both hosts at that tip. The
-repair's live checks cannot stand in for those host records.
-Then run full preflight, update PR #167 and obtain fresh hosted checks. Real-host
-acceptance additionally requires an owner-only Claude token file generated
-outside the repository with `claude setup-token`. Retain only the closed
-redacted host records outside the source tree. Merge remains blocked until the
-user explicitly authorizes it and the hosted checks are green at the latest tip.
+Commit the two closed redacted records and this evidence-only reconciliation,
+prove the diff from `0d8cf362` contains no executable or acceptance-rule change,
+then run full preflight, push PR #167 and obtain fresh hosted checks. Merge
+remains blocked until the user explicitly authorizes it and the hosted checks
+are green at the latest tip.
