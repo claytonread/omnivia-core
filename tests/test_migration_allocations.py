@@ -259,9 +259,8 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # candidates, each pinned to the commit that introduced its SQL.
     65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
     66: "de6724f0bbad1209c8c0af035d662f697db278b7",
-    # 0067 is the DEV-REQ-081 knowledge-share candidate. It is pinned to the starting HEAD until its
-    # introducing commit exists, then repinned to that commit in a chore(migrations) change.
-    67: "8b679b06204cfd9249cb6089bcb871aca0d81040",
+    # 0067 is the DEV-REQ-081 knowledge-share candidate, pinned to its introducing commit.
+    67: "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
