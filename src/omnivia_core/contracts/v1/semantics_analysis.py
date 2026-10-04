@@ -271,6 +271,8 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     if has_period and not (
         "period_start" in document
         and "period_end" in document
+        and _business_date_ok(document["period_start"])
+        and _business_date_ok(document["period_end"])
         and document["period_start"] <= document["period_end"]
     ):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL

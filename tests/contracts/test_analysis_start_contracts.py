@@ -238,6 +238,38 @@ def test_a_period_may_not_end_before_it_starts() -> None:
     assert code == ERROR_CODE_INVALID_REQUEST
 
 
+_OTHER_JSON_VALUES = [
+    pytest.param(7, id="int"),
+    pytest.param(1.5, id="float"),
+    pytest.param(True, id="bool"),
+    pytest.param(None, id="null"),
+    pytest.param([], id="list"),
+    pytest.param({}, id="dict"),
+    pytest.param(MappingProxyType({}), id="mappingproxy"),
+    pytest.param((), id="tuple"),
+    pytest.param(_CustomMapping({}), id="custom-mapping"),
+    pytest.param(_CustomSequence([]), id="custom-sequence"),
+    pytest.param("not-a-date", id="invalid-date-string"),
+    pytest.param("2026-02-30", id="impossible-date-string"),
+]
+
+
+@pytest.mark.parametrize("other", _OTHER_JSON_VALUES)
+@pytest.mark.parametrize("valid_side", ["period_start", "period_end"])
+def test_mixed_type_period_bounds_are_invalid_request_not_a_type_error(
+    other: Any, valid_side: str
+) -> None:
+    request = _valid_request(period_start="2026-09-01", period_end="2026-09-30")
+    request.pop("as_of_date")
+    invalid_side = "period_end" if valid_side == "period_start" else "period_start"
+    request[invalid_side] = other
+    code, _ = classify_analysis_start_request(request)
+    assert code == ERROR_CODE_INVALID_REQUEST
+    request[valid_side] = other
+    code, _ = classify_analysis_start_request(request)
+    assert code == ERROR_CODE_INVALID_REQUEST
+
+
 def test_non_object_documents_are_invalid_request() -> None:
     for document in (None, [], "analysis.start", 7, True):
         code, _ = classify_analysis_start_request(document)
