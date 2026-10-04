@@ -656,14 +656,23 @@ records below remain pending; neither provider has passed.
    `--tools` are intentionally absent: `--safe-mode` disables explicitly
    configured MCP servers, and Claude Code 2.1.289 loads `--mcp-config`
    asynchronously, so any `--tools` filter is evaluated before the MCP tools
-   register and reports `host_initialize_missing`. Claude Code 2.1.289 also
-   launches the stdio server once and closes it before `initialize` to
-   negotiate the protocol version, then launches it again. The proxy therefore
-   creates its observation file lazily: it is made exclusively (`0600`,
-   `O_EXCL`, `O_NOFOLLOW`) immediately before the first validated event, which
+   register and reports `host_initialize_missing`. Two lifecycles are pinned:
+   legacy `initialize` at `2025-06-18` and modern `server/discover` at
+   `2026-07-28`. Claude Code 2.1.289 with `mcp` 2.0.0 uses the modern one: a
+   successful `server/discover`, then `tools/list` and `tools/call`, with no
+   `initialize`; it is not a probe followed by an `initialize`. A valid modern
+   discovery (success object, bounded unique `supportedVersions` including
+   `2026-07-28`, `capabilities`, `resultType` `complete`, integer `ttlMs` of at
+   least zero, `cacheScope` `public` or `private`, valid reserved metadata) is
+   recorded as `proxy_started`, `initialize_request`, `initialize_response`
+   (`ok=true`) before it is forwarded. An error or non-modern discovery is relayed
+   unobserved so the host can fall back to legacy `initialize`; a malformed
+   discovery that claims `2026-07-28` fails closed. The record schema is
+   unchanged. The proxy therefore creates its observation file lazily: it is
+   made exclusively (`0600`, `O_EXCL`, `O_NOFOLLOW`) immediately before the first validated event, which
    is `proxy_started`, emitted automatically before the first closed-vocabulary
-   event. An unobserved discovery probe (empty, or `server/discover` with its
-   response, relayed byte for byte) never creates the path, and nothing is
+   event. An unobserved launch (empty, or `server/discover` with an error or
+   non-modern response, relayed byte for byte) never creates the path, and nothing is
    ever unlinked or replaced. An existing path of any kind refuses a launch that
    emits an event and is left unchanged. Gate D has not passed; this change
    only permits the source.

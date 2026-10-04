@@ -211,9 +211,20 @@ model's report:
   uses `pip --require-hashes` from a generated file-URL list, with no index. The
   record binds the normalized full closure by count and digest, and separately
   binds the exact harness and record-schema bytes by SHA-256.
-- **Protocol:** initialize must negotiate `2025-06-18`; an initialize error,
-  missing or malformed version, version mismatch, or paginated tool listing is
-  a protocol violation. Once the interruption response is withheld, the relay
+- **Protocol:** two lifecycles are pinned, and neither is negotiated. Legacy:
+  `initialize` must negotiate `2025-06-18`. Modern: a successful
+  `server/discover` that advertises `2026-07-28` stands for `initialize`; it must
+  be a success object with a bounded, unique `supportedVersions` string list
+  containing `2026-07-28`, a `capabilities` object, `resultType` `complete`, a
+  nonnegative integer `ttlMs`, `cacheScope` `public` or `private`, and, where
+  present, a top-level `protocolVersion` of exactly `2026-07-28`, a top-level
+  `serverInfo` with nonempty bounded `name` and `version` strings, and an object
+  `_meta` whose reserved `io.modelcontextprotocol/serverInfo` (same shape) and
+  `io.modelcontextprotocol/protocolVersion` (`2026-07-28`) entries are valid.
+  Other `_meta` and result keys are open and no value is retained. An initialize
+  error, missing or malformed version, version mismatch, a malformed discovery
+  that advertises `2026-07-28`, or a paginated tool listing is a protocol
+  violation. Once the interruption response is withheld, the relay
   is sealed and cannot forward another host or child frame.
 - **Platform:** a passing record is limited to macOS 27.0 build 26A428 on arm64,
   rather than any syntactically valid macOS version/build.
@@ -349,16 +360,25 @@ Claude Code 2.1.289 loads `--mcp-config` asynchronously, so any `--tools` filter
 is evaluated before the MCP tools register and the run reports
 `host_initialize_missing`.
 
-Claude Code 2.1.289 also launches the configured stdio server once and closes it
-before `initialize` to negotiate the protocol version, then launches the server
-again on the selected path. The observation file is created exclusively, so the
-probe must not leave one behind: the second launch could not create it and the
-run would report `host_initialize_missing`. The proxy therefore creates the
+Claude Code 2.1.289 with `mcp` 2.0.0 uses the modern lifecycle: a successful
+`server/discover`, then `tools/list` and `tools/call`, with no `initialize`. It is
+not a probe followed by an `initialize`. The proxy accepts that discovery as
+initialization only when its result is a valid modern discovery for
+`2026-07-28`, and then writes `proxy_started`, `initialize_request` and
+`initialize_response` (`ok=true`), in that order, before it forwards the answer.
+A discovery that returns an error, or that does not advertise `2026-07-28`, is
+relayed unobserved so the host can fall back to the legacy `initialize` path,
+which is still validated exactly. A discovery that advertises `2026-07-28` but is
+malformed is recorded as a failed initialize and a protocol violation, and is not
+forwarded. The observation file is created exclusively, so a launch that
+observes nothing, such as a discovery that is empty, unanswered, an error or
+non-modern, must not leave one behind: a later launch could not create it and
+the run would report `host_initialize_missing`. The proxy therefore creates the
 file lazily, with mode `0600` and `O_EXCL`/`O_NOFOLLOW`, immediately before it
 writes the first validated event, and it writes `proxy_started` automatically,
 once, immediately before its first closed-vocabulary event. An unobserved
-discovery probe (an empty launch, or a `server/discover` request and its
-response, which are relayed byte for byte) emits no event and never creates
+launch (an empty launch, or a `server/discover` request and a response that is
+an error or non-modern, relayed byte for byte) emits no event and never creates
 the path. The proxy never deletes or replaces an observation
 path. A launch that emits an event fails closed if any file, symlink or other
 entry already exists at the path, and leaves that entry unchanged. No event

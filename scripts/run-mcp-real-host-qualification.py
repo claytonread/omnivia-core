@@ -73,6 +73,9 @@ HOST_TIMEOUT: Final = 300.0
 CORE_TIMEOUT: Final = 60.0
 SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
 MCP_PROTOCOL_VERSION: Final = "2025-06-18"
+#: The modern lifecycle (Claude Code 2.1.289, mcp 2.0.0): a successful ``server/discover``
+#: replaces ``initialize``.  Both versions are pinned; neither is negotiated.
+MCP_MODERN_PROTOCOL_VERSION: Final = "2026-07-28"
 MAX_PROTOCOL_OUTPUT_BYTES: Final = 1_048_576
 CLAUDE_TOKEN_VARIABLE: Final = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_TOKEN_FILE_BYTES: Final = 1024
@@ -1499,6 +1502,54 @@ def _parse_frame(frame: bytes) -> dict[str, Any]:
     return value
 
 
+def _is_modern_discovery(result: object) -> bool:
+    """Whether a discovery result claims the pinned modern version (``True`` is never silent).
+
+    A result that does not list the pinned version is not a modern advertisement and is
+    relayed unobserved, so the host may fall back to the legacy ``initialize``.  A result
+    that lists it is held to the whole shape and must be valid, else the caller refuses it.
+    """
+    if not isinstance(result, dict):
+        return False
+    versions = result.get("supportedVersions")
+    return isinstance(versions, list) and MCP_MODERN_PROTOCOL_VERSION in versions
+
+
+def _valid_implementation(value: object) -> bool:
+    """An implementation object: nonempty, bounded ``name`` and ``version`` strings."""
+    return isinstance(value, dict) and all(
+        isinstance(value.get(field), str) and 0 < len(value[field]) <= 256
+        for field in ("name", "version")
+    )
+
+
+def _valid_modern_discovery(result: dict[str, Any]) -> bool:
+    """Shape-check a claimed-modern discovery; open extension keys pass and no value is kept."""
+    versions = result["supportedVersions"]
+    meta = result.get("_meta", {})
+    ttl = result.get("ttlMs")
+    return (
+        len(versions) <= 32
+        and all(isinstance(v, str) and 0 < len(v) <= 64 for v in versions)
+        and len(set(versions)) == len(versions)
+        and isinstance(result.get("capabilities"), dict)
+        and result.get("resultType") == "complete"
+        and type(ttl) is int
+        and ttl >= 0
+        and result.get("cacheScope") in ("public", "private")
+        and result.get("protocolVersion", MCP_MODERN_PROTOCOL_VERSION)
+        == MCP_MODERN_PROTOCOL_VERSION
+        and ("serverInfo" not in result or _valid_implementation(result["serverInfo"]))
+        and isinstance(meta, dict)
+        and (
+            "io.modelcontextprotocol/serverInfo" not in meta
+            or _valid_implementation(meta["io.modelcontextprotocol/serverInfo"])
+        )
+        and meta.get("io.modelcontextprotocol/protocolVersion", MCP_MODERN_PROTOCOL_VERSION)
+        == MCP_MODERN_PROTOCOL_VERSION
+    )
+
+
 def _request_key(identifier: object) -> str | None:
     if isinstance(identifier, str) or (type(identifier) is int):
         return json.dumps(identifier)
@@ -1615,6 +1666,9 @@ class _Relay:
         if isinstance(method, str) and key is not None and method == "initialize":
             self.observer.emit("initialize_request")
             entry = (method, None, False, False)
+        elif isinstance(method, str) and key is not None and method == "server/discover":
+            # Tracked only: a discovery that is not a valid modern answer leaves no evidence.
+            entry = (method, None, False, False)
         elif isinstance(method, str) and key is not None and method == "tools/list":
             self.observer.emit("tools_list_request")
             entry = (method, None, False, False)
@@ -1690,7 +1744,18 @@ class _Relay:
         method, tool, targeted, captured = entry
         result = message.get("result")
         ok = isinstance(result, dict) and "error" not in message
-        if method == "initialize":
+        if method == "server/discover":
+            if not ok or not _is_modern_discovery(result):
+                return False
+            # The modern lifecycle has no ``initialize``; the validated discovery stands
+            # for it, recorded before its answer is forwarded.
+            assert isinstance(result, dict)
+            valid = _valid_modern_discovery(result)
+            self.observer.emit("initialize_request")
+            self.observer.emit("initialize_response", ok=valid)
+            if not valid:
+                raise _Violation("invalid_initialize")
+        elif method == "initialize":
             # The negotiated version must be the one this harness speaks; a reply
             # without a version string is malformed, not merely unsuccessful.
             protocol = result.get("protocolVersion") if isinstance(result, dict) else None

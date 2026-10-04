@@ -1444,11 +1444,15 @@ def test_relay_refuses_duplicate_ids_and_malformed_inventory(tmp_path: Path) -> 
     assert inventory.value.kind == "invalid_tool_inventory"
 
 
-def _proxy_child() -> str:
+def _proxy_child(discover: object = None, discover_error: bool = False) -> str:
     return (
         "import json,sys\n"
+        f"D={discover!r}\n"
         "for line in sys.stdin:\n"
         " m=json.loads(line); method=m.get('method'); result={}\n"
+        f" if method=='server/discover' and {discover_error!r}:\n"
+        "  print(json.dumps({'jsonrpc':'2.0','id':m['id'],'error':{'code':-32601,'message':'no'}},separators=(',',':')),flush=True); continue\n"
+        " if method=='server/discover' and D is not None: result=D\n"
         " if method=='initialize': result={'protocolVersion':'2025-06-18','capabilities':{},'serverInfo':{'name':'test','version':'1'}}\n"
         " elif method=='tools/list': result={'tools':[{'name':'workspace_inspect'}]}\n"
         " elif method=='tools/call': result={'content':[],'isError':False,'structuredContent':{'workspace':{}}}\n"
@@ -1481,10 +1485,10 @@ def test_a_pre_initialize_probe_leaves_no_observation_for_the_real_launch(tmp_pa
 
 
 @posix_only
-def test_a_server_discover_probe_is_relayed_unobserved_and_leaves_the_real_launch_its_path(
+def test_a_non_modern_server_discover_probe_is_relayed_unobserved_and_leaves_the_real_launch_its_path(
     tmp_path: Path,
 ) -> None:
-    """Claude Code 2.1.289 sends ``server/discover`` before it closes the probe and re-launches."""
+    """A ``server/discover`` answered without the modern version leaves no evidence at all."""
     spec = tmp_path / "spec"
     observation = tmp_path / "events"
     q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
@@ -1498,6 +1502,211 @@ def test_a_server_discover_probe_is_relayed_unobserved_and_leaves_the_real_launc
     events = q.read_observation(observation)
     assert [event["event"] for event in events][:2] == ["proxy_started", "initialize_request"]
     assert q.summarize_observation(events).initialized
+
+
+RESERVED_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+RESERVED_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+
+
+def _modern_discovery(**overrides: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "supportedVersions": [q.MCP_MODERN_PROTOCOL_VERSION],
+        "capabilities": {"tools": {}},
+        "resultType": "complete",
+        "ttlMs": 0,
+        "cacheScope": "public",
+        "serverInfo": {"name": "test", "version": "1"},
+    }
+    return {**result, **overrides}
+
+
+def _discover_frame(identifier: object = "d1") -> bytes:
+    return _frame({"jsonrpc": "2.0", "id": identifier, "method": "server/discover"})
+
+
+def _modern_session(spec: Path) -> tuple[int, bytes]:
+    """Drive a host that waits for each answer, as Claude Code does, then return the exit and stdout."""
+    requests = [
+        _discover_frame(),
+        _frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        _frame(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "workspace_inspect", "arguments": {}},
+            }
+        ),
+    ]
+    proxy = subprocess.Popen(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    assert proxy.stdin is not None and proxy.stdout is not None
+    answers = b""
+    for request in requests:
+        proxy.stdin.write(request)
+        proxy.stdin.flush()
+        answers += proxy.stdout.readline()
+    proxy.stdin.close()
+    answers += proxy.stdout.read()
+    return proxy.wait(timeout=60), answers
+
+
+@posix_only
+def test_modern_discovery_then_tools_is_observed_in_order_and_relayed_exactly(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    discovery = _modern_discovery()
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _proxy_child(discovery)], observation=observation
+    )
+    returncode, stdout = _modern_session(spec)
+    assert returncode == 0
+    assert stdout.splitlines(keepends=True)[0] == _frame(
+        {"jsonrpc": "2.0", "id": "d1", "result": discovery}
+    )
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events] == [
+        "proxy_started",
+        "initialize_request",
+        "initialize_response",
+        "tools_list_request",
+        "tools_list_response",
+        "tool_call_request",
+        "tool_call_response",
+    ]
+    assert events[2]["ok"] is True
+    summary = q.summarize_observation(events)
+    assert summary.initialized and not summary.initialized_after_pause
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "variant",
+    [
+        {"discover_error": True},
+        {"discover": {}},
+        {"discover": _modern_discovery(supportedVersions=["2025-06-18"])},
+        {"discover": _modern_discovery(supportedVersions=["2026-07-28-rc"])},
+        {"discover": _modern_discovery(supportedVersions="2026-07-28")},
+    ],
+)
+def test_a_discovery_that_is_not_modern_is_relayed_unobserved_and_legacy_initialize_follows(
+    tmp_path: Path, variant: dict[str, Any]
+) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _proxy_child(**variant)], observation=observation
+    )
+    probe = _run_proxy(spec, _discover_frame())
+    assert probe.returncode == 0 and probe.stdout.count(b"\n") == 1
+    assert not os.path.lexists(observation)
+    both = _run_proxy(
+        spec,
+        _discover_frame()
+        + _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    )
+    assert both.returncode == 0
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events] == [
+        "proxy_started",
+        "initialize_request",
+        "initialize_response",
+    ]
+    assert q.summarize_observation(events).initialized
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"capabilities": []},
+        {"resultType": "incomplete"},
+        {"ttlMs": -1},
+        {"ttlMs": True},
+        {"ttlMs": 1.5},
+        {"cacheScope": "global"},
+        {"supportedVersions": ["2026-07-28", "2026-07-28"]},
+        {"supportedVersions": ["2026-07-28", 1]},
+        {"serverInfo": "test"},
+        {"serverInfo": {"name": 1}},
+        {"serverInfo": None},
+        {"serverInfo": []},
+        {"serverInfo": {"version": "1"}},
+        {"serverInfo": {"name": "", "version": "1"}},
+        {"serverInfo": {"name": "n" * 257, "version": "1"}},
+        {"serverInfo": {"name": "test"}},
+        {"protocolVersion": "2025-06-18"},
+        {"protocolVersion": None},
+        {"_meta": []},
+        {"_meta": None},
+        {"_meta": "meta"},
+        {"_meta": 1},
+        {"_meta": {RESERVED_SERVER_INFO: None}},
+        {"_meta": {RESERVED_SERVER_INFO: []}},
+        {"_meta": {RESERVED_SERVER_INFO: "x"}},
+        {"_meta": {RESERVED_SERVER_INFO: {"version": "1"}}},
+        {"_meta": {RESERVED_SERVER_INFO: {"name": "", "version": "1"}}},
+        {"_meta": {RESERVED_SERVER_INFO: {"name": "n" * 257, "version": "1"}}},
+        {"_meta": {RESERVED_PROTOCOL_VERSION: "2025-06-18"}},
+        {"_meta": {RESERVED_PROTOCOL_VERSION: None}},
+    ],
+)
+def test_a_malformed_claimed_modern_discovery_fails_closed(
+    tmp_path: Path, overrides: dict[str, Any]
+) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    discovery = _modern_discovery(**overrides)
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _proxy_child(discovery)], observation=observation
+    )
+    run = _run_proxy(spec, _discover_frame())
+    assert run.returncode == q.PROXY_VIOLATION_EXIT
+    assert run.stdout == b""
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events] == [
+        "proxy_started",
+        "initialize_request",
+        "initialize_response",
+        "protocol_violation",
+    ]
+    assert events[2]["ok"] is False and events[3]["kind"] == "invalid_initialize"
+    assert not q.summarize_observation(events).initialized
+
+
+def test_actual_style_reserved_discovery_metadata_and_open_extensions_pass() -> None:
+    meta = {
+        RESERVED_SERVER_INFO: {"name": "omnivia-core", "version": "1.0.0", "title": "Core"},
+        RESERVED_PROTOCOL_VERSION: q.MCP_MODERN_PROTOCOL_VERSION,
+        "example.com/extension": {"anything": [1, None]},
+    }
+    assert q._valid_modern_discovery(_modern_discovery(_meta=meta, extra="open"))
+    assert q._valid_modern_discovery(
+        {k: v for k, v in _modern_discovery(_meta=meta).items() if k != "serverInfo"}
+    )
+
+
+def test_a_discovery_request_alone_or_unanswered_leaves_no_evidence(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None)
+    relay.request(_discover_frame())
+    relay.request(_frame({"jsonrpc": "2.0", "method": "server/discover"}))
+    observer.close()
+    assert not os.path.lexists(tmp_path / "events")
+
+
+def test_a_discovery_id_cannot_be_reused_while_pending(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None)
+    relay.request(_discover_frame())
+    with pytest.raises(q._Violation) as error:
+        relay.request(_discover_frame())
+    observer.close()
+    assert error.value.kind == "duplicate_request"
 
 
 @posix_only

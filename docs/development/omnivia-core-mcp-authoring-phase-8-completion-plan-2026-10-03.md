@@ -269,8 +269,13 @@ existing closed, redacted schema:
    installs and a wrong hash is refused. The retained record binds the full
    normalized closure by count and digest and binds the exact harness and
    closed-schema bytes by SHA-256 through the bootstrap receipt.
-7. `initialize` must negotiate `2025-06-18`. An initialize error, missing or
-   malformed version, or version mismatch is a protocol violation.
+7. Two lifecycles are pinned. Legacy `initialize` must negotiate `2025-06-18`;
+   an initialize error, missing or malformed version, or version mismatch is a
+   protocol violation. Modern: a valid `server/discover` result for `2026-07-28`
+   stands for `initialize`, and a malformed one that claims `2026-07-28` is a
+   protocol violation. An error or non-modern discovery is relayed unobserved so
+   the host can fall back to legacy. Claude Code 2.1.289 uses modern discovery,
+   then `tools/list` and `tools/call`, with no `initialize`.
 8. A paginated `tools/list` (`nextCursor` present) is refused.
 9. The canonical digest masks only the value of `page.continuation_token`,
    because that token is bound to the principal that issued it. Whether a
