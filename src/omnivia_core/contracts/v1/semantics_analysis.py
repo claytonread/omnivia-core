@@ -38,6 +38,7 @@ typed outcome rather than an exception escaping to the caller.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from .generated import (
@@ -97,6 +98,13 @@ _INVALID_REQUEST_DETAIL: Final = (
 )
 
 
+def _is_array(value: Any) -> bool:
+    """A JSON array: any non-text, non-bytes ``Sequence`` (list, tuple, custom)."""
+    return isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray, memoryview)
+    )
+
+
 def _identifier_ok(value: Any) -> bool:
     return (
         isinstance(value, str)
@@ -107,7 +115,7 @@ def _identifier_ok(value: Any) -> bool:
 
 def _strict_fields(document: Any, allowed: frozenset[str]) -> bool:
     """Every present key is declared and every value is JSON data."""
-    if not isinstance(document, dict):
+    if not isinstance(document, Mapping):
         return False
     if not set(document) <= allowed:
         return False
@@ -126,13 +134,13 @@ def _json_data(value: Any, depth: int = 0) -> bool:
         return True
     if isinstance(value, float):
         return value == value and value not in (float("inf"), float("-inf"))  # noqa: PLR0124 - NaN check
-    if isinstance(value, list):
-        return all(_json_data(item, depth + 1) for item in value)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return all(
             isinstance(key, str) and _json_data(item, depth + 1)
             for key, item in value.items()
         )
+    if _is_array(value):
+        return all(_json_data(item, depth + 1) for item in value)
     return False
 
 
@@ -169,7 +177,7 @@ def _timezone_ok(value: Any) -> bool:
 
 
 def _target_ok(target: Any) -> bool:
-    if not isinstance(target, dict):
+    if not isinstance(target, Mapping):
         return False
     kind = target.get("kind")
     if kind == "metric":
@@ -186,11 +194,11 @@ def _target_ok(target: Any) -> bool:
 def _parameters_ok(parameters: Any) -> bool:
     if parameters is None:
         return True
-    if not isinstance(parameters, list):
+    if not _is_array(parameters):
         return False
     names: set[str] = set()
     for parameter in parameters:
-        if not isinstance(parameter, dict) or set(parameter) != _PARAMETER_FIELDS:
+        if not isinstance(parameter, Mapping) or set(parameter) != _PARAMETER_FIELDS:
             return False
         name = parameter.get("name")
         if not isinstance(name, str) or name in names:
@@ -204,7 +212,7 @@ def _parameters_ok(parameters: Any) -> bool:
 def _output_bounds_ok(bounds: Any) -> bool:
     if bounds is None:
         return True
-    if not isinstance(bounds, dict) or not set(bounds) <= _OUTPUT_BOUNDS_FIELDS:
+    if not isinstance(bounds, Mapping) or not set(bounds) <= _OUTPUT_BOUNDS_FIELDS:
         return False
     max_rows = bounds.get("max_rows")
     return max_rows is None or (
@@ -222,7 +230,7 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     storage, the network, credentials or a worker: classification is the whole
     of milestone 1, and the caller's only job is to render the outcome.
     """
-    if not isinstance(document, dict):
+    if not isinstance(document, Mapping):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     version = document.get("request_version")

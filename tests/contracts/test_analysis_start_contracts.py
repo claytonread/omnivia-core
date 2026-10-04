@@ -16,7 +16,9 @@ reviewable.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -67,6 +69,35 @@ def _valid_request(**overrides: Any) -> dict[str, Any]:
 
 class _Absent:
     pass
+
+
+class _CustomMapping(Mapping[str, Any]):
+    """A read-only mapping that is neither a dict nor a MappingProxyType."""
+
+    def __init__(self, data: Mapping[str, Any]) -> None:
+        self._data = dict(data)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+class _CustomSequence(Sequence[Any]):
+    """A read-only sequence that is neither a list nor a tuple."""
+
+    def __init__(self, items: Sequence[Any]) -> None:
+        self._items = list(items)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._items[index]
+
+    def __len__(self) -> int:
+        return len(self._items)
 
 
 _ABSENT = _Absent()
@@ -229,6 +260,184 @@ def test_the_input_document_is_never_mutated() -> None:
     before = json.dumps(request, sort_keys=True)
     classify_analysis_start_request(request)
     assert json.dumps(request, sort_keys=True) == before
+
+
+# ---------------------------------------------------------------------------
+# Container parity: abstract Mapping / non-text Sequence are JSON object / array
+# ---------------------------------------------------------------------------
+
+
+def _abstract(value: Any, mapping: Any, sequence: Any) -> Any:
+    """Rebuild every dict/list in ``value`` as the given abstract containers."""
+    if isinstance(value, dict):
+        return mapping(
+            {key: _abstract(item, mapping, sequence) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return sequence([_abstract(item, mapping, sequence) for item in value])
+    return value
+
+
+_CONTAINERS = [
+    pytest.param(MappingProxyType, tuple, id="mappingproxy-tuple"),
+    pytest.param(_CustomMapping, _CustomSequence, id="custom-custom"),
+]
+
+
+@pytest.mark.parametrize(("mapping", "sequence"), _CONTAINERS)
+def test_abstract_containers_reach_the_same_refusal_at_every_level(
+    mapping: Any, sequence: Any
+) -> None:
+    request = _valid_request(
+        parameters=[
+            {"name": "p", "value": {"k": [1, {"deep": [None, 1.5, "x", True]}]}},
+            {"name": "q", "value": []},
+        ],
+        output_bounds={"max_rows": 10},
+    )
+    expected = classify_analysis_start_request(request)
+    assert expected[0] == ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    abstract = _abstract(request, mapping, sequence)
+    assert not isinstance(abstract, dict)
+    assert not isinstance(abstract["parameters"], list)
+    assert classify_analysis_start_request(abstract) == expected
+
+
+@pytest.mark.parametrize(("mapping", "sequence"), _CONTAINERS)
+@pytest.mark.parametrize(
+    ("override", "code"),
+    [
+        ({"request_version": "2.0"}, ERROR_CODE_INCOMPATIBLE_VERSION),
+        ({"request_version": "1.7"}, ERROR_CODE_UNSUPPORTED_MINOR_VERSION),
+        ({"request_version": "bogus"}, ERROR_CODE_INVALID_REQUEST),
+        ({"unrecognised_field": True}, ERROR_CODE_INVALID_REQUEST),
+        ({"use_class": "action_input"}, ERROR_CODE_INVALID_REQUEST),
+        ({"target": {"kind": "metric"}}, ERROR_CODE_INVALID_REQUEST),
+        (
+            {
+                "target": {
+                    "kind": "metric",
+                    "metric_revision_id": "m-1",
+                    "data_view_revision_id": "d-1",
+                }
+            },
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        (
+            {"parameters": [{"name": "p", "value": 1}, {"name": "p", "value": 2}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        (
+            {"parameters": [{"name": "p", "value": 1, "extra": 2}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        ({"parameters": [{"name": "p"}]}, ERROR_CODE_INVALID_REQUEST),
+        ({"output_bounds": {"max_rows": True}}, ERROR_CODE_INVALID_REQUEST),
+        ({"output_bounds": {"max_rows": 0}}, ERROR_CODE_INVALID_REQUEST),
+        ({"output_bounds": {"unrecognised_bound": 5}}, ERROR_CODE_INVALID_REQUEST),
+        (
+            {"parameters": [{"name": "p", "value": float("nan")}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        (
+            {"parameters": [{"name": "p", "value": [float("inf")]}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        (
+            {"parameters": [{"name": "p", "value": {"k": float("-inf")}}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        (
+            {"parameters": [{"name": "p", "value": {1: "non-string key"}}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+        (
+            {"parameters": [{"name": "p", "value": {"k": object()}}]},
+            ERROR_CODE_INVALID_REQUEST,
+        ),
+    ],
+)
+def test_abstract_containers_keep_every_strictness_and_outcome(
+    mapping: Any, sequence: Any, override: dict[str, Any], code: str
+) -> None:
+    request = _valid_request(**override)
+    assert classify_analysis_start_request(request)[0] == code
+    assert classify_analysis_start_request(_abstract(request, mapping, sequence)) == (
+        classify_analysis_start_request(request)
+    )
+
+
+@pytest.mark.parametrize(("mapping", "sequence"), _CONTAINERS)
+def test_abstract_temporal_and_timezone_rules_are_unchanged(
+    mapping: Any, sequence: Any
+) -> None:
+    period = _valid_request(period_start="2026-09-01", period_end="2026-09-30")
+    period.pop("as_of_date")
+    assert (
+        classify_analysis_start_request(_abstract(period, mapping, sequence))[0]
+        == ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    )
+    for override in (
+        {"period_start": "2026-09-30", "period_end": "2026-09-01"},
+        {
+            "as_of_date": "2026-09-30",
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+        },
+        {"as_of_date": "2026-02-30"},
+        {"business_timezone": "Not/AZone"},
+    ):
+        request = _valid_request(**override)
+        assert (
+            classify_analysis_start_request(_abstract(request, mapping, sequence))[0]
+            == ERROR_CODE_INVALID_REQUEST
+        )
+
+
+@pytest.mark.parametrize(
+    "text_or_bytes", ["currency=AUD", b"bytes", bytearray(b"bytes")]
+)
+def test_text_and_bytes_are_not_arrays(text_or_bytes: Any) -> None:
+    code, _ = classify_analysis_start_request(_valid_request(parameters=text_or_bytes))
+    assert code == ERROR_CODE_INVALID_REQUEST
+
+
+@pytest.mark.parametrize("not_json", [b"\x01\x02", bytearray(b"\x01\x02")])
+def test_bytes_never_pass_as_a_parameter_value_or_nested_array(not_json: Any) -> None:
+    for value in (not_json, [not_json], {"k": not_json}):
+        request = _valid_request(parameters=[{"name": "p", "value": value}])
+        assert classify_analysis_start_request(request)[0] == ERROR_CODE_INVALID_REQUEST
+
+
+@pytest.mark.parametrize(("mapping", "sequence"), _CONTAINERS)
+def test_abstract_container_nesting_depth_stays_bounded(
+    mapping: Any, sequence: Any
+) -> None:
+    bomb: Any = None
+    for _ in range(200):
+        bomb = sequence([mapping({"depth": bomb})])
+    request = _valid_request(
+        parameters=sequence([mapping({"name": "p", "value": bomb})])
+    )
+    assert classify_analysis_start_request(request)[0] == ERROR_CODE_INVALID_REQUEST
+
+
+@pytest.mark.parametrize(("mapping", "sequence"), _CONTAINERS)
+def test_abstract_containers_are_never_mutated(mapping: Any, sequence: Any) -> None:
+    plain = _valid_request(parameters=[{"name": "p", "value": {"k": [1, 2]}}])
+    request = _abstract(plain, mapping, sequence)
+    classify_analysis_start_request(request)
+    assert json.dumps(_plain(request), sort_keys=True) == json.dumps(
+        plain, sort_keys=True
+    )
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return [_plain(item) for item in value]
+    return value
 
 
 # ---------------------------------------------------------------------------

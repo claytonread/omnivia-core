@@ -12,6 +12,8 @@ itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping
+from types import MappingProxyType
 from typing import Any, Final
 
 import pytest
@@ -168,6 +170,46 @@ def test_accepting_the_literal_current_publication_grants_nothing() -> None:
     assert raised.value.code == ERROR_CODE_DEPENDENCY_UNAVAILABLE
     assert raised.value.__dict__.get("authorization") is None
     assert not hasattr(raised.value, "result")
+
+
+class _CustomMapping(Mapping[str, Any]):
+    def __init__(self, data: Mapping[str, Any]) -> None:
+        self._data = dict(data)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+@pytest.mark.parametrize("mapping", [MappingProxyType, _CustomMapping])
+def test_an_abstract_mapping_request_reaches_the_same_refusal(mapping: Any) -> None:
+    """Wire transports hand the handler a read-only mapping, not a dict."""
+    plain = dict(
+        _valid_input(),
+        target=mapping({"kind": "metric", "metric_revision_id": "metric-overdue-r1"}),
+        parameters=(
+            mapping({"name": "currency", "value": mapping({"codes": ("AUD", "NZD")})}),
+        ),
+    )
+    request_input = mapping(plain)
+    assert not isinstance(request_input, dict)
+    before = repr(sorted(request_input.items()))
+    context, _ = _context(request_input)  # type: ignore[arg-type]
+    with pytest.raises(OperationError) as raised:
+        analysis_start(context)
+    assert raised.value.code == ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    assert raised.value.retry_class == "retryable_after_delay"
+    assert raised.value.job_reference is None
+    assert raised.value.audit_reference is None
+    assert raised.value.__dict__.get("authorization") is None
+    assert not hasattr(raised.value, "result")
+    assert context.request.input is request_input
+    assert repr(sorted(request_input.items())) == before
 
 
 def test_the_handler_name_matches_the_catalogue_operation() -> None:
