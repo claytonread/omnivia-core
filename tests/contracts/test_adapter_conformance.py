@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "97efe838f2f4f50277ff1f5c99613478b487b9dfecfd1407836acc5f13dec70e"
+        "0c1f6a501b070f9cc1046968027200e864a73f1e2b644e63a640a32d61e73782"
     )
 
 
