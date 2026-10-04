@@ -237,7 +237,7 @@ _UNUSABLE = [
         id="extra-member",
     ),
     pytest.param(
-        '{"schema": "omnivia.knowledge-projects.v2", "projects": []}',
+        '{"schema": "omnivia.knowledge-projects.v3", "projects": []}',
         id="other-version",
     ),
     pytest.param(_one(owners=[float("nan")]), id="non-standard-number"),
