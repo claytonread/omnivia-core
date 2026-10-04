@@ -557,6 +557,17 @@
       "sha256": "af2e93cc180c0f1eb5a480306775e460ee57dd3b4e904670f8a13e2764075136",
       "introduced_commit": "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
       "accepted_commit": null
+    },
+    {
+      "number": 68,
+      "filename": "0068_task_context_outcomes.sql",
+      "owner": "Agent Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 67,
+      "sha256": "d218882fdb63bcad31069e829171a69b697e1feb0c7c5d32828cecd63561543c",
+      "introduced_commit": null,
+      "accepted_commit": null
     }
   ]
 }

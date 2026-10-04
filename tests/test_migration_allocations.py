@@ -179,6 +179,7 @@ EXPECTED_ALLOCATION = (
     (65, "0065_review_finding_quarantine.sql", "Agent Runtime", "candidate"),
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
+    (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
