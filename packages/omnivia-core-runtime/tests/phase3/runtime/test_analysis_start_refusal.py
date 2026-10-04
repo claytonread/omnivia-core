@@ -233,3 +233,64 @@ def test_an_abstract_mapping_request_reaches_the_same_refusal(mapping: Any) -> N
 def test_the_handler_name_matches_the_catalogue_operation() -> None:
     assert ANALYSIS_START_OPERATION == "analysis.start"
     assert get_operation_metadata(ANALYSIS_START_OPERATION).name == "analysis.start"
+
+
+_OPERATOR_SECRET: Final = "hostile-operator-secret-must-not-surface"
+
+
+class _HashBombStr(str):
+    def __hash__(self) -> int:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _EqBombStr(str):
+    # Hashable on purpose, so only the equality path can fire.
+    __hash__ = str.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _GeBombInt(int):
+    def __ge__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+@pytest.mark.parametrize(
+    "request_input",
+    [
+        pytest.param(
+            dict(_valid_input(), use_class=_EqBombStr("exploration")), id="use-class"
+        ),
+        pytest.param(
+            dict(
+                _valid_input(),
+                target={"kind": _EqBombStr("metric"), "metric_revision_id": "m-1"},
+            ),
+            id="target-kind",
+        ),
+        pytest.param(
+            dict(_valid_input(), parameters=[{"name": _HashBombStr("p"), "value": {}}]),
+            id="parameter-name",
+        ),
+        pytest.param(
+            dict(_valid_input(), output_bounds={"max_rows": _GeBombInt(5)}),
+            id="max-rows",
+        ),
+    ],
+)
+def test_hostile_scalars_render_a_fixed_non_retryable_refusal(
+    request_input: dict[str, Any],
+) -> None:
+    context, _ = _context(request_input)
+    with pytest.raises(OperationError) as raised:
+        analysis_start(context)
+    assert raised.value.code == ERROR_CODE_INVALID_REQUEST
+    assert raised.value.retry_class == "non_retryable"
+    # No job, audit or result side effect, and no operator text in the error.
+    assert raised.value.job_reference is None
+    assert raised.value.audit_reference is None
+    assert raised.value.__dict__.get("authorization") is None
+    assert not hasattr(raised.value, "result")
+    assert raised.value.__cause__ is None
+    assert _OPERATOR_SECRET not in f"{raised.value}{raised.value!r}"

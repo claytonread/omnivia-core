@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping, Sequence
+from enum import IntEnum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -725,5 +726,225 @@ def test_an_abstract_mapping_value_is_a_json_object(value: Any) -> None:
         ERROR_CODE_DEPENDENCY_UNAVAILABLE
     )
     assert classify_analysis_start_request(_decoded(request))[0] == (
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hostile scalars and keys: exact-type gates, no operator ever invoked
+# ---------------------------------------------------------------------------
+
+# Every hostile operator raises this text. A classifier that invoked one would
+# raise out of the call (failing the test), and a refusal must never echo it.
+_OPERATOR_SECRET = "hostile-operator-secret-must-not-surface"
+
+
+class _HashBombStr(str):
+    def __hash__(self) -> int:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _MethodBombStr(str):
+    """A str whose equality, ordering, length and method protocols all raise."""
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+    def __ne__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+    def __le__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+    def __len__(self) -> int:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+    def split(self, *args: Any, **kwargs: Any) -> list[str]:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _GeBombInt(int):
+    def __ge__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _EqBombFloat(float):
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError(_OPERATOR_SECRET)
+
+
+class _Tier(IntEnum):
+    ONE = 1
+
+
+class _Mode(StrEnum):
+    EXPLORATION = "exploration"
+
+
+class _PairsMapping(Mapping[Any, Any]):
+    """A benign read-only Mapping over a list of pairs. Unlike a dict it never
+    hashes its keys, so a hostile key can be yielded without being stored."""
+
+    def __init__(self, pairs: Sequence[tuple[Any, Any]]) -> None:
+        self._pairs = list(pairs)
+
+    def __getitem__(self, key: Any) -> Any:
+        for stored, value in self._pairs:
+            if stored == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[Any]:
+        return (stored for stored, _ in self._pairs)
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+
+_HOSTILE_SCALAR_CASES = [
+    pytest.param({"request_version": _HashBombStr("1.0")}, id="version-hash-bomb"),
+    pytest.param({"request_version": _MethodBombStr("1.0")}, id="version-ne-bomb"),
+    pytest.param({"request_version": _MethodBombStr("2.0")}, id="major-ne-bomb"),
+    pytest.param({"use_class": _MethodBombStr("exploration")}, id="use-class-eq-bomb"),
+    pytest.param({"use_class": _HashBombStr("exploration")}, id="use-class-hash-bomb"),
+    pytest.param({"use_class": _Mode.EXPLORATION}, id="use-class-strenum"),
+    pytest.param(
+        {"target": {"kind": _MethodBombStr("metric"), "metric_revision_id": "m-1"}},
+        id="target-kind-eq-bomb",
+    ),
+    pytest.param(
+        {"target": {"kind": "metric", "metric_revision_id": _MethodBombStr("m-1")}},
+        id="target-revision-len-bomb",
+    ),
+    pytest.param(
+        {"target": {"kind": "metric", "metric_revision_id": _HashBombStr("m-1")}},
+        id="target-revision-hash-bomb",
+    ),
+    pytest.param({"as_of_date": _HashBombStr("2026-09-30")}, id="as-of-hash-bomb"),
+    pytest.param({"as_of_date": _MethodBombStr("2026-09-30")}, id="as-of-method-bomb"),
+    pytest.param(
+        {
+            "as_of_date": _ABSENT,
+            "period_start": _MethodBombStr("2026-09-01"),
+            "period_end": "2026-09-30",
+        },
+        id="period-start-le-bomb",
+    ),
+    pytest.param(
+        {
+            "as_of_date": _ABSENT,
+            "period_start": _MethodBombStr("2026-09-30"),
+            "period_end": _MethodBombStr("2026-09-01"),
+        },
+        id="period-order-le-bomb",
+    ),
+    pytest.param(
+        {"business_timezone": _MethodBombStr("Australia/Brisbane")},
+        id="timezone-len-bomb",
+    ),
+    pytest.param(
+        {"business_timezone": _HashBombStr("Australia/Brisbane")},
+        id="timezone-hash-bomb",
+    ),
+    pytest.param(
+        {"purpose_reference": _MethodBombStr("finance-exposure-review")},
+        id="purpose-len-bomb",
+    ),
+    pytest.param(
+        {"parameters": [{"name": _HashBombStr("p"), "value": {}}]},
+        id="parameter-name-hash-bomb",
+    ),
+    pytest.param(
+        {
+            "parameters": [
+                {"name": _HashBombStr("p"), "value": {}},
+                {"name": _HashBombStr("p"), "value": {}},
+            ]
+        },
+        id="duplicate-parameter-hash-bomb",
+    ),
+    pytest.param(
+        {"parameters": [{"name": _MethodBombStr("p"), "value": {}}]},
+        id="parameter-name-len-bomb",
+    ),
+    pytest.param(
+        {"parameters": [{"name": "p", "value": {"k": _EqBombFloat(1.5)}}]},
+        id="nested-float-eq-bomb",
+    ),
+    pytest.param(
+        {"parameters": [{"name": "p", "value": {"k": _MethodBombStr("x")}}]},
+        id="nested-str-method-bomb",
+    ),
+    pytest.param(
+        {"parameters": [{"name": "p", "value": {"k": _GeBombInt(1)}}]},
+        id="nested-int-ge-bomb",
+    ),
+    pytest.param({"output_bounds": {"max_rows": _GeBombInt(5)}}, id="max-rows-ge-bomb"),
+    pytest.param({"output_bounds": {"max_rows": _Tier.ONE}}, id="max-rows-intenum"),
+    pytest.param({"output_bounds": {"max_rows": True}}, id="max-rows-bool"),
+]
+
+
+@pytest.mark.parametrize("override", _HOSTILE_SCALAR_CASES)
+def test_hostile_scalars_are_invalid_request_without_invoking_them(
+    override: dict[str, Any],
+) -> None:
+    code, detail = classify_analysis_start_request(_valid_request(**override))
+    assert code == ERROR_CODE_INVALID_REQUEST
+    assert _OPERATOR_SECRET not in detail
+
+
+@pytest.mark.parametrize("override", _HOSTILE_SCALAR_CASES)
+def test_hostile_scalars_survive_the_decoder_and_are_refused(
+    override: dict[str, Any],
+) -> None:
+    # The generic decoder keeps scalar subclasses as they are; the classifier,
+    # not the decoder, must be the gate that refuses them.
+    decoded = _decoded(_valid_request(**override))
+    code, detail = classify_analysis_start_request(decoded)
+    assert code == ERROR_CODE_INVALID_REQUEST
+    assert _OPERATOR_SECRET not in detail
+
+
+def test_a_non_finite_float_subclass_is_rejected_by_the_decoder_first() -> None:
+    # The decoder's own finiteness check runs before classification, so a NaN
+    # subclass is a ContractDecodeError rather than a classifier outcome.
+    request = _valid_request(
+        parameters=[{"name": "p", "value": {"k": _EqBombFloat("nan")}}]
+    )
+    with pytest.raises(ContractDecodeError):
+        _decoded(request)
+
+
+def _with_key(request: Mapping[str, Any], name: str, key: Any) -> _PairsMapping:
+    return _PairsMapping(
+        [(key if field == name else field, value) for field, value in request.items()]
+    )
+
+
+@pytest.mark.parametrize("hostile_key", [_HashBombStr, _MethodBombStr])
+def test_a_hostile_key_at_the_root_is_refused_without_hashing_it(
+    hostile_key: Any,
+) -> None:
+    request = _with_key(_valid_request(), "use_class", hostile_key("use_class"))
+    code, detail = classify_analysis_start_request(request)
+    assert code == ERROR_CODE_INVALID_REQUEST
+    assert _OPERATOR_SECRET not in detail
+
+
+@pytest.mark.parametrize("hostile_key", [_HashBombStr, _MethodBombStr])
+def test_a_hostile_key_in_a_nested_parameter_value_is_refused_without_hashing_it(
+    hostile_key: Any,
+) -> None:
+    value = _PairsMapping([(hostile_key("k"), 1)])
+    request = _valid_request(parameters=[{"name": "p", "value": value}])
+    code, detail = classify_analysis_start_request(request)
+    assert code == ERROR_CODE_INVALID_REQUEST
+    assert _OPERATOR_SECRET not in detail
+
+
+def test_a_benign_mapping_with_only_exact_keys_still_classifies() -> None:
+    request = _with_key(_valid_request(), "use_class", "use_class")
+    assert classify_analysis_start_request(request)[0] == (
         ERROR_CODE_DEPENDENCY_UNAVAILABLE
     )
