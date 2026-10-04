@@ -36,9 +36,11 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
+    ERROR_CODE_INCOMPATIBLE_VERSION,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
+    ERROR_CODE_UNSUPPORTED_MINOR_VERSION,
     ContractDecodeError,
     ContractSemanticError,
     DecisionDefinitionDisableInput,
@@ -66,6 +68,7 @@ from omnivia_core.contracts.v1 import (
     DecisionStatusResult,
     JobReference,
     RequestMetadata,
+    ResultUseRequestError,
     evaluate_result_use,
     idempotency_equivalence,
 )
@@ -99,6 +102,7 @@ from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
     OperationContext,
     OperationError,
+    application_refusal,
 )
 from omnivia_core_runtime.storage.decisions import (
     append_decision_outbox_event,
@@ -161,6 +165,15 @@ _MESSAGE_CONFLICT: Final = (
     "this decision request conflicts with an existing evaluation for the same "
     "idempotency key"
 )
+_RESULT_USE_MESSAGES: Final = {
+    ERROR_CODE_INVALID_REQUEST: "the result-use request payload is invalid",
+    ERROR_CODE_INCOMPATIBLE_VERSION: (
+        "the result-use request payload major version is incompatible"
+    ),
+    ERROR_CODE_UNSUPPORTED_MINOR_VERSION: (
+        "the result-use request payload minor version is unsupported"
+    ),
+}
 
 _EVENT_COMPLETED: Final = "decision.completed.v1"
 _EVENT_ABSTAINED: Final = "decision.abstained.v1"
@@ -195,17 +208,22 @@ class DecisionHandlers:
     ) -> Mapping[str, Any]:
         """The deterministic result-use gate (T-0716, §13.3).
 
-        Pure evaluation over the declared facts: no storage write, no effect.
-        Malformed requests are `invalid_request`; a well-formed request always
-        receives its classified decision document.
+        Pure evaluation of caller-supplied claims at this handler's one clock
+        reading: no storage read or write, no receipt, no cache, no grant. The
+        bare `ResultUseEvaluateResult` comes back, and a refused request is the
+        evaluator's own typed code with a fixed message. Only
+        `ResultUseRequestError` is translated, so a programmer error -- a clock
+        that is not timezone-aware, a defect in the evaluator -- stays visible
+        instead of becoming a request refusal.
         """
         try:
-            decision = evaluate_result_use(context.request.input)
-        except (TypeError, ValueError) as error:
-            raise OperationError(
-                ERROR_CODE_INVALID_REQUEST, f"invalid result-use request: {error}"
+            return evaluate_result_use(
+                context.request.input, evaluation_instant=self.clock.wall_time()
+            )
+        except ResultUseRequestError as error:
+            raise application_refusal(
+                error.code, _RESULT_USE_MESSAGES[error.code]
             ) from error
-        return {"decision": decision}
 
     def decision_evaluate(self, context: OperationContext) -> AuditedOperationResult:
         request: DecisionEvaluateInput | None = None
