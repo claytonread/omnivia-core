@@ -2856,6 +2856,7 @@ def test_the_validation_only_mode_checks_a_record(
 def _outcome_result(
     requests: tuple[tuple[str, str], ...],
     outcomes: tuple[tuple[str, str, str], ...],
+    continuation: Any = None,
 ) -> Any:
     return q.HostRunResult(
         q.ObservationSummary(
@@ -2876,6 +2877,7 @@ def _outcome_result(
         exited_cleanly=True,
         interrupted=False,
         paused=False,
+        continuation=continuation,
     )
 
 
@@ -3266,19 +3268,28 @@ def _owner_pages(count: int) -> list[dict[str, Any]]:
     ]
 
 
+def _host_token(index: int) -> str:
+    """The token the host's successful call for page ``index`` returns: never the owner's ``t{index}``."""
+    return f"h{index}"
+
+
 def _page_request(index: int) -> dict[str, Any]:
-    """The exact arguments of owner page ``index``: the base arguments, then the prior token."""
+    """The exact arguments of host page ``index``: the base arguments, then the prior host token."""
     if index == 0:
         return dict(_TRAVERSAL_ARGUMENTS)
-    return {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": f"t{index - 1}"}}
+    return {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": _host_token(index - 1)}}
 
 
 def _page_session(index: int, page: dict[str, Any], kind: str = "exact") -> Any:
     """One host session that makes the single call for owner page ``index``.
 
+    The proxy hands off the token its own answer carried, so an exact session returns
+    ``_host_token(index)`` when the owner page continues, and ``None`` when it does not.
     ``kind`` names the way that session can be wrong.
     """
     tool = _TRAVERSAL_TOOL
+    continues = bool(page["page"].get("continuation_token"))
+    token: str | None = _host_token(index) if continues else None
     requests: tuple[tuple[str, str], ...] = ((tool, q.arguments_digest(_page_request(index))),)
     outcomes: tuple[tuple[str, str, str], ...] = ((tool, "none", q.canonical_result_digest(page)),)
     if kind == "wrong_token":
@@ -3290,12 +3301,23 @@ def _page_session(index: int, page: dict[str, Any], kind: str = "exact") -> Any:
         requests, outcomes = requests * 2, outcomes * 2
     elif kind == "tool_error":
         outcomes = ((tool, "idempotency_conflict", q.canonical_result_digest(None)),)
+        return _outcome_result(requests, outcomes)
     elif kind == "wrong_digest":
         outcomes = ((tool, "none", q.canonical_result_digest({"events": [99]})),)
+    elif kind == "no_capture":
+        return _outcome_result(requests, outcomes)
+    elif kind == "dropped_token":
+        token = None
+    elif kind == "extra_token":
+        token = "h-extra"
     elif kind == "completion":
-        cut = _outcome_result(requests, outcomes)
+        cut = _outcome_result(requests, outcomes, _continuation_of(tool, token))
         return dataclasses.replace(cut, exited_cleanly=False, marker_seen=False)
-    return _outcome_result(requests, outcomes)
+    return _outcome_result(requests, outcomes, _continuation_of(tool, token))
+
+
+def _continuation_of(tool: str, token: str | None) -> Any:
+    return q.CapturedContinuation(tool, token)
 
 
 def _missing_session() -> Any:
@@ -3303,15 +3325,17 @@ def _missing_session() -> Any:
     return _outcome_result((), ())
 
 
-def test_each_owner_page_is_read_by_its_own_fresh_session_with_its_chained_token(
+def test_each_owner_page_is_read_by_its_own_fresh_session_with_the_token_its_host_returned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(3)
     prompts: list[str] = []
+    captures: list[Any] = []
     sessions = iter([_page_session(index, page) for index, page in enumerate(pages)])
 
     def run(**kwargs: Any) -> Any:
         prompts.append(kwargs["prompt"])
+        captures.append(kwargs["capture"])
         return next(sessions)
 
     monkeypatch.setattr(q, "run_host_session", run)
@@ -3321,10 +3345,92 @@ def test_each_owner_page_is_read_by_its_own_fresh_session_with_its_chained_token
         payload = json.dumps(_page_request(index), sort_keys=True, separators=(",", ":"))
         assert "Call exactly one tool named job_events" in prompt
         assert prompt.endswith(f"JSON:{payload}")
-    for index in range(1, len(pages)):
-        assert _page_request(index)["page"]["continuation_token"] == (
-            pages[index - 1]["page"]["continuation_token"]
-        )
+    # Page two carries page one's host token: distinct from the owner's ``t0``.
+    assert _page_request(1)["page"]["continuation_token"] == "h0"
+    assert _page_request(2)["page"]["continuation_token"] == "h1"
+    assert all("t0" not in prompt and "t1" not in prompt for prompt in prompts)
+    # Each session asked the proxy for its own handoff, in its own directory.
+    assert [capture.handoff.parent.name for capture in captures] == [
+        "session-01",
+        "session-02",
+        "session-03",
+    ]
+    assert all(capture.tool == _TRAVERSAL_TOOL for capture in captures)
+
+
+def test_the_final_page_has_no_token_and_an_intermediate_page_must_hand_one_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter([_page_session(0, pages[0]), _page_session(1, pages[1])])
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    q.host_read_pages(_driver(tmp_path), _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+
+
+@pytest.mark.parametrize(
+    ("position", "kind"),
+    [(1, "extra_token"), (0, "dropped_token")],
+)
+def test_a_host_token_must_be_present_exactly_when_the_owner_page_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: int, kind: str
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(index, pages[index]) for index in range(position)]
+        + [_page_session(position, pages[position], kind)]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert log == ["host_continuation_mismatch"]
+    assert driver.sequence == position + 1
+
+
+@pytest.mark.parametrize("position", [0, 1])
+def test_a_missing_capture_is_refused_on_any_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: int
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(index, pages[index]) for index in range(position)]
+        + [_page_session(position, pages[position], "no_capture")]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert log == ["host_capture_missing"]
+    assert driver.sequence == position + 1
+
+
+def test_a_retried_page_chains_from_the_prior_host_token_on_every_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(3)
+    prompts: list[str] = []
+    sessions = iter(
+        [_page_session(0, pages[0]), _missing_session(), _missing_session(), _page_session(1, pages[1]), _page_session(2, pages[2])]
+    )
+
+    def run(**kwargs: Any) -> Any:
+        prompts.append(kwargs["prompt"])
+        return next(sessions)
+
+    monkeypatch.setattr(q, "run_host_session", run)
+    driver = _driver(tmp_path)
+    q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert driver.sequence == 5
+    # Every attempt at page two, the two missing ones included, asks for h0, never t0.
+    for prompt in prompts[1:4]:
+        assert prompt.endswith('JSON:' + json.dumps(_page_request(1), sort_keys=True, separators=(",", ":")))
+    assert '"h0"' in prompts[1] and '"h0"' in prompts[2] and '"h0"' in prompts[3]
+    assert prompts[4].endswith('JSON:' + json.dumps(_page_request(2), sort_keys=True, separators=(",", ":")))
+    assert all('"t0"' not in prompt for prompt in prompts)
 
 
 def test_a_page_without_a_token_cannot_be_followed(
@@ -3444,6 +3550,308 @@ def test_core_health_failure_on_a_later_page_is_refused(
         q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
     assert _code(error) is Reason.GATE_FAILED
     assert driver.sequence == 2
+
+
+_SECRET = "SECRET-CONTINUATION-7f3a9c"
+_DIGEST_OF_PAGE = q.arguments_digest({"job_id": "job-1", "limit": 1})
+
+
+def _handoff_document(path: Path, text: str, mode: int = 0o600) -> Path:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "not json",
+        "[]",
+        "{}",
+        '{"continuation_token": ""}',
+        '{"continuation_token": 5}',
+        '{"continuation_token": true}',
+        '{"continuation_token": {"nested": "x"}}',
+        '{"continuation_token": "t", "extra": 1}',
+        '{"token": "t"}',
+        '{"continuation_token": NaN}',
+    ],
+)
+def test_a_malformed_handoff_is_refused(tmp_path: Path, text: str) -> None:
+    with pytest.raises(q.QualificationError) as error:
+        q._read_handoff(_handoff_document(tmp_path / "handoff.json", text))
+    assert _code(error) is Reason.GATE_FAILED
+    assert _SECRET not in str(error.value)
+
+
+def test_a_handoff_must_be_a_private_regular_file_within_its_bound(tmp_path: Path) -> None:
+    body = json.dumps({"continuation_token": _SECRET})
+    with pytest.raises(q.QualificationError) as error:
+        q._read_handoff(_handoff_document(tmp_path / "wide", body, mode=0o644))
+    assert _code(error) is Reason.GATE_FAILED
+    target = _handoff_document(tmp_path / "target", body)
+    os.symlink(target, tmp_path / "linked")
+    with pytest.raises(q.QualificationError):
+        q._read_handoff(tmp_path / "linked")
+    with pytest.raises(q.QualificationError):
+        q._read_handoff(_handoff_document(tmp_path / "large", " " * q.HANDOFF_MAX_BYTES + body))
+    with pytest.raises(q.QualificationError):
+        q._read_handoff(tmp_path / "absent")
+
+
+def test_a_well_formed_handoff_yields_its_token_or_an_exhausted_page(tmp_path: Path) -> None:
+    token = _handoff_document(tmp_path / "token", json.dumps({"continuation_token": _SECRET}))
+    exhausted = _handoff_document(tmp_path / "exhausted", json.dumps({"continuation_token": None}))
+    assert q._read_handoff(token) == _SECRET
+    assert q._read_handoff(exhausted) is None
+
+
+def test_the_handoff_and_the_observation_must_agree_before_a_continuation_is_taken(
+    tmp_path: Path,
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def summary(*captured: tuple[str, bool]) -> Any:
+        return dataclasses.replace(_outcome_result((), ()).summary, captured=captured)
+
+    assert q._take_continuation(capture, summary()) is None
+    _handoff_document(capture.handoff, json.dumps({"continuation_token": _SECRET}))
+    for observed in [(), (("job_events", False),), (("other", True),)]:
+        with pytest.raises(q.QualificationError) as error:
+            q._take_continuation(capture, summary(*observed))
+        assert _code(error) is Reason.GATE_FAILED
+    taken = q._take_continuation(capture, summary(("job_events", True)))
+    assert taken == q.CapturedContinuation("job_events", _SECRET)
+    _handoff_document(capture.handoff, json.dumps({"continuation_token": None}))
+    assert q._take_continuation(capture, summary(("job_events", False))).token is None
+    with pytest.raises(q.QualificationError):
+        q._take_continuation(capture, summary(("job_events", True)))
+    os.unlink(capture.handoff)
+    with pytest.raises(q.QualificationError):
+        q._take_continuation(capture, summary(("job_events", True)))
+
+
+def _capture_result(*, captured: bool) -> Any:
+    base = _outcome_result((), ())
+    observed = (("job_events", True),) if captured else ()
+    return dataclasses.replace(base, summary=dataclasses.replace(base.summary, captured=observed))
+
+
+def test_run_host_unlinks_the_handoff_on_success_and_takes_the_token_only_transiently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def host(**_kwargs: Any) -> Any:
+        q._write_private(capture.handoff, json.dumps({"continuation_token": _SECRET}))
+        return _capture_result(captured=True)
+
+    monkeypatch.setattr(q, "_run_host_process", lambda *_a, **kwargs: host(**kwargs))
+    result = q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert result.continuation == q.CapturedContinuation("job_events", _SECRET)
+    assert _SECRET not in repr(result)
+    assert not os.path.lexists(capture.handoff)
+
+
+def test_run_host_unlinks_the_handoff_when_the_host_run_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def failing(*_args: Any, **_kwargs: Any) -> Any:
+        q._write_private(capture.handoff, json.dumps({"continuation_token": _SECRET}))
+        raise q.QualificationError(q.ReasonCode.HOST_TIMEOUT)
+
+    monkeypatch.setattr(q, "_run_host_process", failing)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert _code(error) is Reason.HOST_TIMEOUT
+    assert not os.path.lexists(capture.handoff)
+
+
+def test_run_host_unlinks_a_malformed_handoff_before_refusing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def malformed(*_args: Any, **_kwargs: Any) -> Any:
+        _handoff_document(capture.handoff, json.dumps({"continuation_token": 7}))
+        return _capture_result(captured=True)
+
+    monkeypatch.setattr(q, "_run_host_process", malformed)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert _code(error) is Reason.GATE_FAILED
+    assert not os.path.lexists(capture.handoff)
+
+
+def test_run_host_reports_no_continuation_when_the_target_never_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+    monkeypatch.setattr(q, "_run_host_process", lambda *_a, **_k: _capture_result(captured=False))
+    result = q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert result.continuation is None
+
+
+def test_run_host_refuses_to_pass_when_the_handoff_cannot_be_proved_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+    monkeypatch.setattr(q, "_run_host_process", lambda *_a, **_k: _capture_result(captured=False))
+    monkeypatch.setattr(q, "_unlink_handoff", lambda _path: False)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert _code(error) is Reason.CLEANUP_INCOMPLETE
+
+
+def test_the_relay_hands_off_only_the_first_matching_successful_page_token(tmp_path: Path) -> None:
+    def call(identifier: int, arguments: dict[str, Any]) -> bytes:
+        return _frame({"jsonrpc": "2.0", "id": identifier, "method": "tools/call", "params": {"name": "job_events", "arguments": arguments}})
+
+    def answer(identifier: int, structured: dict[str, Any], *, failed: bool = False) -> bytes:
+        result: dict[str, Any] = {"content": [], "isError": failed}
+        if not failed:
+            result["structuredContent"] = structured
+        return _frame({"jsonrpc": "2.0", "id": identifier, "result": result})
+
+    handoff = tmp_path / "handoff.json"
+    observation = tmp_path / "events"
+    observer = q._Observer(observation)
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    other = {"job_id": "other", "limit": 1}
+    relay.request(call(1, other))
+    assert relay.response(answer(1, {"page": {"continuation_token": _SECRET}})) is False
+    assert not handoff.exists()
+    relay.request(call(2, {"job_id": "job-1", "limit": 1}))
+    assert relay.response(answer(2, {}, failed=True)) is False
+    # The first matching request is the one eligible; a later identical one is not handed off.
+    relay.request(call(3, {"job_id": "job-1", "limit": 1}))
+    assert relay.response(answer(3, {"page": {"continuation_token": _SECRET}})) is False
+    assert not handoff.exists()
+    observer.close()
+    assert _SECRET.encode() not in observation.read_bytes()
+    assert not any(e["event"] == "continuation_captured" for e in q.read_observation(observation))
+
+
+def test_the_relay_writes_a_private_handoff_and_observes_only_its_presence(tmp_path: Path) -> None:
+    handoff = tmp_path / "handoff.json"
+    observation = tmp_path / "events"
+    observer = q._Observer(observation)
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    assert relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": {"content": [], "isError": False, "structuredContent": {"events": [], "page": {"continuation_token": _SECRET}}}})) is False
+    observer.close()
+    assert json.loads(handoff.read_text(encoding="utf-8")) == {"continuation_token": _SECRET}
+    assert stat.S_IMODE(os.lstat(handoff).st_mode) == 0o600
+    captured = [e for e in q.read_observation(observation) if e["event"] == "continuation_captured"]
+    assert captured == [{"event": "continuation_captured", "seq": captured[0]["seq"], "tool": "job_events", "present": True}]
+    assert _SECRET.encode() not in observation.read_bytes()
+
+
+def test_a_violating_handoff_is_a_protocol_violation_not_a_silent_capture(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json"))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    with pytest.raises(q._Violation) as error:
+        relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": {"content": [], "isError": False, "structuredContent": {"events": []}}}))
+    observer.close()
+    assert error.value.kind == "invalid_tool_result"
+    assert not (tmp_path / "handoff.json").exists()
+
+
+def _answer_with_token(token: Any) -> bytes:
+    page = {"events": [], "page": {"continuation_token": token}}
+    return _frame({"jsonrpc": "2.0", "id": 1, "result": {"content": [], "isError": False, "structuredContent": page}})
+
+
+@pytest.mark.parametrize(
+    "token",
+    [5, True, [], {}, "", "é" * 3000, "x" * q.HANDOFF_MAX_BYTES],
+)
+def test_a_malformed_or_oversized_service_token_creates_no_handoff_and_no_capture(
+    tmp_path: Path, token: Any
+) -> None:
+    handoff = tmp_path / "handoff.json"
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    with pytest.raises(q._Violation) as error:
+        relay.response(_answer_with_token(token))
+    observer.close()
+    assert error.value.kind == "invalid_tool_result"
+    assert not os.path.lexists(handoff)
+    assert not any(e["event"] == "continuation_captured" for e in q.read_observation(tmp_path / "events"))
+
+
+def test_a_token_whose_closed_handoff_is_exactly_the_bound_is_accepted(tmp_path: Path) -> None:
+    room = q.HANDOFF_MAX_BYTES - len(json.dumps({"continuation_token": ""}).encode("utf-8"))
+    handoff = tmp_path / "handoff.json"
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    assert relay.response(_answer_with_token("t" * room)) is False
+    observer.close()
+    assert os.lstat(handoff).st_size == q.HANDOFF_MAX_BYTES
+    assert json.loads(handoff.read_text(encoding="utf-8")) == {"continuation_token": "t" * room}
+
+
+_HANDOFF_CHILD: str = (
+    "import json,sys\n"
+    "for line in sys.stdin:\n"
+    " m=json.loads(line); method=m.get('method'); result={}\n"
+    " if method=='initialize': result={'protocolVersion':'2025-06-18','capabilities':{},'serverInfo':{'name':'test','version':'1'}}\n"
+    " elif method=='tools/list': result={'tools':[{'name':'job_events'}]}\n"
+    " elif method=='tools/call': result={'content':[],'isError':False,'structuredContent':{'events':[],'page':{'continuation_token':'" + _SECRET + "'}}}\n"
+    " print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':result},separators=(',',':')),flush=True)\n"
+)
+_HANDOFF_HOST: str = """
+import subprocess, sys
+spec, script, payload = sys.argv[1], sys.argv[2], sys.argv[3].encode()
+proxy = subprocess.Popen([sys.executable, "-I", script, "--internal-proxy", spec], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+proxy.stdin.write(payload)
+proxy.stdin.flush()
+for _ in range(3):
+    proxy.stdout.readline()
+proxy.stdin.close()
+proxy.wait()
+print("OMNIVIA_HANDOFF_DONE", flush=True)
+"""
+
+
+@posix_only
+def test_a_real_proxy_hands_off_the_token_to_run_host_without_retaining_it(tmp_path: Path) -> None:
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}},
+    ]
+    payload = "".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages)
+    observation = tmp_path / "observation.jsonl"
+    handoff = tmp_path / "handoff.json"
+    spec = tmp_path / "spec.json"
+    q.write_proxy_spec(
+        spec,
+        child=[sys.executable, "-u", "-c", _HANDOFF_CHILD],
+        observation=observation,
+        capture=q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff),
+    )
+    result = q.run_host(
+        [sys.executable, "-I", "-c", _HANDOFF_HOST, str(spec), str(SCRIPT), payload],
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        observation=observation,
+        marker="OMNIVIA_HANDOFF_DONE",
+        timeout=60,
+        capture=q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff),
+    )
+    assert result.continuation == q.CapturedContinuation("job_events", _SECRET)
+    assert result.summary.captured == (("job_events", True),)
+    assert result.summary.violation is False
+    assert not os.path.lexists(handoff)
+    assert _SECRET not in repr(result)
+    assert _SECRET.encode() not in observation.read_bytes()
 
 
 def _event(sequence: int) -> dict[str, Any]:
@@ -3627,6 +4035,12 @@ class FakeCore:
             return self.mutate(tool, arguments)
         if self.revoked and self.tamper != "revocation_ignored" and tool != "workspace_inspect":
             return "credential_missing", None
+        if tool == "job_events" and "page" in arguments:
+            # Tokens bind to the principal: the host's own token is accepted, an owner token is not.
+            token = arguments["page"]["continuation_token"]
+            if not token.startswith("host:"):
+                return "other", None
+            arguments = {**arguments, "page": {"continuation_token": token[len("host:"):]}}
         return "none", self.read(tool, arguments)
 
 
@@ -3706,7 +4120,8 @@ def _journey(
         return cores[context.root].read(names[path], dict(payload or {}))
 
     def run(self: Any, calls: Any, arguments: Any = None, *, interrupt: bool = False,
-            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None) -> Any:
+            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None,
+            capture: bool = False) -> Any:
         tool, first = calls, arguments
         steps = [(tool, first)]
         core = cores[Path(self.core_config).parent]
@@ -3748,6 +4163,7 @@ def _journey(
             )
         requests: list[tuple[str, str]] = []
         outcomes: list[tuple[str, str, str]] = []
+        handed: q.CapturedContinuation | None = None
         # Only the paused post-revocation request is tampered; earlier sessions are honest.
         served = _tampered(core.tamper, steps) if pause_before else steps
         for name, args in served:
@@ -3759,6 +4175,10 @@ def _journey(
             if refusal == "none" and name == "job_events" and core.tamper == "host_page_differs":
                 structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
             outcomes.append((name, refusal, q.canonical_result_digest(structured)))
+            if capture and handed is None and name == tool and refusal == "none":
+                # The proxy hands off the first successful answer's token: the host's, never the owner's.
+                token = structured["page"].get("continuation_token")
+                handed = q.CapturedContinuation(tool, None if token is None else f"host:{token}")
         if core.tamper == "core_replaced_unexpectedly" and tool == "evidence_capture":
             core.replace()  # Core exited mid-session; a managed-local client replaced it
         if not self.healthy():
@@ -3775,7 +4195,7 @@ def _journey(
                 initialized_after_pause=pause_before and core.tamper == "initialized_after_pause",
             ),
             marker_seen=not timed_out, exited_cleanly=not timed_out, interrupted=False,
-            paused=pause_before,
+            paused=pause_before, continuation=handed,
         )
 
     monkeypatch.setattr(q, "initialize_core", initialize)

@@ -617,12 +617,15 @@ produce a different principal. Replayed requests keep the principal the owner
 recorded as their actor. The final revocation is verified for both contexts.
 Import pagination reads `job_events` as one exact host call per owner page. Each
 page runs in its own fresh host session, with exact arguments: page one is the
-base arguments, and each later page carries the continuation token of the owner
-page before it. Each call must be the only call its session makes, must succeed,
-and must return exactly that owner page's digest. Only a missing target call may
-be retried, within the existing bound of two retries and for that individual
-read. A wrong token or argument, extra call, tool error, wrong page digest,
-incomplete host completion, Core-health failure or mutation is refused at once.
+base arguments, and each later page carries the continuation token returned by
+the host's preceding successful call. Owner-side tokens are never sent to the
+host. The private handoff is closed, owner-only and bounded; the token value is
+not retained in observations, qualification records, durable logs or final
+output. Each call must be the only call its session makes, must succeed, and
+must return exactly that owner page's digest. Only a missing target call may be
+retried, within the existing bound of two retries and for that individual read.
+A wrong token or argument, extra call, tool error, wrong page digest, incomplete
+host completion, Core-health failure or mutation is refused at once.
 The user has authorized the external data flow: fixed qualification
 prompts and bounded, service-derived results may be sent through both the Codex
 and Claude providers. That authorization is recorded in the task. Both real-host

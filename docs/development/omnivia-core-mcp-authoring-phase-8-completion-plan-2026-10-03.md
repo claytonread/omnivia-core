@@ -277,7 +277,11 @@ existing closed, redacted schema:
    non-empty token was present stays in the digest as a marker, so a continuing
    page and an exhausted page digest differently while two principals' non-empty
    tokens digest the same. Every other field, including the other `page`
-   fields, stays in the digest, with drift tests.
+   fields, stays in the digest, with drift tests. Pagination chains the token
+   returned by the host's preceding successful call, not the owner's token,
+   through a private, bounded handoff that is removed on every path. Token
+   values do not enter observations, qualification records, durable logs or
+   final output.
 10. Runtime cleanup is verified, not silent. A root that cannot be removed, or
     that still exists after a deletion reports a vanished nested entry, fails
     the run as `cleanup_incomplete` before any pass record is written.

@@ -33,7 +33,7 @@ import time
 import tomllib
 import venv
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
@@ -1255,6 +1255,8 @@ EVENT_SHAPES: Final[dict[str, dict[str, Callable[[object], bool]]]] = {
         "refusal": lambda value: value in REFUSALS,
     },
     "request_paused": {"tool": _is_name},
+    #: The continuation's value never enters the stream; only whether one was handed off.
+    "continuation_captured": {"tool": _is_name, "present": _is_bool},
     #: The withheld answer is never forwarded or kept; only its canonical digest is.
     "response_withheld": {"tool": _is_name, "tool_error": _is_bool, "result_digest": _is_digest},
     "protocol_violation": {"kind": lambda value: value in VIOLATION_KINDS},
@@ -1336,6 +1338,27 @@ class Interruption:
             raise QualificationError(ReasonCode.RECORD_INVALID)
 
 
+#: The longest a continuation handoff may be; a token is a short opaque string.
+HANDOFF_MAX_BYTES: Final = 8192
+
+
+@dataclass(frozen=True)
+class CaptureTarget:
+    """The one successful page call whose continuation token the proxy hands off.
+
+    The handoff is a private 0600 file the proxy writes before it forwards the answer,
+    so the parent can read it once the host has exited.  Only the token value goes there.
+    """
+
+    tool: str
+    arguments_digest: str
+    handoff: Path
+
+    def __post_init__(self) -> None:
+        if not _is_name(self.tool) or not _is_digest(self.arguments_digest):
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
 @dataclass(frozen=True)
 class PauseBefore:
     """Pause one exact tool request until the harness publishes ``release``."""
@@ -1351,6 +1374,7 @@ class PauseBefore:
 
 def _write_private(path: Path, text: str) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    os.fchmod(descriptor, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(text)
 
@@ -1362,6 +1386,7 @@ def write_proxy_spec(
     observation: Path,
     interruption: Interruption | None = None,
     pause_before: PauseBefore | None = None,
+    capture: CaptureTarget | None = None,
 ) -> None:
     """Write the private spec the proxy reads: its child command, stream and target."""
     document = {
@@ -1377,6 +1402,13 @@ def write_proxy_spec(
             "arguments_digest": pause_before.arguments_digest,
             "release": str(pause_before.release),
         },
+        "capture": None
+        if capture is None
+        else {
+            "tool": capture.tool,
+            "arguments_digest": capture.arguments_digest,
+            "handoff": str(capture.handoff),
+        },
     }
     _write_private(path, json.dumps(document))
 
@@ -1388,15 +1420,16 @@ def proxy_server_entry(python: Path, spec: Path) -> dict[str, Any]:
 
 def _load_spec(
     path: Path,
-) -> tuple[list[str], Path, Interruption | None, PauseBefore | None]:
+) -> tuple[list[str], Path, Interruption | None, PauseBefore | None, CaptureTarget | None]:
     try:
         document = _mapping(json.loads(path.read_text(encoding="utf-8")), ReasonCode.RECORD_INVALID)
-        if set(document) != {"child", "observation", "interrupt", "pause_before"}:
+        if set(document) != {"child", "observation", "interrupt", "pause_before", "capture"}:
             raise ValueError
         child = document["child"]
         observation = document["observation"]
         target = document["interrupt"]
         paused = document["pause_before"]
+        handed_off = document["capture"]
         if (
             not isinstance(child, list)
             or not child
@@ -1420,9 +1453,20 @@ def _load_spec(
             pause_before = PauseBefore(
                 paused["tool"], paused["arguments_digest"], Path(paused["release"])
             )
-    except (OSError, ValueError, KeyError, TypeError):
+        capture = None
+        if handed_off is not None:
+            if (
+                not isinstance(handed_off, dict)
+                or set(handed_off) != {"tool", "arguments_digest", "handoff"}
+                or not isinstance(handed_off["handoff"], str)
+            ):
+                raise ValueError
+            capture = CaptureTarget(
+                handed_off["tool"], handed_off["arguments_digest"], Path(handed_off["handoff"])
+            )
+    except (OSError, ValueError, KeyError, TypeError, QualificationError):
         raise QualificationError(ReasonCode.RECORD_INVALID) from None
-    return child, Path(observation), interruption, pause_before
+    return child, Path(observation), interruption, pause_before, capture
 
 
 class _Violation(Exception):
@@ -1488,12 +1532,15 @@ class _Relay:
         observer: _Observer,
         interruption: Interruption | None,
         pause_before: PauseBefore | None = None,
+        capture: CaptureTarget | None = None,
     ) -> None:
         self.observer = observer
         self.interruption = interruption
         self.pause_before = pause_before
         self.pause_consumed = False
-        self.pending: dict[str, tuple[str, str | None, bool]] = {}
+        self.capture = capture
+        self.capture_consumed = False
+        self.pending: dict[str, tuple[str, str | None, bool, bool]] = {}
         #: Guards ``pending``, ``closed`` and ``writing``.  Never held across a pipe write.
         self.state = threading.Condition()
         #: True while the one host frame in flight to the child is being written.
@@ -1539,13 +1586,13 @@ class _Relay:
         message = _parse_frame(frame)
         method = message.get("method")
         key = _request_key(message.get("id"))
-        entry: tuple[str, str | None, bool] | None = None
+        entry: tuple[str, str | None, bool, bool] | None = None
         if isinstance(method, str) and key is not None and method == "initialize":
             self.observer.emit("initialize_request")
-            entry = (method, None, False)
+            entry = (method, None, False, False)
         elif isinstance(method, str) and key is not None and method == "tools/list":
             self.observer.emit("tools_list_request")
-            entry = (method, None, False)
+            entry = (method, None, False, False)
         elif isinstance(method, str) and key is not None and method == "tools/call":
             params = message.get("params")
             if not isinstance(params, dict) or not _is_name(params.get("name")):
@@ -1567,7 +1614,20 @@ class _Relay:
                 self.observer.emit("request_paused", tool=tool)
                 while not pause.release.is_file() and not self.released.wait(0.01):
                     pass
-            entry = (method, tool, target is not None and (tool, digest) == (target.tool, target.arguments_digest))
+            # Only the first request that matches the capture target is handed off.
+            capture = self.capture
+            captured = (
+                not self.capture_consumed
+                and capture is not None
+                and (tool, digest) == (capture.tool, capture.arguments_digest)
+            )
+            self.capture_consumed = self.capture_consumed or captured
+            entry = (
+                method,
+                tool,
+                target is not None and (tool, digest) == (target.tool, target.arguments_digest),
+                captured,
+            )
         with self.state:
             if self.closed:
                 raise _Violation("frame_after_withheld")
@@ -1602,7 +1662,7 @@ class _Relay:
                 self.closed = True
         if entry is None:
             return False
-        method, tool, targeted = entry
+        method, tool, targeted, captured = entry
         result = message.get("result")
         ok = isinstance(result, dict) and "error" not in message
         if method == "initialize":
@@ -1652,7 +1712,30 @@ class _Relay:
                 result_digest=digest,
                 refusal=refusal_class(result) if ok else "other",
             )
+            if captured and not failed and self.capture is not None:
+                self._hand_off(self.capture, structured)
         return False
+
+    def _hand_off(self, capture: CaptureTarget, structured: object) -> None:
+        """Write the page's continuation token to the private handoff and observe only its presence.
+
+        The answer is forwarded unchanged, so the host sees the token in that result too.
+        This copy goes only to the handoff file, which only the parent reads, and it is
+        written before the answer is forwarded so the parent finds it once the host has
+        exited.  A malformed or oversized token is a protocol violation, checked before
+        anything is written or observed.  A write failure stops the child before the answer.
+        """
+        page = structured.get("page") if isinstance(structured, dict) else None
+        if not isinstance(page, dict):
+            raise _Violation("invalid_tool_result")
+        token = page.get("continuation_token")
+        if token is not None and (not isinstance(token, str) or not token):
+            raise _Violation("invalid_tool_result")
+        document = json.dumps({"continuation_token": token})
+        if len(document.encode("utf-8")) > HANDOFF_MAX_BYTES:
+            raise _Violation("invalid_tool_result")
+        _write_private(capture.handoff, document)
+        self.observer.emit("continuation_captured", tool=capture.tool, present=token is not None)
 
     def violation(self, kind: str) -> None:
         with self.state:
@@ -1771,15 +1854,17 @@ def run_proxy(spec_path: Path) -> int:
     handled qualification failure.  The child's stderr stays on this process's
     stderr, never stdout.  The one configured interruption target's response is
     withheld indefinitely and never replaced; only its canonical digest is observed.
+    The one configured capture target's first successful answer has its page's
+    continuation token written to a private handoff, and nothing else of it is kept.
     """
-    child_command, observation, interruption, pause_before = _load_spec(spec_path)
+    child_command, observation, interruption, pause_before, capture = _load_spec(spec_path)
     try:
         observer = _Observer(observation)
     except OSError:
         return 2
     child: subprocess.Popen[bytes] | None = None
     try:
-        relay = _Relay(observer, interruption, pause_before)
+        relay = _Relay(observer, interruption, pause_before, capture)
         try:
             child = subprocess.Popen(child_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         except OSError:
@@ -1839,6 +1924,8 @@ class ObservationSummary:
     #: The canonical digest of the withheld answer, when it was a successful
     #: structured result.  The answer itself is never kept.
     withheld_digest: str | None = None
+    #: Per handed-off page, in order: (tool, whether a continuation token was present).
+    captured: tuple[tuple[str, bool], ...] = ()
 
 
 def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSummary:
@@ -1883,6 +1970,9 @@ def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSum
             (e["tool"], e["refusal"], e["result_digest"])
             for e in events
             if e["event"] == "tool_call_response"
+        ),
+        captured=tuple(
+            (e["tool"], e["present"]) for e in events if e["event"] == "continuation_captured"
         ),
     )
 
@@ -2047,11 +2137,25 @@ def require_host_authentication(
 
 
 @dataclass(frozen=True)
+class CapturedContinuation:
+    """The continuation token one successful page call returned, as the host saw it.
+
+    Transient: the token is hidden from ``repr`` and must never be logged, recorded or
+    retained.  It exists only for the next call of the same paging walk.
+    """
+
+    tool: str
+    token: str | None = field(repr=False)
+
+
+@dataclass(frozen=True)
 class HostRunResult:
     """Typed outcome of one host run.  It holds no host output and no model text.
 
     ``marker_seen`` is a transient orchestration signal only; it is never gate
     evidence.  Gates may be fed from ``summary`` and Core's own state only.
+    ``continuation`` is set only when the run was asked for a capture and the proxy
+    proved it: it is the one transient token a paging walk chains from.
     """
 
     summary: ObservationSummary
@@ -2059,6 +2163,7 @@ class HostRunResult:
     exited_cleanly: bool
     interrupted: bool
     paused: bool
+    continuation: CapturedContinuation | None = field(default=None, repr=False)
 
 
 def _kill_group(process: subprocess.Popen[bytes]) -> bool:
@@ -2096,6 +2201,90 @@ def run_host(
     on_withheld: Callable[[], None] = lambda: None,
     on_paused: Callable[[], None] = lambda: None,
     poll_interval: float = 0.05,
+    capture: CaptureTarget | None = None,
+) -> HostRunResult:
+    """Run one host, then, when asked, take the continuation the proxy handed off.
+
+    The handoff is read only after the host group is gone, and it is unlinked on every
+    path, success or failure.  An unlink that cannot be proved is a cleanup failure.
+    """
+    try:
+        result = _run_host_process(
+            command,
+            env=env,
+            cwd=cwd,
+            observation=observation,
+            marker=marker,
+            timeout=timeout,
+            on_withheld=on_withheld,
+            on_paused=on_paused,
+            poll_interval=poll_interval,
+        )
+        if capture is None:
+            return result
+        return replace(result, continuation=_take_continuation(capture, result.summary))
+    finally:
+        if capture is not None and not _unlink_handoff(capture.handoff):
+            raise QualificationError(ReasonCode.CLEANUP_INCOMPLETE)
+
+
+def _take_continuation(
+    capture: CaptureTarget, summary: ObservationSummary
+) -> CapturedContinuation | None:
+    """The handed-off continuation, proven by both the handoff and the observation.
+
+    No observed capture and no handoff means the target never got a successful answer;
+    that is ``None``, so the caller can retry a missing call.  Anything partial is refused.
+    """
+    if not summary.captured and not os.path.lexists(capture.handoff):
+        return None
+    token = _read_handoff(capture.handoff)
+    if summary.captured != ((capture.tool, token is not None),):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return CapturedContinuation(capture.tool, token)
+
+
+def _read_handoff(path: Path) -> str | None:
+    """Read the proxy's handoff; only the closed shape ``{"continuation_token": ...}`` passes."""
+    try:
+        status = os.lstat(path)
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or stat.S_IMODE(status.st_mode) != 0o600
+            or status.st_size > HANDOFF_MAX_BYTES
+        ):
+            raise ValueError
+        document = json.loads(path.read_bytes().decode("utf-8"), parse_constant=_reject_constant)
+    except (OSError, ValueError, RecursionError):
+        raise QualificationError(ReasonCode.GATE_FAILED) from None
+    if not isinstance(document, dict) or set(document) != {"continuation_token"}:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    token = document["continuation_token"]
+    if token is not None and (not isinstance(token, str) or not token):
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    return token
+
+
+def _unlink_handoff(path: Path) -> bool:
+    """Remove the handoff and prove it is gone; False when that cannot be proved."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return not os.path.lexists(path)
+
+
+def _run_host_process(
+    command: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
+    observation: Path,
+    marker: str,
+    timeout: float,
+    on_withheld: Callable[[], None],
+    on_paused: Callable[[], None],
+    poll_interval: float,
 ) -> HostRunResult:
     """Run one host in its own process group and always kill the group afterwards.
 
@@ -2183,6 +2372,7 @@ def run_host_session(
     timeout: float,
     interruption: Interruption | None = None,
     pause_before: PauseBefore | None = None,
+    capture: CaptureTarget | None = None,
     on_withheld: Callable[[], None] = lambda: None,
     on_paused: Callable[[], None] = lambda: None,
 ) -> HostRunResult:
@@ -2200,6 +2390,7 @@ def run_host_session(
             observation=observation,
             interruption=interruption,
             pause_before=pause_before,
+            capture=capture,
         )
     except OSError:
         raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
@@ -2227,6 +2418,7 @@ def run_host_session(
         timeout=timeout,
         on_withheld=on_withheld,
         on_paused=on_paused,
+        capture=capture,
     )
 
 
@@ -3055,6 +3247,7 @@ class HostDriver:
         on_withheld: Callable[[], None] = lambda: None,
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
+        capture: bool = False,
     ) -> HostRunResult:
         """Run one fresh host process whose prompt asks for one call to ``tool``."""
         self.sequence += 1
@@ -3066,6 +3259,7 @@ class HostDriver:
         release = layout.root / "release-request"
         if pause_before:
             pause = PauseBefore(tool, digest, release)
+        handed_off = CaptureTarget(tool, digest, layout.root / "continuation-handoff.json") if capture else None
 
         def release_request() -> None:
             on_paused()
@@ -3084,6 +3278,7 @@ class HostDriver:
             timeout=HOST_TIMEOUT,
             interruption=interruption,
             pause_before=pause,
+            capture=handed_off,
             on_withheld=on_withheld,
             on_paused=release_request if pause_before else on_paused,
         )
@@ -3117,6 +3312,7 @@ class HostDriver:
         on_withheld: Callable[[], None] = lambda: None,
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
+        capture: bool = False,
         _remaining_missing_retries: int = 2,
     ) -> HostRunResult:
         result = self._run(
@@ -3126,12 +3322,14 @@ class HostDriver:
             on_withheld=on_withheld,
             pause_before=pause_before,
             on_paused=on_paused,
+            capture=capture,
         )
         summary = result.summary
         digest = arguments_digest(arguments)
         if tool not in summary.called:
             self.progress("host_target_call_missing")
             if _remaining_missing_retries > 0:
+                # The retry re-sends the same arguments, so a chained page keeps its prior token.
                 return self.call(
                     tool,
                     arguments,
@@ -3141,6 +3339,7 @@ class HostDriver:
                     on_withheld=on_withheld,
                     pause_before=pause_before,
                     on_paused=on_paused,
+                    capture=capture,
                     _remaining_missing_retries=_remaining_missing_retries - 1,
                 )
             raise QualificationError(ReasonCode.GATE_FAILED)
@@ -3243,20 +3442,18 @@ def host_read_pages(
 ) -> None:
     """Read each owner page in order, with one fresh host session and one call per page.
 
-    Page one is requested with ``arguments``.  Each later page adds the continuation
-    token of the owner page before it.  Each call must be the only call its session
-    makes, must succeed, and must return exactly that owner page's digest.  A missing
-    target is retried by ``HostDriver.call`` within its bound; any other failure is
-    refused at once.
+    Page one is requested with ``arguments``.  Each later page carries the continuation
+    token that the host's own preceding call returned, handed off by the proxy from that
+    successful answer.  Owner tokens are bound to the owner principal and are never sent
+    to the host; the owner pages say only how many pages there are and where they end.
+    Each call must be the only call its session makes, must succeed, and must return
+    exactly that owner page's digest.  The host's token must be present exactly when the
+    owner page has a next page.  A missing target is retried by ``HostDriver.call``
+    within its bound, with the same arguments; any other failure is refused at once.
     """
     request: Mapping[str, Any] = arguments
     for index, page in enumerate(expected):
-        if index:
-            token = _continuation(expected[index - 1])
-            if token is None:
-                raise QualificationError(ReasonCode.GATE_FAILED)
-            request = {**arguments, "page": {"continuation_token": token}}
-        result = driver.call(tool, request)
+        result = driver.call(tool, request, capture=True)
         summary = result.summary
         if (
             tuple(summary.called) != (tool,)
@@ -3265,6 +3462,18 @@ def host_read_pages(
         ):
             driver.progress("host_page_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
+        if result.continuation is None or result.continuation.tool != tool:
+            driver.progress("host_capture_missing")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        token = result.continuation.token
+        if (token is None) != (_continuation(page) is None):
+            driver.progress("host_continuation_mismatch")
+            raise QualificationError(ReasonCode.GATE_FAILED)
+        if index + 1 < len(expected):
+            if token is None:
+                driver.progress("host_continuation_mismatch")
+                raise QualificationError(ReasonCode.GATE_FAILED)
+            request = {**arguments, "page": {"continuation_token": token}}
 
 
 def _capture_arguments(source: str, key: str, text: str) -> dict[str, Any]:

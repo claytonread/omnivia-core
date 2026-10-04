@@ -350,6 +350,28 @@ In existing-login mode the same command runs against the operator's profile, as
 described above. The harness does not weaken file-mode isolation or point a file
 run at the operator's normal host state.
 
+Paged reads, such as the import's `job_events` walk, chain through the host's own
+tokens. Each page is one fresh host session that makes exactly one call. Page one
+uses the base arguments. Each later page carries the continuation token that the
+host's preceding successful call returned, never the owner's token: owner-side
+tokens are not sent to a host. The transparent proxy hands off only that one
+token, from the targeted call's first successful answer, to a private `0600`
+handoff file. The parent reads it after the host has exited, checks its closed
+shape and that it agrees with the observed capture, and unlinks it on every path.
+Tokens bind to the same Core principal, not to a transport session, so a fresh
+session can continue the walk. The host's presence or absence of a token must
+match the owner page at the same position, and the final page carries none.
+
+The token is exposed to the host in two places, and the harness cannot prevent
+either. First, the provider necessarily sees it in the preceding MCP tool result,
+because the proxy forwards that answer unchanged. Second, it appears again in the
+next fresh session's exact prompt and arguments, as the page's arguments already
+do. The harness does not retain it: it is never written to the observation
+stream, a qualification record, a durable log or the final output. The in-memory
+result holds it only for the next call of the same walk, and its representation
+hides it. Runtime cleanup removes the private session artifacts, including the
+handoff file, so no copy survives the run.
+
 Success and failure records are validated against the closed schema before an
 atomic write. Early failures use the schema's minimal failure branch; once the
 candidate, OS and host identities are verified, failures also carry the fixed
