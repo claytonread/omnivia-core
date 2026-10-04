@@ -646,16 +646,17 @@ records below remain pending; neither provider has passed.
    `HOME` and `USER` so it selects the same login; it sets no `CLAUDE_CONFIG_DIR`
    and injects no token. The Claude MCP child is redirected to the harness-owned
    home and config directories with an empty token, so Core never sees the real
-   profile, but the login itself is not isolated per run. Guardrails:
-   `--tools` set to the same comma-joined exact MCP tool names as
-   `--allowedTools` (the qualified MCP surface is the only available and the only
-   pre-authorized tool set, with no built-ins), a private per-run `TMPDIR` and
-   empty workspace, exact strict MCP config, project-only setting sources,
-   `dontAsk` with no prompts, no session persistence, an `auth status --json`
-   preflight, and no read, copy, print or deletion of the real profile.
-   `--safe-mode`, `--restricted` and `--tools ""` are intentionally absent:
-   Claude Code 2.1.289 disables explicitly configured MCP servers in the first
-   and reports `host_initialize_missing` with the other two. Gate D has not
+   profile, but the login itself is not isolated per run. The Claude command is
+   identical to token mode. Guardrails: exact strict MCP config, project-only
+   setting sources in an empty workspace, `--allowedTools` set to the exact MCP
+   tool names only (ambient MCP servers and executable built-ins are not
+   pre-authorized), `dontAsk` with no prompts, a private per-run `TMPDIR`, no
+   session persistence, an `auth status --json` preflight, and no read, copy,
+   print or deletion of the real profile. `--safe-mode`, `--restricted` and
+   `--tools` are intentionally absent: `--safe-mode` disables explicitly
+   configured MCP servers, and Claude Code 2.1.289 loads `--mcp-config`
+   asynchronously, so any `--tools` filter is evaluated before the MCP tools
+   register and reports `host_initialize_missing`. Gate D has not
    passed; this change only permits the source.
 4. Validate both records against the closed schema and confirm every I-1 through
    I-8 case and the restricted decision cases pass.

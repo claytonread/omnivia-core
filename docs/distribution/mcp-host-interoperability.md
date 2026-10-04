@@ -338,14 +338,16 @@ login only through `claude auth status --json` in the session environment. The
 MCP server process is pointed at the harness-owned home and configuration
 directories with an empty `CLAUDE_CODE_OAUTH_TOKEN`, so Core never sees the real
 profile. This mode is less isolated than file mode, the login is not isolated
-per run, and it runs only when the operator passes the flag. Its guardrails are
-`--tools` set to the same comma-joined exact MCP tool names as `--allowedTools`
-(so the qualified `omnivia-core` MCP surface is the only available and the only
-pre-authorized tool set, with no built-ins), a private per-run `TMPDIR`, strict
-MCP config with the exact `--mcp-config`, `dontAsk` permissions, project-only
-setting sources, and no session persistence. It passes neither `--safe-mode`,
-which disables all MCP servers, nor `--restricted` nor `--tools ""`, with which
-Claude Code 2.1.289 reports `host_initialize_missing`.
+per run, and it runs only when the operator passes the flag. The Claude command is
+identical to token mode. Its guardrails are strict MCP config with the exact
+`--mcp-config`, project-only setting sources in an empty workspace, `--allowedTools`
+set to the exact MCP tool names only, `dontAsk` permissions with no prompts, a
+private per-run `TMPDIR`, and no session persistence. Ambient MCP servers and
+executable built-ins are not pre-authorized. It passes no `--safe-mode`,
+`--restricted` or `--tools` flag: `--safe-mode` disables all MCP servers, and
+Claude Code 2.1.289 loads `--mcp-config` asynchronously, so any `--tools` filter
+is evaluated before the MCP tools register and the run reports
+`host_initialize_missing`.
 
 Before Core starts, the harness provisions the credential and asks that host's
 own authentication-status command to prove it works in the session environment.
