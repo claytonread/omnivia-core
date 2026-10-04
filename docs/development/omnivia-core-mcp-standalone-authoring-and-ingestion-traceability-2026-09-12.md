@@ -3,7 +3,7 @@
 **Date:** 2026-09-12
 
 **Status:** Phase 8 evidence is complete for qualified runtime commit
-`a808e6eef6cf3d284ef6bf9b418ab6f85a610752`. B-12, H-5 through H-7 and
+`0d8cf362d15b43077a744542974b6160c283e1dc`. B-12, H-5 through H-7 and
 I-1 through I-8 are green from the exact candidate and the two retained,
 schema-valid real-host records. Final exact-head preflight, hosted checks and
 merge authorization remain outside this traceability record.
@@ -197,10 +197,10 @@ step is decided.
 | B-9 Repeat both mutations with the same key; stable results and no duplicate business rows | lines 295-296, 494-510 | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace` | AUTO | green |
 | B-10 Repeat with changed input and prove `idempotency_conflict` | lines 312-325, 512-515 | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace` | AUTO | green |
 | B-11 Close the MCP session and prove the independently owned Core service stays healthy | lines 411-412, 419-420 | `packages/omnivia-core-mcp/tests/test_mcp_standalone_authoring_acceptance.py::test_the_standalone_authoring_journey_runs_on_an_empty_workspace` | AUTO | green |
-| B-12 Retain only a redacted qualification record | `scripts/run-mcp-authoring-qualification.py` builds the result field by field; `docs/distribution/schemas/mcp-authoring-qualification-record-v1.schema.json` denies unknown fields and fixes every gate/redaction value; candidate `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8` retained a passing authoring record with SHA-256 `6bc166dbf9a037e7eeaffd39358b1a6992ea54ae145587dd2b5ce7a6fbb882cd` | `tests/package_qualification/test_mcp_authoring_qualification.py::test_retained_installed_record_is_the_closed_schema_valid_result`, `tests/package_qualification/test_mcp_authoring_qualification.py::test_builder_refuses_extra_sensitive_fields_and_false_redaction_claims`, `tests/package_qualification/test_mcp_authoring_qualification.py::test_record_contains_no_field_that_can_carry_private_run_material` | WHEEL | green |
+| B-12 Retain only a redacted qualification record | `scripts/run-mcp-authoring-qualification.py` builds the result field by field; `docs/distribution/schemas/mcp-authoring-qualification-record-v1.schema.json` denies unknown fields and fixes every gate/redaction value; candidate `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` retained a passing authoring record with SHA-256 `6bc166dbf9a037e7eeaffd39358b1a6992ea54ae145587dd2b5ce7a6fbb882cd` | `tests/package_qualification/test_mcp_authoring_qualification.py::test_retained_installed_record_is_the_closed_schema_valid_result`, `tests/package_qualification/test_mcp_authoring_qualification.py::test_builder_refuses_extra_sensitive_fields_and_false_redaction_claims`, `tests/package_qualification/test_mcp_authoring_qualification.py::test_record_contains_no_field_that_can_carry_private_run_material` | WHEEL | green |
 
 B-12 is closed by the installed authoring record from candidate key
-`b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8`.
+`857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`.
 The two records in 13.I are separate real-host evidence and are not used to
 relabel the installed-wheel journey as host evidence.
 
@@ -402,9 +402,9 @@ configuration tests hold.
 | H-2 Client, CLI and MCP conformance | `contracts/application/v1/fixtures/application-wire-adapter-conformance-v1.json`, `src/omnivia_core/contracts/v1/conformance.py` | `tests/contracts/test_adapter_conformance.py::test_every_operation_has_a_primary_success_case`, `tests/contracts/test_adapter_conformance.py::test_every_mutation_has_a_replay_and_a_conflict_case`, `packages/omnivia-core-cli/tests/test_v06_6_dispatch.py::test_each_command_dispatches_its_exact_catalogue_claims[evidence/capture]` | AUTO | green |
 | H-3 Runtime migrations | `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/migration_files/0041_evidence_source_identity.sql`, `packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/installation_migration_files/0003_mcp_role_grants.sql` | `packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_source_identity_migration.py::test_0041_applies_cleanly_as_the_consecutive_successor`, `packages/omnivia-core-runtime/tests/phase3/runtime/test_installed_mcp_authority_migration.py::test_fresh_catalogue_materialises_the_whole_pinned_chain`, `tests/test_migration_allocations.py` | AUTO | green |
 | H-4 Generated schema projection is reproducible and clean after regeneration | `scripts/generate-mcp-exposure-schemas.py`, `packages/omnivia-core-mcp/src/omnivia_core_mcp/generated_schema_projection.py` | `packages/omnivia-core-mcp/tests/test_mcp_exposure_manifest.py::test_the_committed_projection_is_exactly_what_the_generator_emits`, `packages/omnivia-core-mcp/tests/test_mcp_exposure_manifest.py::test_the_generator_check_mode_reports_success_without_writing` | AUTO | green |
-| H-5 Wheelhouse installation and offline packaging | `scripts/check-package-builds.sh`, `scripts/build-standard-candidate.py`, `scripts/mcp-wheelhouse-constraints.txt` | Exact candidate `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8` at `a808e6ee` built and installed all five first-party distributions from the verified 35-wheel closure; qualification-result SHA-256 `13675037c60367232365d54ac42dd84e8eedd4ae19a292ac5edbb4365b063ff5` | WHEEL | green |
+| H-5 Wheelhouse installation and offline packaging | `scripts/check-package-builds.sh`, `scripts/build-standard-candidate.py`, `scripts/mcp-wheelhouse-constraints.txt` | Exact candidate `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` at `0d8cf362` built and installed all five first-party distributions from the verified 35-wheel closure; qualification-result SHA-256 `e7725a1b12c995a0cf462734fde6a29137d5455664daaccd8844097f4774bb46` | WHEEL | green |
 | H-6 Installed service smoke tests over the authoring inventory | `scripts/run-mcp-authoring-qualification.py`, `scripts/build-standard-candidate.py`, `docs/distribution/mcp-host-interoperability.md` | The exact candidate passed the restricted, eighteen-tool authoring and lifecycle journeys; authoring-record SHA-256 `6bc166dbf9a037e7eeaffd39358b1a6992ea54ae145587dd2b5ce7a6fbb882cd` | WHEEL | green |
-| H-7 The release artifact uses `mcp==2.0.0` and `mcp-types==2.0.0`, not whichever versions happen to be in a developer venv | `scripts/mcp-wheelhouse-constraints.txt`, `docs/distribution/schemas/mcp-authoring-qualification-record-v1.schema.json` | Candidate `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8` and both host records bind the reviewed 35-wheel closure SHA-256 `0325d9e86b1f50b5e585e0ad1371969a6e04ab32ad84b77a7f359f9c757e97dd`, including `mcp==2.0.0` and `mcp-types==2.0.0` | WHEEL | green |
+| H-7 The release artifact uses `mcp==2.0.0` and `mcp-types==2.0.0`, not whichever versions happen to be in a developer venv | `scripts/mcp-wheelhouse-constraints.txt`, `docs/distribution/schemas/mcp-authoring-qualification-record-v1.schema.json` | Candidate `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` and both host records bind the reviewed 35-wheel closure SHA-256 `0ad954b79e8152f705c4b9941b2231dbc09d2ce4bd3c10baf094d2698f752c93`, including `mcp==2.0.0` and `mcp-types==2.0.0` | WHEEL | green |
 
 ### 13.I Real-host qualification
 
@@ -425,10 +425,10 @@ from these retained host records.
 | I-8 Revoke authoring and prove mutation tools disappear or fail closed according to the documented restart model | `packages/omnivia-core-runtime/src/omnivia_core_runtime/service/installed_mcp.py`, `scripts/run-mcp-real-host-qualification.py` | both retained records: gate `i8` | HOST | green |
 
 The Claude record SHA-256 is
-`56eb9636dac35c3bd91280a68b35cb83f4d8179e2a7bfcda02cf395b617f841c`;
+`02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794`;
 the Codex record SHA-256 is
-`4eded41ec4366f5e04343b6a334115d59e414fea951ee65e5ba319e75170c299`.
-Both name source revision `a808e6eef6cf3d284ef6bf9b418ab6f85a610752`,
+`c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08`.
+Both name source revision `0d8cf362d15b43077a744542974b6160c283e1dc`,
 the same first-party wheel digests, closure digest, harness digest and schema
 digest, and every I-1 through I-8 field is `true`.
 

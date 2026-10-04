@@ -144,10 +144,10 @@ Remaining before completion:
 
 | Order | Work package | Status | Exit condition |
 |---|---|---|---|
-| 1 | Stabilize current branch | complete at qualified runtime `a808e6ee` | Final hardening passed independent review and is committed |
+| 1 | Stabilize current branch | complete at qualified runtime `0d8cf362` | Final hardening passed independent review and is committed |
 | 2 | Close planning evidence | complete | This plan and the complete 121-path PR #108 file-disposition map are tracked |
 | 3 | Complete harness coverage | complete | Automated tests prove every section 8 case and reject incomplete evidence |
-| 4 | Freeze candidate | complete | Clean runtime tip `a808e6ee`, release wheels, SDK pins and host versions are immutable |
+| 4 | Freeze candidate | complete | Clean runtime tip `0d8cf362`, release wheels, SDK pins and host versions are immutable |
 | 5 | Run real hosts | complete | Claude Code 2.1.289 and Codex CLI 0.146.0 each produced schema-valid passing records for the same candidate |
 | 6 | Reconcile records | in progress in this evidence-only diff | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
 | 7 | Accept exact tip | pending | Independent review, focused suites, full preflight, and hosted checks are green |
@@ -522,10 +522,10 @@ Current local status after Gate D:
 
 | Area | State | Evidence or next action |
 |---|---|---|
-| Qualified runtime commit | complete | `a808e6eef6cf3d284ef6bf9b418ab6f85a610752`; all executable, harness, schema, test and substantive documentation changes are frozen there |
-| Standard candidate | complete | candidate key `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8`; restricted, authoring and lifecycle journeys passed from the installed 35-wheel closure |
-| Claude Code real-host record | complete | Claude Code 2.1.289, schema-valid pass, every I-1 through I-8 field true; committed redacted record SHA-256 `56eb9636dac35c3bd91280a68b35cb83f4d8179e2a7bfcda02cf395b617f841c` |
-| Codex CLI real-host record | complete | Codex CLI 0.146.0, schema-valid pass, every I-1 through I-8 field true; committed redacted record SHA-256 `4eded41ec4366f5e04343b6a334115d59e414fea951ee65e5ba319e75170c299` |
+| Qualified runtime commit | complete | `0d8cf362d15b43077a744542974b6160c283e1dc`; all executable, harness, schema, test and substantive documentation changes are frozen there |
+| Standard candidate | complete | candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`; restricted, authoring and lifecycle journeys passed from the installed 35-wheel closure |
+| Claude Code real-host record | complete | Claude Code 2.1.289, schema-valid pass, every I-1 through I-8 field true; committed redacted record SHA-256 `02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794` |
+| Codex CLI real-host record | complete | Codex CLI 0.146.0, schema-valid pass, every I-1 through I-8 field true; committed redacted record SHA-256 `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08` |
 | Evidence-only closeout | in progress | This diff adds only the two closed records and status/traceability reconciliation; it must contain no executable or acceptance-rule change |
 | Exact-head preflight and hosted checks | pending | Run after the evidence-only closeout commit, then push and require fresh PR #167 checks |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
@@ -533,8 +533,8 @@ Current local status after Gate D:
 The remaining critical path is therefore:
 
 1. done: freeze qualified runtime commit
-   `a808e6eef6cf3d284ef6bf9b418ab6f85a610752` and build candidate
-   `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8`;
+   `0d8cf362d15b43077a744542974b6160c283e1dc` and build candidate
+   `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`;
 2. done: run Claude Code and Codex CLI against that candidate and validate both
    redacted records;
 3. land this evidence-only closeout commit, run full preflight and require every
@@ -602,7 +602,7 @@ candidate and restarting Gate C.
 #### Gate D — qualify both real hosts
 
 Status: complete at qualified runtime commit
-`a808e6eef6cf3d284ef6bf9b418ab6f85a610752`. The I-8 revocation harness remains
+`0d8cf362d15b43077a744542974b6160c283e1dc`. The I-8 revocation harness remains
 provider- and model-agnostic. Each
 post-revocation request (the evidence capture mutation and its replay, the
 memory replay, `job_get`, `job_events` and the import start replay) runs in its
@@ -685,22 +685,22 @@ runtime commit, candidate digest set, SDK pins and accepted host versions.
 Exit evidence:
 
 - qualified runtime commit:
-  `a808e6eef6cf3d284ef6bf9b418ab6f85a610752`;
+  `0d8cf362d15b43077a744542974b6160c283e1dc`;
 - candidate key:
-  `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8`;
+  `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`;
 - wheel closure: 35 wheels, SHA-256
-  `0325d9e86b1f50b5e585e0ad1371969a6e04ab32ad84b77a7f359f9c757e97dd`;
+  `0ad954b79e8152f705c4b9941b2231dbc09d2ce4bd3c10baf094d2698f752c93`;
 - Claude Code 2.1.289 record:
   `docs/development/qualification/mcp-real-host-claude-code-2.1.289.json`,
   SHA-256
-  `56eb9636dac35c3bd91280a68b35cb83f4d8179e2a7bfcda02cf395b617f841c`;
+  `02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794`;
 - Codex CLI 0.146.0 record:
   `docs/development/qualification/mcp-real-host-codex-cli-0.146.0.json`,
   SHA-256
-  `4eded41ec4366f5e04343b6a334115d59e414fea951ee65e5ba319e75170c299`;
+  `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08`;
 - both records pass the closed-schema validator and every gate field is `true`;
 - candidate qualification-result SHA-256:
-  `13675037c60367232365d54ac42dd84e8eedd4ae19a292ac5edbb4365b063ff5`;
+  `e7725a1b12c995a0cf462734fde6a29137d5455664daaccd8844097f4774bb46`;
 - installed authoring record SHA-256:
   `6bc166dbf9a037e7eeaffd39358b1a6992ea54ae145587dd2b5ce7a6fbb882cd`.
 
@@ -752,7 +752,7 @@ recorded; no implicit release or worktree deletion has occurred.
 |---|---|---|
 | Claude Code qualification credential | completed 2026-10-04 with the selected existing logged-in Claude CLI profile (`--use-existing-host-auth`); the host authentication preflight passed and no token file was used | No further credential action for this candidate |
 | Real-host external data flow | authorized and completed 2026-10-04 for fixed qualification prompts and bounded Core-derived results through the Claude and Codex accounts | No further provider call is required unless executable qualification behavior changes |
-| Qualified runtime and Standard candidate | complete at `a808e6eef6cf3d284ef6bf9b418ab6f85a610752`; candidate key `b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8` | Preserve the runtime commit; any executable or acceptance-rule change requires returning to Gate C |
+| Qualified runtime and Standard candidate | complete at `0d8cf362d15b43077a744542974b6160c283e1dc`; candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` | Preserve the runtime commit; any executable or acceptance-rule change requires returning to Gate C |
 | Real-host records | complete for Claude Code 2.1.289 and Codex CLI 0.146.0; both schema-valid with every gate true | Preserve the committed redacted records and their digests |
 | PR #167 hosted checks | final evidence-head checks pending | Run full local preflight, push the evidence-only head and require fresh checks |
 | Merge | not authorized | Request explicit authorization only after Gate F |

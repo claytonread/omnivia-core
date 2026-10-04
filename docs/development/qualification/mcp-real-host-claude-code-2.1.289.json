@@ -3,9 +3,9 @@
     "harness_sha256": "2529d9c27eaa17397de6820ec4f112c979856cbba2b83678742f6b4afd1d37b8",
     "schema_sha256": "5ece526fe9655c2f7f8569929e0b6f9b80e3099846686e63783827676f5a4e26",
     "wheel_closure_count": 35,
-    "wheel_closure_sha256": "0325d9e86b1f50b5e585e0ad1371969a6e04ab32ad84b77a7f359f9c757e97dd"
+    "wheel_closure_sha256": "0ad954b79e8152f705c4b9941b2231dbc09d2ce4bd3c10baf094d2698f752c93"
   },
-  "finished_at": "2026-10-04T02:18:37Z",
+  "finished_at": "2026-10-04T02:46:02Z",
   "format": "omnivia.mcp-real-host-qualification.v1",
   "gates": {
     "i1": {
@@ -128,15 +128,15 @@
   },
   "source": {
     "clean": true,
-    "revision": "a808e6eef6cf3d284ef6bf9b418ab6f85a610752"
+    "revision": "0d8cf362d15b43077a744542974b6160c283e1dc"
   },
-  "started_at": "2026-10-04T02:15:17Z",
+  "started_at": "2026-10-04T02:42:48Z",
   "verdict": "pass",
   "wheels": {
-    "omnivia-core": "c25c566e22bf649ed0a75ddd1239cc8f55277fc8d7cb1feab7ec540fa28acf76",
-    "omnivia-core-cli": "ed9efe27ee56e351f4edec0330dad600fb1e9f297d0ec9a6ee9399abd5feb70a",
-    "omnivia-core-client": "8090764bc5dc7bfb42b353702e6a095e17f9f697f0bb8448eb5b94ab435287bb",
-    "omnivia-core-mcp": "078c0fbbfff35945cb77fe72acd41f45c67e3fedef8e73a66cadf29486a9c0a2",
-    "omnivia-core-runtime": "f772832f2461cb7910e2d6b066d32ec539c847c32018cbb50f1a6d201de73d8f"
+    "omnivia-core": "37797e6078405bf6ecfaf125e231542260c59d0d7977dea996b0b06130585c89",
+    "omnivia-core-cli": "1a161a78276a56ee06f54a3e7028d9ca9d7c327f75e22cf41bb0de70136159e4",
+    "omnivia-core-client": "f79f343808c82280583321145c4f66251f2464eef7eeb3c5469f29df776c2286",
+    "omnivia-core-mcp": "fb6ce8f2e08986cee51488f4cdf1d81ac5d83cad2ea55f062385342b627a1b50",
+    "omnivia-core-runtime": "465a63ec570864463f523e6fa5cc139672a7dfdaa33f8f4eee96a17c6ab77594"
   }
 }

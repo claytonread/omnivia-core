@@ -8,9 +8,9 @@
 **Reviewed predecessor checkpoint:** `9022e2aa` (the independent-review hardening
 of the harness, checkpointed on the working branch)
 **Qualified runtime commit:**
-`a808e6eef6cf3d284ef6bf9b418ab6f85a610752`.
+`0d8cf362d15b43077a744542974b6160c283e1dc`.
 **Candidate key:**
-`b84e8938ac099c6cd3d936d88336aa19ceb71c7bfae71c6e2d9c63f581f7f8e8`.
+`857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`.
 The exact candidate passed its restricted, authoring and lifecycle journeys and
 both pinned real hosts produced schema-valid passing records. The current work
 is the evidence-only closeout; full preflight and hosted checks remain before
@@ -405,7 +405,7 @@ found no code defect; its three test-coverage observations were added. A full
 exact-tip independent review is still required before candidate freeze.
 
 Exact-tip Claude and Codex records now exist for qualified runtime commit
-`a808e6eef6cf3d284ef6bf9b418ab6f85a610752`. The operator authorized the fixed
+`0d8cf362d15b43077a744542974b6160c283e1dc`. The operator authorized the fixed
 qualification prompts and bounded service-derived results for both providers.
 Claude Code 2.1.289 used the selected existing-login mode and the modern MCP
 `server/discover` lifecycle; Codex CLI 0.146.0 used the isolated copied
@@ -499,7 +499,7 @@ frozen, and use renewable monitor leases without spawning a second writer.
 ### Next Step
 
 Commit the two closed redacted records and this evidence-only reconciliation,
-prove the diff from `a808e6ee` contains no executable or acceptance-rule change,
+prove the diff from `0d8cf362` contains no executable or acceptance-rule change,
 then run full preflight, push PR #167 and obtain fresh hosted checks. Merge
 remains blocked until the user explicitly authorizes it and the hosted checks
 are green at the latest tip.
