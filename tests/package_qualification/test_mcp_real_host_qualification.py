@@ -17,6 +17,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 import zipfile
@@ -3266,36 +3267,39 @@ def _owner_pages(count: int) -> list[dict[str, Any]]:
     ]
 
 
-def _page_request(index: int) -> dict[str, Any]:
-    """The exact arguments of owner page ``index``: the base arguments, then the prior token."""
-    if index == 0:
-        return dict(_TRAVERSAL_ARGUMENTS)
-    return {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": f"t{index - 1}"}}
-
-
-def _page_session(index: int, page: dict[str, Any], kind: str = "exact") -> Any:
-    """One host session that makes the single call for owner page ``index``.
+def _chained_session(pages: list[dict[str, Any]], kind: str = "exact") -> Any:
+    """One host session: its one call, then the proxy's pages, each as the owner page answers.
 
     ``kind`` names the way that session can be wrong.
     """
-    tool = _TRAVERSAL_TOOL
-    requests: tuple[tuple[str, str], ...] = ((tool, q.arguments_digest(_page_request(index))),)
-    outcomes: tuple[tuple[str, str, str], ...] = ((tool, "none", q.canonical_result_digest(page)),)
-    if kind == "wrong_token":
-        forged = {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": "forged"}}
-        requests = ((tool, q.arguments_digest(forged)),)
-    elif kind == "wrong_arguments":
-        requests = ((tool, q.arguments_digest({**_page_request(index), "limit": 2})),)
-    elif kind == "extra":
+    base = dict(_TRAVERSAL_ARGUMENTS)
+    requests: tuple[tuple[str, str], ...] = ((_TRAVERSAL_TOOL, q.arguments_digest(base)),)
+    outcomes: tuple[tuple[str, str, str], ...] = (
+        (_TRAVERSAL_TOOL, "none", q.canonical_result_digest(pages[0])),
+    )
+    chained = [(_TRAVERSAL_TOOL, q.canonical_result_digest(page)) for page in pages[1:]]
+    if kind == "wrong_arguments":
+        requests = ((_TRAVERSAL_TOOL, q.arguments_digest({**base, "limit": 2})),)
+    elif kind == "extra_host_call":
         requests, outcomes = requests * 2, outcomes * 2
     elif kind == "tool_error":
-        outcomes = ((tool, "idempotency_conflict", q.canonical_result_digest(None)),)
+        outcomes = ((_TRAVERSAL_TOOL, "idempotency_conflict", q.canonical_result_digest(None)),)
+    elif kind == "wrong_first_page":
+        outcomes = ((_TRAVERSAL_TOOL, "none", q.canonical_result_digest({"events": [99]})),)
     elif kind == "wrong_digest":
-        outcomes = ((tool, "none", q.canonical_result_digest({"events": [99]})),)
-    elif kind == "completion":
-        cut = _outcome_result(requests, outcomes)
-        return dataclasses.replace(cut, exited_cleanly=False, marker_seen=False)
-    return _outcome_result(requests, outcomes)
+        chained[-1] = (_TRAVERSAL_TOOL, q.canonical_result_digest({"events": [99]}))
+    elif kind == "short":
+        chained = chained[:-1]
+    elif kind == "extra":
+        chained = [*chained, chained[-1]]
+    result = _outcome_result(requests, outcomes)
+    summary = dataclasses.replace(
+        result.summary, chained=tuple(chained), violation=kind == "violation"
+    )
+    result = dataclasses.replace(result, summary=summary)
+    if kind == "completion":
+        return dataclasses.replace(result, exited_cleanly=False, marker_seen=False)
+    return result
 
 
 def _missing_session() -> Any:
@@ -3303,57 +3307,72 @@ def _missing_session() -> Any:
     return _outcome_result((), ())
 
 
-def test_each_owner_page_is_read_by_its_own_fresh_session_with_its_chained_token(
+def test_the_owner_pages_are_read_by_one_session_whose_proxy_chains_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(3)
     prompts: list[str] = []
-    sessions = iter([_page_session(index, page) for index, page in enumerate(pages)])
+    chains: list[Any] = []
 
     def run(**kwargs: Any) -> Any:
         prompts.append(kwargs["prompt"])
-        return next(sessions)
+        chains.append(kwargs["chain"])
+        return _chained_session(pages)
 
     monkeypatch.setattr(q, "run_host_session", run)
-    q.host_read_pages(_driver(tmp_path), _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert len(prompts) == 3
-    for index, prompt in enumerate(prompts):
-        payload = json.dumps(_page_request(index), sort_keys=True, separators=(",", ":"))
-        assert "Call exactly one tool named job_events" in prompt
-        assert prompt.endswith(f"JSON:{payload}")
-    for index in range(1, len(pages)):
-        assert _page_request(index)["page"]["continuation_token"] == (
-            pages[index - 1]["page"]["continuation_token"]
-        )
-
-
-def test_a_page_without_a_token_cannot_be_followed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pages = [{"events": [0], "page": {}}, {"events": [1], "page": {}}]
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0]))
     driver = _driver(tmp_path)
+    q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert driver.sequence == 1
+    assert chains == [q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, 3)]
+    # The host's prompt names only the first call: no continuation token, owner or host.
+    payload = json.dumps(_TRAVERSAL_ARGUMENTS, sort_keys=True, separators=(",", ":"))
+    assert "Call exactly one tool named job_events" in prompts[0]
+    assert prompts[0].endswith(f"JSON:{payload}")
+    assert "continuation" not in prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("wrong_arguments", Reason.GATE_FAILED),
+        ("extra_host_call", Reason.GATE_FAILED),
+        ("tool_error", Reason.GATE_FAILED),
+        ("wrong_first_page", Reason.GATE_FAILED),
+        ("wrong_digest", Reason.GATE_FAILED),
+        ("short", Reason.GATE_FAILED),
+        ("extra", Reason.GATE_FAILED),
+        ("completion", Reason.HOST_OUTPUT_AMBIGUOUS),
+        ("violation", Reason.PROTOCOL_VIOLATION),
+    ],
+)
+def test_a_wrong_traversal_fails_closed_in_its_one_session_without_a_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    reason: Reason,
+) -> None:
+    pages = _owner_pages(3)
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _chained_session(pages, kind))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
     with pytest.raises(q.QualificationError) as error:
         q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert _code(error) is Reason.GATE_FAILED
+    assert _code(error) is reason
     assert driver.sequence == 1
+    assert "host_target_call_missing" not in log
 
 
 @pytest.mark.parametrize("bad_attempts", [1, 2])
-def test_a_missing_target_is_retried_within_the_bound_for_one_page_only(
+def test_a_missing_target_is_retried_within_the_bound_before_any_page_is_chained(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_attempts: int
 ) -> None:
     pages = _owner_pages(2)
-    sessions = iter(
-        [_page_session(0, pages[0])]
-        + [_missing_session()] * bad_attempts
-        + [_page_session(1, pages[1])]
-    )
+    sessions = iter([_missing_session()] * bad_attempts + [_chained_session(pages)])
     monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
     log: list[str] = []
     driver = _driver(tmp_path, progress=log.append)
     q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert driver.sequence == bad_attempts + 2
+    assert driver.sequence == bad_attempts + 1
     assert log == ["host_target_call_missing"] * bad_attempts
 
 
@@ -3371,46 +3390,12 @@ def test_a_missing_target_is_refused_after_three_sessions_without_the_call(
     assert log == ["host_target_call_missing"] * 3
 
 
-@pytest.mark.parametrize("position", [0, 1])
-@pytest.mark.parametrize(
-    ("kind", "reason"),
-    [
-        ("wrong_token", Reason.GATE_FAILED),
-        ("wrong_arguments", Reason.GATE_FAILED),
-        ("extra", Reason.GATE_FAILED),
-        ("tool_error", Reason.GATE_FAILED),
-        ("wrong_digest", Reason.GATE_FAILED),
-        ("completion", Reason.HOST_OUTPUT_AMBIGUOUS),
-    ],
-)
-def test_a_wrong_page_call_fails_closed_without_a_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    position: int,
-    kind: str,
-    reason: Reason,
-) -> None:
-    pages = _owner_pages(2)
-    sessions = iter(
-        [_page_session(index, pages[index]) for index in range(position)]
-        + [_page_session(position, pages[position], kind)]
-    )
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
-    log: list[str] = []
-    driver = _driver(tmp_path, progress=log.append)
-    with pytest.raises(q.QualificationError) as error:
-        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert _code(error) is reason
-    assert driver.sequence == position + 1
-    assert "host_target_call_missing" not in log
-
-
 def test_a_page_that_answers_with_the_wrong_digest_is_named_as_a_page_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(2)
     monkeypatch.setattr(
-        q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0], "wrong_digest")
+        q, "run_host_session", lambda **_kwargs: _chained_session(pages, "wrong_digest")
     )
     log: list[str] = []
     driver = _driver(tmp_path, progress=log.append)
@@ -3420,11 +3405,11 @@ def test_a_page_that_answers_with_the_wrong_digest_is_named_as_a_page_mismatch(
     assert log == ["host_page_mismatch"]
 
 
-def test_core_health_is_checked_after_each_page_host_exits(
+def test_core_health_is_checked_after_the_one_host_session_exits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(2)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0]))
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _chained_session(pages))
     driver = _driver(tmp_path, healthy=lambda: False)
     with pytest.raises(q.QualificationError) as error:
         q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
@@ -3432,18 +3417,334 @@ def test_core_health_is_checked_after_each_page_host_exits(
     assert driver.sequence == 1
 
 
-def test_core_health_failure_on_a_later_page_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("arguments", "pages"),
+    [
+        ({"job_id": "job-1", "page": {}}, 2),
+        ({"job_id": "job-1"}, 0),
+        ({"job_id": "job-1"}, True),
+        ({"job_id": "job-1"}, 1.0),
+        ({"job_id": "job-1"}, q.MAX_EVENT_PAGES + 1),
+    ],
+)
+def test_a_page_chain_refuses_a_token_bearing_base_or_an_unbounded_count(
+    arguments: dict[str, Any], pages: Any
 ) -> None:
-    pages = _owner_pages(2)
-    health = iter([True, False])
-    sessions = iter([_page_session(0, pages[0]), _page_session(1, pages[1])])
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
-    driver = _driver(tmp_path, healthy=lambda: next(health))
     with pytest.raises(q.QualificationError) as error:
-        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert _code(error) is Reason.GATE_FAILED
-    assert driver.sequence == 2
+        q.PageChain(_TRAVERSAL_TOOL, arguments, pages)
+    assert _code(error) is Reason.RECORD_INVALID
+
+
+def test_the_private_spec_names_the_base_arguments_and_count_and_never_a_token(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "spec.json"
+    chain = q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, 3)
+    q.write_proxy_spec(spec, child=["server"], observation=tmp_path / "events", chain=chain)
+    assert json.loads(spec.read_text(encoding="utf-8"))["chain"] == {
+        "tool": _TRAVERSAL_TOOL,
+        "arguments": _TRAVERSAL_ARGUMENTS,
+        "pages": 3,
+    }
+    assert "continuation" not in spec.read_text(encoding="utf-8")
+    assert q._load_spec(spec)[4] == chain
+
+
+def _page_result(page: dict[str, Any]) -> dict[str, Any]:
+    return {"isError": False, "content": [], "structuredContent": page}
+
+
+def _page_frame(identifier: Any, result: dict[str, Any]) -> bytes:
+    return _frame({"jsonrpc": "2.0", "id": identifier, "result": result})
+
+
+def _call_frame(identifier: int) -> bytes:
+    return _frame(
+        {
+            "jsonrpc": "2.0",
+            "id": identifier,
+            "method": "tools/call",
+            "params": {"name": _TRAVERSAL_TOOL, "arguments": _TRAVERSAL_ARGUMENTS},
+        }
+    )
+
+
+def _paged_relay(directory: Path, pages: int) -> tuple[Any, Any, Path]:
+    directory.mkdir()
+    path = directory / "events.jsonl"
+    observer = q._Observer(path)
+    relay = q._Relay(observer, None, chain=q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages))
+    return relay, observer, path
+
+
+def _hold_first(relay: Any, sink: io.BytesIO, first: dict[str, Any]) -> None:
+    """The host's one call is written to the child; its first page is answered and held."""
+    relay.request(_call_frame(7), sink)
+    assert not relay.response(_page_frame(7, _page_result(first)))
+    assert relay.holding
+
+
+def test_the_proxy_chains_each_page_on_the_connection_with_the_token_copied_verbatim(
+    tmp_path: Path,
+) -> None:
+    pages = [
+        {"events": [0], "page": {"continuation_token": "secret-token-one"}},
+        {"events": [1], "page": {"continuation_token": "secret-token-two"}},
+        {"events": [2], "page": {}},
+    ]
+    relay, observer, path = _paged_relay(tmp_path / "exact", 3)
+    child_in = io.BytesIO()
+    _hold_first(relay, child_in, pages[0])
+    child_out = io.BytesIO(
+        _page_frame("omnivia-page-1", _page_result(pages[1]))
+        + _page_frame("omnivia-page-2", _page_result(pages[2]))
+    )
+    relay.chain_pages(child_in, child_out)
+    relay.release()
+    observer.close()
+    assert not relay.holding
+    sent = [json.loads(line) for line in child_in.getvalue().splitlines()]
+    assert [message["id"] for message in sent] == [7, "omnivia-page-1", "omnivia-page-2"]
+    assert sent[1]["params"]["arguments"] == {
+        **_TRAVERSAL_ARGUMENTS,
+        "page": {"continuation_token": "secret-token-one"},
+    }
+    assert sent[2]["params"]["arguments"] == {
+        **_TRAVERSAL_ARGUMENTS,
+        "page": {"continuation_token": "secret-token-two"},
+    }
+    events = q.read_observation(path)
+    assert [event["event"] for event in events] == [
+        "tool_call_request",
+        "tool_call_response",
+        "page_request",
+        "page_response",
+        "page_request",
+        "page_response",
+    ]
+    # Tokens and page bodies are never retained: only closed names and canonical digests.
+    assert "secret-token" not in path.read_text(encoding="ascii")
+    summary = q.summarize_observation(events)
+    assert summary.called == (_TRAVERSAL_TOOL,) and not summary.violation
+    assert summary.chained == (
+        (_TRAVERSAL_TOOL, q.canonical_result_digest(pages[1])),
+        (_TRAVERSAL_TOOL, q.canonical_result_digest(pages[2])),
+    )
+
+
+def test_the_held_answer_waits_for_release_and_no_host_frame_is_admitted_meanwhile(
+    tmp_path: Path,
+) -> None:
+    relay, observer, _path = _paged_relay(tmp_path / "held", 2)
+    child_in = io.BytesIO()
+    _hold_first(relay, child_in, {"events": [0], "page": {"continuation_token": "t0"}})
+    with pytest.raises(q._Violation) as error:
+        relay.request(_frame({"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {}}), child_in)
+    assert error.value.kind == "host_frame_during_injection"
+    relay.chain_pages(child_in, io.BytesIO(_page_frame("omnivia-page-1", _page_result({"events": [1], "page": {}}))))
+    assert relay.holding  # the chain alone never lifts the hold
+    relay.release()
+    observer.close()
+    assert not relay.holding
+
+
+def test_the_host_drain_waits_out_a_hold_before_closing_the_childs_input(tmp_path: Path) -> None:
+    relay, observer, _path = _paged_relay(tmp_path / "drain", 1)
+    _hold_first(relay, io.BytesIO(), {"events": [0], "page": {}})
+    waiter = threading.Thread(target=relay.drain, args=(5,))
+    waiter.start()
+    waiter.join(0.2)
+    assert waiter.is_alive()
+    relay.chain_pages(io.BytesIO(), io.BytesIO())
+    relay.release()
+    waiter.join(5)
+    observer.close()
+    assert not waiter.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("reply", "kind"),
+    [
+        (_frame({"jsonrpc": "2.0", "method": "notifications/message", "params": {}}), "interleaved_frame"),
+        (_page_frame("omnivia-page-9", _page_result({"events": [1], "page": {"continuation_token": "t1"}})), "wrong_page_id"),
+        (_frame({"jsonrpc": "2.0", "id": "omnivia-page-1", "error": {"code": -1, "message": "x"}}), "page_tool_error"),
+        (_page_frame("omnivia-page-1", {**_page_result({"events": [1], "page": {}}), "isError": True}), "page_tool_error"),
+        (_page_frame("omnivia-page-1", {"isError": False, "content": []}), "invalid_tool_result"),
+        (_page_frame("omnivia-page-1", _page_result({"events": [1], "page": {}})), "page_token_missing"),
+        (b"", "early_eof"),
+        (b"not-json\n", "not_json"),
+        (b"x" * (q.MAX_FRAME_BYTES + 1), "oversized_frame"),
+    ],
+)
+def test_a_faulty_chained_reply_is_a_violation_and_the_held_answer_is_never_released(
+    tmp_path: Path, reply: bytes, kind: str
+) -> None:
+    relay, observer, _path = _paged_relay(tmp_path / kind, 3)
+    _hold_first(relay, io.BytesIO(), {"events": [0], "page": {"continuation_token": "t0"}})
+    with pytest.raises(q._Violation) as error:
+        relay.chain_pages(io.BytesIO(), io.BytesIO(reply))
+    observer.close()
+    assert error.value.kind == kind
+    assert relay.holding
+
+
+def test_the_final_chained_page_must_be_exhausted(tmp_path: Path) -> None:
+    relay, observer, _path = _paged_relay(tmp_path / "final", 2)
+    _hold_first(relay, io.BytesIO(), {"events": [0], "page": {"continuation_token": "t0"}})
+    still_more = _page_frame("omnivia-page-1", _page_result({"events": [1], "page": {"continuation_token": "t1"}}))
+    with pytest.raises(q._Violation) as error:
+        relay.chain_pages(io.BytesIO(), io.BytesIO(still_more))
+    observer.close()
+    assert error.value.kind == "page_not_exhausted"
+
+
+@pytest.mark.parametrize(
+    ("frame", "pages", "kind"),
+    [
+        (_page_frame(7, _page_result({"events": [0], "page": {}})), 2, "page_token_missing"),
+        (_page_frame(7, _page_result({"events": [0], "page": {"continuation_token": "t0"}})), 1, "page_not_exhausted"),
+        (_page_frame(7, {"isError": False, "content": []}), 2, "invalid_tool_result"),
+        (_page_frame(7, {"isError": True, "content": []}), 2, "page_tool_error"),
+    ],
+)
+def test_the_first_page_must_carry_the_traversal_shape_before_any_hold(
+    tmp_path: Path, frame: bytes, pages: int, kind: str
+) -> None:
+    relay, observer, _path = _paged_relay(tmp_path / kind, pages)
+    relay.request(_call_frame(7), io.BytesIO())
+    with pytest.raises(q._Violation) as error:
+        relay.response(frame)
+    observer.close()
+    assert error.value.kind == kind
+    assert not relay.holding
+
+
+def test_a_second_host_request_pending_at_the_hold_is_an_interleaving(tmp_path: Path) -> None:
+    relay, observer, _path = _paged_relay(tmp_path / "pending", 2)
+    sink = io.BytesIO()
+    relay.request(_call_frame(7), sink)
+    relay.request(_frame({"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {}}), sink)
+    with pytest.raises(q._Violation) as error:
+        relay.response(_page_frame(7, _page_result({"events": [0], "page": {"continuation_token": "t0"}})))
+    observer.close()
+    assert error.value.kind == "interleaving"
+
+
+_PAGED_CHILD = r'''
+import json, sys
+mode, log_path = sys.argv[1], sys.argv[2]
+pages = [
+    {"events": [0], "page": {"continuation_token": "tok-1"}},
+    {"events": [1], "page": {"continuation_token": "tok-2"}},
+    {"events": [2], "page": {}},
+]
+log = open(log_path, "a")
+def send(message):
+    print(json.dumps(message, separators=(",", ":")), flush=True)
+for line in sys.stdin:
+    message = json.loads(line)
+    method, identifier = message.get("method"), message.get("id")
+    log.write(f"{method}:{identifier}\n"); log.flush()
+    if identifier is None:
+        continue
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "t", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "job_events"}]}
+    else:
+        arguments = message["params"]["arguments"]
+        index = 0 if "page" not in arguments else int(arguments["page"]["continuation_token"].split("-")[1])
+        page = dict(pages[index])
+        if mode == "token_missing" and index == 0:
+            page = {"events": [0], "page": {}}
+        if mode == "notify" and index == 1:
+            send({"jsonrpc": "2.0", "method": "notifications/message", "params": {}})
+        reply_id = "other" if mode == "wrong_id" and index == 1 else identifier
+        send({"jsonrpc": "2.0", "id": reply_id, "result": {"content": [], "isError": False, "structuredContent": page}})
+        if mode == "eof" and index == 0:
+            sys.exit(0)
+        continue
+    send({"jsonrpc": "2.0", "id": identifier, "result": result})
+'''
+
+
+def _paged_proxy(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedProcess[bytes], Path, Path]:
+    directory = tmp_path / mode
+    directory.mkdir()
+    observation, spec, log = directory / "events", directory / "spec", directory / "child-log"
+    q.write_proxy_spec(
+        spec,
+        child=[sys.executable, "-u", "-c", _PAGED_CHILD, mode, str(log)],
+        observation=observation,
+        chain=q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, 3),
+    )
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": _TRAVERSAL_TOOL, "arguments": _TRAVERSAL_ARGUMENTS}},
+    ]
+    completed = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=b"".join(_frame(message) for message in messages),
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    return completed, observation, log
+
+
+@posix_only
+def test_the_proxy_pages_on_the_child_that_initialized_and_releases_the_first_answer_last(
+    tmp_path: Path,
+) -> None:
+    completed, observation, log = _paged_proxy(tmp_path, "exact")
+    assert completed.returncode == 0 and completed.stderr == b""
+    host = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert [message["id"] for message in host] == [1, 2, 3]
+    assert host[2]["result"]["structuredContent"]["page"] == {"continuation_token": "tok-1"}
+    # One child process: it initialized once, then served the host's call and both pages.
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "initialize:1",
+        "notifications/initialized:None",
+        "tools/list:2",
+        "tools/call:3",
+        "tools/call:omnivia-page-1",
+        "tools/call:omnivia-page-2",
+    ]
+    summary = q.summarize_observation(q.read_observation(observation))
+    assert not summary.violation and summary.called == (_TRAVERSAL_TOOL,)
+    assert summary.chained == (
+        (_TRAVERSAL_TOOL, q.canonical_result_digest({"events": [1], "page": {"continuation_token": "tok-2"}})),
+        (_TRAVERSAL_TOOL, q.canonical_result_digest({"events": [2], "page": {}})),
+    )
+    assert "tok-" not in observation.read_text(encoding="ascii")
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("mode", "kind"),
+    [
+        ("notify", "interleaved_frame"),
+        ("wrong_id", "wrong_page_id"),
+        ("token_missing", "page_token_missing"),
+        ("eof", None),
+    ],
+)
+def test_a_faulty_traversal_never_releases_the_held_first_answer(
+    tmp_path: Path, mode: str, kind: str | None
+) -> None:
+    completed, observation, _log = _paged_proxy(tmp_path, mode)
+    host = [json.loads(line) for line in completed.stdout.splitlines()]
+    # Only the two answers before the traversal reached the host; the held one never did.
+    assert [message["id"] for message in host] == [1, 2]
+    assert completed.returncode in {q.PROXY_VIOLATION_EXIT, q.PROXY_FAILED_EXIT}
+    events = q.read_observation(observation)
+    observed = [event["kind"] for event in events if event["event"] == "protocol_violation"]
+    if kind is None:
+        assert observed in ([], ["early_eof"])
+    else:
+        assert observed == [kind]
 
 
 def _event(sequence: int) -> dict[str, Any]:
@@ -3706,7 +4007,8 @@ def _journey(
         return cores[context.root].read(names[path], dict(payload or {}))
 
     def run(self: Any, calls: Any, arguments: Any = None, *, interrupt: bool = False,
-            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None) -> Any:
+            on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None,
+            chain: Any = None) -> Any:
         tool, first = calls, arguments
         steps = [(tool, first)]
         core = cores[Path(self.core_config).parent]
@@ -3748,17 +4050,32 @@ def _journey(
             )
         requests: list[tuple[str, str]] = []
         outcomes: list[tuple[str, str, str]] = []
-        # Only the paused post-revocation request is tampered; earlier sessions are honest.
-        served = _tampered(core.tamper, steps) if pause_before else steps
-        for name, args in served:
-            log.append(f"call:{name}")
-            requests.append((name, q.arguments_digest(args)))
+        chained: list[tuple[str, str]] = []
+
+        def served_result(name: str, args: dict[str, Any]) -> tuple[str, Any]:
             refusal, structured = core.serve(name, args)
             if core.tamper == "wrong_refusal" and refusal == "credential_missing":
                 refusal = "idempotency_conflict"
             if refusal == "none" and name == "job_events" and core.tamper == "host_page_differs":
                 structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
+            return refusal, structured
+
+        # Only the paused post-revocation request is tampered; earlier sessions are honest.
+        served = _tampered(core.tamper, steps) if pause_before else steps
+        for name, args in served:
+            log.append(f"call:{name}")
+            requests.append((name, q.arguments_digest(args)))
+            refusal, structured = served_result(name, args)
             outcomes.append((name, refusal, q.canonical_result_digest(structured)))
+        if chain is not None:
+            # The proxy's own pages, on the host's connection: each token copied from the page before.
+            token = structured["page"].get("continuation_token")
+            for _ in range(chain.pages - 1):
+                log.append(f"call:{chain.tool}")
+                refusal, page = served_result(chain.tool, {**chain.arguments, "page": {"continuation_token": token}})
+                assert refusal == "none"
+                chained.append((chain.tool, q.canonical_result_digest(page)))
+                token = page["page"].get("continuation_token")
         if core.tamper == "core_replaced_unexpectedly" and tool == "evidence_capture":
             core.replace()  # Core exited mid-session; a managed-local client replaced it
         if not self.healthy():
@@ -3773,6 +4090,7 @@ def _journey(
                 tool_errors=tuple(name for name, refusal, _ in outcomes if refusal != "none"),
                 paused=pause_before, withheld=False, violation=False, outcomes=tuple(outcomes),
                 initialized_after_pause=pause_before and core.tamper == "initialized_after_pause",
+                chained=tuple(chained),
             ),
             marker_seen=not timed_out, exited_cleanly=not timed_out, interrupted=False,
             paused=pause_before,
@@ -3893,6 +4211,10 @@ def test_the_journey_proves_every_gate_in_the_pinned_order(
     # Both contexts end revoked and are re-verified after the final refusal, before shutdown.
     final = log.index("call:import_start", imported) + 1
     assert log[final : final + 2] == ["verified:core", "verified:import-core"]
+    # The import's paged read is one host session: its one call, the proxy's own second page,
+    # and the revocation probe's one call.  No page is read by a fresh host session.
+    assert log.count("host:job_events:call") == 1
+    assert log.count("call:job_events") == 3
 
 
 @pytest.mark.parametrize(

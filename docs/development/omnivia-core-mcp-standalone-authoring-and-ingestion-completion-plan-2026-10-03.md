@@ -526,8 +526,8 @@ Current local status at the time of this plan update:
 | Standard candidate for `ffa1b36c` | built and verified, now superseded for closeout | `/private/tmp/omnivia-core-standard-ffa1b36c` was built cleanly without `--allow-dirty`; its key is `73eca52dbd69b41fdbffa78369009f736ea4e5b82bc8ef42f7ff425dadc8d0ef`, but the later teardown correction changes harness behavior and therefore requires a new Gate C candidate before real-host qualification |
 | Final PID-reuse teardown correction | runtime repair pushed as checkpoint `84b1510b2e5e8803803cec30ae625d3731510eb4`; Gate A behavior accepted | Four code/test files contain the fail-closed same-PID-after-reap correction and nine regressions. Codex independently reviewed the recovered Claude diff: an unproved live reused PID receives no signal and retains cleanup, a completely proved live PID is stopped once through the non-child path, and an absent original PID still permits known-group cleanup. The review-closeout diff adds the ninth race regression and explanatory comment. The three-file focused gate passes 562 tests, the four-directory gate passes 2,668 tests, strict mypy, Ruff and `git diff --check` pass, and Phase 2 passes 596 tests with four expected skips |
 | Hosted checks for `ffa1b36c` | in progress, not final acceptance evidence | Evidence-search jobs are green on Linux, macOS and Windows; Core acceptance and the three Phase 2 jobs are still running. These checks qualify only the superseded checkpoint and must run again on the evidence-closeout head |
-| Qualified runtime behavior and final candidate | behavior frozen at `84b1510b`; review-closeout checkpoint not yet pushed | Commit and push the behavior-neutral final comment, regression and plan correction, then build a new Standard candidate from that clean exact tip |
-| Real-host records | not current | Historical Codex records are diagnostic only; both hosts must run against the same new candidate |
+| Qualified runtime behavior and final candidate | candidate `665673ba` built and verified, now superseded by the pagination repair | Candidate key `bfd67a10f1b97a161171ec701b235ef787336e9459f31ad58485561064e2d0db` passed Gate C, but the later same-principal pagination correction changes the harness and requires a new clean candidate |
+| Real-host records | diagnostic only | Two Codex runs against `665673ba` failed at I-5. The reproduced run proved the fresh-session implementation passed an owner-principal continuation token to the host principal, where Core correctly refused it. Both hosts must run against the replacement candidate |
 | Real-host revocation harness (I-8) | repaired locally, not accepted | Simulated journey only: each refused request now has its own paused, admitted host session, and every regrant is a fresh configure that keeps the configuration path and rotates the principal. The simulated qualification file passes; no real-host run, provider call or Gate D record exists |
 | Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
@@ -615,13 +615,15 @@ regrant is a fresh `mcp configure`. The service rotates the MCP principal on eac
 configure after a revoke, so the regrant keeps the configuration path and must
 produce a different principal. Replayed requests keep the principal the owner
 recorded as their actor. The final revocation is verified for both contexts.
-Import pagination reads `job_events` as one exact host call per owner page. Each
-page runs in its own fresh host session, with exact arguments: page one is the
-base arguments, and each later page carries the continuation token of the owner
-page before it. Each call must be the only call its session makes, must succeed,
-and must return exactly that owner page's digest. Only a missing target call may
-be retried, within the existing bound of two retries and for that individual
-read. A wrong token or argument, extra call, tool error, wrong page digest,
+Import pagination keeps one host principal and one MCP child connection. The
+real host issues the base `job_events` call and the proxy holds its answer. The
+proxy then issues each remaining page on that same connection, copying the
+continuation token from the immediately previous host-principal result, and
+releases the first answer only after the final page is exhausted. Each page must
+match the corresponding owner page's canonical digest. Only a session in which
+the host never made the first call may be retried, within the existing bound of
+two retries. Once a traversal starts, a wrong id, notification or other
+interleaving, tool error, missing or unexpected token, wrong page digest,
 incomplete host completion, Core-health failure or mutation is refused at once.
 The user has authorized the external data flow: fixed qualification
 prompts and bounded, service-derived results may be sent through both the Codex

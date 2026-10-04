@@ -1198,6 +1198,15 @@ VIOLATION_KINDS: Final = frozenset(
         "invalid_initialize",
         "frame_after_withheld",
         "oversized_frame",
+        #: Traversal faults: the held first answer is never released after one of these.
+        "host_frame_during_injection",
+        "interleaving",
+        "interleaved_frame",
+        "wrong_page_id",
+        "page_tool_error",
+        "page_token_missing",
+        "page_not_exhausted",
+        "early_eof",
     }
 )
 
@@ -1255,6 +1264,9 @@ EVENT_SHAPES: Final[dict[str, dict[str, Callable[[object], bool]]]] = {
         "refusal": lambda value: value in REFUSALS,
     },
     "request_paused": {"tool": _is_name},
+    #: Later pages of a traversal the proxy itself issues; their tokens and bodies are never kept.
+    "page_request": {"tool": _is_name, "arguments_digest": _is_digest},
+    "page_response": {"tool": _is_name, "result_digest": _is_digest},
     #: The withheld answer is never forwarded or kept; only its canonical digest is.
     "response_withheld": {"tool": _is_name, "tool_error": _is_bool, "result_digest": _is_digest},
     "protocol_violation": {"kind": lambda value: value in VIOLATION_KINDS},
@@ -1349,6 +1361,30 @@ class PauseBefore:
             raise QualificationError(ReasonCode.RECORD_INVALID)
 
 
+@dataclass(frozen=True)
+class PageChain:
+    """One paged read the proxy completes on the connection that makes its first call.
+
+    ``arguments`` are the fixed base arguments of that first call.  The proxy adds
+    each later page's continuation token itself, copied from the page before, so no
+    token or page body ever leaves the proxy's own connection.
+    """
+
+    tool: str
+    arguments: Mapping[str, Any]
+    pages: int
+
+    def __post_init__(self) -> None:
+        if (
+            not _is_name(self.tool)
+            or not isinstance(self.arguments, Mapping)
+            or "page" in self.arguments
+            or type(self.pages) is not int
+            or not 1 <= self.pages <= MAX_EVENT_PAGES
+        ):
+            raise QualificationError(ReasonCode.RECORD_INVALID)
+
+
 def _write_private(path: Path, text: str) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -1362,6 +1398,7 @@ def write_proxy_spec(
     observation: Path,
     interruption: Interruption | None = None,
     pause_before: PauseBefore | None = None,
+    chain: PageChain | None = None,
 ) -> None:
     """Write the private spec the proxy reads: its child command, stream and target."""
     document = {
@@ -1377,6 +1414,10 @@ def write_proxy_spec(
             "arguments_digest": pause_before.arguments_digest,
             "release": str(pause_before.release),
         },
+        #: Base arguments and page count only: never a continuation token or page body.
+        "chain": None
+        if chain is None
+        else {"tool": chain.tool, "arguments": dict(chain.arguments), "pages": chain.pages},
     }
     _write_private(path, json.dumps(document))
 
@@ -1388,15 +1429,16 @@ def proxy_server_entry(python: Path, spec: Path) -> dict[str, Any]:
 
 def _load_spec(
     path: Path,
-) -> tuple[list[str], Path, Interruption | None, PauseBefore | None]:
+) -> tuple[list[str], Path, Interruption | None, PauseBefore | None, PageChain | None]:
     try:
         document = _mapping(json.loads(path.read_text(encoding="utf-8")), ReasonCode.RECORD_INVALID)
-        if set(document) != {"child", "observation", "interrupt", "pause_before"}:
+        if set(document) != {"child", "observation", "interrupt", "pause_before", "chain"}:
             raise ValueError
         child = document["child"]
         observation = document["observation"]
         target = document["interrupt"]
         paused = document["pause_before"]
+        chained = document["chain"]
         if (
             not isinstance(child, list)
             or not child
@@ -1420,9 +1462,14 @@ def _load_spec(
             pause_before = PauseBefore(
                 paused["tool"], paused["arguments_digest"], Path(paused["release"])
             )
+        chain = None
+        if chained is not None:
+            if not isinstance(chained, dict) or set(chained) != {"tool", "arguments", "pages"}:
+                raise ValueError
+            chain = PageChain(chained["tool"], chained["arguments"], chained["pages"])
     except (OSError, ValueError, KeyError, TypeError):
         raise QualificationError(ReasonCode.RECORD_INVALID) from None
-    return child, Path(observation), interruption, pause_before
+    return child, Path(observation), interruption, pause_before, chain
 
 
 class _Violation(Exception):
@@ -1454,6 +1501,28 @@ def _request_key(identifier: object) -> str | None:
     if isinstance(identifier, str) or (type(identifier) is int):
         return json.dumps(identifier)
     return None
+
+
+#: How the relay treats one pending host request: plainly, as the withheld target, or as the
+#: first page of a chained traversal.
+_PLAIN: Final = "plain"
+_INTERRUPT: Final = "interrupt"
+_CHAIN: Final = "chain"
+
+
+def _page_token(structured: Mapping[str, Any], final: bool) -> str | None:
+    """A non-final page carries a nonempty continuation token; the final page carries none."""
+    position = structured.get("page")
+    if not isinstance(position, dict):
+        raise _Violation("invalid_tool_result")
+    token = position.get("continuation_token")
+    if final:
+        if token is not None:
+            raise _Violation("page_not_exhausted")
+        return None
+    if not isinstance(token, str) or not token:
+        raise _Violation("page_token_missing")
+    return token
 
 
 class _Observer:
@@ -1488,12 +1557,20 @@ class _Relay:
         observer: _Observer,
         interruption: Interruption | None,
         pause_before: PauseBefore | None = None,
+        chain: PageChain | None = None,
     ) -> None:
         self.observer = observer
         self.interruption = interruption
         self.pause_before = pause_before
         self.pause_consumed = False
-        self.pending: dict[str, tuple[str, str | None, bool]] = {}
+        self.chain = chain
+        self.chain_digest = None if chain is None else arguments_digest(chain.arguments)
+        self.chain_started = False
+        #: True from the held first page until ``release``: no host frame is admitted.
+        self.holding = False
+        #: The continuation token of the page most recently answered on the chain.
+        self.page_token: str | None = None
+        self.pending: dict[str, tuple[str, str | None, str]] = {}
         #: Guards ``pending``, ``closed`` and ``writing``.  Never held across a pipe write.
         self.state = threading.Condition()
         #: True while the one host frame in flight to the child is being written.
@@ -1511,12 +1588,14 @@ class _Relay:
 
         The host's end of input must not close the child's stdin while a request is
         unanswered: an MCP server that reads end-of-input can exit before it writes
-        the answer, so the answer would be lost.  Only the bound ends the wait.
+        the answer, so the answer would be lost.  A held first page is unanswered
+        too: its remaining pages are still to be read on this same connection.  Only
+        the bound ends the wait.
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not self.finished.is_set():
             with self.state:
-                if not self.pending:
+                if not self.pending and not self.holding:
                     return
             time.sleep(0.01)
 
@@ -1539,13 +1618,13 @@ class _Relay:
         message = _parse_frame(frame)
         method = message.get("method")
         key = _request_key(message.get("id"))
-        entry: tuple[str, str | None, bool] | None = None
+        entry: tuple[str, str | None, str] | None = None
         if isinstance(method, str) and key is not None and method == "initialize":
             self.observer.emit("initialize_request")
-            entry = (method, None, False)
+            entry = (method, None, _PLAIN)
         elif isinstance(method, str) and key is not None and method == "tools/list":
             self.observer.emit("tools_list_request")
-            entry = (method, None, False)
+            entry = (method, None, _PLAIN)
         elif isinstance(method, str) and key is not None and method == "tools/call":
             params = message.get("params")
             if not isinstance(params, dict) or not _is_name(params.get("name")):
@@ -1567,8 +1646,20 @@ class _Relay:
                 self.observer.emit("request_paused", tool=tool)
                 while not pause.release.is_file() and not self.released.wait(0.01):
                     pass
-            entry = (method, tool, target is not None and (tool, digest) == (target.tool, target.arguments_digest))
+            role = _PLAIN
+            if target is not None and (tool, digest) == (target.tool, target.arguments_digest):
+                role = _INTERRUPT
+            elif (
+                self.chain is not None
+                and not self.chain_started
+                and (tool, digest) == (self.chain.tool, self.chain_digest)
+            ):
+                self.chain_started = True
+                role = _CHAIN
+            entry = (method, tool, role)
         with self.state:
+            if self.holding:
+                raise _Violation("host_frame_during_injection")
             if self.closed:
                 raise _Violation("frame_after_withheld")
             if entry is not None:
@@ -1589,7 +1680,11 @@ class _Relay:
                 self.state.notify_all()
 
     def response(self, frame: bytes) -> bool:
-        """Observe a server frame; True means it must be withheld, never forwarded."""
+        """Observe a server frame; True means it must be withheld, never forwarded.
+
+        A held first page returns False with ``holding`` set: the caller completes the
+        traversal, then releases the answer.
+        """
         message = _parse_frame(frame)
         key = _request_key(message.get("id"))
         if "method" in message or key is None:
@@ -1598,11 +1693,11 @@ class _Relay:
             if self.closed:
                 raise _Violation("frame_after_withheld")
             entry = self.pending.pop(key, None)
-            if entry is not None and entry[2]:
+            if entry is not None and entry[2] == _INTERRUPT:
                 self.closed = True
         if entry is None:
             return False
-        method, tool, targeted = entry
+        method, tool, role = entry
         result = message.get("result")
         ok = isinstance(result, dict) and "error" not in message
         if method == "initialize":
@@ -1634,10 +1729,13 @@ class _Relay:
                 # A failed call must not carry the field at all, whatever its value.
                 if isinstance(result, dict) and "structuredContent" in result:
                     raise _Violation("invalid_tool_result")
+                if role == _CHAIN:
+                    # A traversal that cannot read its first page has nothing to chain from.
+                    raise _Violation("page_tool_error")
             elif not isinstance(structured, dict):
                 raise _Violation("invalid_tool_result")
             digest = canonical_result_digest(structured)
-            if targeted:
+            if role == _INTERRUPT:
                 # What the withheld answer would have said is kept as this digest alone,
                 # so a later same-key replay can be held to it.
                 self.observer.emit(
@@ -1652,7 +1750,72 @@ class _Relay:
                 result_digest=digest,
                 refusal=refusal_class(result) if ok else "other",
             )
+            if role == _CHAIN:
+                self._hold(structured)
         return False
+
+    def _hold(self, structured: Any) -> None:
+        """Hold the first page's answer until the rest of the traversal has been read."""
+        chain = self.chain
+        assert chain is not None
+        self.page_token = _page_token(structured, final=chain.pages == 1)
+        with self.state:
+            # Nothing else may be in flight: the chain owns the connection until release.
+            if self.pending or self.writing:
+                raise _Violation("interleaving")
+            self.holding = True
+
+    def chain_pages(self, stdin: Any, stdout: Any) -> None:
+        """Issue pages 2..N on the connection that answered page 1, each token copied verbatim.
+
+        Runs on the relay thread while the first answer is held.  Each reply must be
+        the one answer to the request just written; anything else fails closed.
+        """
+        chain = self.chain
+        assert chain is not None
+        for index in range(1, chain.pages):
+            identifier = f"omnivia-page-{index}"
+            arguments = {**chain.arguments, "page": {"continuation_token": self.page_token}}
+            request = {
+                "jsonrpc": "2.0",
+                "id": identifier,
+                "method": "tools/call",
+                "params": {"name": chain.tool, "arguments": arguments},
+            }
+            self.observer.emit(
+                "page_request", tool=chain.tool, arguments_digest=arguments_digest(arguments)
+            )
+            stdin.write(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
+            stdin.flush()
+            reply = _read_frame(stdout)
+            if not reply:
+                raise _Violation("early_eof")
+            self._page_reply(reply, identifier, index)
+
+    def _page_reply(self, frame: bytes, identifier: str, index: int) -> None:
+        chain = self.chain
+        assert chain is not None
+        message = _parse_frame(frame)
+        if "method" in message:
+            raise _Violation("interleaved_frame")
+        if message.get("id") != identifier:
+            raise _Violation("wrong_page_id")
+        result = message.get("result")
+        if "error" in message or not isinstance(result, dict) or result.get("isError") is True:
+            raise _Violation("page_tool_error")
+        structured = result.get("structuredContent")
+        if not isinstance(structured, dict):
+            raise _Violation("invalid_tool_result")
+        self.page_token = _page_token(structured, final=index == chain.pages - 1)
+        self.observer.emit(
+            "page_response", tool=chain.tool, result_digest=canonical_result_digest(structured)
+        )
+
+    def release(self) -> None:
+        """Lift the hold: the held first answer may now reach the host."""
+        with self.state:
+            self.holding = False
+            self.state.notify_all()
 
     def violation(self, kind: str) -> None:
         with self.state:
@@ -1745,6 +1908,12 @@ def _relay_session(child: subprocess.Popen[bytes], relay: _Relay, observer: _Obs
                     # The in-flight write is stuck behind a child that stopped reading.
                     failed.set()
                 break
+            if relay.holding:
+                # The first page is held: the rest of the traversal runs on this same
+                # connection, then the held answer is released.  A fault raises above
+                # and the held answer is never forwarded.
+                relay.chain_pages(stdin, stdout)
+                relay.release()
             sys.stdout.buffer.write(frame)
             sys.stdout.buffer.flush()
     except _Violation as violation:
@@ -1771,15 +1940,17 @@ def run_proxy(spec_path: Path) -> int:
     handled qualification failure.  The child's stderr stays on this process's
     stderr, never stdout.  The one configured interruption target's response is
     withheld indefinitely and never replaced; only its canonical digest is observed.
+    The one configured chain's first page is held while the proxy reads the remaining
+    pages on this same child connection, then released; no fault ever releases it.
     """
-    child_command, observation, interruption, pause_before = _load_spec(spec_path)
+    child_command, observation, interruption, pause_before, chain = _load_spec(spec_path)
     try:
         observer = _Observer(observation)
     except OSError:
         return 2
     child: subprocess.Popen[bytes] | None = None
     try:
-        relay = _Relay(observer, interruption, pause_before)
+        relay = _Relay(observer, interruption, pause_before, chain)
         try:
             child = subprocess.Popen(child_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         except OSError:
@@ -1839,6 +2010,8 @@ class ObservationSummary:
     #: The canonical digest of the withheld answer, when it was a successful
     #: structured result.  The answer itself is never kept.
     withheld_digest: str | None = None
+    #: Per page the proxy read after the held first page, in order: (tool, result digest).
+    chained: tuple[tuple[str, str], ...] = ()
 
 
 def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSummary:
@@ -1883,6 +2056,9 @@ def summarize_observation(events: Sequence[Mapping[str, Any]]) -> ObservationSum
             (e["tool"], e["refusal"], e["result_digest"])
             for e in events
             if e["event"] == "tool_call_response"
+        ),
+        chained=tuple(
+            (e["tool"], e["result_digest"]) for e in events if e["event"] == "page_response"
         ),
     )
 
@@ -2183,6 +2359,7 @@ def run_host_session(
     timeout: float,
     interruption: Interruption | None = None,
     pause_before: PauseBefore | None = None,
+    chain: PageChain | None = None,
     on_withheld: Callable[[], None] = lambda: None,
     on_paused: Callable[[], None] = lambda: None,
 ) -> HostRunResult:
@@ -2200,6 +2377,7 @@ def run_host_session(
             observation=observation,
             interruption=interruption,
             pause_before=pause_before,
+            chain=chain,
         )
     except OSError:
         raise QualificationError(ReasonCode.HOST_LAUNCH_FAILED) from None
@@ -3055,6 +3233,7 @@ class HostDriver:
         on_withheld: Callable[[], None] = lambda: None,
         pause_before: bool = False,
         on_paused: Callable[[], None] = lambda: None,
+        chain: PageChain | None = None,
     ) -> HostRunResult:
         """Run one fresh host process whose prompt asks for one call to ``tool``."""
         self.sequence += 1
@@ -3084,6 +3263,7 @@ class HostDriver:
             timeout=HOST_TIMEOUT,
             interruption=interruption,
             pause_before=pause,
+            chain=chain,
             on_withheld=on_withheld,
             on_paused=release_request if pause_before else on_paused,
         )
@@ -3235,36 +3415,58 @@ class HostDriver:
         return result
 
 
+#: Fresh host sessions allowed for a traversal whose first call never happened.
+MISSING_TARGET_SESSIONS: Final = 3
+
+
 def host_read_pages(
     driver: HostDriver,
     tool: str,
     arguments: Mapping[str, Any],
     expected: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Read each owner page in order, with one fresh host session and one call per page.
+    """Read every owner page through one host session: the host calls once, the proxy pages.
 
-    Page one is requested with ``arguments``.  Each later page adds the continuation
-    token of the owner page before it.  Each call must be the only call its session
-    makes, must succeed, and must return exactly that owner page's digest.  A missing
-    target is retried by ``HostDriver.call`` within its bound; any other failure is
-    refused at once.
+    The host makes exactly one call, ``tool(arguments)``.  The proxy holds its answer,
+    issues each later page on the same initialized connection with the continuation
+    token copied from the page before, and releases the answer only after the last
+    page.  Every host-principal page must match its owner page's canonical digest, so
+    token presence is checked page by page while the token value is masked.
+
+    A session whose first call never happened made no traversal and may be retried,
+    within the bound.  A traversal that began is never retried: its tokens belong to
+    its own connection, and any fault there fails closed.
     """
-    request: Mapping[str, Any] = arguments
-    for index, page in enumerate(expected):
-        if index:
-            token = _continuation(expected[index - 1])
-            if token is None:
-                raise QualificationError(ReasonCode.GATE_FAILED)
-            request = {**arguments, "page": {"continuation_token": token}}
-        result = driver.call(tool, request)
-        summary = result.summary
-        if (
-            tuple(summary.called) != (tool,)
-            or tuple(summary.requests) != ((tool, arguments_digest(request)),)
-            or _single_outcome(result, tool) != ("none", canonical_result_digest(page))
-        ):
-            driver.progress("host_page_mismatch")
-            raise QualificationError(ReasonCode.GATE_FAILED)
+    _require(len(expected) >= 1)
+    chain = PageChain(tool, arguments, len(expected))
+    for _attempt in range(MISSING_TARGET_SESSIONS):
+        result = driver._run(tool, arguments, chain=chain)
+        if tool in result.summary.called:
+            break
+        driver.progress("host_target_call_missing")
+    else:
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    summary = result.summary
+    if tuple(summary.called) != (tool,) or tuple(summary.requests) != (
+        (tool, arguments_digest(arguments)),
+    ):
+        driver.progress("host_page_mismatch")
+        raise QualificationError(ReasonCode.GATE_FAILED)
+    if (
+        not result.exited_cleanly
+        or not result.marker_seen
+        or summary.withheld
+        or summary.paused
+        or len(summary.responded) != 1
+    ):
+        driver.progress("host_completion_mismatch")
+        raise QualificationError(ReasonCode.HOST_OUTPUT_AMBIGUOUS)
+    if _single_outcome(result, tool) != ("none", canonical_result_digest(expected[0])) or (
+        summary.chained
+        != tuple((tool, canonical_result_digest(page)) for page in expected[1:])
+    ):
+        driver.progress("host_page_mismatch")
+        raise QualificationError(ReasonCode.GATE_FAILED)
 
 
 def _capture_arguments(source: str, key: str, text: str) -> dict[str, Any]:

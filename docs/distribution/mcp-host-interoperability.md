@@ -214,7 +214,11 @@ model's report:
 - **Protocol:** initialize must negotiate `2025-06-18`; an initialize error,
   missing or malformed version, version mismatch, or paginated tool listing is
   a protocol violation. Once the interruption response is withheld, the relay
-  is sealed and cannot forward another host or child frame.
+  is sealed and cannot forward another host or child frame. For qualification
+  pagination, the host requests page one and the proxy reads later pages on the
+  same MCP child connection, copying only the preceding host-principal token.
+  The first answer is released after the final page; tokens and page bodies are
+  never retained.
 - **Platform:** a passing record is limited to macOS 27.0 build 26A428 on arm64,
   rather than any syntactically valid macOS version/build.
 - **Cleanup:** the runtime root is removed and verified before a pass is written.
