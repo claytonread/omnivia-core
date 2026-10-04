@@ -335,6 +335,8 @@ __all__ = [
     "EngineeringSourceAnchor",
     "EngineeringSourceCaptureCommitInput",
     "EngineeringSourceCaptureCommitResult",
+    "EngineeringSourceCaptureHintInput",
+    "EngineeringSourceCaptureHintResult",
     "EngineeringSourceManifestEntry",
     "EngineeringSourcePredecessor",
     "EngineeringSourceRecordInput",
@@ -3466,6 +3468,45 @@ class EngineeringSourceStreamCoverage:
             state=field_state,
             covered_sequence=field_covered_sequence,
             announced_sequence=field_announced_sequence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceCaptureHintResult:
+    """Result of `engineering.source.capture.hint`: a redacted acknowledgement that the hint was
+    received. It is identical whether or not the named checkout is registered, and it exposes
+    no local path, checkout contents, queue state or timing: a hint can be coalesced,
+    deferred or dropped, and polling recovers it.
+    """
+
+    acknowledged: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["acknowledged"] = self.acknowledged
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceCaptureHintResult"
+    ) -> EngineeringSourceCaptureHintResult:
+        """Decode a wire payload into a EngineeringSourceCaptureHintResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_acknowledged = _decode_bool(
+            _require_field(mapping, "acknowledged", path),
+            f"{path}.acknowledged",
+        )
+        return cls(
+            acknowledged=field_acknowledged,
         )
 
 
@@ -7660,6 +7701,55 @@ class EngineeringSourceCaptureCommitResult:
             coverage=field_coverage,
             recorded_at=field_recorded_at,
             audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceCaptureHintInput:
+    """Input for `engineering.source.capture.hint`: a trusted local watcher tells Core that one
+    registered checkout may have changed. It names the checkout only by its two stable
+    registered identities. It never accepts a checkout path, a repository path, a file path,
+    a manifest body, raw bytes, a command, an `installation_id`, a workspace, principal,
+    purpose, scope, role or capability field, or any other payload. The hint is advisory and
+    carries no content: Core's periodic capture poll remains the durable source of truth, so
+    a lost, refused or unregistered hint changes no stored state. Unknown keys are refused.
+    """
+
+    repository_id: Identifier
+    checkout_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["checkout_id"] = self.checkout_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceCaptureHintInput"
+    ) -> EngineeringSourceCaptureHintInput:
+        """Decode a wire payload into a EngineeringSourceCaptureHintInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_checkout_id = _decode_str(
+            _require_field(mapping, "checkout_id", path),
+            f"{path}.checkout_id",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            checkout_id=field_checkout_id,
         )
 
 
@@ -24309,6 +24399,56 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "invalid_request",
             "rate_limited",
             "unsupported_minor_version",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="engineering.source.capture.hint",
+        scope=OperationScope(
+            required_scopes=("engineering:source",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceCaptureHintInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceCaptureHintResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.source",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
             "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",

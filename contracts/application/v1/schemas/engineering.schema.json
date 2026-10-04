@@ -2193,6 +2193,41 @@
         "audit_reference"
       ]
     },
+    "EngineeringSourceCaptureHintInput": {
+      "title": "EngineeringSourceCaptureHintInput",
+      "description": "Input for `engineering.source.capture.hint`: a trusted local watcher tells Core that one registered checkout may have changed. It names the checkout only by its two stable registered identities. It never accepts a checkout path, a repository path, a file path, a manifest body, raw bytes, a command, an `installation_id`, a workspace, principal, purpose, scope, role or capability field, or any other payload. The hint is advisory and carries no content: Core's periodic capture poll remains the durable source of truth, so a lost, refused or unregistered hint changes no stored state. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable logical repository identity the checkout was registered under."
+        },
+        "checkout_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable checkout identity returned by `engineering.repository.register`."
+        }
+      },
+      "required": [
+        "repository_id",
+        "checkout_id"
+      ]
+    },
+    "EngineeringSourceCaptureHintResult": {
+      "title": "EngineeringSourceCaptureHintResult",
+      "description": "Result of `engineering.source.capture.hint`: a redacted acknowledgement that the hint was received. It is identical whether or not the named checkout is registered, and it exposes no local path, checkout contents, queue state or timing: a hint can be coalesced, deferred or dropped, and polling recovers it.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "acknowledged": {
+          "type": "boolean",
+          "description": "Always true: the hint was received. It is not a statement that a capture was scheduled or has run."
+        }
+      },
+      "required": [
+        "acknowledged"
+      ]
+    },
     "EngineeringRepositoryRegisterInput": {
       "title": "EngineeringRepositoryRegisterInput",
       "description": "Input for `engineering.repository.register`: an explicitly authorized local operator binds one exact, installation-local checkout directory to one logical repository identity. Not a model-facing tool: it is reachable only through the accepted local client/CLI, under the distinct `engineering:repository` scope and `engineering.repository` capability, and is refused over every other route. `repository_id` is the caller's own stable logical identity -- never inferred from `display_name`, from the checkout's own git remote or configuration, or from any other repository-supplied hint -- and two registrations may share a `display_name` by design (label-only lookup stays ambiguous). `checkout_root` is validated server-side as a real, installation-local directory with no traversal or symlink escape; it is stored only as this installation's own checkout mapping and never appears in a governed observation, a manifest or an error message. The workspace and installation are the authenticated caller's own and can never be supplied by the payload. Unknown keys are refused.",

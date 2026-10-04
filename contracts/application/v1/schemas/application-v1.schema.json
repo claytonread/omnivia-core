@@ -1128,6 +1128,12 @@
     "EngineeringSourceCaptureCommitResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureCommitResult"
     },
+    "EngineeringSourceCaptureHintInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintInput"
+    },
+    "EngineeringSourceCaptureHintResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintResult"
+    },
     "EngineeringRepositoryRegisterInput": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterInput"
     },

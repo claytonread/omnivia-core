@@ -648,10 +648,10 @@ def test_the_manifest_version_is_the_one_the_addendum_names() -> None:
     assert f"`{MANIFEST_VERSION}`" in ADDENDUM
 
 
-def test_the_generated_catalogue_is_the_fifty_seven_the_addendum_states() -> None:
-    assert len(CATALOGUE_ENTRIES) == 57
+def test_the_generated_catalogue_is_the_fifty_eight_the_addendum_states() -> None:
+    assert len(CATALOGUE_ENTRIES) == 58
     assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
-    assert "57 operations" in ADDENDUM
+    assert "58 operations" in ADDENDUM
     assert "fifty-four" not in MANIFEST_SOURCE
 
 

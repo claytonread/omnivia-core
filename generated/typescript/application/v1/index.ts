@@ -1289,6 +1289,20 @@ export interface EngineeringSourceStreamCoverage {
 }
 
 /**
+ * Result of `engineering.source.capture.hint`: a redacted acknowledgement that the hint was
+ * received. It is identical whether or not the named checkout is registered, and it exposes no
+ * local path, checkout contents, queue state or timing: a hint can be coalesced, deferred or
+ * dropped, and polling recovers it.
+ */
+export interface EngineeringSourceCaptureHintResult {
+  /**
+   * Always true: the hint was received. It is not a statement that a capture was scheduled or
+   * has run.
+   */
+  readonly acknowledged: boolean;
+}
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states;
  * what each name binds to -- its input and result schemas, and its scope, capability,
  * completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture --
@@ -4595,6 +4609,26 @@ export interface EngineeringSourceCaptureCommitResult {
    * Audit reference for this delivery.
    */
   readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.source.capture.hint`: a trusted local watcher tells Core that one
+ * registered checkout may have changed. It names the checkout only by its two stable registered
+ * identities. It never accepts a checkout path, a repository path, a file path, a manifest body,
+ * raw bytes, a command, an `installation_id`, a workspace, principal, purpose, scope, role or
+ * capability field, or any other payload. The hint is advisory and carries no content: Core's
+ * periodic capture poll remains the durable source of truth, so a lost, refused or unregistered
+ * hint changes no stored state. Unknown keys are refused.
+ */
+export interface EngineeringSourceCaptureHintInput {
+  /**
+   * Stable logical repository identity the checkout was registered under.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Stable checkout identity returned by `engineering.repository.register`.
+   */
+  readonly checkout_id: Identifier;
 }
 
 /**
@@ -12822,6 +12856,35 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_request",
       "rate_limited",
       "unsupported_minor_version",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.source.capture.hint",
+    scope: { required_scopes: ["engineering:source"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
       "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",

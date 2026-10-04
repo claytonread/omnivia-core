@@ -70,6 +70,27 @@ external integration work, so Core polling is the recovery source of truth. Dev 
 owns semantic parser/indexer and symbol/span adapters; this Core slice supplies only
 captured whole-file coverage.
 
+A platform or Dev watcher may hint that a registered checkout changed through
+`engineering.source.capture.hint`, reached by the trusted CLI route `engineering hint`.
+The request is exactly `repository_id` and `checkout_id`: no path, content, command or
+authority field is accepted, and unknown keys are refused. It is a read-class operation
+under the source producer's own `engineering:source` scope, `engineering.source`
+capability and `engineering_source` purpose, and is omitted from model-facing MCP with
+reason `read_not_allow_listed`. It stores nothing, so there is no idempotency key to
+replay and no durable audit write per hint. The handler forwards a hint only for a
+checkout registered to this workspace and installation, and the reply is the same
+`{"acknowledged": true}` for a registered, unknown or foreign target (and when the
+executor seam fails), so it discloses no registration fact, path, queue state or timing.
+
+The live executor keeps at most 64 distinct pending identities under a lock. A hint wakes
+the next service tick once, without moving the poll schedule, and names its checkout
+ahead of ordinary rotation inside the checkout lane. Hinted and rotation units alternate,
+and the lane budget and recovery-lane reservation are unchanged, so neither a hint burst
+nor recovery work can starve the other. A full set drops the new identity but still wakes
+the tick. A lost hint (restart, full set, stale registration, unavailable checkout,
+storage contention or a failing seam) only delays that checkout until the unchanged poll
+reaches it, and none writes a durable failure verdict.
+
 A proposal's sealed set is carried to the exact versions that the
 claim-preserving `knowledge.propose` and `candidate.approve` mint (migration
 0051), so the same vertical reaches accepted knowledge. No other transition

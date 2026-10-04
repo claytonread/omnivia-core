@@ -3236,6 +3236,59 @@
         "workspace_migration_required",
         "workspace_not_granted"
       ]
+    },
+    {
+      "name": "engineering.source.capture.hint",
+      "scope": {
+        "required_scopes": [
+          "engineering:source"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintResult",
+      "required_capability": {
+        "id": "engineering.source",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
     }
   ]
 }

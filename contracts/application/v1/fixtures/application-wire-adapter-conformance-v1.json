@@ -10240,6 +10240,44 @@
       }
     },
     {
+      "id": "engineering.source.capture.hint/primary-success",
+      "operation": "engineering.source.capture.hint",
+      "description": "engineering.source.capture.hint tells Core that one registered checkout may have changed and returns only a redacted acknowledgement; polling stays the durable capture path.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.hint-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "engineering.source.capture.hint",
+        "input": {
+          "repository_id": "erepo-1",
+          "checkout_id": "echeckout-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-engineering.source.capture.hint-success",
+          "audit_reference": "audit-engineering.source.capture.hint"
+        },
+        "result": {
+          "acknowledged": true
+        }
+      }
+    },
+    {
       "id": "engineering.source.record/primary-success",
       "operation": "engineering.source.record",
       "description": "engineering.source.record records one trusted source snapshot as the first event of its stream on the success branch, with the stream's coverage barrier.",

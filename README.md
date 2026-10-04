@@ -199,7 +199,7 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Fifty-five are workspace-scoped:
+Fifty-six are workspace-scoped:
 
 ```text
 analysis.start          candidate.approve   candidate.reject    chat.command
@@ -217,7 +217,7 @@ decision.status
 engineering.context.build                  engineering.expand
 engineering.repository.register            engineering.review.record
 engineering.search      engineering.source.capture.commit
-engineering.source.record
+engineering.source.capture.hint            engineering.source.record
 evidence.capture        evidence.search     graph.traverse      import.start
 job.cancel              job.events          job.get             job.retry
 knowledge.propose       knowledge.search    memory.create       memory.get

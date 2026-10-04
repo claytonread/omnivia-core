@@ -1631,6 +1631,13 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("decision:read",), "none", "decision.read",
         "decision", "ResultUseEvaluate", "ANALYSIS_START", False,
     ),
+    # A trusted local watcher's advisory hint under the source producer's own grant.
+    # It is a read: it stores nothing, so it has no idempotency key to replay and no
+    # durable mutation to audit; the stored capture path stays Core's own poll.
+    "engineering.source.capture.hint": FrozenOperation(
+        "workspace", ("engineering:source",), "none", "engineering.source",
+        "engineering", "EngineeringSourceCaptureHint", "WORKSPACE_READ", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
