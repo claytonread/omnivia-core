@@ -254,10 +254,11 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0064 was introduced by 29ae6c85 and repinned to its binding-generations
     # repair cecb879b, which is where its current content lives.
     64: "cecb879bda649e8323d218d0c7927a50cc299b9e",
-    # 0065 and 0066 are the C13 review-finding quarantine and completion-decision
-    # candidates, each pinned to the commit that introduced its SQL.
+    # 0065 is the C13 review-finding quarantine candidate, pinned to the commit that
+    # introduced its SQL. 0066 was introduced by de6724f0 and repinned to its
+    # completion-authority hardening a3319bd2, which is where its current content lives.
     65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
-    66: "de6724f0bbad1209c8c0af035d662f697db278b7",
+    66: "a3319bd2a8ff43003c04e0815454990838dda00d",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
