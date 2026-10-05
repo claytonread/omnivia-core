@@ -17,6 +17,8 @@ from omnivia_core.contracts.v1.semantics_workflow_check import (
     CONTRACT_VERSION_INCOMPATIBLE,
     CONTRACT_VERSION_UNRESOLVED,
     FLOATING_REFERENCE_PROHIBITED,
+    PHYSICAL_SCHEMA_PROFILE,
+    PHYSICAL_SCHEMA_PROFILE_VERSION,
     SCHEMA_INVALID,
     SCHEMA_UNSUPPORTED,
     ResolvedSchema,
@@ -367,3 +369,389 @@ def test_result_is_frozen() -> None:
     result = check_workflow_value_schema(_value(GOOD), "publication", _resolver())
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.definition_valid = False  # type: ignore[misc]
+
+
+def test_ref_and_supported_sibling_assertions_are_both_evaluated() -> None:
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {"Text": {"type": "string"}},
+        "$ref": "#/$defs/Text",
+        "minLength": 3,
+    }
+    short = check_workflow_value_schema(_value("x"), "publication", _resolver(schema))
+    long = check_workflow_value_schema(_value("text"), "publication", _resolver(schema))
+    wrong_type = check_workflow_value_schema(_value(3), "publication", _resolver(schema))
+    assert [item.code for item in short.diagnostics] == [SCHEMA_INVALID]
+    assert long.definition_valid
+    assert [item.code for item in wrong_type.diagnostics] == [SCHEMA_INVALID]
+
+
+@pytest.mark.parametrize("keyword", ["const", "enum"])
+def test_json_equality_keeps_booleans_distinct_from_numbers(keyword: str) -> None:
+    schema = {keyword: 1 if keyword == "const" else [1]}
+    boolean = check_workflow_value_schema(_value(True), "publication", _resolver(schema))
+    numeric = check_workflow_value_schema(_value(1.0), "publication", _resolver(schema))
+    assert [item.code for item in boolean.diagnostics] == [SCHEMA_INVALID]
+    assert numeric.definition_valid
+
+
+@pytest.mark.parametrize("keyword", ["const", "enum"])
+def test_json_equality_is_recursive_and_object_order_independent(keyword: str) -> None:
+    literal = {"items": [1, {"flag": True}], "name": "x"}
+    schema = {keyword: literal if keyword == "const" else [literal]}
+    equal = {"name": "x", "items": [1.0, {"flag": True}]}
+    unequal = {"name": "x", "items": [1.0, {"flag": 1}]}
+    assert check_workflow_value_schema(
+        _value(equal), "runtime_load", _resolver(schema)
+    ).definition_valid
+    refused = check_workflow_value_schema(
+        _value(unequal), "runtime_load", _resolver(schema)
+    )
+    assert [item.code for item in refused.diagnostics] == [SCHEMA_INVALID]
+
+
+def test_mathematical_integer_semantics() -> None:
+    schema = {"type": "integer"}
+    assert check_workflow_value_schema(
+        _value(1.0), "publication", _resolver(schema)
+    ).definition_valid
+    for instance in (1.5, True, float("inf"), float("nan")):
+        result = check_workflow_value_schema(
+            _value(instance), "publication", _resolver(schema)
+        )
+        assert [item.code for item in result.diagnostics] == [SCHEMA_INVALID]
+
+
+def test_generic_evaluator_receives_shared_semantic_corrections_only() -> None:
+    ref_with_sibling = {
+        "$defs": {"Text": {"type": "string"}},
+        "$ref": "#/$defs/Text",
+        "minLength": 3,
+    }
+    assert conformance.evaluate_json_schema("x", ref_with_sibling)
+    assert conformance.evaluate_json_schema("text", ref_with_sibling) == ()
+    assert conformance.evaluate_json_schema(True, {"const": 1})
+    assert conformance.evaluate_json_schema(1.0, {"const": 1}) == ()
+    assert conformance.evaluate_json_schema(1.0, {"type": "integer"}) == ()
+    # The generic canonical-schema evaluator remains broader than the physical
+    # profile; the separate production preflight must not narrow this caller.
+    assert conformance.evaluate_json_schema([1, 1], {"uniqueItems": True})
+
+
+def test_physical_schema_profile_is_machine_readable_and_immutable() -> None:
+    assert PHYSICAL_SCHEMA_PROFILE_VERSION == "1.0.0"
+    assert PHYSICAL_SCHEMA_PROFILE["version"] == "1.0.0"
+    assert PHYSICAL_SCHEMA_PROFILE["max_depth"] == 64
+    assert PHYSICAL_SCHEMA_PROFILE["max_work"] == 100_000
+    keywords = PHYSICAL_SCHEMA_PROFILE["keywords"]
+    assert isinstance(keywords, tuple)
+    assert "uniqueItems" not in keywords
+    with pytest.raises(TypeError):
+        PHYSICAL_SCHEMA_PROFILE["max_depth"] = 1  # type: ignore[index]
+
+
+def test_complete_admitted_physical_schema_profile() -> None:
+    schema: dict[str, Any] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": PIN[0],
+        "title": "Order",
+        "description": "A bounded example",
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 8,
+                "pattern": "^[A-Za-z]+$",
+                "format": "uri",
+            },
+            "count": {"type": "integer", "minimum": 0, "maximum": 10},
+            "tags": {
+                "type": "array",
+                "items": {"enum": ["a", "b"]},
+                "minItems": 1,
+                "maxItems": 2,
+            },
+            "choice": {
+                "allOf": [{"type": "string"}, {"minLength": 1}],
+                "oneOf": [{"const": "x"}, {"const": "y"}],
+            },
+            "defined": {"$ref": "#/$defs/Text", "minLength": 2},
+        },
+        "required": ["name", "count", "tags", "choice", "defined"],
+        "additionalProperties": False,
+        "$defs": {"Text": {"type": "string"}},
+        "x-display": {"group": "core", "order": [1, 2]},
+    }
+    good = {
+        "name": "ab",
+        "count": 1.0,
+        "tags": ["a"],
+        "choice": "x",
+        "defined": "ok",
+    }
+    result = check_workflow_value_schema(_value(good), "publication", _resolver(schema))
+    assert result.definition_valid
+
+
+def test_simple_unevaluated_properties_form_is_admitted() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "unevaluatedProperties": False,
+    }
+    assert check_workflow_value_schema(
+        _value({"name": "ok"}), "publication", _resolver(schema)
+    ).definition_valid
+    refused = check_workflow_value_schema(
+        _value({"name": "ok", "extra": 1}), "publication", _resolver(schema)
+    )
+    assert [item.code for item in refused.diagnostics] == [SCHEMA_INVALID]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"uniqueItems": True},
+        {"propertyNames": {"type": "string"}},
+        {"minProperties": 1},
+        {"maxProperties": 1},
+        {"if": {"type": "string"}, "then": {"minLength": 1}},
+        {"not": {"type": "string"}},
+        {"anyOf": [{"type": "string"}]},
+        {"dependencies": {"a": ["b"]}},
+        {"prefixItems": [{"type": "string"}]},
+        {"contains": {"type": "string"}},
+        {"unevaluatedItems": False},
+        {"dynamicRef": "#x"},
+        {"multipleOf": 2},
+        {"format": "date-time"},
+        {"format": "email"},
+        {"type": ["string", "null"]},
+    ],
+)
+def test_first_physical_profile_refuses_excluded_forms(schema: dict[str, Any]) -> None:
+    result = check_workflow_value_schema(_value("x"), "publication", _resolver(schema))
+    assert [item.code for item in result.diagnostics] == [SCHEMA_UNSUPPORTED]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string"},
+        {"$id": "https://schemas.example.test/wrong", "type": "string"},
+        {"type": "object", "properties": {"x": {"$id": PIN[0]}}},
+        {"type": "object", "properties": {"x": {"$schema": "https://json-schema.org/draft/2020-12/schema"}}},
+        {"type": "object", "properties": {"x": {"$defs": {"A": {"type": "string"}}}}},
+        {"$defs": {"bad/name": {"type": "string"}}},
+        {"$defs": {"1bad": {"type": "string"}}},
+        {"$ref": "#/$defs/a~1b", "$defs": {"a/b": {"type": "string"}}},
+        {"$ref": "#/$defs/A/properties/x", "$defs": {"A": {"type": "object"}}},
+    ],
+)
+def test_identity_dialect_and_definition_closure_refusals(
+    schema: dict[str, Any],
+) -> None:
+    result = check_workflow_value_schema(_value("x"), "publication", _resolver(schema))
+    assert [item.code for item in result.diagnostics] == [SCHEMA_UNSUPPORTED]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"unevaluatedProperties": False},
+        {"type": "object", "properties": {}, "unevaluatedProperties": True},
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+            "unevaluatedProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {},
+            "allOf": [{"type": "object"}],
+            "unevaluatedProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {},
+            "$ref": "#/$defs/O",
+            "$defs": {"O": {"type": "object"}},
+            "unevaluatedProperties": False,
+        },
+    ],
+)
+def test_unsafe_unevaluated_properties_forms_are_refused(
+    schema: dict[str, Any],
+) -> None:
+    result = check_workflow_value_schema(_value({}), "publication", _resolver(schema))
+    assert [item.code for item in result.diagnostics] == [SCHEMA_UNSUPPORTED]
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "(?<=a)b",
+        "(?<!a)b",
+        "(?i)a",
+        "(?P<name>a)",
+        "(?(1)a|b)",
+        "(?=a)a",
+        r"(a)\1",
+        r"\Astart",
+    ],
+)
+def test_non_portable_patterns_are_refused(pattern: str) -> None:
+    result = check_workflow_value_schema(
+        _value("a"), "publication", _resolver({"type": "string", "pattern": pattern})
+    )
+    assert [item.code for item in result.diagnostics] == [SCHEMA_UNSUPPORTED]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "value"),
+    [
+        ("^[A-Za-z]+$", "Text"),
+        ("^(red|blue)$", "red"),
+        ("^[0-9]{2,4}$", "123"),
+        ("^[ab]*$", "abba"),
+    ],
+)
+def test_portable_patterns_are_admitted(pattern: str, value: str) -> None:
+    result = check_workflow_value_schema(
+        _value(value), "publication", _resolver({"type": "string", "pattern": pattern})
+    )
+    assert result.definition_valid
+
+
+def test_unsupported_content_in_unused_definition_is_refused() -> None:
+    schema = {
+        "type": "string",
+        "$defs": {
+            "Used": {"type": "string"},
+            "Unused": {"uniqueItems": True},
+        },
+    }
+    result = check_workflow_value_schema(_value("ok"), "publication", _resolver(schema))
+    assert [item.code for item in result.diagnostics] == [SCHEMA_UNSUPPORTED]
+
+
+def test_extension_metadata_must_be_bounded_finite_json() -> None:
+    for extension in (float("nan"), {1: "not-json"}, object()):
+        result = check_workflow_value_schema(
+            _value("ok"),
+            "publication",
+            _resolver({"type": "string", "x-meta": extension}),
+        )
+        assert [item.code for item in result.diagnostics] == [SCHEMA_UNSUPPORTED]
+
+
+def _assert_budget_exceeded(schema: dict[str, Any], value: Any = "x") -> None:
+    with pytest.raises(conformance.SchemaEvaluationBudgetExceeded) as error:
+        check_workflow_value_schema(_value(value), "publication", _resolver(schema))
+    rendered = repr(error.value)
+    assert SECRET not in rendered
+    assert "Traceback" not in rendered
+
+
+def test_depth_limit_is_distinct_from_unsupported_schema() -> None:
+    schema: dict[str, Any] = {"type": "string"}
+    for _ in range(65):
+        schema = {"items": schema}
+    _assert_budget_exceeded(schema, [])
+
+
+def test_depth_limit_accepts_the_exact_boundary() -> None:
+    schema: dict[str, Any] = {"type": "string"}
+    value: Any = "ok"
+    for _ in range(64):
+        schema = {"type": "array", "items": schema}
+        value = [value]
+    assert check_workflow_value_schema(
+        _value(value), "publication", _resolver(schema)
+    ).definition_valid
+
+
+def test_definition_count_limit() -> None:
+    schema = {"$defs": {f"D{index}": {} for index in range(257)}, "type": "string"}
+    _assert_budget_exceeded(schema)
+
+
+def test_definition_count_accepts_the_exact_boundary() -> None:
+    schema = {"$defs": {f"D{index}": {} for index in range(256)}, "type": "string"}
+    assert check_workflow_value_schema(
+        _value("ok"), "publication", _resolver(schema)
+    ).definition_valid
+
+
+def test_reference_hop_limit() -> None:
+    definitions: dict[str, Any] = {"D32": {"type": "string"}}
+    for index in range(31, -1, -1):
+        definitions[f"D{index}"] = {"$ref": f"#/$defs/D{index + 1}"}
+    schema = {"$ref": "#/$defs/D0", "$defs": definitions}
+    _assert_budget_exceeded(schema)
+
+
+def test_reference_hop_limit_accepts_the_exact_boundary() -> None:
+    definitions: dict[str, Any] = {"D31": {"type": "string"}}
+    for index in range(30, -1, -1):
+        definitions[f"D{index}"] = {"$ref": f"#/$defs/D{index + 1}"}
+    schema = {"$ref": "#/$defs/D0", "$defs": definitions}
+    assert check_workflow_value_schema(
+        _value("ok"), "publication", _resolver(schema)
+    ).definition_valid
+
+
+def test_pattern_length_limit() -> None:
+    _assert_budget_exceeded({"type": "string", "pattern": "a" * 1_025})
+
+
+def test_pattern_length_limit_accepts_the_exact_boundary() -> None:
+    pattern = "a?" * 512
+    assert len(pattern) == 1_024
+    assert check_workflow_value_schema(
+        _value(""), "publication", _resolver({"type": "string", "pattern": pattern})
+    ).definition_valid
+
+
+def test_finding_limit_prevents_partial_result() -> None:
+    schema = {"type": "array", "items": {"const": 0}}
+    _assert_budget_exceeded(schema, list(range(34)))
+
+
+def test_finding_limit_accepts_the_exact_boundary() -> None:
+    result = check_workflow_value_schema(
+        _value(list(range(33))),
+        "publication",
+        _resolver({"type": "array", "items": {"const": 0}}),
+    )
+    assert not result.definition_valid
+    assert result.diagnostics[0].finding_count == 32
+
+
+def test_work_limit_counts_recursive_equality() -> None:
+    # Pairwise uniqueness reaches the deterministic work limit only when
+    # recursive equality visits are counted; all values remain within the enum
+    # and collection-count bounds.
+    enum = [[0, 0, index] for index in range(256)]
+    _assert_budget_exceeded({"enum": enum})
+
+
+def test_budget_exception_and_public_result_do_not_expose_schema_or_value_text() -> None:
+    secret_pattern = SECRET * 200
+    with pytest.raises(conformance.SchemaEvaluationBudgetExceeded) as error:
+        check_workflow_value_schema(
+            _value(SECRET),
+            "publication",
+            _resolver({"type": "string", "pattern": secret_pattern}),
+        )
+    assert SECRET not in repr(error.value)
+
+    result = check_workflow_value_schema(
+        _value({SECRET: SECRET}),
+        "publication",
+        _resolver({"type": "object", "properties": {}, "additionalProperties": False}),
+    )
+    rendered = json.dumps(dataclasses.asdict(result), sort_keys=True)
+    assert SECRET not in rendered

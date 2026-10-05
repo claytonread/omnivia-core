@@ -50,9 +50,12 @@ from typing import Any, Final
 from omnivia_core.contracts.v1.canonical_json import canonical_bytes
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.conformance import (
+    PHYSICAL_SCHEMA_PROFILE,
+    PHYSICAL_SCHEMA_PROFILE_VERSION,
+    SchemaEvaluationBudgetExceeded,
     SchemaEvaluationError,
-    evaluate_json_schema,
-    require_supported_json_schema,
+    evaluate_physical_json_schema,
+    require_supported_physical_json_schema,
 )
 from omnivia_core.contracts.v1.generated import is_content_checksum, is_release_version
 from omnivia_core.contracts.v1.semantics_workflow import validate_workflow_value
@@ -61,6 +64,8 @@ __all__ = [
     "CONTRACT_VERSION_INCOMPATIBLE",
     "CONTRACT_VERSION_UNRESOLVED",
     "FLOATING_REFERENCE_PROHIBITED",
+    "PHYSICAL_SCHEMA_PROFILE",
+    "PHYSICAL_SCHEMA_PROFILE_VERSION",
     "SCHEMA_CHECK_PROFILES",
     "SCHEMA_INVALID",
     "SCHEMA_UNSUPPORTED",
@@ -87,9 +92,9 @@ _DEFERRED_PRESENCES: Final = frozenset({"absent", "redacted", "unavailable", "fa
 class ResolvedSchema:
     """The artifact a resolver returns for one exact `(schema_id, schema_version)`.
 
-    `schema` must be a self-contained JSON Schema document (only local `#/$defs/<name>`
-    references) within the subset of :func:`conformance.evaluate_json_schema`. The identity fields are echoed so the check
-    can refuse a resolver that answers for a different pin.
+    `schema` must be a self-contained JSON Schema document admitted by physical-schema
+    profile ``1.0.0``. The identity fields are echoed so the check can refuse a resolver
+    that answers for a different pin.
     """
 
     schema_id: str
@@ -199,10 +204,17 @@ def check_workflow_value_schema(
             return refuse(CONTRACT_VERSION_INCOMPATIBLE, pin)
 
     try:
-        require_supported_json_schema(schema)
         if deferred:
+            require_supported_physical_json_schema(schema, schema_id)
             return WorkflowSchemaCheckResult(profile, True, (), True)
-        findings = evaluate_json_schema(value_record["value"], schema)
+        findings = evaluate_physical_json_schema(
+            value_record["value"], schema, schema_id
+        )
+    except SchemaEvaluationBudgetExceeded:
+        # A deterministic limit is not an unsupported schema verdict and must
+        # not be turned into a completed pass/fail result. The exception text is
+        # a stable policy label and contains no schema or instance content.
+        raise
     except SchemaEvaluationError:
         return refuse(SCHEMA_UNSUPPORTED, pin)
     if findings:
