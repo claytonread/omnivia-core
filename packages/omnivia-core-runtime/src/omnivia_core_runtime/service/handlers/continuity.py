@@ -29,8 +29,14 @@ The security shape is the one the decision family established:
    (`context.principal`, never the principal this owner-composed handler was
    issued for), in the precondition read and again inside the fenced write.
    Another principal's session or checkpoint is `not_found` exactly as a
-   missing one, before any stated version is compared. There is no sharing
-   grant, so continuity is same-principal only.
+   missing one, before any stated version is compared.
+8. the one exception is a handoff grant (migration 0064).  The checkpoint's owner
+   names one other existing principal for one exact checkpoint, pinned by its
+   digest, and the grantee reads only the redacted handoff, by checkpoint id,
+   through its own binding while the grant is unexpired and unrevoked.  A wrong
+   grantee, no grant, an expired or revoked one, a changed digest and an invalid
+   grantee binding are all the same `not_found`.  Session-and-sequence selection
+   stays owner-only, a close does not revoke, and a grantee cannot grant.
 """
 
 from __future__ import annotations
@@ -52,7 +58,11 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ContinuityCheckpointAppendInput,
     ContinuityCheckpointAppendResult,
+    ContinuityHandoffGrantInput,
+    ContinuityHandoffGrantResult,
     ContinuityHandoffReadInput,
+    ContinuityHandoffRevokeInput,
+    ContinuityHandoffRevokeResult,
     ContinuitySessionCloseInput,
     ContinuitySessionCloseResult,
     ContinuitySessionRegisterInput,
@@ -60,6 +70,8 @@ from omnivia_core.contracts.v1 import (
     ContractDecodeError,
     ContractSemanticError,
     idempotency_equivalence,
+    is_content_checksum,
+    is_identifier,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
 from omnivia_core_runtime.service.authorization import TrustedContinuityBinding
@@ -78,6 +90,8 @@ from omnivia_core_runtime.service.operations import (
 from omnivia_core_runtime.storage import continuity as storage
 from omnivia_core_runtime.storage import repository_identity as repo_identity
 from omnivia_core_runtime.storage.continuity import (
+    HandoffGrantConflict,
+    HandoffGrantNotFound,
     ParentCheckpointMismatch,
     PayloadTooLarge,
     SequencePreconditionFailed,
@@ -108,6 +122,14 @@ _MESSAGE_INTEGRITY: Final = (
 _MESSAGE_BINDING_REQUIRED: Final = (
     "this continuity operation requires a server-established session binding"
 )
+_MESSAGE_GRANT_CONFLICT: Final = (
+    "a live handoff grant already covers this checkpoint and principal; revoke it first"
+)
+
+_GRANT_KEYS: Final = frozenset(
+    {"checkpoint_id", "checkpoint_digest", "grantee_principal_id", "ttl_seconds"}
+)
+_REVOKE_KEYS: Final = frozenset({"grant_id"})
 
 # A handoff is a deliberately small projection of checkpoint evidence.  These
 # regions either require their own current authorisation check, describe the
@@ -163,6 +185,16 @@ _ERROR_FOR_STORAGE: Final[tuple[tuple[type[BaseException], str, str], ...]] = (
         SessionBindingMismatch,
         ERROR_CODE_CONFLICT,
         _MESSAGE_CONFLICT,
+    ),
+    (
+        HandoffGrantNotFound,
+        ERROR_CODE_NOT_FOUND,
+        _MESSAGE_NOT_FOUND,
+    ),
+    (
+        HandoffGrantConflict,
+        ERROR_CODE_CONFLICT,
+        _MESSAGE_GRANT_CONFLICT,
     ),
     (
         ParentCheckpointMismatch,
@@ -691,6 +723,12 @@ class ContinuityHandlers:
             session_id=request.session_id,
             sequence=request.sequence,
         )
+        if record is None and request.checkpoint_id is not None:
+            # Exact checkpoint identity only: a grantee has no session-and-sequence
+            # route, and the owner path above has already refused this principal.
+            record = self._read_granted(
+                connection, context, continuity_binding, request.checkpoint_id
+            )
         if record is None:
             raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
         payload = record["payload"]
@@ -731,6 +769,185 @@ class ContinuityHandlers:
         view["content_digest"] = content_digest(canonical_document(view))
         return {"handoff": view}
 
+    def _read_granted(
+        self,
+        connection: sqlite3.Connection,
+        context: OperationContext,
+        binding: TrustedContinuityBinding,
+        checkpoint_id: str,
+    ) -> dict[str, Any] | None:
+        """The checkpoint a live grant names for this caller, else `None`.
+
+        The grantee must hold its own current, active, unexpired binding: a stale,
+        closed or expired one reads as no grant, never as a distinct refusal.
+        """
+        now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
+        try:
+            session = storage.read_bound_session(
+                connection,
+                workspace_id=context.workspace_id,
+                session_id=binding.session_id,
+                principal_id=context.principal,
+                binding_generation=binding.binding_generation,
+            )
+        except SessionBindingMismatch:
+            return None
+        if (
+            session is None
+            or session["state"] != "active"
+            or int(session["lease_expires_at_us"]) <= now_us
+        ):
+            return None
+        return storage.read_granted_checkpoint(
+            connection,
+            workspace_id=context.workspace_id,
+            grantee_principal_id=context.principal,
+            checkpoint_id=checkpoint_id,
+            now_us=now_us,
+        )
+
+    # --- continuity.handoff.grant / continuity.handoff.revoke -------------------
+
+    def continuity_handoff_grant(
+        self, context: OperationContext
+    ) -> AuditedOperationResult:
+        """Let one other existing principal read one owned checkpoint's handoff.
+
+        The grantor is the authenticated principal; the workspace and installation
+        are the caller's own and no payload field can name them.  The contract
+        decoder tolerates unknown keys, so the raw payload is checked first.
+        """
+        raw = context.request.input
+        if not isinstance(raw, Mapping) or set(raw) != _GRANT_KEYS:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        try:
+            request = ContinuityHandoffGrantInput.from_wire(raw)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        if (
+            not is_identifier(request.checkpoint_id)
+            or not is_content_checksum(request.checkpoint_digest)
+            or not is_identifier(request.grantee_principal_id)
+            or type(request.ttl_seconds) is not int
+            or not (
+                storage.HANDOFF_GRANT_MIN_TTL_SECONDS
+                <= request.ttl_seconds
+                <= storage.HANDOFF_GRANT_MAX_TTL_SECONDS
+            )
+            or request.grantee_principal_id == context.principal
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection, identity, guard = self._authority()
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self.session,
+            binding=self.binding,
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            stored = storage.grant_handoff(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                grant_id=self.allocate_identifier("ehg"),
+                checkpoint_id=request.checkpoint_id,
+                checkpoint_digest=request.checkpoint_digest,
+                grantee_principal_id=request.grantee_principal_id,
+                ttl_seconds=request.ttl_seconds,
+            )
+            return {
+                "grant": {
+                    "grant_id": stored["grant_id"],
+                    "checkpoint_id": stored["checkpoint_id"],
+                    "checkpoint_digest": stored["checkpoint_digest"],
+                    "grantee_principal_id": stored["grantee_principal_id"],
+                    "granted_at": _timestamp(stored["granted_at_us"]),
+                    "expires_at": _timestamp(stored["expires_at_us"]),
+                }
+            }
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                ContinuityHandoffGrantResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, grant, equivalence, mutate, valid_result
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
+    def continuity_handoff_revoke(
+        self, context: OperationContext
+    ) -> AuditedOperationResult:
+        """End one handoff grant the caller issued; it applies on the next read."""
+        raw = context.request.input
+        if not isinstance(raw, Mapping) or set(raw) != _REVOKE_KEYS:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        try:
+            request = ContinuityHandoffRevokeInput.from_wire(raw)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from error
+        if not is_identifier(request.grant_id):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection, identity, guard = self._authority()
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self.session,
+            binding=self.binding,
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            stored = storage.revoke_handoff(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                grant_id=request.grant_id,
+            )
+            return {
+                "grant_id": stored["grant_id"],
+                "revoked_at": _timestamp(stored["revoked_at_us"]),
+            }
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                ContinuityHandoffRevokeResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, grant, equivalence, mutate, valid_result
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
     def _execute(
         self,
         context: OperationContext,
@@ -765,6 +982,8 @@ class ContinuityHandlers:
             SessionNotFound,
             SessionNotActive,
             SessionBindingMismatch,
+            HandoffGrantNotFound,
+            HandoffGrantConflict,
             ParentCheckpointMismatch,
             SequencePreconditionFailed,
             PayloadTooLarge,

@@ -714,7 +714,11 @@ def read_authorized_memory_frontier(
                 select=select_versions,
                 where_before="workspace_id = ? AND recorded_at_us <= ?",
                 in_column="governed_record_id",
-                where_after=domain_filter,
+                # The ORDER BY is for the planner, not the result (the rows are
+                # re-sorted below): without it SQLite, which holds no statistics,
+                # scans every assembly of the workspace for each page of ids
+                # instead of seeking the record index.
+                where_after=f"{domain_filter} ORDER BY governed_record_id",
                 leading=(workspace_id, resolution_instant_us),
                 ids=record_ids,
                 trailing=(() if domain_scope is None else (domain_scope,)),

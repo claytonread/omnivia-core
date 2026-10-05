@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,7 @@ from omnivia_core_runtime.ownership.fencing import (
     clear_authorizer,
     close_guard,
     fenced_transaction,
+    guarded_tables,
     install_authorizer,
     open_guard,
     read_guard,
@@ -27,6 +30,7 @@ from omnivia_core_runtime.ownership.identity import (
     ServiceInstanceIdentity,
 )
 from omnivia_core_runtime.ownership.lease import acquire_lease
+from omnivia_core_runtime.storage import migrations as migrations_module
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     authorised,
@@ -36,6 +40,8 @@ from omnivia_core_runtime.storage.connection import (
 from omnivia_core_runtime.storage.migrations import (
     apply_pending_migrations,
     bootstrap_generation_one,
+    canonical_schema_fingerprint,
+    canonical_schema_tables,
     load_migrations,
     materialise_phase0_baseline,
     phase0_baseline_sql,
@@ -431,6 +437,143 @@ def test_schema_drift_is_detected_for_an_added_table(
     connection.execute("CREATE TABLE interloper (id TEXT PRIMARY KEY)")
     with pytest.raises(SchemaDrift):
         verify_fingerprint(connection, expected)
+
+
+@contextmanager
+def _catalogue_through(version: int) -> Iterator[None]:
+    """Expose only the migrations up to `version`, as a release of that age would see them."""
+    original = migrations_module.load_migrations
+    trimmed = tuple(
+        migration for migration in original() if migration.version <= version
+    )
+    migrations_module.load_migrations = lambda: trimmed
+    try:
+        yield
+    finally:
+        migrations_module.load_migrations = original
+        canonical_schema_tables.cache_clear()
+        canonical_schema_fingerprint.cache_clear()
+        guarded_tables.cache_clear()
+
+
+def _migrated_through(path: Path, version: int) -> None:
+    """A workspace whose ledger stops at `version`, as an older release would leave it."""
+    materialise_phase0_baseline(path)
+    identity = make_identity()
+    with _catalogue_through(version):
+        connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+        try:
+            state = bootstrap_generation_one(
+                connection,
+                workspace_id=WORKSPACE_ID,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                expect_phase0_baseline=True,
+                service_instance_id=identity.service_instance_id,
+            )
+            apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=identity.service_instance_id,
+                fencing_generation=state.fencing_generation,
+                workspace_id=WORKSPACE_ID,
+            )
+        finally:
+            connection.close()
+
+
+# The guard expectation follows the migrations a workspace has applied, not the catalogue.
+def test_a_workspace_held_at_0062_is_judged_by_the_guards_it_has_applied(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workspace.sqlite"
+    _migrated_through(path, 62)
+    connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+    try:
+        # The guards that 0064 and 0065 add later are absent here, and that is not drift.
+        assert "omnivia_guard_engineering_handoff_grants_insert" not in trigger_names(
+            connection
+        )
+        assert_guards_intact(connection)
+    finally:
+        connection.close()
+
+
+def test_a_workspace_held_at_0062_still_refuses_a_missing_guard_it_has_applied(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workspace.sqlite"
+    _migrated_through(path, 62)
+    connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+    try:
+        connection.execute(
+            "DROP TRIGGER omnivia_guard_analysis_dataset_state_observations_delete"
+        )
+        connection.commit()
+        with pytest.raises(SchemaDrift, match="guard triggers are missing"):
+            assert_guards_intact(connection)
+    finally:
+        connection.close()
+
+
+def test_a_workspace_held_at_0062_refuses_a_guard_only_a_later_migration_declares(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workspace.sqlite"
+    _migrated_through(path, 62)
+    connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+    try:
+        connection.execute(
+            "CREATE TRIGGER omnivia_guard_engineering_handoff_grants_insert "
+            "BEFORE INSERT ON omnivia_analysis_dataset_state_observations "
+            "BEGIN SELECT RAISE(ABORT, 'probe'); END"
+        )
+        connection.commit()
+        with pytest.raises(SchemaDrift, match="unrecognised guard triggers"):
+            assert_guards_intact(connection)
+    finally:
+        connection.close()
+
+
+def test_a_ledger_naming_a_migration_this_catalogue_lacks_is_refused(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workspace.sqlite"
+    _migrated_through(path, 62)
+    connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+    try:
+        with (
+            _catalogue_through(61),
+            pytest.raises(SchemaDrift, match="not in this catalogue"),
+        ):
+            assert_guards_intact(connection)
+    finally:
+        connection.close()
+
+
+def test_a_database_with_no_recorded_migration_is_refused_not_passed(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workspace.sqlite"
+    materialise_phase0_baseline(path)
+    connection = sqlite3.connect(str(path))
+    try:
+        with pytest.raises(SchemaDrift, match="no migrations are recorded"):
+            assert_guards_intact(connection)
+    finally:
+        connection.close()
+
+
+def test_a_fully_migrated_workspace_still_requires_its_newest_guards(
+    owned: tuple[sqlite3.Connection, ServiceInstanceIdentity, int, Path, FakeClock],
+) -> None:
+    connection, _identity, _generation, _path, _clock = owned
+    newest = "omnivia_guard_engineering_selector_attestations_delete"
+    connection.execute(f"DROP TRIGGER {newest}")
+    connection.commit()
+    with pytest.raises(SchemaDrift) as refusal:
+        assert_guards_intact(connection)
+    assert "guard triggers are missing" in str(refusal.value)
+    assert newest in str(refusal.value)
 
 
 # FM-18 … FM-21

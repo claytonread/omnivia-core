@@ -176,6 +176,18 @@ EXPECTED_ALLOCATION = (
         "Engineering Memory",
         "candidate",
     ),
+    (
+        64,
+        "0064_engineering_handoff_grants.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
+    (
+        65,
+        "0065_engineering_selector_attestations.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -248,6 +260,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # its current content lives.
     62: "d54b3f447456534b4e436225233b0ab858eae49e",
     63: "2ed5e6a67763be23629eaaf392db70fd2b526084",
+    # 0064 and 0065 were introduced together by the follow-on implementation commit.
+    64: "8efab26e83d137736f229f84745c2e535390980e",
+    65: "8efab26e83d137736f229f84745c2e535390980e",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

@@ -76,6 +76,9 @@ same fenced, audited, idempotent mutation seam as every other write here.
 operator's own write, under its own `engineering:repository` grant, binding one
 exact installation-local checkout to one logical repository identity through
 that same fenced, audited, idempotent seam.
+
+`engineering.source.capture.hint` is a trusted watcher's advisory wake for the capture
+executor: identities only, read-class, nothing stored, with polling the durable path.
 """
 
 from __future__ import annotations
@@ -83,7 +86,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
@@ -96,6 +99,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
     ERROR_CODE_CONTEXT_BUDGET_INSUFFICIENT,
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
+    ERROR_CODE_INVALID_PURPOSE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     ERROR_CODE_NOT_FOUND,
@@ -116,8 +120,11 @@ from omnivia_core.contracts.v1 import (
     EngineeringReviewRecordInput,
     EngineeringReviewRecordResult,
     EngineeringSearchInput,
+    EngineeringSelectorAttestInput,
+    EngineeringSelectorAttestResult,
     EngineeringSourceCaptureCommitInput,
     EngineeringSourceCaptureCommitResult,
+    EngineeringSourceCaptureHintInput,
     EngineeringSourceRecordInput,
     EngineeringSourceRecordResult,
     decode_engineering_context_build_input,
@@ -143,6 +150,7 @@ from omnivia_core_runtime.service.engineering_pack import (
     build_pack_byte_only,
 )
 from omnivia_core_runtime.service.mutation import (
+    ENGINEERING_SOURCE_PURPOSE,
     MutationIdempotencyConflict,
     MutationPreconditionFailed,
     MutationSettlementContext,
@@ -366,6 +374,12 @@ _MESSAGE_CAPTURE_FOREIGN: Final = (
 _MESSAGE_CAPTURE_PRECONDITION: Final = (
     "the sealed source capture does not match the expected manifest digest"
 )
+_MESSAGE_ATTESTATION_INVALID: Final = (
+    "the selector attestation is outside its bounded, validated shape"
+)
+_MESSAGE_ATTESTATION_NOT_FOUND: Final = (
+    "the source stream or snapshot named by the selector attestation was not found"
+)
 _CAPTURE_COMMIT_KEYS: Final[frozenset[str]] = frozenset(
     {
         "repository_id",
@@ -375,6 +389,15 @@ _CAPTURE_COMMIT_KEYS: Final[frozenset[str]] = frozenset(
         "snapshot_id",
         "expected_manifest_digest",
     }
+)
+#: Only the two stable registered identities; the raw payload's keys are checked
+#: against this set because the tolerant decoder would drop any other key.
+_CAPTURE_HINT_KEYS: Final[frozenset[str]] = frozenset({"repository_id", "checkout_id"})
+_MESSAGE_CAPTURE_HINT_INVALID: Final = (
+    "the capture hint must name only a registered repository and checkout identity"
+)
+_MESSAGE_CAPTURE_HINT_PURPOSE: Final = (
+    "the capture hint is served only under the trusted source producer's purpose"
 )
 _MESSAGE_REPOSITORY_INVALID: Final = (
     "the repository registration request is outside its bounded, validated shape"
@@ -567,8 +590,11 @@ class EngineeringHandlers:
         binding: ServiceBinding | None = None,
         clock: Clock | None = None,
         allocate_identifier: IdentifierAllocator = random_identifier,
+        source_capture_hint: Callable[[str, str], None] | None = None,
     ) -> None:
         self.service = service
+        # The live capture executor's thread-safe, payload-free hint seam.
+        self._source_capture_hint = source_capture_hint
         self._issued_session = session
         self._issued_binding = binding
         self.clock = SystemClock() if clock is None else clock
@@ -849,6 +875,10 @@ class EngineeringHandlers:
         except source_storage.CapturedSourceNotFound as error:
             raise application_refusal(
                 ERROR_CODE_NOT_FOUND, _MESSAGE_CAPTURE_NOT_FOUND
+            ) from error
+        except source_storage.SelectorAttestationNotFound as error:
+            raise application_refusal(
+                ERROR_CODE_NOT_FOUND, _MESSAGE_ATTESTATION_NOT_FOUND
             ) from error
         except source_storage.CapturedSourcePreconditionFailed as error:
             raise application_refusal(
@@ -1445,6 +1475,61 @@ class EngineeringHandlers:
         )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 
+    def engineering_source_capture_hint(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Pass one registered checkout's identities to the capture executor as a hint.
+
+        Advisory and stateless: nothing is stored, so there is no idempotency key
+        or durable audit write per hint, and the capture executor's periodic poll
+        stays the source of truth. An unregistered, foreign or unknown target gets
+        the same acknowledgement as a registered one and is simply not forwarded, so
+        the reply never discloses registration facts, a path, queue state or timing.
+        A failing seam is likewise acknowledged: the poll recovers the checkout.
+
+        The family session carries every engineering purpose, and the authorization
+        seam only checks a read's purpose against that set, so this handler pins the
+        one purpose a trusted source producer states, as a mutation grant would.
+        """
+        if context.purpose != ENGINEERING_SOURCE_PURPOSE:
+            raise OperationError(ERROR_CODE_INVALID_PURPOSE, _MESSAGE_CAPTURE_HINT_PURPOSE)
+        if (
+            not isinstance(context.request.input, Mapping)
+            or set(context.request.input) != _CAPTURE_HINT_KEYS
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_CAPTURE_HINT_INVALID)
+        try:
+            request = EngineeringSourceCaptureHintInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError) as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_CAPTURE_HINT_INVALID
+            ) from error
+        if not is_identifier(request.repository_id) or not is_identifier(
+            request.checkout_id
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_CAPTURE_HINT_INVALID)
+        connection = self._connection()
+        identity = getattr(self.service, "identity", None)
+        if identity is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        try:
+            registered = connection.execute(
+                "SELECT 1 FROM omnivia_engineering_checkouts "
+                "WHERE workspace_id = ? AND installation_id = ? "
+                "AND repository_id = ? AND checkout_id = ?",
+                (
+                    context.workspace_id,
+                    identity.installation_id,
+                    request.repository_id,
+                    request.checkout_id,
+                ),
+            ).fetchone()
+            if registered is not None and self._source_capture_hint is not None:
+                self._source_capture_hint(request.repository_id, request.checkout_id)
+        except Exception:  # noqa: BLE001,S110 - advisory; the poll recovers the checkout
+            pass
+        return {"acknowledged": True}
+
     def engineering_source_record(
         self, context: OperationContext
     ) -> Mapping[str, Any] | AuditedOperationResult:
@@ -1513,6 +1598,69 @@ class EngineeringHandlers:
             guard,
             workspace_id=context.workspace_id,
             stream_id=record.stream_id,
+        )
+        return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
+
+    def engineering_selector_attest(
+        self, context: OperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        """Store one installed Dev adapter's `symbol` or `source_span` coverage.
+
+        Core never parses source. Stream ownership comes from the authenticated
+        principal and the installation from this service's own trusted identity,
+        never from the payload. The contract decoder tolerates unknown keys, so the
+        raw payload is validated strictly first; the adapter's selector digest is
+        stored only after the stream owner, repository, snapshot and whole-file
+        digest all validate against Core's own records.
+        """
+        try:
+            decoded = EngineeringSelectorAttestInput.from_wire(context.request.input)
+            request = source_storage.parse_selector_attestation(context.request.input)
+        except (
+            ContractDecodeError,
+            ContractSemanticError,
+            source_storage.SourceRecordInvalid,
+        ) as error:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_ATTESTATION_INVALID
+            ) from error
+        connection = self._connection()
+        from omnivia_core_runtime.ownership.fencing import read_guard as _read_guard
+
+        guard = _read_guard(connection)
+        identity = getattr(self.service, "identity", None)
+        if identity is None or guard is None:
+            raise OperationError("internal_non_recoverable", _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            decoded.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            return source_storage.record_selector_attestation(
+                fenced,
+                settlement,
+                workspace_id=context.workspace_id,
+                principal_id=context.principal,
+                installation_id=identity.installation_id,
+                request=request,
+                allocate_identifier=self.allocate_identifier,
+            )
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                EngineeringSelectorAttestResult.from_wire(wire)
+            except (ContractDecodeError, ContractSemanticError):
+                return False
+            return True
+
+        outcome = self._execute(
+            context, connection, identity, guard, equivalence, mutate, valid_result
         )
         return AuditedOperationResult(outcome.result, audit_reference=outcome.audit_ref)
 

@@ -1289,6 +1289,20 @@ export interface EngineeringSourceStreamCoverage {
 }
 
 /**
+ * Result of `engineering.source.capture.hint`: a redacted acknowledgement that the hint was
+ * received. It is identical whether or not the named checkout is registered, and it exposes no
+ * local path, checkout contents, queue state or timing: a hint can be coalesced, deferred or
+ * dropped, and polling recovers it.
+ */
+export interface EngineeringSourceCaptureHintResult {
+  /**
+   * Always true: the hint was received. It is not a statement that a capture was scheduled or
+   * has run.
+   */
+  readonly acknowledged: boolean;
+}
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states;
  * what each name binds to -- its input and result schemas, and its scope, capability,
  * completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture --
@@ -4291,6 +4305,99 @@ export interface HandoffView {
 }
 
 /**
+ * Input for `continuity.handoff.grant`: the owner of one existing continuity checkpoint lets
+ * exactly one other existing principal read that checkpoint's redacted `continuity_handoff.v1`
+ * view, by exact checkpoint identity, for a bounded time. The grant is pinned to the
+ * checkpoint's own content digest, so it can name only the checkpoint the owner actually holds
+ * and stops applying if the digest ever differs. The grantor is the authenticated principal and
+ * must own the checkpoint's session; the workspace and installation are the authenticated
+ * caller's own and can never be supplied by the payload. A grantee cannot grant or regrant: the
+ * grant is not delegable. Closing the owning session does not revoke a grant;
+ * `continuity.handoff.revoke` does. Unknown keys are refused.
+ */
+export interface ContinuityHandoffGrantInput {
+  /**
+   * Exact identity of the checkpoint to share.
+   */
+  readonly checkpoint_id: Identifier;
+  /**
+   * The checkpoint's own content digest, as returned by its append or close receipt. The grant
+   * applies only while the stored checkpoint still carries exactly this digest.
+   */
+  readonly checkpoint_digest: ContentChecksum;
+  /**
+   * The existing authenticated principal that may read the handoff. It must read through its
+   * own continuity binding.
+   */
+  readonly grantee_principal_id: Identifier;
+  /**
+   * How long the grant stays valid, counted from the server's settlement instant: at least one
+   * minute, at most seven days.
+   */
+  readonly ttl_seconds: number;
+}
+
+/**
+ * One recorded handoff grant. It names the checkpoint, the pinned digest and the grantee, and
+ * states when it was granted and when it expires. It carries no workspace, installation, session
+ * or capability field.
+ */
+export interface ContinuityHandoffGrant {
+  /**
+   * Service-issued identity of this grant, used to revoke it.
+   */
+  readonly grant_id: Identifier;
+  /**
+   * The one checkpoint this grant covers.
+   */
+  readonly checkpoint_id: Identifier;
+  /**
+   * The checkpoint digest the grant is pinned to.
+   */
+  readonly checkpoint_digest: ContentChecksum;
+  /**
+   * The principal that may read the handoff.
+   */
+  readonly grantee_principal_id: Identifier;
+  /**
+   * The server instant the grant settled.
+   */
+  readonly granted_at: Timestamp;
+  /**
+   * The instant after which the grant no longer applies.
+   */
+  readonly expires_at: Timestamp;
+}
+
+/**
+ * Input for `continuity.handoff.revoke`: the grantor ends one handoff grant. Revocation applies
+ * on the grantee's next read. Revoking an already revoked or expired grant is a no-op that
+ * reports the same result; a grant that is not the caller's own reads as `not_found`. Unknown
+ * keys are refused.
+ */
+export interface ContinuityHandoffRevokeInput {
+  /**
+   * The grant to revoke.
+   */
+  readonly grant_id: Identifier;
+}
+
+/**
+ * Result of `continuity.handoff.revoke`: the grant is revoked as of `revoked_at`, which is the
+ * first revocation's instant when the grant was already revoked.
+ */
+export interface ContinuityHandoffRevokeResult {
+  /**
+   * The revoked grant.
+   */
+  readonly grant_id: Identifier;
+  /**
+   * When the grant was revoked.
+   */
+  readonly revoked_at: Timestamp;
+}
+
+/**
  * One bounded preview in an engineering search result: exact record/evidence identity, a
  * truncated bounded preview, and the server-owned authority/applicability facts a caller needs
  * before expanding. Carries no full content, no raw local paths, and never identity-bearing
@@ -4595,6 +4702,111 @@ export interface EngineeringSourceCaptureCommitResult {
    * Audit reference for this delivery.
    */
   readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.source.capture.hint`: a trusted local watcher tells Core that one
+ * registered checkout may have changed. It names the checkout only by its two stable registered
+ * identities. It never accepts a checkout path, a repository path, a file path, a manifest body,
+ * raw bytes, a command, an `installation_id`, a workspace, principal, purpose, scope, role or
+ * capability field, or any other payload. The hint is advisory and carries no content: Core's
+ * periodic capture poll remains the durable source of truth, so a lost, refused or unregistered
+ * hint changes no stored state. Unknown keys are refused.
+ */
+export interface EngineeringSourceCaptureHintInput {
+  /**
+   * Stable logical repository identity the checkout was registered under.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Stable checkout identity returned by `engineering.repository.register`.
+   */
+  readonly checkout_id: Identifier;
+}
+
+/**
+ * Input for `engineering.selector.attest`: an installed Dev adapter, running as the
+ * authenticated source stream owner, states what one `symbol` or `source_span` selector resolved
+ * to in one sealed snapshot of that stream. Core never parses source and never reads the file:
+ * it stores the adapter's statement as bound evidence and compares selector digests later. Every
+ * field is exact. `path` is the normalized repository-relative path as the snapshot's file index
+ * spells it, and `file_digest` must equal that index's whole-file digest for the path in the
+ * named snapshot. The selector digest is the adapter's own evidence and counts only after the
+ * repository, stream, snapshot, path and whole-file digest all validate against Core's records.
+ * The request carries no raw source, no local path, no `installation_id`, workspace, principal,
+ * purpose, scope, role or capability field; the workspace, installation and stream owner are the
+ * authenticated caller's own. Only `symbol` and `source_span` are accepted. Unknown keys are
+ * refused.
+ */
+export interface EngineeringSelectorAttestInput {
+  /**
+   * Repository the stream belongs to.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The source stream the snapshot was recorded in. The caller must own it.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The sealed snapshot the adapter analysed.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Normalized repository-relative `/`-separated path of the analysed file, preserved exactly.
+   */
+  readonly path: string;
+  /**
+   * Whole-file digest of `path` as captured in the snapshot.
+   */
+  readonly file_digest: ContentChecksum;
+  /**
+   * The selector type: `symbol` or `source_span`.
+   */
+  readonly selector_type: string;
+  /**
+   * The selector value exactly as a dependency names it. It must identify one selector within
+   * the snapshot: a second attestation for the same selector in one snapshot is refused.
+   */
+  readonly selector: string;
+  /**
+   * Whether the adapter fully analysed the file (`complete`) or only part of it (`partial`).
+   * Partial coverage never supports a verdict.
+   */
+  readonly file_coverage: string;
+  /**
+   * Whether the selector resolved in the file (`present`) or the adapter explicitly found it
+   * absent (`absent`).
+   */
+  readonly selector_state: string;
+  /**
+   * The adapter's digest of what the selector resolved to. Required when `selector_state` is
+   * `present` and refused when it is `absent`.
+   */
+  readonly selector_digest?: ContentChecksum;
+  /**
+   * Stable identity of the installed Dev adapter that produced the statement.
+   */
+  readonly adapter_id: string;
+  /**
+   * The adapter's version. Digests from different adapter versions are never compared.
+   */
+  readonly adapter_version: string;
+}
+
+/**
+ * Result of `engineering.selector.attest`: the stored attestation's identity, and whether this
+ * call stored it or an identical attestation already existed. A different statement for a
+ * selector already attested in the snapshot is a `conflict`, never an overwrite.
+ */
+export interface EngineeringSelectorAttestResult {
+  /**
+   * Service-issued identity of the stored attestation.
+   */
+  readonly attestation_id: Identifier;
+  /**
+   * `recorded` for a new attestation, `already_recorded` for an identical one stored earlier.
+   */
+  readonly disposition: string;
 }
 
 /**
@@ -7030,6 +7242,16 @@ export interface ContinuityHandoffReadResult {
    * The bounded, authorised handoff view.
    */
   readonly handoff: HandoffView;
+}
+
+/**
+ * Result of `continuity.handoff.grant`.
+ */
+export interface ContinuityHandoffGrantResult {
+  /**
+   * The recorded grant.
+   */
+  readonly grant: ContinuityHandoffGrant;
 }
 
 /**
@@ -12823,6 +13045,149 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "rate_limited",
       "unsupported_minor_version",
       "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.source.capture.hint",
+    scope: { required_scopes: ["engineering:source"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.handoff.grant",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrantInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrantResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.handoff.revoke",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffRevokeInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffRevokeResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.selector.attest",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSelectorAttestInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSelectorAttestResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

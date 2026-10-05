@@ -235,6 +235,11 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         "engineering_source",
     ),
     ApplicationCommand(
+        ("engineering", "hint"),
+        "engineering.source.capture.hint",
+        "engineering_source",
+    ),
+    ApplicationCommand(
         ("engineering", "source"),
         "engineering.source.record",
         "engineering_source",
@@ -249,6 +254,21 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ),
     ApplicationCommand(
         ("decisions", "result-use"), "decision.result_use.evaluate", "decision_result_use"
+    ),
+    ApplicationCommand(
+        ("continuity", "grant"),
+        "continuity.handoff.grant",
+        "continuity_handoff_grant",
+    ),
+    ApplicationCommand(
+        ("continuity", "revoke"),
+        "continuity.handoff.revoke",
+        "continuity_handoff_grant",
+    ),
+    ApplicationCommand(
+        ("engineering", "attest"),
+        "engineering.selector.attest",
+        "engineering_source",
     ),
 )
 

@@ -11,6 +11,30 @@ AC-001 through AC-064 are verified in
 PR-H2 sections below preserve the implementation history; later closeout evidence
 and the committed format-2 qualification reports supersede their branch-era status.
 
+## Follow-on slice (branch `codex/engineering-memory-followons`, 2026-10-05, uncommitted)
+
+Three Core-side follow-ons, each described in `engineering-source-coverage.md`, extend the
+closeout above. Migration head moves from 0063 to 0065.
+
+- **Cross-principal continuity handoff grants (migration 0064).** `continuity.handoff.grant`
+  and `continuity.handoff.revoke` let the owner of one exact checkpoint, pinned by its digest,
+  let one other existing principal read its redacted `continuity_handoff.v1` view by checkpoint
+  id, for a bounded time. Grants are append-only, audited, revocable on the next read,
+  expiring and non-delegable; session-and-sequence lookup stays owner-only, and a session
+  close does not revoke. Both are trusted, non-MCP mutations.
+- **Trusted selector attestations (migration 0065).** `engineering.selector.attest` ingests an
+  installed Dev adapter's `symbol` and `source_span` coverage as the authenticated stream
+  owner, and the evaluator compares attested selector digests (`matched`, `potentially_stale`,
+  `invalid`, otherwise `unknown`). Core never parses source; `whole_file` behaviour is
+  unchanged and every other selector type stays `unknown`. No installed adapter yet emits
+  attestations.
+- **Search/context performance.** See the "Search and context narrowing" section of
+  `engineering-source-coverage.md`; it adds no migration.
+
+Still excluded, unchanged: **G-2** (Laya distribution pin), **G-3** (signed-manifest trust
+anchor) and the semantic conflict assessor (P2-08) that depends on both. None of them is
+implemented, pinned or simulated by this slice.
+
 ## Delivery sequence
 
 | PR | Scope | Spec packages |
@@ -84,12 +108,12 @@ These are measurements, not release guarantees. The older tables above remain fo
 
 ## Honest limitations (carried into the release note)
 
-- Lease expiry and binding generation are enforced at settlement. Cross-principal continuity sharing remains outside the supported v1 Personal-mode profile (§19.4).
+- Lease expiry and binding generation are enforced at settlement. Cross-principal continuity is available only through an explicit, trusted handoff grant (migration 0064; see the follow-on slice above); it remains outside the supported v1 Personal-mode profile (§19.4), and the local service authenticates no second non-MCP principal, so using it needs that principal and credential decision.
 - Applicability is dependency-qualified against recorded source streams. Core has a bounded local polling producer, durable-seal crash recovery, restart-persistent scheduling fairness and indexed pending lookup. Platform filesystem notifications and Dev semantic parser/indexer adapters remain external integration work.
 - Context packs emit structural conflict warnings, including `unresolved_overlap`, and governed endpoint checks are enforced.
 - Semantic assessment (P2-08) is deliberately not implemented; it waits on the owner gates G-2 (Laya distribution pin) and G-3 (signed-manifest trust anchor).
 - The v1 renderer uses a deterministic named-tokenizer count that is not a host-model tokenizer. The negotiated byte-only v2 representation omits token and tokenizer fields, and unsupported exact-tokenizer requests fail closed before storage.
-- Whole-file digest selectors are supported. Other stored selector shapes fail closed in the v1 profile.
+- Whole-file digest selectors are evaluated from the snapshot's file digests, and `symbol` and `source_span` selectors from trusted adapter attestations (migration 0065). Other stored selector shapes fail closed in the v1 profile.
 - Performance numbers are lane measurements on the development machine that produced them, not qualified release guarantees (§20.2).
 
 ## Owner gates still open

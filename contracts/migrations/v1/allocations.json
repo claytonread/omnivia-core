@@ -513,6 +513,28 @@
       "sha256": "44206c9e3460b837eba580e6103e5b600ba597c2c75106f57ec8d09d6aaeffe3",
       "introduced_commit": "2ed5e6a67763be23629eaaf392db70fd2b526084",
       "accepted_commit": null
+    },
+    {
+      "number": 64,
+      "filename": "0064_engineering_handoff_grants.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 63,
+      "sha256": "e6f89df9b913b40bdf4d49e142c0f2ff625ff8fc53b98064d82d7046d66eaae5",
+      "introduced_commit": "8efab26e83d137736f229f84745c2e535390980e",
+      "accepted_commit": null
+    },
+    {
+      "number": 65,
+      "filename": "0065_engineering_selector_attestations.sql",
+      "owner": "Engineering Memory",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 64,
+      "sha256": "00a6cee0288bcdb13ab9ba330a25d9b90f725c16f48e371d19f49458ac46f3a9",
+      "introduced_commit": "8efab26e83d137736f229f84745c2e535390980e",
+      "accepted_commit": null
     }
   ]
 }

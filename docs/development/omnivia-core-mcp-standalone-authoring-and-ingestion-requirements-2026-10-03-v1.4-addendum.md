@@ -20,7 +20,7 @@ and `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-tracea
      (`MANIFEST_VERSION`, `RESTRICTED_MANIFEST`, `_AUTHORING_ADDITIONS`, `ADMITTED_MUTATIONS`);
    - the generated Application Contract v1 operation catalogue,
      `contracts/application/v1/schemas/operations.schema.json` (`x-omnivia-operation-catalogue`,
-     57 operations);
+     61 operations);
    - the reviewed MCP dependency pins, `scripts/mcp-wheelhouse-constraints.txt`.
 3. `tests/service_conformance/test_mcp_authoring_traceability.py` checks this addendum against the sources named in item 2 and fails on drift.
 4. Nothing in this addendum is a claim that a pending gate has passed.

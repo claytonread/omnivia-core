@@ -280,6 +280,7 @@ def _build_production_application_surface(
     execute_chat_generation: ChatGenerationExecution | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    source_capture_hint: Callable[[str, str], None] | None = None,
 ) -> ProductionApplicationSurface:
     """Compose the exact production route for one live service.
 
@@ -406,6 +407,7 @@ def _build_production_application_surface(
             workspace_id=started.workspace_id,
             provenance=ContinuityAssociationProvenance.CORE_LOCAL_CONNECTION,
         ),
+        source_capture_hint=source_capture_hint,
     )
     return compose_production_application_surface(
         installation=installation,
@@ -978,12 +980,21 @@ def main(
         started.lifecycle.resources.push(
             "installation_authority", installation_authority.close
         )
+        # The hint handler runs on a request thread before the executor below exists;
+        # this forwards to it once it does, and is a no-op until then.
+        source_executor: EngineeringSourceCaptureExecutor | None = None
+
+        def hint_source_capture(repository_id: str, checkout_id: str) -> None:
+            if source_executor is not None:
+                source_executor.hint(repository_id, checkout_id)
+
         application = _build_production_application_surface(
             started=started,
             probe=dispatcher,
             installation=installation,
             resolve_workflow_release=resolve_workflow_release,
             workflow_wait_policy=workflow_wait_policy,
+            source_capture_hint=hint_source_capture,
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

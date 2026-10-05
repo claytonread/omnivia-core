@@ -8,12 +8,19 @@ cursors keep either lane from starving across bounded passes and service
 restarts; see ``run_pending`` for the fairness rule.
 Filesystem paths stay inside the trusted capture primitive and never enter an
 application request or result.
+
+A trusted watcher may hint that a registered checkout changed (``hint``). A hint
+is an in-memory, payload-free advisory: it wakes the next service tick and puts
+the named checkout ahead of ordinary rotation, never replacing the durable poll.
+Losing a hint (a full set, a restart, an unavailable checkout, a storage or
+callback failure) only delays that checkout until the unchanged poll reaches it.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -38,6 +45,9 @@ from omnivia_core_runtime.storage.connection import StorageError
 
 DEFAULT_EXECUTION_BUDGET: Final = 2
 DEFAULT_POLL_INTERVAL_SECONDS: Final = 1.0
+#: Hard cap on distinct pending hints. A full set drops the new identity (its
+#: checkout is still reached by polling) rather than growing.
+MAX_PENDING_HINTS: Final = 64
 _OPERATION: Final = "engineering.source.capture.commit"
 _PURPOSE: Final = "engineering_source"
 _SCOPE: Final = "engineering:source"
@@ -91,6 +101,28 @@ class EngineeringSourceCaptureExecutor:
     principal_id: str
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     _next_poll: float = 0.0
+    # Written by request threads through ``hint``, read and drained only by the
+    # service-owned tick; ``_hint_lock`` guards just these two fields.
+    _hints: dict[tuple[str, str], None] = field(default_factory=dict)
+    _wake: bool = False
+    _hint_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Service-thread only: alternates hinted and rotation units in the checkout
+    # lane, so a hint burst cannot starve rotation and rotation cannot starve a hint.
+    _hint_turn: bool = True
+
+    def hint(self, repository_id: str, checkout_id: str) -> None:
+        """Record that one registered checkout may have changed; safe from any thread.
+
+        Identities only, deduplicated and bounded by ``MAX_PENDING_HINTS``. Even a
+        full set wakes the next tick, so a dropped identity is polled soon rather
+        than not at all. Registration is the caller's check; ``_take_hinted_checkout``
+        re-verifies it against storage before any path is read.
+        """
+
+        with self._hint_lock:
+            if len(self._hints) < MAX_PENDING_HINTS:
+                self._hints.setdefault((repository_id, checkout_id))
+            self._wake = True
 
     def run_pending(
         self,
@@ -110,9 +142,14 @@ class EngineeringSourceCaptureExecutor:
         if budget <= 0:
             return SourceProducerPass(inspected=0, captured=0, committed=0)
         now = self.runner.clock.monotonic()
-        if not force and now < self._next_poll:
+        with self._hint_lock:
+            woken, self._wake = self._wake, False
+        if not force and now < self._next_poll and not woken:
             return SourceProducerPass(inspected=0, captured=0, committed=0)
-        self._next_poll = now + max(self.poll_interval_seconds, 0.0)
+        if now >= self._next_poll or force:
+            # A hint-woken early pass leaves the poll schedule alone, so the
+            # periodic poll keeps its own cadence.
+            self._next_poll = now + max(self.poll_interval_seconds, 0.0)
 
         tally = _Tally()
         try:
@@ -172,7 +209,7 @@ class EngineeringSourceCaptureExecutor:
 
         consumed = 0
         while consumed < limit:
-            checkout = self._take_next_checkout()
+            checkout = self._next_checkout()
             if checkout is None:
                 break
             repository_id, checkout_id, checkout_hint = checkout
@@ -291,6 +328,43 @@ class EngineeringSourceCaptureExecutor:
                 now_us=self._now_us(),
                 limit=limit,
             )
+
+    def _next_checkout(self) -> tuple[str, str, str] | None:
+        """A hinted checkout on its turn, otherwise the ordinary rotation's next."""
+
+        if self._hint_turn:
+            hinted = self._take_hinted_checkout()
+            if hinted is not None:
+                self._hint_turn = False
+                return hinted
+        self._hint_turn = True
+        return self._take_next_checkout()
+
+    def _take_hinted_checkout(self) -> tuple[str, str, str] | None:
+        """Pop pending hints until one names a checkout registered to this service.
+
+        A hint that is stale or was never registered is dropped without spending a
+        unit. A popped hint is not requeued: if the pass then fails, the poll recovers.
+        The rotation cursor is untouched, so ordinary rotation order is unchanged.
+        """
+
+        connection, workspace_id, installation_id = self._owned_facts()
+        while True:
+            with self._hint_lock:
+                if not self._hints:
+                    return None
+                repository_id, checkout_id = next(iter(self._hints))
+                del self._hints[(repository_id, checkout_id)]
+            with self.runner.sqlite_gate:
+                row = connection.execute(
+                    "SELECT repository_id, checkout_id, checkout_hint "
+                    "FROM omnivia_engineering_checkouts "
+                    "WHERE workspace_id = ? AND installation_id = ? "
+                    "AND repository_id = ? AND checkout_id = ?",
+                    (workspace_id, installation_id, repository_id, checkout_id),
+                ).fetchone()
+            if row is not None:
+                return str(row[0]), str(row[1]), str(row[2])
 
     def _take_next_checkout(self) -> tuple[str, str, str] | None:
         connection, workspace_id, installation_id = self._owned_facts()
@@ -633,6 +707,7 @@ class EngineeringSourceCaptureExecutor:
 __all__ = [
     "DEFAULT_EXECUTION_BUDGET",
     "DEFAULT_POLL_INTERVAL_SECONDS",
+    "MAX_PENDING_HINTS",
     "EngineeringSourceCaptureExecutor",
     "SourceProducerPass",
 ]

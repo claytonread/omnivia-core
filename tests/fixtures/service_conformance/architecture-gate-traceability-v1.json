@@ -216,7 +216,11 @@
         "engineering.source.record",
         "engineering.repository.register",
         "analysis.start",
-        "decision.result_use.evaluate"
+        "decision.result_use.evaluate",
+        "engineering.source.capture.hint",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -345,7 +349,10 @@
         "engineering.review.record",
         "engineering.source.capture.commit",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -383,7 +390,10 @@
         "engineering.review.record",
         "engineering.source.capture.commit",
         "engineering.source.record",
-        "engineering.repository.register"
+        "engineering.repository.register",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -476,7 +486,11 @@
         "engineering.source.record",
         "engineering.repository.register",
         "analysis.start",
-        "decision.result_use.evaluate"
+        "decision.result_use.evaluate",
+        "engineering.source.capture.hint",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -542,7 +556,11 @@
         "engineering.source.record",
         "engineering.repository.register",
         "analysis.start",
-        "decision.result_use.evaluate"
+        "decision.result_use.evaluate",
+        "engineering.source.capture.hint",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {

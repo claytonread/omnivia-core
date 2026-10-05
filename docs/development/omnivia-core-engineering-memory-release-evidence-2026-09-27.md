@@ -100,6 +100,6 @@ Operations in every lane: `engineering.search`, `.search.current_safe`, `.search
 
 1. Context packs emit structural conflict warnings, including `unresolved_overlap`, and governed endpoint checks are enforced. The semantic assessor (P2-08) remains disabled pending the separate G-2/G-3 owner decisions.
 2. Core's bounded local polling producer advances registered checkout streams, recovers sealed captures and uses a durable pending-work queue with restart-persistent fairness and history-independent next-eligible lookup. Platform filesystem notifications and Dev semantic/index adapters are outside Core.
-3. Settlement enforces lease expiry and binding generation. Cross-principal continuity sharing remains outside the supported v1 Personal-mode profile.
+3. Settlement enforces lease expiry and binding generation. Cross-principal continuity sharing remains outside the supported v1 Personal-mode profile; the later explicit handoff grant (migration 0064, branch `codex/engineering-memory-followons`) is a trusted, non-MCP exception, not part of that profile.
 4. The v1 renderer reports a deterministic named-tokenizer count that is explicitly not a host-model tokenizer. The negotiated byte-only v2 representation omits token and tokenizer fields; unsupported exact-tokenizer requests fail closed before storage.
-5. Whole-file digest selectors are supported. Other stored selector shapes fail closed in the v1 profile.
+5. Whole-file digest selectors are supported, and `symbol` and `source_span` selectors are supported only through trusted adapter attestations (migration 0065, branch `codex/engineering-memory-followons`). Other stored selector shapes fail closed in the v1 profile.

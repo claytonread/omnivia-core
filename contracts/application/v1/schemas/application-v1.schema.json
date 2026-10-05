@@ -1035,6 +1035,21 @@
     "ContinuityHandoffReadResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadResult"
     },
+    "ContinuityHandoffGrantInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrantInput"
+    },
+    "ContinuityHandoffGrant": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrant"
+    },
+    "ContinuityHandoffGrantResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrantResult"
+    },
+    "ContinuityHandoffRevokeInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffRevokeInput"
+    },
+    "ContinuityHandoffRevokeResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffRevokeResult"
+    },
     "EngineeringSearchView": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchView"
     },
@@ -1127,6 +1142,18 @@
     },
     "EngineeringSourceCaptureCommitResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureCommitResult"
+    },
+    "EngineeringSourceCaptureHintInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintInput"
+    },
+    "EngineeringSourceCaptureHintResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureHintResult"
+    },
+    "EngineeringSelectorAttestInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSelectorAttestInput"
+    },
+    "EngineeringSelectorAttestResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSelectorAttestResult"
     },
     "EngineeringRepositoryRegisterInput": {
       "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterInput"

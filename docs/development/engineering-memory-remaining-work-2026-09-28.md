@@ -23,6 +23,24 @@ filenames previously named here do not exist in this checkout and are not eviden
   2,505.244 ms and context-build p95 3,801.514 ms as advisory target misses;
   checkpoint p95 21.636 ms is inside target.
 
+### Follow-on slice (2026-10-05, branch `codex/engineering-memory-followons`, uncommitted)
+
+Implemented in Core, with details in `engineering-source-coverage.md`:
+
+- cross-principal continuity handoff grants, migration 0064 (`continuity.handoff.grant`,
+  `continuity.handoff.revoke`; read by exact checkpoint id for the named grantee only);
+- trusted `symbol` and `source_span` selector attestations, migration 0065
+  (`engineering.selector.attest`, plus evaluator support); and
+- search/context narrowing performance work, with no migration.
+
+Still not implemented, and deliberately excluded: **G-2** (Laya distribution pin), **G-3**
+(signed-manifest trust anchor), and the semantic conflict assessor (P2-08), which depends on
+both. Also still open: `config_key`, `schema_contract` and `external_evidence` selectors;
+renames and cross-stream lineage; an installed Dev adapter that actually emits attestations;
+the invalidation worker's selector reverse index; and a second distinct non-MCP principal in
+the production local service (grants are proven through the production application surface
+with injected authenticated sessions).
+
 Sections 1–4 below are retained as the historical 28 September register. Their
 individual state labels are not current status; use the acceptance register above.
 
@@ -91,15 +109,17 @@ Sequencing rule: rebase each on current `origin/main` and run
 
 ### 3.2 Selector and lineage gaps (source-coverage "Deferred and unsupported")
 
-- Non-digest selectors: `symbol`, `config_key`, `source_span`,
-  `schema_contract`, `external_evidence` — recorded, never evaluated.
+- Non-digest selectors: `config_key`, `schema_contract`, `external_evidence` — recorded,
+  never evaluated. `symbol` and `source_span` are now evaluated through trusted adapter
+  attestations (follow-on slice above).
 - Renames: no rename field; a renamed required file reads as absent.
 - Transitions that do not carry a sealed set (`record.supersede`,
   `candidate.reject`, content-changing transitions) mint versions that stay
   `unknown`; no path records a set for them.
 - No lineage reasoning: no cross-stream equivalence, ancestry or merge-base.
 - `current_safe` search omissions are not counted (contract has no field).
-- Continuity is same-principal only; no sharing grant.
+- Continuity is same-principal only, except for an explicit handoff grant (follow-on
+  slice above), which reaches `continuity.handoff.read` by checkpoint id only.
 
 ### 3.3 Consumer and release-gate work (completion plan Phase 1)
 

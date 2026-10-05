@@ -151,6 +151,7 @@ from omnivia_core_runtime.service.installation import (
     InstallationOperationContext,
 )
 from omnivia_core_runtime.service.mutation import (
+    ENGINEERING_SOURCE_PURPOSE,
     INSTALLATION_ADMINISTRATOR_ROLE,
     KNOWLEDGE_REVIEWER_ROLE,
     MUTATION_PURPOSES,
@@ -243,6 +244,9 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.search": ENGINEERING_SEARCH_PURPOSE,
         "engineering.expand": ENGINEERING_EXPAND_PURPOSE,
         "engineering.context.build": ENGINEERING_CONTEXT_PURPOSE,
+        # A read-class advisory under the trusted source producer's own purpose, so a
+        # grant to read engineering memory never covers it.
+        "engineering.source.capture.hint": ENGINEERING_SOURCE_PURPOSE,
         ANALYSIS_START_OPERATION: ANALYSIS_REQUEST_PURPOSE,
         "decision.result_use.evaluate": DECISION_RESULT_USE_PURPOSE,
     }
@@ -996,7 +1000,7 @@ def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
 ) -> ApplicationOperationRegistry:
-    """The twelve engineering-memory operations, one registry, catalogue-complete.
+    """The sixteen engineering-memory operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
     plan's PR-B producer; retrieval, the pack builder, priorities, reviews, the
@@ -1021,6 +1025,14 @@ def build_engineering_registry(
         cast(OperationHandler, continuity.continuity_handoff_read),
     )
     registry.register(
+        "continuity.handoff.grant",
+        cast(OperationHandler, continuity.continuity_handoff_grant),
+    )
+    registry.register(
+        "continuity.handoff.revoke",
+        cast(OperationHandler, continuity.continuity_handoff_revoke),
+    )
+    registry.register(
         "engineering.search", cast(OperationHandler, refusals.engineering_search)
     )
     registry.register(
@@ -1042,8 +1054,16 @@ def build_engineering_registry(
         cast(OperationHandler, refusals.engineering_source_capture_commit),
     )
     registry.register(
+        "engineering.source.capture.hint",
+        cast(OperationHandler, refusals.engineering_source_capture_hint),
+    )
+    registry.register(
         "engineering.source.record",
         cast(OperationHandler, refusals.engineering_source_record),
+    )
+    registry.register(
+        "engineering.selector.attest",
+        cast(OperationHandler, refusals.engineering_selector_attest),
     )
     registry.register(
         "engineering.repository.register",
@@ -1063,8 +1083,9 @@ def build_engineering_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
     local_continuity_association: TrustedContinuityAssociation | None = None,
+    source_capture_hint: Callable[[str, str], None] | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the twelve-operation S-engineering family around the existing router."""
+    """Compose the sixteen-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -1076,7 +1097,11 @@ def build_engineering_application_dispatcher(
         # The engineering writes (priority, review, source record) issue their
         # mutation grants from this family's own session and binding.
         EngineeringHandlers(
-            service=service, session=session, binding=binding, clock=server_clock
+            service=service,
+            session=session,
+            binding=binding,
+            clock=server_clock,
+            source_capture_hint=source_capture_hint,
         ),
         ContinuityHandlers(
             service=service,

@@ -91,6 +91,11 @@ EXPECTED_COMMANDS = (
         "engineering.source.capture.commit",
         "engineering_source",
     ),
+    (
+        ("engineering", "hint"),
+        "engineering.source.capture.hint",
+        "engineering_source",
+    ),
     (("engineering", "source"), "engineering.source.record", "engineering_source"),
     (
         ("repository", "register"),
@@ -106,6 +111,21 @@ EXPECTED_COMMANDS = (
         ("decisions", "result-use"),
         "decision.result_use.evaluate",
         "decision_result_use",
+    ),
+    (
+        ("continuity", "grant"),
+        "continuity.handoff.grant",
+        "continuity_handoff_grant",
+    ),
+    (
+        ("continuity", "revoke"),
+        "continuity.handoff.revoke",
+        "continuity_handoff_grant",
+    ),
+    (
+        ("engineering", "attest"),
+        "engineering.selector.attest",
+        "engineering_source",
     ),
 )
 
@@ -162,7 +182,7 @@ def test_the_fifty_six_application_commands_are_declared_in_order() -> None:
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 57
+    assert len(APPLICATION_COMMANDS) == 61
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

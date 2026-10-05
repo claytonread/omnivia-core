@@ -271,6 +271,40 @@ def test_captured_source_commit_is_explicitly_omitted_from_model_facing_mcp() ->
     assert manifest.exposed_by_tool_name("engineering_source_capture_commit") is None
 
 
+def test_capture_hint_is_explicitly_omitted_from_model_facing_mcp() -> None:
+    operation = "engineering.source.capture.hint"
+    mapping = json.loads(OPERATION_TRACEABILITY.read_text(encoding="utf-8"))[
+        "client_surfaces"
+    ]["mcp"]
+    assert {"operation": operation, "reason": "read_not_allow_listed"} in mapping[
+        "omitted"
+    ]
+    assert operation not in {entry.operation for entry in manifest.AUTHORING_MANIFEST}
+    assert manifest.exposed_by_tool_name("engineering_source_capture_hint") is None
+
+
+@pytest.mark.parametrize(
+    ("operation", "tool"),
+    (
+        ("continuity.handoff.grant", "continuity_handoff_grant"),
+        ("continuity.handoff.revoke", "continuity_handoff_revoke"),
+        ("engineering.selector.attest", "engineering_selector_attest"),
+    ),
+)
+def test_handoff_grants_and_selector_attestations_are_omitted_from_model_facing_mcp(
+    operation: str, tool: str
+) -> None:
+    """A model never grants another principal read access to its checkpoints and never
+    states selector coverage: both are mutations reachable only through the trusted
+    CLI and client, and the mechanical `mutation` omission is the only exposure rule."""
+    mapping = json.loads(OPERATION_TRACEABILITY.read_text(encoding="utf-8"))[
+        "client_surfaces"
+    ]["mcp"]
+    assert {"operation": operation, "reason": "mutation"} in mapping["omitted"]
+    assert operation not in {entry.operation for entry in manifest.AUTHORING_MANIFEST}
+    assert manifest.exposed_by_tool_name(tool) is None
+
+
 def test_the_purpose_vocabulary_is_the_services_own_per_operation() -> None:
     """The purpose is a claim the request states and the service checks against
     its own grant, so the claim has to be the one the grant allows -- a purpose

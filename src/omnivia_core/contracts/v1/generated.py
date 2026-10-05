@@ -224,8 +224,13 @@ __all__ = [
     "ContextPrioritySetResult",
     "ContinuityCheckpointAppendInput",
     "ContinuityCheckpointAppendResult",
+    "ContinuityHandoffGrant",
+    "ContinuityHandoffGrantInput",
+    "ContinuityHandoffGrantResult",
     "ContinuityHandoffReadInput",
     "ContinuityHandoffReadResult",
+    "ContinuityHandoffRevokeInput",
+    "ContinuityHandoffRevokeResult",
     "ContinuitySessionBinding",
     "ContinuitySessionCloseInput",
     "ContinuitySessionCloseResult",
@@ -330,11 +335,15 @@ __all__ = [
     "EngineeringSearchInput",
     "EngineeringSearchResult",
     "EngineeringSearchView",
+    "EngineeringSelectorAttestInput",
+    "EngineeringSelectorAttestResult",
     "EngineeringSessionState",
     "EngineeringSnapshotRef",
     "EngineeringSourceAnchor",
     "EngineeringSourceCaptureCommitInput",
     "EngineeringSourceCaptureCommitResult",
+    "EngineeringSourceCaptureHintInput",
+    "EngineeringSourceCaptureHintResult",
     "EngineeringSourceManifestEntry",
     "EngineeringSourcePredecessor",
     "EngineeringSourceRecordInput",
@@ -3466,6 +3475,45 @@ class EngineeringSourceStreamCoverage:
             state=field_state,
             covered_sequence=field_covered_sequence,
             announced_sequence=field_announced_sequence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceCaptureHintResult:
+    """Result of `engineering.source.capture.hint`: a redacted acknowledgement that the hint was
+    received. It is identical whether or not the named checkout is registered, and it exposes
+    no local path, checkout contents, queue state or timing: a hint can be coalesced,
+    deferred or dropped, and polling recovers it.
+    """
+
+    acknowledged: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["acknowledged"] = self.acknowledged
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceCaptureHintResult"
+    ) -> EngineeringSourceCaptureHintResult:
+        """Decode a wire payload into a EngineeringSourceCaptureHintResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_acknowledged = _decode_bool(
+            _require_field(mapping, "acknowledged", path),
+            f"{path}.acknowledged",
+        )
+        return cls(
+            acknowledged=field_acknowledged,
         )
 
 
@@ -7018,6 +7066,218 @@ class HandoffView:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityHandoffGrantInput:
+    """Input for `continuity.handoff.grant`: the owner of one existing continuity checkpoint
+    lets exactly one other existing principal read that checkpoint's redacted
+    `continuity_handoff.v1` view, by exact checkpoint identity, for a bounded time. The grant
+    is pinned to the checkpoint's own content digest, so it can name only the checkpoint the
+    owner actually holds and stops applying if the digest ever differs. The grantor is the
+    authenticated principal and must own the checkpoint's session; the workspace and
+    installation are the authenticated caller's own and can never be supplied by the payload.
+    A grantee cannot grant or regrant: the grant is not delegable. Closing the owning session
+    does not revoke a grant; `continuity.handoff.revoke` does. Unknown keys are refused.
+    """
+
+    checkpoint_id: Identifier
+    checkpoint_digest: ContentChecksum
+    grantee_principal_id: Identifier
+    ttl_seconds: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["checkpoint_id"] = self.checkpoint_id
+        wire["checkpoint_digest"] = self.checkpoint_digest
+        wire["grantee_principal_id"] = self.grantee_principal_id
+        wire["ttl_seconds"] = self.ttl_seconds
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContinuityHandoffGrantInput"
+    ) -> ContinuityHandoffGrantInput:
+        """Decode a wire payload into a ContinuityHandoffGrantInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_checkpoint_id = _decode_str(
+            _require_field(mapping, "checkpoint_id", path),
+            f"{path}.checkpoint_id",
+        )
+        field_checkpoint_digest = _decode_str(
+            _require_field(mapping, "checkpoint_digest", path),
+            f"{path}.checkpoint_digest",
+        )
+        field_grantee_principal_id = _decode_str(
+            _require_field(mapping, "grantee_principal_id", path),
+            f"{path}.grantee_principal_id",
+        )
+        field_ttl_seconds = _decode_int(
+            _require_field(mapping, "ttl_seconds", path),
+            f"{path}.ttl_seconds",
+        )
+        return cls(
+            checkpoint_id=field_checkpoint_id,
+            checkpoint_digest=field_checkpoint_digest,
+            grantee_principal_id=field_grantee_principal_id,
+            ttl_seconds=field_ttl_seconds,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityHandoffGrant:
+    """One recorded handoff grant. It names the checkpoint, the pinned digest and the grantee,
+    and states when it was granted and when it expires. It carries no workspace,
+    installation, session or capability field.
+    """
+
+    grant_id: Identifier
+    checkpoint_id: Identifier
+    checkpoint_digest: ContentChecksum
+    grantee_principal_id: Identifier
+    granted_at: Timestamp
+    expires_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["grant_id"] = self.grant_id
+        wire["checkpoint_id"] = self.checkpoint_id
+        wire["checkpoint_digest"] = self.checkpoint_digest
+        wire["grantee_principal_id"] = self.grantee_principal_id
+        wire["granted_at"] = self.granted_at
+        wire["expires_at"] = self.expires_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContinuityHandoffGrant"
+    ) -> ContinuityHandoffGrant:
+        """Decode a wire payload into a ContinuityHandoffGrant.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_grant_id = _decode_str(_require_field(mapping, "grant_id", path), f"{path}.grant_id")
+        field_checkpoint_id = _decode_str(
+            _require_field(mapping, "checkpoint_id", path),
+            f"{path}.checkpoint_id",
+        )
+        field_checkpoint_digest = _decode_str(
+            _require_field(mapping, "checkpoint_digest", path),
+            f"{path}.checkpoint_digest",
+        )
+        field_grantee_principal_id = _decode_str(
+            _require_field(mapping, "grantee_principal_id", path),
+            f"{path}.grantee_principal_id",
+        )
+        field_granted_at = _decode_str(
+            _require_field(mapping, "granted_at", path),
+            f"{path}.granted_at",
+        )
+        field_expires_at = _decode_str(
+            _require_field(mapping, "expires_at", path),
+            f"{path}.expires_at",
+        )
+        return cls(
+            grant_id=field_grant_id,
+            checkpoint_id=field_checkpoint_id,
+            checkpoint_digest=field_checkpoint_digest,
+            grantee_principal_id=field_grantee_principal_id,
+            granted_at=field_granted_at,
+            expires_at=field_expires_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityHandoffRevokeInput:
+    """Input for `continuity.handoff.revoke`: the grantor ends one handoff grant. Revocation
+    applies on the grantee's next read. Revoking an already revoked or expired grant is a no-
+    op that reports the same result; a grant that is not the caller's own reads as
+    `not_found`. Unknown keys are refused.
+    """
+
+    grant_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["grant_id"] = self.grant_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContinuityHandoffRevokeInput"
+    ) -> ContinuityHandoffRevokeInput:
+        """Decode a wire payload into a ContinuityHandoffRevokeInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_grant_id = _decode_str(_require_field(mapping, "grant_id", path), f"{path}.grant_id")
+        return cls(
+            grant_id=field_grant_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityHandoffRevokeResult:
+    """Result of `continuity.handoff.revoke`: the grant is revoked as of `revoked_at`, which is
+    the first revocation's instant when the grant was already revoked.
+    """
+
+    grant_id: Identifier
+    revoked_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["grant_id"] = self.grant_id
+        wire["revoked_at"] = self.revoked_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContinuityHandoffRevokeResult"
+    ) -> ContinuityHandoffRevokeResult:
+        """Decode a wire payload into a ContinuityHandoffRevokeResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_grant_id = _decode_str(_require_field(mapping, "grant_id", path), f"{path}.grant_id")
+        field_revoked_at = _decode_str(
+            _require_field(mapping, "revoked_at", path),
+            f"{path}.revoked_at",
+        )
+        return cls(
+            grant_id=field_grant_id,
+            revoked_at=field_revoked_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class EngineeringPreview:
     """One bounded preview in an engineering search result: exact record/evidence identity, a
     truncated bounded preview, and the server-owned authority/applicability facts a caller
@@ -7660,6 +7920,223 @@ class EngineeringSourceCaptureCommitResult:
             coverage=field_coverage,
             recorded_at=field_recorded_at,
             audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSourceCaptureHintInput:
+    """Input for `engineering.source.capture.hint`: a trusted local watcher tells Core that one
+    registered checkout may have changed. It names the checkout only by its two stable
+    registered identities. It never accepts a checkout path, a repository path, a file path,
+    a manifest body, raw bytes, a command, an `installation_id`, a workspace, principal,
+    purpose, scope, role or capability field, or any other payload. The hint is advisory and
+    carries no content: Core's periodic capture poll remains the durable source of truth, so
+    a lost, refused or unregistered hint changes no stored state. Unknown keys are refused.
+    """
+
+    repository_id: Identifier
+    checkout_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["checkout_id"] = self.checkout_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSourceCaptureHintInput"
+    ) -> EngineeringSourceCaptureHintInput:
+        """Decode a wire payload into a EngineeringSourceCaptureHintInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_checkout_id = _decode_str(
+            _require_field(mapping, "checkout_id", path),
+            f"{path}.checkout_id",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            checkout_id=field_checkout_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSelectorAttestInput:
+    """Input for `engineering.selector.attest`: an installed Dev adapter, running as the
+    authenticated source stream owner, states what one `symbol` or `source_span` selector
+    resolved to in one sealed snapshot of that stream. Core never parses source and never
+    reads the file: it stores the adapter's statement as bound evidence and compares selector
+    digests later. Every field is exact. `path` is the normalized repository-relative path as
+    the snapshot's file index spells it, and `file_digest` must equal that index's whole-file
+    digest for the path in the named snapshot. The selector digest is the adapter's own
+    evidence and counts only after the repository, stream, snapshot, path and whole-file
+    digest all validate against Core's records. The request carries no raw source, no local
+    path, no `installation_id`, workspace, principal, purpose, scope, role or capability
+    field; the workspace, installation and stream owner are the authenticated caller's own.
+    Only `symbol` and `source_span` are accepted. Unknown keys are refused.
+    """
+
+    repository_id: Identifier
+    stream_id: Identifier
+    snapshot_id: Identifier
+    path: str
+    file_digest: ContentChecksum
+    selector_type: str
+    selector: str
+    file_coverage: str
+    selector_state: str
+    adapter_id: str
+    adapter_version: str
+    selector_digest: ContentChecksum | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["stream_id"] = self.stream_id
+        wire["snapshot_id"] = self.snapshot_id
+        wire["path"] = self.path
+        wire["file_digest"] = self.file_digest
+        wire["selector_type"] = self.selector_type
+        wire["selector"] = self.selector
+        wire["file_coverage"] = self.file_coverage
+        wire["selector_state"] = self.selector_state
+        if self.selector_digest is not None:
+            wire["selector_digest"] = self.selector_digest
+        wire["adapter_id"] = self.adapter_id
+        wire["adapter_version"] = self.adapter_version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSelectorAttestInput"
+    ) -> EngineeringSelectorAttestInput:
+        """Decode a wire payload into a EngineeringSelectorAttestInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_stream_id = _decode_str(
+            _require_field(mapping, "stream_id", path),
+            f"{path}.stream_id",
+        )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_path = _decode_str(_require_field(mapping, "path", path), f"{path}.path")
+        field_file_digest = _decode_str(
+            _require_field(mapping, "file_digest", path),
+            f"{path}.file_digest",
+        )
+        field_selector_type = _decode_str(
+            _require_field(mapping, "selector_type", path),
+            f"{path}.selector_type",
+        )
+        field_selector = _decode_str(_require_field(mapping, "selector", path), f"{path}.selector")
+        field_file_coverage = _decode_str(
+            _require_field(mapping, "file_coverage", path),
+            f"{path}.file_coverage",
+        )
+        field_selector_state = _decode_str(
+            _require_field(mapping, "selector_state", path),
+            f"{path}.selector_state",
+        )
+        field_selector_digest: ContentChecksum | None = None
+        if "selector_digest" in mapping:
+            raw_selector_digest = mapping["selector_digest"]
+            if raw_selector_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.selector_digest: null is not a valid value"
+                )
+            field_selector_digest = _decode_str(raw_selector_digest, f"{path}.selector_digest")
+        field_adapter_id = _decode_str(
+            _require_field(mapping, "adapter_id", path),
+            f"{path}.adapter_id",
+        )
+        field_adapter_version = _decode_str(
+            _require_field(mapping, "adapter_version", path),
+            f"{path}.adapter_version",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            stream_id=field_stream_id,
+            snapshot_id=field_snapshot_id,
+            path=field_path,
+            file_digest=field_file_digest,
+            selector_type=field_selector_type,
+            selector=field_selector,
+            file_coverage=field_file_coverage,
+            selector_state=field_selector_state,
+            selector_digest=field_selector_digest,
+            adapter_id=field_adapter_id,
+            adapter_version=field_adapter_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringSelectorAttestResult:
+    """Result of `engineering.selector.attest`: the stored attestation's identity, and whether
+    this call stored it or an identical attestation already existed. A different statement
+    for a selector already attested in the snapshot is a `conflict`, never an overwrite.
+    """
+
+    attestation_id: Identifier
+    disposition: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["attestation_id"] = self.attestation_id
+        wire["disposition"] = self.disposition
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "EngineeringSelectorAttestResult"
+    ) -> EngineeringSelectorAttestResult:
+        """Decode a wire payload into a EngineeringSelectorAttestResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_attestation_id = _decode_str(
+            _require_field(mapping, "attestation_id", path),
+            f"{path}.attestation_id",
+        )
+        field_disposition = _decode_str(
+            _require_field(mapping, "disposition", path),
+            f"{path}.disposition",
+        )
+        return cls(
+            attestation_id=field_attestation_id,
+            disposition=field_disposition,
         )
 
 
@@ -13273,6 +13750,41 @@ class ContinuityHandoffReadResult:
         )
         return cls(
             handoff=field_handoff,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityHandoffGrantResult:
+    """Result of `continuity.handoff.grant`."""
+
+    grant: ContinuityHandoffGrant
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["grant"] = self.grant.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContinuityHandoffGrantResult"
+    ) -> ContinuityHandoffGrantResult:
+        """Decode a wire payload into a ContinuityHandoffGrantResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_grant = ContinuityHandoffGrant.from_wire(
+            _require_field(mapping, "grant", path),
+            f"{path}.grant",
+        )
+        return cls(
+            grant=field_grant,
         )
 
 
@@ -24310,6 +24822,221 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "rate_limited",
             "unsupported_minor_version",
             "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="engineering.source.capture.hint",
+        scope=OperationScope(
+            required_scopes=("engineering:source",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceCaptureHintInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSourceCaptureHintResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.source",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="continuity.handoff.grant",
+        scope=OperationScope(
+            required_scopes=("engineering:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/ContinuityHandoffGrantInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/ContinuityHandoffGrantResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="continuity.handoff.revoke",
+        scope=OperationScope(
+            required_scopes=("engineering:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/ContinuityHandoffRevokeInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/ContinuityHandoffRevokeResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="engineering.selector.attest",
+        scope=OperationScope(
+            required_scopes=("engineering:source",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSelectorAttestInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+            "#/$defs/EngineeringSelectorAttestResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.source",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

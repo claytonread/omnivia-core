@@ -19,6 +19,8 @@ from omnivia_core.contracts.v1.generated import (
     OPERATION_CATALOGUE,
     EngineeringSourceCaptureCommitInput,
     EngineeringSourceCaptureCommitResult,
+    EngineeringSourceCaptureHintInput,
+    EngineeringSourceCaptureHintResult,
     EngineeringSourcePredecessor,
     EngineeringSourceStreamCoverage,
 )
@@ -327,7 +329,7 @@ def test_result_unknown_keys_are_refused() -> None:
 
 
 def test_the_operation_catalogue_accepts_capture_commit_as_entry_53() -> None:
-    assert len(OPERATION_CATALOGUE) == 57
+    assert len(OPERATION_CATALOGUE) == 61
     entry = next(
         item
         for item in OPERATION_CATALOGUE
@@ -352,3 +354,66 @@ def test_the_operation_catalogue_accepts_capture_commit_as_entry_53() -> None:
         "size_limit_exceeded",
         "idempotency_conflict",
     } <= set(entry.allowed_errors)
+
+
+# --- engineering.source.capture.hint: identities only, advisory, read-class --------
+
+_HINT = {"repository_id": "repo-1", "checkout_id": "co-1"}
+
+
+def test_the_hint_input_names_only_the_two_registered_identities() -> None:
+    _valid("EngineeringSourceCaptureHintInput", _HINT)
+    assert {f.name for f in fields(EngineeringSourceCaptureHintInput)} == set(_HINT)
+    for missing in _HINT:
+        _invalid(
+            "EngineeringSourceCaptureHintInput",
+            {k: v for k, v in _HINT.items() if k != missing},
+        )
+
+
+def test_the_hint_input_refuses_paths_content_commands_and_authority_fields() -> None:
+    for extra in (
+        "checkout_root",
+        "checkout_hint",
+        "path",
+        "paths",
+        "file_path",
+        "content",
+        "bytes",
+        "manifest",
+        "command",
+        "installation_id",
+        "workspace_id",
+        "principal_id",
+        "purpose",
+        "scopes",
+        "roles",
+        "capabilities",
+        "payload",
+    ):
+        _invalid("EngineeringSourceCaptureHintInput", {**_HINT, extra: "x"})
+
+
+def test_the_hint_result_is_a_bare_acknowledgement() -> None:
+    _valid("EngineeringSourceCaptureHintResult", {"acknowledged": True})
+    assert {f.name for f in fields(EngineeringSourceCaptureHintResult)} == {"acknowledged"}
+    for extra in ("queued", "queue_depth", "path", "coalesced", "retry_after_ms"):
+        _invalid(
+            "EngineeringSourceCaptureHintResult", {"acknowledged": True, extra: 1}
+        )
+    _invalid("EngineeringSourceCaptureHintResult", {})
+
+
+def test_the_hint_is_a_read_class_trusted_source_operation() -> None:
+    entry = next(
+        item
+        for item in OPERATION_CATALOGUE
+        if item.name == "engineering.source.capture.hint"
+    )
+    assert entry.scope.side_effect == "none"
+    assert entry.scope.required_scopes == ("engineering:source",)
+    assert entry.required_capability.id == "engineering.source"
+    assert not entry.idempotency.required
+    assert entry.idempotency.safe_to_retry
+    assert entry.audit.audited and entry.audit.audit_category == "read"
+    assert "not_found" not in entry.allowed_errors

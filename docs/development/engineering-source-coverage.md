@@ -18,8 +18,10 @@ This slice delivers one bounded vertical:
 3. a `current_safe` read serves a record only when one evaluator proves it
    `matched` at an explicitly requested target that coverage has reached.
 
-Only whole-file SHA-256 digests are compared. No symbol, span, config key or
-rename is ever resolved.
+Whole-file SHA-256 digests are compared directly. A `symbol` or `source_span`
+selector is compared only through a trusted adapter attestation (see "Selector
+attestations"). Core never parses source, and no config key, schema contract,
+external evidence or rename is ever resolved.
 
 ## Captured working-tree source
 
@@ -69,6 +71,27 @@ from model-facing MCP with reason `mutation`. Platform filesystem notifications 
 external integration work, so Core polling is the recovery source of truth. Dev still
 owns semantic parser/indexer and symbol/span adapters; this Core slice supplies only
 captured whole-file coverage.
+
+A platform or Dev watcher may hint that a registered checkout changed through
+`engineering.source.capture.hint`, reached by the trusted CLI route `engineering hint`.
+The request is exactly `repository_id` and `checkout_id`: no path, content, command or
+authority field is accepted, and unknown keys are refused. It is a read-class operation
+under the source producer's own `engineering:source` scope, `engineering.source`
+capability and `engineering_source` purpose, and is omitted from model-facing MCP with
+reason `read_not_allow_listed`. It stores nothing, so there is no idempotency key to
+replay and no durable audit write per hint. The handler forwards a hint only for a
+checkout registered to this workspace and installation, and the reply is the same
+`{"acknowledged": true}` for a registered, unknown or foreign target (and when the
+executor seam fails), so it discloses no registration fact, path, queue state or timing.
+
+The live executor keeps at most 64 distinct pending identities under a lock. A hint wakes
+the next service tick once, without moving the poll schedule, and names its checkout
+ahead of ordinary rotation inside the checkout lane. Hinted and rotation units alternate,
+and the lane budget and recovery-lane reservation are unchanged, so neither a hint burst
+nor recovery work can starve the other. A full set drops the new identity but still wakes
+the tick. A lost hint (restart, full set, stale registration, unavailable checkout,
+storage contention or a failing seam) only delays that checkout until the unchanged poll
+reaches it, and none writes a durable failure verdict.
 
 A proposal's sealed set is carried to the exact versions that the
 claim-preserving `knowledge.propose` and `candidate.approve` mint (migration
@@ -254,7 +277,9 @@ covered target. It reads only and writes nothing.
 | Stored dependency rows differ from the set's sealed count | `unknown` (fails closed; at most count + 1 rows are read) |
 | A required whole-file digest that the baseline attests is absent from a complete target | `invalid` |
 | A required whole-file digest that the baseline attests changed at the target | `potentially_stale` |
-| Unsupported selector type; required digest not attested by the baseline; incomplete baseline or target capture; `partial` coverage; no resolved evidence; no required dependency (empty or `context_only` only) | `unknown` |
+| A required `symbol` or `source_span` selector that a trusted baseline attestation holds as present and the target attests explicitly absent in a completely analysed file | `invalid` |
+| A required `symbol` or `source_span` selector whose complete, compatible baseline and target attestations carry different selector digests | `potentially_stale` |
+| Selector type other than `whole_file`, `symbol` or `source_span`; required digest not attested by the baseline; incomplete baseline or target capture; `partial` coverage; no resolved evidence; no required dependency (empty or `context_only` only); a `symbol` or `source_span` selector without trusted, complete, compatible attestations in both snapshots | `unknown` |
 | Otherwise (every required digest attested and equal) | `matched` |
 
 - **Precedence:** `invalid`, then `potentially_stale`, then `unknown`, then
@@ -267,6 +292,102 @@ covered target. It reads only and writes nothing.
   branch names and recency.
 - **Reverts:** a revert matches again because its digests are equal, and the
   intervening stale snapshot stays stale.
+
+## Selector attestations: `symbol` and `source_span` (migration 0065)
+
+Core never parses source. `engineering.selector.attest` ingests what an installed Dev
+adapter, running as the authenticated source stream owner, states about one selector in
+one sealed snapshot. It is a trusted, non-MCP mutation (omitted from model-facing MCP with
+reason `mutation`), reached by the CLI path `engineering attest` under the source
+producer's own `engineering:source` scope, `engineering.source` capability and
+`engineering_source` purpose.
+
+The request is exactly `repository_id`, `stream_id`, `snapshot_id`, `path`, `file_digest`,
+`selector_type` (`symbol` or `source_span`), `selector`, `file_coverage` (`complete` or
+`partial`), `selector_state` (`present` or `absent`), `selector_digest` (required exactly
+when the selector is `present`), `adapter_id` and `adapter_version`. Unknown keys fail
+closed. It carries no raw source, no local path (a path must be repository-relative and
+normalized), and no workspace, installation, principal, purpose, scope, role or capability:
+the workspace, installation and stream owner are the authenticated caller's own.
+
+- **Bindings validated before a digest counts:** the stream exists and is owned by the
+  authenticated principal (a foreign stream is `authorization_denied`, an unknown stream
+  or snapshot `not_found`); the stream is bound to the stated repository; the snapshot is
+  a recorded event of that stream; the stated whole-file digest is exactly the snapshot's
+  own captured digest for the path (the inline manifest for `flat_v1`, the indexed file
+  table for `captured_v1`); and, where the stream's origin or the snapshot's capture header
+  names an installation, it is the authenticated one. A mismatch is a `conflict`. The
+  adapter's selector digest is evidence only after all of these hold.
+- **Immutable:** one statement per (snapshot, selector type, selector). An identical
+  redelivery returns `already_recorded`; a different statement is a `conflict`, never an
+  overwrite. The row is never updated or deleted, and migration 0065's triggers hold every
+  binding, the audit, and append-only a second time. Because digests from different adapter
+  versions are never compared, an adapter upgrade cannot re-attest an old snapshot: a
+  dependency whose baseline and target were attested by different adapters stays `unknown`.
+- **Evaluation:** a dependency's `selector` is the attestation's `selector` value exactly;
+  Core does not interpret it, so an adapter must make it unique within a snapshot. The
+  evaluator re-checks every binding at read time (stream owner, repository, installation,
+  and the whole-file digest the snapshot still holds for the path); evidence that no longer
+  holds is `unknown`. A verdict needs trusted, `complete` attestations of the same adapter
+  id and version and the same path in the baseline and the target, and a `present`
+  baseline whose digest equals any `expected_digest` the dependency claimed. The target
+  then decides: explicitly `absent` is `invalid`, the same selector digest is `matched`,
+  and a different one is `potentially_stale`. A missing, partial or mismatched attestation
+  is `unknown`, never adverse. A `context_only` selector is ignored like a `context_only`
+  whole file. A file removed from a complete target has no attestation, so the selector is
+  `unknown`; only an explicit `absent` statement is `invalid`.
+- **Out of scope here:** `config_key`, `schema_contract` and `external_evidence` stay
+  recorded and `unknown`; the invalidation worker's reverse index is still whole-file only,
+  so `diagnostic` assessment history does not react to selector changes (`current_safe`
+  evaluates every version directly); and no installed adapter yet emits attestations, so
+  Dev still owns the parser/indexer that produces them.
+- **Portable export:** attestations name the attesting installation, so they are excluded
+  from a portable export like capture headers and stream origins; the snapshot, its file
+  index and the source events stay.
+
+## Continuity handoff grants (migration 0064)
+
+Continuity stays owner-only: another principal's checkpoint is `not_found`, exactly like a
+missing one. A handoff grant is the one narrow exception, added by two trusted, non-MCP
+mutations (omitted from model-facing MCP with reason `mutation`; CLI paths
+`continuity grant` and `continuity revoke`, purpose `continuity_handoff_grant`, under the
+same `engineering:write` scope as the other continuity writes):
+
+- `continuity.handoff.grant` takes `checkpoint_id`, `checkpoint_digest` (the checkpoint's own
+  digest from its append or close receipt), `grantee_principal_id` and `ttl_seconds`
+  (60 to 604,800). The grantor is the authenticated principal and must own the
+  checkpoint's session; the workspace and installation are the caller's own, never the
+  payload's. The grantee must already be a continuity principal in the workspace (it has
+  registered a session: Core keeps no separate principal registry). A missing or foreign
+  checkpoint, a stale digest and an unknown grantee are all the same `not_found`; a grant
+  to oneself or an unknown key is `invalid_request`; a second live grant for the same
+  checkpoint and grantee is a `conflict`.
+- `continuity.handoff.revoke` takes `grant_id`. Only the grantor revokes, a foreign or
+  missing grant is `not_found`, and revoking an already revoked grant returns the first
+  revocation unchanged. Grants and revocations are append-only rows with an exact audit;
+  nothing is updated or deleted.
+
+`continuity.handoff.read` by exact `checkpoint_id` falls back to a grant only when the owner
+path found nothing. It returns the same redacted `continuity_handoff.v1` view the owner
+gets, and only while the grant is unexpired and unrevoked, the checkpoint's stored digest
+still equals the pinned digest, and the grantee holds its own current, active, unexpired
+continuity binding. Wrong grantee, no grant, expired, revoked, a changed digest and a
+stale, closed or expired grantee binding are one indistinguishable `not_found`.
+Session-and-sequence selection stays owner-only. A caller with no continuity binding at
+all is refused `authorization_denied` before any grant is consulted, as for every
+continuity read, so that refusal discloses nothing about grants.
+
+Revocation applies on the grantee's next read, and expiry is judged against the server's
+wall clock at read time. Closing the owning session does not revoke a grant. A grantee
+cannot grant, regrant or revoke: the insert trigger accepts only the checkpoint's owner.
+A portable export excludes grants and revocations, so a restored workspace carries no live
+read authority granted to another principal.
+
+Production note: the local service authenticates the configured local principal and the
+installed-MCP principals, and no model-facing profile exposes `continuity.handoff.*`. The
+behaviour is proven through the production application surface with distinct authenticated
+sessions, but a deployment with two distinct non-MCP principals needs the principal and
+credential decision recorded for other sharing work before it can use grants.
 
 ## `current_safe` reads
 
@@ -534,6 +655,16 @@ migration file's own content has to exist at a real commit before that
 commit's hash can be recorded. `accepted_commit` stays null until the normal
 acceptance process records a landing.
 
+## Migration pins (0064 and 0065)
+
+Allocations 64 (`0064_engineering_handoff_grants.sql`, predecessor 63) and 65
+(`0065_engineering_selector_attestations.sql`, predecessor 64) are candidates owned by
+Engineering Memory. Their normalized SHA-256 values are
+`e6f89df9b913b40bdf4d49e142c0f2ff625ff8fc53b98064d82d7046d66eaae5` and
+`00a6cee0288bcdb13ab9ba330a25d9b90f725c16f48e371d19f49458ac46f3a9`. Both were
+introduced by commit `8efab26e83d137736f229f84745c2e535390980e`, which is pinned in the
+allocation ledger and conformance test. `accepted_commit` stays null until landing.
+
 ## Producer → consumer map
 
 | Producer | Writes | Consumers |
@@ -541,6 +672,8 @@ acceptance process records a landing.
 | `engineering.source.record` (trusted source, `engineering:source`) | repository (first use), stream, 0047 snapshot, source event, head and barrier | `covered_snapshot` (targets and baselines), the evaluator, `current_safe` search and build, the dependency-set trigger, the invalidation worker |
 | `memory.create` with `dependency_manifest` (contributor) | governed proposal, 0049 dependency rows, dependency set | the evaluator, the invalidation worker's reverse lookup |
 | `knowledge.propose`, `candidate.approve` (claim-preserving governance) | the new exact version's carried dependency rows and set, when the source's set is consistent | the evaluator |
+| `engineering.selector.attest` (trusted source producer, `engineering:source`) | immutable selector attestation bound to the stream owner, installation, snapshot, path and whole-file digest | the evaluator (`symbol` and `source_span` selectors only) |
+| `continuity.handoff.grant` / `continuity.handoff.revoke` (checkpoint owner, `engineering:write`) | append-only grant and revocation rows | `continuity.handoff.read` by checkpoint id, for the named grantee only |
 | Evaluator (read-only) | nothing | `current_safe` search (frontier admission, preview `matched`) and `current_safe` pack build (sections, per-target status, omissions); also called by the invalidation worker |
 | `engineering.review.record` (unchanged) | attestation plus conservative assessment | `diagnostic` search only; never the evaluator |
 | Invalidation worker (migration 0054, service-owned, generation-fenced) | `deterministic` assessments; the stream's `processed_sequence` and its keyset cursor (`pending_dependent_record_id`/`pending_dependent_version`) | `diagnostic` search's re-assessment of stored rows; never `current_safe`, which still proves every version directly |
@@ -556,8 +689,10 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
   carry nothing, so the version they mint has no set and stays `unknown` until
   it has its own qualified set; no path records one for it. An accepted version
   whose source had no consistent set is likewise `unknown`.
-- **Other selector types:** `symbol`, `config_key`, `source_span`,
-  `schema_contract` and `external_evidence` are recorded but not evaluated.
+- **Other selector types:** `config_key`, `schema_contract` and
+  `external_evidence` are recorded but not evaluated. `symbol` and `source_span`
+  are evaluated only through trusted attestations (above), and stay `unknown`
+  without them.
 - **Renames:** there is no rename field. A renamed required file reads as absent
   at the target, which is `invalid` under complete capture.
 - **No serving projection beyond the assessment history itself:** migration
@@ -575,8 +710,9 @@ evaluate `unknown`; the rest are limitations that this slice leaves as they were
   section) reads the continuity checkpoint index, which carries no evidence
   labels. Sessions, checkpoints and that index are read only for the effective
   principal's own sessions. Another principal's session is indistinguishable
-  from a missing one. There is no sharing grant, so continuity is
-  same-principal only.
+  from a missing one. The only exception is a handoff grant (below), and it
+  reaches only `continuity.handoff.read`: `working_context` search and the
+  `resume` pack remain same-principal.
 - **Known conflicts:** context packs do not yet produce known-conflict warnings.
 - **Search omissions:** `current_safe` search omissions are not counted in the
   result, because the contract has no field for them.

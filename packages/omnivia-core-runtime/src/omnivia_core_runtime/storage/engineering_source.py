@@ -34,7 +34,13 @@ Rules enforced here:
   in the same repository and stream. A changed required file is
   `potentially_stale`, an absent one under complete capture is `invalid`, and
   anything unqualified is `unknown`. Reviews, labels, base commits and recency
-  play no part.
+  play no part;
+- `symbol` and `source_span` selectors are evaluated only through immutable,
+  trusted selector attestations (migration 0065) that an installed Dev adapter
+  states as the stream owner. Core never parses source: it compares the
+  adapter's selector digests between the baseline and the target, and every
+  attestation must still bind its stream owner, repository, snapshot, path and
+  whole-file digest. Every other selector type stays `unknown`.
 """
 
 from __future__ import annotations
@@ -72,8 +78,9 @@ SNAPSHOT_KINDS: Final = frozenset({"git_commit", "working_tree", "source_archive
 #: sealed by `omnivia_engineering_snapshot_captures`. Unknown values fail closed.
 MANIFEST_FORMATS: Final = frozenset({"flat_v1", "captured_v1"})
 CAPTURE_STATUSES: Final = frozenset({"complete", "incomplete"})
-#: 0049's selector and meaning vocabularies. Only `whole_file` is evaluated in v1;
-#: every other selector type is recorded and yields `unknown`.
+#: 0049's selector and meaning vocabularies. `whole_file` is evaluated from the
+#: snapshot's file digests, `symbol` and `source_span` from trusted selector
+#: attestations; every other selector type is recorded and yields `unknown`.
 SELECTOR_TYPES: Final = frozenset(
     {
         "whole_file",
@@ -84,6 +91,10 @@ SELECTOR_TYPES: Final = frozenset(
         "external_evidence",
     }
 )
+#: The selector types a trusted Dev adapter may attest (migration 0065).
+ATTESTED_SELECTOR_TYPES: Final = frozenset({"symbol", "source_span"})
+FILE_COVERAGES: Final = frozenset({"complete", "partial"})
+SELECTOR_STATES: Final = frozenset({"present", "absent"})
 MEANINGS: Final = frozenset(
     {"must_match", "requires_revalidation_on_change", "context_only"}
 )
@@ -111,6 +122,22 @@ _CAPTURE_COMMIT_KEYS: Final = frozenset(
         "predecessor",
         "snapshot_id",
         "expected_manifest_digest",
+    }
+)
+_ATTESTATION_KEYS: Final = frozenset(
+    {
+        "repository_id",
+        "stream_id",
+        "snapshot_id",
+        "path",
+        "file_digest",
+        "selector_type",
+        "selector",
+        "file_coverage",
+        "selector_state",
+        "selector_digest",
+        "adapter_id",
+        "adapter_version",
     }
 )
 _PREDECESSOR_KEYS: Final = frozenset({"sequence", "snapshot_id"})
@@ -169,6 +196,10 @@ class DependencyManifestInvalid(ValueError):
 
 class DependencyBaselineUnavailable(LookupError):
     """The dependency manifest's baseline is not a recorded source event."""
+
+
+class SelectorAttestationNotFound(LookupError):
+    """The stream or snapshot an attestation names was never recorded."""
 
 
 @dataclass(frozen=True)
@@ -233,6 +264,24 @@ class CoveredSnapshot:
     manifest_digest: str
     manifest: Mapping[str, str]
     representation: str = "flat_v1"
+
+
+@dataclass(frozen=True)
+class SelectorAttestation:
+    """One validated adapter statement about one selector in one sealed snapshot."""
+
+    repository_id: str
+    stream_id: str
+    snapshot_id: str
+    path: str
+    file_digest: str
+    selector_type: str
+    selector: str
+    file_coverage: str
+    selector_state: str
+    selector_digest: str | None
+    adapter_id: str
+    adapter_version: str
 
 
 @dataclass(frozen=True)
@@ -450,6 +499,180 @@ def parse_captured_source_commit(raw: object) -> CapturedSourceCommit:
         snapshot_id=snapshot_id,
         expected_manifest_digest=expected,
     )
+
+
+def parse_selector_attestation(raw: object) -> SelectorAttestation:
+    """Validate one `engineering.selector.attest` payload, strictly and totally.
+
+    Unknown keys fail closed. The statement carries identities, a normalized
+    repository-relative path, digests and bounded labels, never source text: a
+    selector value with a control character, or a path that is absolute,
+    drive-prefixed, backslashed or traversing, is refused.
+    """
+    value = _plain(raw)
+    required = _ATTESTATION_KEYS - {"selector_digest"}
+    if (
+        not isinstance(value, dict)
+        or not required <= set(value)
+        or not set(value) <= _ATTESTATION_KEYS
+    ):
+        raise SourceRecordInvalid("unknown or missing selector attestation fields")
+    if not (
+        _member(value["selector_type"], ATTESTED_SELECTOR_TYPES)
+        and _member(value["file_coverage"], FILE_COVERAGES)
+        and _member(value["selector_state"], SELECTOR_STATES)
+        and valid_path(value["path"])
+        and is_content_checksum(value["file_digest"])
+        and _bounded_text(value["selector"], MAX_PATH_CHARS)
+        and _bounded_text(value["adapter_id"], 128)
+        and _bounded_text(value["adapter_version"], 64)
+    ):
+        raise SourceRecordInvalid("a selector attestation field is malformed")
+    digest = value.get("selector_digest")
+    if (value["selector_state"] == "present") != (digest is not None) or (
+        digest is not None and not is_content_checksum(digest)
+    ):
+        raise SourceRecordInvalid("the selector digest must accompany exactly a present selector")
+    return SelectorAttestation(
+        repository_id=_identifier(value, "repository_id"),
+        stream_id=_identifier(value, "stream_id"),
+        snapshot_id=_identifier(value, "snapshot_id"),
+        path=value["path"],
+        file_digest=value["file_digest"],
+        selector_type=value["selector_type"],
+        selector=value["selector"],
+        file_coverage=value["file_coverage"],
+        selector_state=value["selector_state"],
+        selector_digest=digest,
+        adapter_id=value["adapter_id"],
+        adapter_version=value["adapter_version"],
+    )
+
+
+def _file_digest_at(
+    connection: sqlite3.Connection,
+    workspace_id: str,
+    snapshot: CoveredSnapshot,
+    path: str,
+) -> str | None:
+    """The whole-file digest `snapshot` holds for `path`: one bounded lookup, or None."""
+    if snapshot.representation == "captured_v1":
+        return captured_manifest_lookup(
+            connection, workspace_id=workspace_id, snapshot_id=snapshot.snapshot_id, paths=[path]
+        ).get(path)
+    return snapshot.manifest.get(path)
+
+
+def record_selector_attestation(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    installation_id: str,
+    request: SelectorAttestation,
+    allocate_identifier: Any,
+) -> dict[str, Any]:
+    """Store one adapter statement after every exact binding validates.
+
+    Only the authenticated stream owner may attest, for the stream's own
+    repository, one of its recorded snapshots, with the whole-file digest that
+    snapshot already holds for the path, from the stream's own installation. The
+    adapter's selector digest is evidence only after all of that holds. An
+    identical statement already stored is `already_recorded`; a different one for
+    the same selector in the same snapshot is a conflict, never an overwrite.
+    Migration 0065's insert trigger decides all of this a second time.
+    """
+    stream = _stream(connection, workspace_id, request.stream_id)
+    if stream is None:
+        raise SelectorAttestationNotFound(request.stream_id)
+    if stream[1] != principal_id:
+        raise SourceStreamForeignPrincipal(request.stream_id)
+    if stream[0] != request.repository_id:
+        raise SourceConflict("the stream is bound to another repository")
+    event = connection.execute(
+        "SELECT manifest_format, manifest_json FROM omnivia_engineering_source_events "
+        "WHERE workspace_id = ? AND stream_id = ? AND snapshot_id = ?",
+        (workspace_id, request.stream_id, request.snapshot_id),
+    ).fetchone()
+    if event is None:
+        raise SelectorAttestationNotFound(request.snapshot_id)
+    for table, key in (
+        ("omnivia_engineering_source_stream_origins", ("stream_id", request.stream_id)),
+        ("omnivia_engineering_snapshot_captures", ("snapshot_id", request.snapshot_id)),
+    ):
+        bound = connection.execute(
+            f"SELECT installation_id FROM {table} WHERE workspace_id = ? AND {key[0]} = ?",
+            (workspace_id, key[1]),
+        ).fetchone()
+        if bound is not None and str(bound[0]) != installation_id:
+            raise CapturedSourceUnauthorized("the stream belongs to another installation")
+    if str(event[0]) == "captured_v1":
+        held = captured_manifest_lookup(
+            connection,
+            workspace_id=workspace_id,
+            snapshot_id=request.snapshot_id,
+            paths=[request.path],
+        ).get(request.path)
+    else:
+        held = json.loads(str(event[1])).get(request.path)
+    if held != request.file_digest:
+        raise SourceConflict("the whole-file digest is not the snapshot's captured digest")
+    stored = connection.execute(
+        "SELECT attestation_id, path, file_digest, file_coverage, selector_state, "
+        "selector_digest, adapter_id, adapter_version, producer_principal_id, "
+        "installation_id, repository_id, stream_id "
+        "FROM omnivia_engineering_selector_attestations "
+        "WHERE workspace_id = ? AND snapshot_id = ? AND selector_type = ? AND selector = ?",
+        (workspace_id, request.snapshot_id, request.selector_type, request.selector),
+    ).fetchone()
+    if stored is not None:
+        identical = tuple(stored[1:]) == (
+            request.path,
+            request.file_digest,
+            request.file_coverage,
+            request.selector_state,
+            request.selector_digest,
+            request.adapter_id,
+            request.adapter_version,
+            principal_id,
+            installation_id,
+            request.repository_id,
+            request.stream_id,
+        )
+        if not identical:
+            raise SourceConflict("a different statement already attests this selector")
+        return {"attestation_id": str(stored[0]), "disposition": "already_recorded"}
+    attestation_id = allocate_identifier("esat")
+    connection.execute(
+        "INSERT INTO omnivia_engineering_selector_attestations "
+        "(workspace_id, attestation_id, installation_id, producer_principal_id, "
+        "repository_id, stream_id, snapshot_id, path, file_digest, selector_type, "
+        "selector, file_coverage, selector_state, selector_digest, adapter_id, "
+        "adapter_version, recorded_at_us, audit_ref) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            workspace_id,
+            attestation_id,
+            installation_id,
+            principal_id,
+            request.repository_id,
+            request.stream_id,
+            request.snapshot_id,
+            request.path,
+            request.file_digest,
+            request.selector_type,
+            request.selector,
+            request.file_coverage,
+            request.selector_state,
+            request.selector_digest,
+            request.adapter_id,
+            request.adapter_version,
+            settlement.settled_at_us,
+            settlement.audit_ref,
+        ),
+    )
+    return {"attestation_id": attestation_id, "disposition": "recorded"}
 
 
 def _timestamp(us: int) -> str:
@@ -1377,12 +1600,120 @@ def _seal_dependency_set(
     )
 
 
+@dataclass(frozen=True)
+class _TrustedAttestation:
+    path: str
+    coverage: str
+    state: str
+    digest: str | None
+    adapter: tuple[str, str]
+
+
+def _trusted_attestation(
+    connection: sqlite3.Connection,
+    workspace_id: str,
+    snapshot: CoveredSnapshot,
+    selector_type: str,
+    selector: str,
+) -> _TrustedAttestation | None:
+    """The attestation for one selector in `snapshot`, only if it is still trusted.
+
+    Trusted means every binding still holds: the stream owner is the attesting
+    principal, the repository and stream are the snapshot's own, the installation
+    matches the stream's origin and the snapshot's capture header where either
+    exists, and the whole-file digest is exactly what the snapshot holds for the
+    path. Anything else is evidence about a file Core did not capture: `None`.
+    """
+    row = connection.execute(
+        "SELECT a.installation_id, a.path, a.file_digest, a.file_coverage, "
+        "a.selector_state, a.selector_digest, a.adapter_id, a.adapter_version "
+        "FROM omnivia_engineering_selector_attestations a "
+        "JOIN omnivia_engineering_source_streams st "
+        "ON st.workspace_id = a.workspace_id AND st.stream_id = a.stream_id "
+        "WHERE a.workspace_id = ? AND a.snapshot_id = ? AND a.selector_type = ? "
+        "AND a.selector = ? AND a.stream_id = ? AND a.repository_id = ? "
+        "AND st.repository_id = a.repository_id "
+        "AND st.principal_id = a.producer_principal_id",
+        (
+            workspace_id,
+            snapshot.snapshot_id,
+            selector_type,
+            selector,
+            snapshot.stream_id,
+            snapshot.repository_id,
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    for table, key, value in (
+        ("omnivia_engineering_source_stream_origins", "stream_id", snapshot.stream_id),
+        ("omnivia_engineering_snapshot_captures", "snapshot_id", snapshot.snapshot_id),
+    ):
+        bound = connection.execute(
+            f"SELECT installation_id FROM {table} WHERE workspace_id = ? AND {key} = ?",
+            (workspace_id, value),
+        ).fetchone()
+        if bound is not None and str(bound[0]) != str(row[0]):
+            return None
+    if _file_digest_at(connection, workspace_id, snapshot, str(row[1])) != str(row[2]):
+        return None
+    return _TrustedAttestation(
+        path=str(row[1]),
+        coverage=str(row[3]),
+        state=str(row[4]),
+        digest=None if row[5] is None else str(row[5]),
+        adapter=(str(row[6]), str(row[7])),
+    )
+
+
+def selector_outcomes(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    dependencies: Sequence[tuple[str, str, str, str | None]],
+    baseline: CoveredSnapshot,
+    target: CoveredSnapshot,
+) -> dict[tuple[str, str], str]:
+    """`matched`, `stale`, `invalid` or `unknown` for each attestable required selector.
+
+    A verdict needs trusted, complete attestations of the same adapter identity
+    and version, for the same path, in both snapshots, and a present baseline. A
+    caller's `expected_digest` is a claim that must equal the baseline's attested
+    digest. The target then decides: an explicitly absent selector in a completely
+    analysed file is `invalid`; the same digest is `matched`; a different one is
+    `stale`. Missing, partial or mismatched evidence is `unknown`, never adverse.
+    """
+    outcomes: dict[tuple[str, str], str] = {}
+    for selector_type, selector, meaning, expected in dependencies:
+        if selector_type not in ATTESTED_SELECTOR_TYPES or meaning == "context_only":
+            continue
+        base = _trusted_attestation(connection, workspace_id, baseline, selector_type, selector)
+        tgt = _trusted_attestation(connection, workspace_id, target, selector_type, selector)
+        verdict = "unknown"
+        if (
+            base is not None
+            and tgt is not None
+            and base.adapter == tgt.adapter
+            and base.path == tgt.path
+            and base.coverage == tgt.coverage == "complete"
+            and base.state == "present"
+            and (expected is None or expected == base.digest)
+        ):
+            if tgt.state == "absent":
+                verdict = "invalid"
+            else:
+                verdict = "matched" if tgt.digest == base.digest else "stale"
+        outcomes[(selector_type, selector)] = verdict
+    return outcomes
+
+
 def decide(
     dependencies: Sequence[tuple[str, str, str, str | None]],
     *,
     baseline: CoveredSnapshot,
     target: CoveredSnapshot,
     qualified: bool,
+    selector_verdicts: Mapping[tuple[str, str], str] | None = None,
 ) -> str:
     """The pure v1 applicability rule over whole-file digests (§15.4).
 
@@ -1390,8 +1721,10 @@ def decide(
     baseline attests that changed is `potentially_stale`, and one absent from a
     complete target is `invalid`. `matched` needs everything: a qualified set,
     complete baseline and target captures, at least one required dependency,
-    only whole-file selectors, and every required digest attested by the baseline
-    and equal at the target.
+    only evaluable selectors, and every required digest attested by the baseline
+    and equal at the target. `selector_verdicts` carries the already-resolved
+    `symbol` and `source_span` outcomes (see `selector_outcomes`); a selector
+    with none is `unknown`.
     """
     invalid = stale = False
     unknown = (
@@ -1402,7 +1735,19 @@ def decide(
     required = 0
     for selector_type, selector, meaning, expected in dependencies:
         if selector_type != "whole_file":
-            unknown = True
+            if selector_type in ATTESTED_SELECTOR_TYPES and meaning == "context_only":
+                continue
+            verdict = (selector_verdicts or {}).get((selector_type, selector))
+            if verdict is None:
+                unknown = True
+                continue
+            required += 1
+            if verdict == "invalid":
+                invalid = True
+            elif verdict == "stale":
+                stale = True
+            elif verdict != "matched":
+                unknown = True
             continue
         if meaning == "context_only":
             continue
@@ -1521,4 +1866,11 @@ def evaluate_applicability(
         baseline=baseline,
         target=target,
         qualified=evidence_available and str(row[3]) == "complete",
+        selector_verdicts=selector_outcomes(
+            connection,
+            workspace_id=workspace_id,
+            dependencies=dependencies,
+            baseline=baseline,
+            target=target,
+        ),
     )
