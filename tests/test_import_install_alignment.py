@@ -45,6 +45,9 @@ PHASE2_RUNTIME_CONTRACT_TESTS = "tests/runtime_contract"
 PHASE2_TRUSTED_RUNTIME_TESTS = (
     "packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py"
 )
+PHASE2_ANALYSIS_WORKER_TESTS = (
+    "packages/omnivia-core-runtime/tests/phase3/runtime/test_analysis_worker.py"
+)
 BENCHMARK_TESTS = "benchmarks/tests"
 
 # The M2 defect, in the shape it actually shipped: not a module-level import
@@ -103,6 +106,7 @@ def phase2_root(tmp_path: Path) -> Path:
     _write(tmp_path / PHASE2_WINDOWS_MANAGED_RESTART_TESTS, "")
     _write(tmp_path / PHASE2_RUNTIME_CONTRACT_TESTS / "conftest.py", "")
     _write(tmp_path / PHASE2_TRUSTED_RUNTIME_TESTS, "")
+    _write(tmp_path / PHASE2_ANALYSIS_WORKER_TESTS, "")
     return tmp_path
 
 
@@ -136,6 +140,7 @@ def test_the_real_workflows_parse_into_their_install_lists_and_test_paths() -> N
         PHASE2_WINDOWS_MANAGED_RESTART_TESTS,
         PHASE2_RUNTIME_CONTRACT_TESTS,
         PHASE2_TRUSTED_RUNTIME_TESTS,
+        PHASE2_ANALYSIS_WORKER_TESTS,
     )
     assert "packages/omnivia-core-runtime" in phase2.install_targets
     # Read out of the workflow rather than written down here. This used to assert
