@@ -51,7 +51,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from omnivia_core.contracts.v1 import generated
 from omnivia_core.contracts.v1.adapter import ApplicationWireAdapter
@@ -151,7 +151,10 @@ __all__ = [
     "ADAPTER_CONFORMANCE_CORPUS_FORMAT",
     "AdapterConformanceCase",
     "AdapterConformanceError",
+    "SchemaEvaluationError",
+    "evaluate_json_schema",
     "load_adapter_conformance_corpus",
+    "require_supported_json_schema",
     "run_adapter_conformance",
     "validate_case_collection",
 ]
@@ -724,8 +727,14 @@ _JSON_TYPES: Final[dict[str, tuple[type, ...]]] = {
 }
 
 
-class _SchemaEvaluationError(ContractSemanticError):
-    """The canonical schema asks the bounded evaluator to do unsupported work."""
+_T = TypeVar("_T")
+
+
+class SchemaEvaluationError(ContractSemanticError):
+    """The schema asks the bounded evaluator to do unsupported work."""
+
+
+_SchemaEvaluationError = SchemaEvaluationError  # the evaluator's historical internal name
 
 
 class _CanonicalSchemas:
@@ -760,6 +769,65 @@ class _CanonicalSchemas:
         if not isinstance(defs, Mapping) or pointer not in defs:
             raise ContractSemanticError(f"schema reference {ref!r} resolves to nothing")
         return _require_mapping(defs[pointer], ref)
+
+
+class _ClosedSchemas(_CanonicalSchemas):
+    """Resolves only ``#/$defs/<name>`` against the caller's own root schema."""
+
+    def __init__(self, root: Mapping[str, Any]) -> None:
+        super().__init__()
+        self._root = root
+
+    def resolve(self, ref: str) -> Mapping[str, Any]:
+        name = ref.removeprefix("#/$defs/")
+        defs = self._root.get("$defs")
+        if name == ref or "/" in name or not isinstance(defs, Mapping):
+            raise SchemaEvaluationError("$ref is not a local #/$defs/<name> reference")
+        target = defs.get(name)
+        if not isinstance(target, Mapping):
+            raise SchemaEvaluationError("$ref resolves to no local schema")
+        return target
+
+
+def _closed_run(schema: object, run: Callable[[_ClosedSchemas], _T]) -> _T:
+    """Run the evaluator over a caller schema; anything unevaluable is a SchemaEvaluationError."""
+    if not isinstance(schema, Mapping):
+        raise SchemaEvaluationError("schema must be a JSON object")
+    try:
+        return run(_ClosedSchemas(schema))
+    except SchemaEvaluationError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError, RecursionError) as error:
+        raise SchemaEvaluationError(
+            f"schema cannot be evaluated ({type(error).__name__})"
+        ) from error
+
+
+def require_supported_json_schema(schema: Mapping[str, Any]) -> None:
+    """Raise :class:`SchemaEvaluationError` unless `schema` stays inside the bounded subset.
+
+    Public narrow wrapper over the evaluator's preflight, for a caller-supplied schema rather
+    than a packaged canonical one. The schema must be self-contained: the only ``$ref`` form
+    accepted is ``#/$defs/<name>`` into its own root ``$defs``; external, absolute, nested-pointer
+    and unresolved references are refused, as are cycles, so nothing is read from packaged
+    resources. A schema that is not a JSON-shaped mapping is refused the same way.
+    """
+    _closed_run(schema, lambda closed: _preflight_schema(schema, closed, "$"))
+
+
+def evaluate_json_schema(value: object, schema: Mapping[str, Any]) -> tuple[str, ...]:
+    """Evaluate `value` against a self-contained `schema`; return its findings (empty when valid).
+
+    Runs the same bounded evaluator as the conformance gate, after the same full-schema
+    preflight, so an unsupported keyword anywhere raises :class:`SchemaEvaluationError`
+    instead of being skipped. ``$ref`` is limited as in :func:`require_supported_json_schema`.
+    Finding text may quote the instance (``const``, ``enum``, ``pattern``, property names); a
+    caller that must not leak payload contents must not forward it.
+    """
+    return _closed_run(
+        schema,
+        lambda closed: tuple(_validate_against_schema(value, schema, closed, "$")),
+    )
 
 
 def _preflight_schema(
