@@ -340,7 +340,7 @@ class EvaluationCaseSummary:
 
     def __post_init__(self) -> None:
         _id("case_ref", self.case_ref)
-        _refs("attempt_refs", self.attempt_refs, required=True)
+        _refs("attempt_refs", self.attempt_refs)
         require(len(self.attempt_refs) == len(self.outcomes), GovernedKnowledgeErrorCode.INVALID_FIELD, "summary attempt and outcome counts differ")
         require(all(isinstance(item, EvaluationResultStatus) for item in self.outcomes), GovernedKnowledgeErrorCode.UNSUPPORTED_VALUE, "summary outcome is unsupported")
 
