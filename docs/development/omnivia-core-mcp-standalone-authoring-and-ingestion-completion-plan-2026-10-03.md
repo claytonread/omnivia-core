@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-03
 
-**Status:** in progress — execution baseline for PR #167
+**Status:** Historical Gate E closeout for PR #167; Gate C and Gate D evidence exists for the 13/18 snapshot at `0d8cf362` and is superseded for the live candidate; the live 14/25 candidate is not qualified
 
 **Active branch:** `codex/core-mcp-authoring-phase8-closeout`
 
@@ -94,8 +94,9 @@ I-1 through I-8 at this or any later tip.
 
 Completed on the branch:
 
-- a v1.4 addendum accepts and classifies the current thirteen-tool restricted
-  and eighteen-tool authoring inventories;
+- a v1.4 addendum, a dated snapshot, accepts and classifies the thirteen-tool
+  restricted and eighteen-tool authoring inventories that were live then; the
+  live inventories are now fourteen and twenty-five under manifest 2.5;
 - installed-wheel restricted and authoring journeys, a closed redacted record
   schema, and deterministic conformance tests exist locally. The retained-record
   gate is not current frozen-candidate evidence, so B-12 and H-5 through H-7
@@ -124,7 +125,7 @@ Completed on the branch:
   12 rewritten for the current architecture, 96 already superseded and 11
   rejected.
 
-Remaining before completion:
+Remaining before completion, as the `0d8cf362` closeout stated them (historical):
 
 1. checkpoint the focused-reviewed harness hardening, complete full exact-tip
    independent review, and freeze the resulting clean source tip;
@@ -140,17 +141,30 @@ Remaining before completion:
 7. merge only with explicit user authorization, record the release decision,
    and archive temporary worktrees only after separate cleanup authorization.
 
+Live residuals for the manifest 2.5 candidate (fourteen restricted, twenty-five
+authoring, ten admitted mutations, 69 catalogue operations). None of the
+`0d8cf362` records qualifies it, so all of the following remain open:
+
+- freeze a clean exact tip that carries the live manifest, and record its
+  candidate key and wheel closure;
+- build release-form wheels from that tip and run the restricted (14-tool) and
+  authoring (25-tool) installed-wheel journeys against them;
+- run Claude Code 2.1.289 and Codex CLI 0.146.0 against that candidate and retain
+  new records whose harness and schema digests are the current bytes;
+- update traceability and status only from those records, then run exact-head
+  preflight and require fresh hosted checks; merge needs explicit authorization.
+
 ### 2.3 Critical path
 
 | Order | Work package | Status | Exit condition |
 |---|---|---|---|
-| 1 | Stabilize current branch | focused patch review complete; full exact-tip review pending | Final hardening passes full independent review and is committed and pushed |
-| 2 | Close planning evidence | complete through reviewed predecessor; this update pending | This plan and the complete 121-path PR #108 file-disposition map are tracked |
-| 3 | Complete harness coverage | complete locally; checkpoint pending | Automated tests prove every section 8 case and reject incomplete evidence |
-| 4 | Freeze candidate | pending | Clean source tip, release wheels, SDK pins, and host versions are immutable |
-| 5 | Run real hosts | blocked on Claude token and frozen tip | Claude Code and Codex CLI each produce schema-valid passing records for the frozen tip |
-| 6 | Reconcile records | pending | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
-| 7 | Accept exact tip | pending | Independent review, focused suites, full preflight, and hosted checks are green |
+| 1 | Stabilize current branch | historical: complete at qualified runtime `0d8cf362` (13/18 snapshot) | Final hardening passed independent review and is committed |
+| 2 | Close planning evidence | historical: complete | This plan and the complete 121-path PR #108 file-disposition map are tracked |
+| 3 | Complete harness coverage | historical: complete for the 13/18 inventories | Automated tests prove every section 8 case and reject incomplete evidence |
+| 4 | Freeze candidate | historical: complete at `0d8cf362`; not the live candidate | Clean runtime tip `0d8cf362`, release wheels, SDK pins and host versions are immutable; the live manifest 2.5 candidate needs its own freeze |
+| 5 | Run real hosts | historical: Claude Code 2.1.289 and Codex CLI 0.146.0 each produced passing records for the 13/18 candidate | Those records are bound to superseded digests and cannot be validated as current; the live candidate needs new records |
+| 6 | Reconcile records | in this evidence-only diff: historical records labelled, live residuals listed | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
+| 7 | Accept exact tip (live 14/25 candidate) | pending | Independent review, focused suites, full preflight, and hosted checks are green at the live tip |
 | 8 | Integrate and retire | authorization required | Authorized merge, explicit release decision, and separately authorized cleanup are complete |
 
 ---
@@ -160,7 +174,8 @@ Remaining before completion:
 ### In scope
 
 - a small requirements completion addendum or successor baseline;
-- reconciliation of the current thirteen/eighteen-tool MCP inventories;
+- reconciliation of the thirteen/eighteen-tool snapshot with the live
+  fourteen/twenty-five inventories under manifest 2.5;
 - selective porting and adaptation of the useful PR #108 qualification harness;
 - installed-wheel qualification using the reviewed MCP SDK pins;
 - isolated real-host qualification for Claude Code and Codex;
@@ -254,9 +269,11 @@ This is a product-security gate and must precede host qualification.
 
 ### Recommended decision
 
-Retain the current thirteen/eighteen inventories and issue a completion addendum
-that supersedes only the frozen inventory counts and restricted-profile wording
-in v1.3. Do not roll back later accepted Engineering Memory or decision-runtime
+Retain the thirteen/eighteen inventories as the reviewed 13/18 snapshot and issue
+a completion addendum that supersedes only the frozen inventory counts and
+restricted-profile wording in v1.3. The live inventories are now fourteen and
+twenty-five under manifest 2.5; the addendum records the snapshot, not the live
+contract. Do not roll back later accepted Engineering Memory or decision-runtime
 tools merely to reproduce the September six/eleven count.
 
 The addendum must:
@@ -309,7 +326,8 @@ restricted profile. Do not silently call the profile read-only.
    - a versioned evidence fixture under
      `docs/development/qualification-evidence/`.
 3. Make expected inventories explicit and validate them independently against
-   manifest 2.3. A host exposing fewer, more or reordered tools must fail.
+   the manifest version current at this phase: 2.3 at the 13/18 snapshot, and 2.5
+   for the live candidate. A host exposing fewer, more or reordered tools must fail.
 4. Build all Core distributions and acquire the reviewed wheelhouse.
 5. Install into a fresh environment with:
    - `--no-index`;
@@ -518,31 +536,30 @@ branch state, complete the work in the following order. Do not skip ahead from a
 failed gate, and do not treat a reported Claude check as Codex-accepted evidence
 until Codex has rerun it.
 
-Current local status at the time of this plan update:
+Local status after Gate D, as of 2026-10-04. These states are historical for the
+13/18 candidate; the live 14/25 candidate is not qualified:
 
 | Area | State | Evidence or next action |
 |---|---|---|
-| Pushed reviewed checkpoint | complete | PR #167 points to `ffa1b36c336b9e540e3b869710dc67d041a0e4f8`; that exact tip passed the 553-test focused gate, the 2,659-test four-directory gate, strict mypy, Ruff, `git diff --check`, and Phase 2 with 596 passing and four expected skips |
-| Standard candidate for `ffa1b36c` | built and verified, now superseded for closeout | `/private/tmp/omnivia-core-standard-ffa1b36c` was built cleanly without `--allow-dirty`; its key is `73eca52dbd69b41fdbffa78369009f736ea4e5b82bc8ef42f7ff425dadc8d0ef`, but the later teardown correction changes harness behavior and therefore requires a new Gate C candidate before real-host qualification |
-| Final PID-reuse teardown correction | runtime repair pushed as checkpoint `84b1510b2e5e8803803cec30ae625d3731510eb4`; Gate A behavior accepted | Four code/test files contain the fail-closed same-PID-after-reap correction and nine regressions. Codex independently reviewed the recovered Claude diff: an unproved live reused PID receives no signal and retains cleanup, a completely proved live PID is stopped once through the non-child path, and an absent original PID still permits known-group cleanup. The review-closeout diff adds the ninth race regression and explanatory comment. The three-file focused gate passes 562 tests, the four-directory gate passes 2,668 tests, strict mypy, Ruff and `git diff --check` pass, and Phase 2 passes 596 tests with four expected skips |
-| Hosted checks for `ffa1b36c` | in progress, not final acceptance evidence | Evidence-search jobs are green on Linux, macOS and Windows; Core acceptance and the three Phase 2 jobs are still running. These checks qualify only the superseded checkpoint and must run again on the evidence-closeout head |
-| Qualified runtime behavior and final candidate | candidate `665673ba` built and verified, now superseded by the pagination repair | Candidate key `bfd67a10f1b97a161171ec701b235ef787336e9459f31ad58485561064e2d0db` passed Gate C, but the later same-principal pagination correction changes the harness and requires a new clean candidate |
-| Real-host records | diagnostic only | Two Codex runs against `665673ba` failed at I-5. The reproduced run proved the fresh-session implementation passed an owner-principal continuation token to the host principal, where Core correctly refused it. Both hosts must run against the replacement candidate |
-| Real-host revocation harness (I-8) | repaired locally, not accepted | Simulated journey only: each refused request now has its own paused, admitted host session, and every regrant is a fresh configure that keeps the configuration path and rotates the principal. The simulated qualification file passes; no real-host run, provider call or Gate D record exists |
-| Exact-head preflight and hosted checks | pending | Run only after the evidence closeout head is clean and pushed |
+| Qualified runtime commit | historical | `0d8cf362d15b43077a744542974b6160c283e1dc`; all executable, harness, schema, test and substantive documentation changes are frozen there |
+| Standard candidate | historical | candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`; restricted, authoring and lifecycle journeys passed from the installed 35-wheel closure, on the 13/18 inventories |
+| Claude Code real-host record | historical | Claude Code 2.1.289, pass with every I-1 through I-8 field true when recorded; bound to harness `2529d9…` and schema `5ece52…`; committed redacted record SHA-256 `02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794` |
+| Codex CLI real-host record | historical | Codex CLI 0.146.0, pass with every I-1 through I-8 field true when recorded; bound to the same superseded digests; committed redacted record SHA-256 `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08` |
+| Evidence-only closeout | in progress | This diff adds only the two closed records and status/traceability reconciliation; it must contain no executable or acceptance-rule change |
+| Exact-head preflight and hosted checks | pending | Run after the evidence-only closeout commit, then push and require fresh PR #167 checks |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
 
-The remaining critical path is therefore:
+The critical path at the `0d8cf362` closeout was therefore (historical; for the
+live 14/25 candidate, see the residuals in section 2.2):
 
-1. done: the independently reviewed PID-reuse teardown repair is pushed as
-   `84b1510b2e5e8803803cec30ae625d3731510eb4`, and Gate A is complete there;
-2. commit and push the behavior-neutral review closeout, then run Gate C: build
-   and verify a new clean Standard candidate from that exact pushed tip;
-3. after explicit external-data authorization, run Codex CLI and Claude Code
-   against the same candidate and retain only redacted schema-valid records;
-4. land an evidence-only closeout commit, run full preflight and require every
+1. done at that closeout: freeze qualified runtime commit
+   `0d8cf362d15b43077a744542974b6160c283e1dc` and build candidate
+   `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`;
+2. done at that closeout: run Claude Code and Codex CLI against that candidate and
+   retain both redacted records;
+3. land this evidence-only closeout commit, run full preflight and require every
    hosted check on that exact head;
-5. request merge authorization, then separately record the release disposition
+4. request merge authorization, then separately record the release disposition
    and request any worktree-cleanup authorization.
 
 #### Gate A — accept or repair the final teardown response
@@ -604,8 +621,10 @@ candidate and restarting Gate C.
 
 #### Gate D — qualify both real hosts
 
-Status: pending. The I-8 revocation harness has a provider- and model-agnostic
-repair, verified only against the simulated Core and host runner. Each
+Status: historical. Complete for the 13/18 candidate at qualified runtime commit
+`0d8cf362d15b43077a744542974b6160c283e1dc`; this is not qualification of the live
+14/25 candidate. The I-8 revocation harness remains
+provider- and model-agnostic. Each
 post-revocation request (the evidence capture mutation and its replay, the
 memory replay, `job_get`, `job_events` and the import start replay) runs in its
 own host session that is paused before that one request. Authority is revoked
@@ -615,20 +634,23 @@ regrant is a fresh `mcp configure`. The service rotates the MCP principal on eac
 configure after a revoke, so the regrant keeps the configuration path and must
 produce a different principal. Replayed requests keep the principal the owner
 recorded as their actor. The final revocation is verified for both contexts.
-Import pagination keeps one host principal and one MCP child connection. The
-real host issues the base `job_events` call and the proxy holds its answer. The
-proxy then issues each remaining page on that same connection, copying the
-continuation token from the immediately previous host-principal result, and
-releases the first answer only after the final page is exhausted. Each page must
-match the corresponding owner page's canonical digest. Only a session in which
-the host never made the first call may be retried, within the existing bound of
-two retries. Once a traversal starts, a wrong id, notification or other
-interleaving, tool error, missing or unexpected token, wrong page digest,
-incomplete host completion, Core-health failure or mutation is refused at once.
-The user has authorized the external data flow: fixed qualification
-prompts and bounded, service-derived results may be sent through both the Codex
-and Claude providers. That authorization is recorded in the task. Both real-host
-records below remain pending; neither provider has passed.
+Import pagination reads `job_events` as one exact host call per owner page. Each
+page runs in its own fresh host session, with exact arguments: page one is the
+base arguments, and each later page carries the continuation token returned by
+the host's preceding successful call. Owner-side tokens are never sent to the
+host. The private handoff is closed, owner-only and bounded; the token value is
+not retained in observations, qualification records, durable logs or final
+output. Each call must be the only call its session makes, must succeed, and
+must return exactly that owner page's digest. Only a missing target call may be
+retried, within the existing bound of two retries and for that individual read.
+A wrong token or argument, extra call, tool error, wrong page digest, incomplete
+host completion, Core-health failure or mutation is refused at once.
+The user authorized the external data flow: fixed qualification prompts and
+bounded, service-derived results were sent through both the Codex and Claude
+providers. At that closeout, both retained records validated against the closed
+schema of the time, named the same qualified runtime revision and wheel closure,
+and had every I-1 through I-8 field set to `true`. The current schema bytes cannot
+validate them, so the retained pair is now guarded by exact file digest.
 
 1. Before either run, obtain explicit user authorization for the external data
    flow. Each real host sends fixed qualification prompts and bounded,
@@ -645,18 +667,66 @@ records below remain pending; neither provider has passed.
    `HOME` and `USER` so it selects the same login; it sets no `CLAUDE_CONFIG_DIR`
    and injects no token. The Claude MCP child is redirected to the harness-owned
    home and config directories with an empty token, so Core never sees the real
-   profile, but the login itself is not isolated per run. Guardrails: `--safe-mode`, `--restricted`, a private
-   per-run `TMPDIR` and empty workspace, strict MCP config, a bounded tool
-   allowlist, `dontAsk` with no prompts, no session persistence, an
-   `auth status --json` preflight, and no read, copy, print or deletion of the
-   real profile. Gate D has not passed; this change only permits the source.
+   profile, but the login itself is not isolated per run. The Claude command is
+   identical to token mode. Guardrails: exact strict MCP config, project-only
+   setting sources in an empty workspace, `--allowedTools` set to the exact MCP
+   tool names only (ambient MCP servers and executable built-ins are not
+   pre-authorized), `dontAsk` with no prompts, a private per-run `TMPDIR`, no
+   session persistence, an `auth status --json` preflight, and no read, copy,
+   print or deletion of the real profile. `--safe-mode`, `--restricted` and
+   `--tools` are intentionally absent: `--safe-mode` disables explicitly
+   configured MCP servers, and Claude Code 2.1.289 loads `--mcp-config`
+   asynchronously, so any `--tools` filter is evaluated before the MCP tools
+   register and reports `host_initialize_missing`. Two lifecycles are pinned:
+   legacy `initialize` at `2025-06-18` and modern `server/discover` at
+   `2026-07-28`. Claude Code 2.1.289 with `mcp` 2.0.0 uses the modern one: a
+   successful `server/discover`, then `tools/list` and `tools/call`, with no
+   `initialize`; it is not a probe followed by an `initialize`. A valid modern
+   discovery (success object, bounded unique `supportedVersions` including
+   `2026-07-28`, `capabilities`, `resultType` `complete`, integer `ttlMs` of at
+   least zero, `cacheScope` `public` or `private`, valid reserved metadata) is
+   recorded as `proxy_started`, `initialize_request`, `initialize_response`
+   (`ok=true`) before it is forwarded. An error or non-modern discovery is relayed
+   unobserved so the host can fall back to legacy `initialize`; a malformed
+   discovery that claims `2026-07-28` fails closed. The record schema is
+   unchanged. The proxy therefore creates its observation file lazily: it is
+   made exclusively (`0600`, `O_EXCL`, `O_NOFOLLOW`) immediately before the first validated event, which
+   is `proxy_started`, emitted automatically before the first closed-vocabulary
+   event. An unobserved launch (empty, or `server/discover` with an error or
+   non-modern response, relayed byte for byte) never creates the path, and
+   nothing is ever unlinked or replaced. An existing path of any kind refuses a
+   launch that emits an event and is left unchanged.
 4. Validate both records against the closed schema and confirm every I-1 through
    I-8 case and the restricted decision cases pass.
 5. Confirm temporary profiles, credentials, processes, roots and workspaces were
    removed. A cleanup failure is a failed qualification.
 
-Exit condition: two schema-valid passing records identify the same qualified
-runtime commit, candidate digest set, SDK pins and accepted host versions.
+Exit condition (met at the 13/18 `0d8cf362` closeout): two passing records
+identified the same qualified runtime commit, candidate digest set, SDK pins and
+accepted host versions. The live candidate needs its own pair.
+
+Exit evidence (historical, 13/18 candidate at `0d8cf362`):
+
+- qualified runtime commit:
+  `0d8cf362d15b43077a744542974b6160c283e1dc`;
+- candidate key:
+  `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`;
+- wheel closure: 35 wheels, SHA-256
+  `0ad954b79e8152f705c4b9941b2231dbc09d2ce4bd3c10baf094d2698f752c93`;
+- Claude Code 2.1.289 record:
+  `docs/development/qualification/mcp-real-host-claude-code-2.1.289.json`,
+  SHA-256
+  `02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794`;
+- Codex CLI 0.146.0 record:
+  `docs/development/qualification/mcp-real-host-codex-cli-0.146.0.json`,
+  SHA-256
+  `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08`;
+- both records were passing with every gate field `true` when recorded; they are
+  not valid against the current schema bytes;
+- candidate qualification-result SHA-256:
+  `e7725a1b12c995a0cf462734fde6a29137d5455664daaccd8844097f4774bb46`;
+- installed authoring record SHA-256:
+  `6bc166dbf9a037e7eeaffd39358b1a6992ea54ae145587dd2b5ce7a6fbb882cd`.
 
 #### Gate E — land evidence without changing the qualified runtime
 
@@ -704,11 +774,11 @@ recorded; no implicit release or worktree deletion has occurred.
 
 | Item | Current state | Required action |
 |---|---|---|
-| Claude Code qualification credential | selected 2026-10-04: the operator explicitly selected the existing logged-in Claude CLI profile (`--use-existing-host-auth`); no token file is used | Run Gate D with `--use-existing-host-auth`; the run must still pass its own `auth status --json` preflight and produce a schema-valid pass record |
-| Real-host external data flow | authorized 2026-10-04 for fixed qualification prompts and bounded Core-derived results through the logged-in Claude and Codex accounts | Run Gate D within that authorization only; authorization does not by itself mean qualification passed |
-| Final teardown behavior | accepted and pushed as `84b1510b`; behavior-neutral review closeout pending push | Commit and push the final comment, regression and plan correction, then run Gate B hosted checks on that pushed tip |
-| Final Standard candidate | previous `ffa1b36c` candidate is superseded for closeout | Gate C: rebuild from the clean pushed review-closeout tip without `--allow-dirty` and rerun installed journeys |
-| PR #167 hosted checks | checkpoint checks are in progress, but are not the final evidence-head checks | Obtain fresh exact-head checks after the teardown commit and again after the evidence-only closeout commit |
+| Claude Code qualification credential | completed 2026-10-04 with the selected existing logged-in Claude CLI profile (`--use-existing-host-auth`); the host authentication preflight passed and no token file was used | No further credential action for this candidate |
+| Real-host external data flow | authorized and completed 2026-10-04 for fixed qualification prompts and bounded Core-derived results through the Claude and Codex accounts | No further provider call is required unless executable qualification behavior changes |
+| Qualified runtime and Standard candidate | historical at `0d8cf362d15b43077a744542974b6160c283e1dc`; candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` | Preserve the runtime commit; any executable or acceptance-rule change requires returning to Gate C; the live 14/25 candidate needs its own qualification |
+| Real-host records | historical for Claude Code 2.1.289 and Codex CLI 0.146.0 on the 13/18 snapshot, bound to superseded harness and schema digests; they do not qualify the live 14/25 candidate | Preserve the committed redacted records and their digests; a current-candidate credentialed run is an external residual |
+| PR #167 hosted checks | final evidence-head checks pending | Run full local preflight, push the evidence-only head and require fresh checks |
 | Merge | not authorized | Request explicit authorization only after Gate F |
 | Release publication | not authorized and out of scope | Record publication as deferred unless separately authorized |
 | Worktree cleanup | not authorized | Preserve both completion worktrees until separately authorized |

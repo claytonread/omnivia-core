@@ -104,6 +104,14 @@ jobs:
         # could not provide rather than letting it vanish into a green row.
         run: python -m pytest tests/runtime_contract packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py -q -rs
 
+      - name: Run analysis worker result-artifact staging tests
+        # Retain-on-refusal staging is a filesystem claim: exclusive create, then
+        # no pathname call, so a foreign leaf is never touched. Directory
+        # descriptors, modes and `os.fchmod` exist on POSIX but not Windows, so
+        # only a three-platform row shows the platform-neutral cases hold without
+        # them and that the POSIX-only cases skip visibly (`-rs`).
+        run: python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_analysis_worker.py -q -rs
+
       - name: Qualify isolated-wheel MCP and CLI executables
         # Cross-platform by construction: this Python driver creates two clean
         # environments, installs wheels only, and invokes the actual console
