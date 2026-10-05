@@ -36,6 +36,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -45,7 +46,7 @@ import test_application_audit_idempotency_migration as m1
 import test_t0688_workflow_transition_bundle_repository as ip07
 import test_t0693_workflow_application as app
 import test_workflow_runs_migration as m27
-from _completion_gate_fixture import gate
+from _completion_gate_fixture import gate, reader_answering
 from omnivia_core_runtime.execution.workflow import (
     EXECUTION_CLASS_WAIT,
     ChildWorkflowDefinition,
@@ -60,10 +61,17 @@ from omnivia_core_runtime.service.application import (
     ApplicationDispatcher,
     build_installation_application_dispatcher,
 )
+from omnivia_core_runtime.service.completion_gate import (
+    REFUSED_INCOMPLETE,
+    REFUSED_NO_GATE,
+    CompletionGate,
+    CompletionRefused,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.workflow import (
     WORKFLOW_CONTROL_OPERATION,
     WORKFLOW_INSPECT_OPERATION,
+    WORKFLOW_REVIEW_OPERATION,
     WORKFLOW_START_OPERATION,
 )
 from omnivia_core_runtime.service.main import (
@@ -98,6 +106,7 @@ from omnivia_core_runtime.storage.agent_runtime import (
     read_run_sequence,
     runtime_writer,
 )
+from omnivia_core_runtime.storage.completion_decisions import read_decision
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.storage.workflow_runs import (
@@ -185,6 +194,27 @@ def scheduler(holder: m1.Owned, *, clock: FakeClock | None = None) -> RuntimeSch
         fencing_generation=holder.generation,
         clock=FakeClock(wall=WALL) if clock is None else clock,
         completion=gate(),
+    )
+
+
+def scheduler_with(holder: m1.Owned, completion: CompletionGate) -> RuntimeScheduler:
+    return workflow_runtime_scheduler(
+        holder.connection,
+        holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=holder.generation,
+        clock=FakeClock(wall=WALL),
+        completion=completion,
+    )
+
+
+def review(dispatcher: ApplicationDispatcher, run_id: str, request_id: str) -> dict[str, Any]:
+    return dict(
+        app.result(
+            dispatcher.dispatch(
+                app.request(WORKFLOW_REVIEW_OPERATION, {"run_id": run_id}, request_id=request_id)
+            )
+        )
     )
 
 
@@ -619,6 +649,60 @@ def test_completing_the_last_step_terminalizes_the_run_and_its_job(
     # Both steps were observed as they were reached, at the plan's own route and position.
     assert [step["step_id"] for step in answer["observations"]] == ["a-plan", "b-write"]
     assert [step["sequence_index"] for step in answer["observations"]] == [0, 1]
+
+
+def test_a_gated_completion_is_projected_by_workflow_review_with_its_audit_digest(
+    owned: m1.Owned,
+) -> None:
+    """The accepted runtime decision is what `workflow.review` reports, and it names its own audit."""
+    dispatcher, run_id = started(owned)
+    live = scheduler(owned)
+    claim = live.claim_next()
+    assert claim is not None
+    claim = live.complete(claim, result_kind="runtime_completion", result={"ok": True})
+    assert claim is not None
+    assert live.complete(claim, result_kind="runtime_completion", result={"ok": True}) is None
+
+    decision = read_decision(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id)
+    assert decision is not None
+    settled = owned.connection.execute(
+        f"SELECT details_json FROM {EVENTS} WHERE workspace_id = ? AND run_id = ? "
+        "AND run_status = 'succeeded'",
+        (WORKSPACE_ID, run_id),
+    ).fetchall()
+    assert len(settled) == 1
+    assert f'"completion_decision_digest":"{decision.decision_digest}"' in settled[0][0]
+
+    answer = review(dispatcher, run_id, "req-review-gated")
+    assert answer["completion"] == {
+        "outcome": "SUCCEEDED",
+        "decided_at": datetime.fromtimestamp(decision.decided_at_us / 1_000_000, UTC).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        ),
+        "audit_reference": decision.decision_digest,
+    }
+    assert review(dispatcher, run_id, "req-review-gated-again") == answer
+
+
+def test_a_refused_final_settlement_projects_no_completion_and_records_no_decision(
+    owned: m1.Owned,
+) -> None:
+    dispatcher, run_id = started(owned)
+    refusing = scheduler_with(
+        owned, gate(reader_answering(lambda readout: replace(readout, complete=False)))
+    )
+    claim = refusing.claim_next()
+    assert claim is not None
+    claim = refusing.complete(claim, result_kind="runtime_completion", result={"ok": True})
+    assert claim is not None
+    with pytest.raises(CompletionRefused) as raised:
+        refusing.complete(claim, result_kind="runtime_completion", result={"ok": True})
+    assert raised.value.reason == REFUSED_INCOMPLETE
+
+    assert read_decision(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id) is None
+    assert run_status(owned, run_id) != "succeeded"
+    # The wire omits an absent completion rather than stating it as null, as the review contract does.
+    assert "completion" not in review(dispatcher, run_id, "req-review-refused")
 
 
 def test_a_terminal_run_admits_no_further_claim(owned: m1.Owned) -> None:
@@ -1918,7 +2002,7 @@ def test_the_production_runner_start_runs_the_runtime_startup_pass(
     goes away. A second `ServiceRunner.start()` -- the real production startup sequence,
     nothing constructed by hand -- is what classifies and adopts it.
     """
-    first = ServiceRunner(workspace, clock=FakeClock(wall=WALL))
+    first = ServiceRunner(workspace, clock=FakeClock(wall=WALL), completion=gate())
     report = first.start()
     assert report.ready, report.to_dict()
     workspace_id = report.workspace_id
@@ -2031,7 +2115,9 @@ def test_the_production_surface_serves_workflow_against_an_injected_release_auth
     `dependency_unavailable` of a build that had none to ask. C06's Ruling-2 suite holds
     that composition in full; what is kept here is that the override still overrides it.
     """
-    runner = ServiceRunner(workspace, clock=FakeClock(wall=WALL))
+    runner = ServiceRunner(
+        workspace, clock=FakeClock(wall=WALL), completion=gate()
+    )
     report = runner.start()
     try:
         assert report.ready, report.to_dict()
@@ -2121,3 +2207,135 @@ def test_a_run_with_no_open_attempt_is_classified_as_ordinary_queued_work(
 
     found = [job for job in recovery.jobs if job.run_id == run_id]
     assert [job.classification for job in found] == [CLASSIFICATION_NO_OPEN_ATTEMPT]
+
+
+def _production_ledger(runner: ServiceRunner) -> tuple[Any, ...]:
+    """Every row a claim writes, counted, with each durable job's state, read from the runner's own connection."""
+    connection = runner.connection
+    assert connection is not None
+    counts = tuple(
+        int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in (
+            "omnivia_job_attempts",
+            "omnivia_job_events",
+            "omnivia_runtime_attempts",
+            "omnivia_runtime_run_step_states",
+            EVENTS,
+            OUTCOMES,
+            "omnivia_runtime_completion_decisions",
+            "omnivia_job_terminal_observations",
+        )
+    )
+    return (counts, tuple(connection.execute("SELECT job_id, state FROM omnivia_durable_jobs ORDER BY job_id").fetchall()))
+
+
+def test_a_trusted_gate_injected_into_the_production_runner_completes_a_workflow_end_to_end(
+    workspace: ServiceSettings,
+) -> None:
+    """ServiceRunner(completion=...) carries the gate through runtime_scheduler() to the workflow scheduler.
+
+    The real startup, a real started Run, then claim and complete until the Run is finished. Afterwards
+    the decision, the run's succeeded event, the job's succeeded terminal observation and workflow.review
+    all agree, which is the closure the scheduler's order produces.
+    """
+    runner = ServiceRunner(workspace, clock=FakeClock(wall=WALL), completion=gate())
+    report = runner.start()
+    try:
+        assert report.ready, report.to_dict()
+        workspace_id = report.workspace_id
+        assert workspace_id is not None
+        holder = m1.Owned(
+            connection=runner.connection,  # type: ignore[arg-type]
+            identity=runner.identity,  # type: ignore[arg-type]
+            generation=runner.generation,  # type: ignore[arg-type]
+            path=workspace.workspace_root,
+        )
+        dispatcher = app.dispatcher(holder, releases=(app.release(),), workspace_id=workspace_id)
+        run_id = app.run_id_of(app.start(dispatcher, workspace_id=workspace_id))
+
+        live = runner.runtime_scheduler()
+        assert live is not None
+        claim = live.claim_next()
+        steps = 0
+        while claim is not None:
+            assert claim.run_id == run_id
+            steps += 1
+            claim = live.complete(claim, result_kind="runtime_completion", result={"ok": True})
+        assert steps >= 1
+
+        connection = runner.connection
+        assert connection is not None
+        decision = read_decision(connection, workspace_id=workspace_id, run_id=run_id)
+        assert decision is not None
+        assert connection.execute(
+            "SELECT state FROM omnivia_durable_jobs WHERE job_id = ?", (decision.decision.job_id,)
+        ).fetchone() == ("succeeded",)
+        assert connection.execute(
+            "SELECT terminal_state, attempt_number FROM omnivia_job_terminal_observations "
+            "WHERE workspace_id = ? AND job_id = ? ORDER BY terminal_observation_number DESC LIMIT 1",
+            (workspace_id, decision.decision.job_id),
+        ).fetchone() == ("succeeded", decision.decision.application_attempt_number)
+        assert connection.execute(
+            f"SELECT run_status FROM {EVENTS} WHERE workspace_id = ? AND run_id = ? "
+            "ORDER BY sequence DESC LIMIT 1",
+            (workspace_id, run_id),
+        ).fetchone() == ("succeeded",)
+        answer = dict(
+            app.result(
+                dispatcher.dispatch(
+                    app.request(
+                        WORKFLOW_REVIEW_OPERATION,
+                        {"run_id": run_id},
+                        request_id="req-review-production-gate",
+                        workspace_id=workspace_id,
+                    )
+                )
+            )
+        )
+        assert answer["completion"]["audit_reference"] == decision.decision_digest
+    finally:
+        runner.stop()
+
+
+def test_an_unconfigured_production_runner_refuses_to_claim_a_workflow_before_any_write_and_after_restart(
+    workspace: ServiceSettings,
+) -> None:
+    """Stock composition: no gate, so the workflow is never claimed, and a restart does not change that."""
+    runner = ServiceRunner(workspace, clock=FakeClock(wall=WALL))
+    report = runner.start()
+    try:
+        assert report.ready, report.to_dict()
+        workspace_id = report.workspace_id
+        assert workspace_id is not None
+        holder = m1.Owned(
+            connection=runner.connection,  # type: ignore[arg-type]
+            identity=runner.identity,  # type: ignore[arg-type]
+            generation=runner.generation,  # type: ignore[arg-type]
+            path=workspace.workspace_root,
+        )
+        dispatcher = app.dispatcher(holder, releases=(app.release(),), workspace_id=workspace_id)
+        app.run_id_of(app.start(dispatcher, workspace_id=workspace_id))
+        before = _production_ledger(runner)
+
+        live = runner.runtime_scheduler()
+        assert live is not None
+        with pytest.raises(CompletionRefused) as raised:
+            live.claim_next()
+        assert raised.value.reason == REFUSED_NO_GATE
+        assert _production_ledger(runner) == before
+    finally:
+        runner.stop()
+
+    restarted = ServiceRunner(workspace, clock=FakeClock(wall=WALL))
+    try:
+        again = restarted.start()
+        assert again.ready, again.to_dict()
+        assert _production_ledger(restarted) == before
+        live = restarted.runtime_scheduler()
+        assert live is not None
+        with pytest.raises(CompletionRefused) as raised:
+            live.claim_next()
+        assert raised.value.reason == REFUSED_NO_GATE
+        assert _production_ledger(restarted) == before
+    finally:
+        restarted.stop()

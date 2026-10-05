@@ -15,12 +15,20 @@ The decision needs three things, all supplied by the composition rather than by 
 the decision, and is called inside the scheduler's fenced transaction, so a refusal rolls back the
 whole final settlement and the claim stays open for a later, valid proof.
 
-Absence fails closed everywhere: no gate, no accepted criteria, an unavailable reader, a reader that
-states an incomplete observation, a stale fence, any identity that does not agree exactly, a criterion
-that is missing, extra, duplicated or not proven, and evidence whose collector or reviewer is not
-independent of the implementer. The one exception is :class:`SelfEvidenceException`: a single
-criterion the policy has explicitly allowed the implementer to collect, attributed to the actor who
-allowed it. The reviewer must still be independent, and the attribution is recorded on the decision.
+The reader is handed the workspace, the run and the fence it must answer under, and nothing else. It
+is never handed the Runtime's database connection, so it has no route to the settlement's transaction:
+it cannot commit, roll back or write it. Its evidence comes from the source the composition gave it.
+
+Inputs are snapshotted once, into exact-typed records, before any check or comparison. A subclass of
+`int`, `str`, `tuple`, or any of the Runtime's dataclasses is refused by type before it is read, so no
+user code it carries runs during the rule.
+
+Absence fails closed everywhere: no gate, no accepted criteria, an unavailable reader, a stale fence,
+any identity that does not agree exactly, a criterion that is missing, extra, duplicated or not proven,
+and evidence whose collector or reviewer is not independent of the implementer. The one exception is
+:class:`SelfEvidenceException`: a single criterion the policy has explicitly allowed the implementer to
+collect, attributed to the actor who allowed it. The reviewer must still be independent, and the
+attribution is recorded on the decision.
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Final, Protocol, cast
 
 from omnivia_core.contracts.v1 import is_identifier
 from omnivia_core_runtime.storage.completion_decisions import (
@@ -110,7 +118,7 @@ class AcceptedCompletion:
         )
         if not all(is_identifier(value) for value in identifiers):
             raise ValueError("accepted completion identities are outside their closed shape")
-        if not _is_digest(self.definition_digest):
+        if not _text(self.definition_digest, _is_digest):
             raise ValueError("accepted definition_digest is outside its closed shape")
         if not self.criteria or list(self.criteria) != sorted(set(self.criteria)):
             raise ValueError("accepted criteria must be non-empty, sorted and unique")
@@ -160,12 +168,13 @@ class EvidenceReadout:
 class IndependentEvidenceReader(Protocol):
     """The boundary that collects evidence for a run from outside the implementer's work.
 
-    It is given the connection so it can read what it needs inside the settlement's fence, and it must
-    only read. It raises :class:`CompletionEvidenceUnavailable` when it cannot reach its evidence.
+    It is given the identifiers and the fence it must answer under, and no connection: it reads from
+    the source the composition configured for it, never from the settlement's transaction. It raises
+    :class:`CompletionEvidenceUnavailable` when it cannot reach its evidence.
     """
 
     def read(
-        self, connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+        self, *, workspace_id: str, run_id: str, fencing_generation: int
     ) -> EvidenceReadout: ...
 
 
@@ -181,6 +190,49 @@ class CompletionGate:
     accepted: Callable[[str], AcceptedCompletion | None]
 
 
+@dataclass(frozen=True, slots=True)
+class _Accepted:
+    """A snapshot of one :class:`AcceptedCompletion`, read once and held as exact plain values."""
+
+    run_id: str
+    candidate_id: str
+    binding_id: str
+    definition_digest: str
+    aggregate_id: str
+    package_id: str
+    application_id: str
+    implementer_id: str
+    criteria: tuple[str, ...]
+    self_evidence: tuple[str, str] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Item:
+    criterion: str
+    outcome: str
+    evidence_id: object
+    content_digest: object
+    collected_by: object
+    reviewed_by: object
+
+
+@dataclass(frozen=True, slots=True)
+class _Observed:
+    """A snapshot of one :class:`EvidenceReadout`, read once. Its values are checked before use."""
+
+    workspace_id: object
+    run_id: object
+    candidate_id: object
+    binding_id: object
+    definition_digest: object
+    aggregate_id: object
+    package_id: object
+    application_id: object
+    fencing_generation: int
+    complete: bool
+    items: tuple[_Item, ...]
+
+
 def decide_completion(
     accepted: AcceptedCompletion,
     readout: EvidenceReadout,
@@ -189,98 +241,24 @@ def decide_completion(
     job_id: str,
     run_step_id: str,
     runtime_attempt_id: str,
+    application_attempt_number: int,
     fencing_generation: int,
+    settled_sequence: int,
 ) -> CompletionDecision:
     """Apply the completion rule to one readout, or refuse with a named reason.
 
     Pure: it reads nothing and writes nothing, so every refusal path can be exercised directly.
     """
-    if not _is_readout(readout):
-        raise CompletionRefused(REFUSED_MALFORMED, "the observation is outside its closed shape")
-    if readout.fencing_generation != fencing_generation:
-        raise CompletionRefused(REFUSED_STALE_FENCE, "the observation is not under the current fence")
-    if readout.complete is not True:
-        raise CompletionRefused(REFUSED_INCOMPLETE, "the observation is partial")
-    if readout.workspace_id != workspace_id or readout.run_id != accepted.run_id or (
-        readout.candidate_id,
-        readout.binding_id,
-        readout.definition_digest,
-        readout.aggregate_id,
-        readout.package_id,
-        readout.application_id,
-    ) != (
-        accepted.candidate_id,
-        accepted.binding_id,
-        accepted.definition_digest,
-        accepted.aggregate_id,
-        accepted.package_id,
-        accepted.application_id,
-    ):
-        raise CompletionRefused(REFUSED_IDENTITY, "the observation does not name the accepted identities")
-
-    names = [item.criterion for item in readout.items]
-    if len(set(names)) != len(names) or set(names) != set(accepted.criteria):
-        raise CompletionRefused(
-            REFUSED_CRITERIA, "the observation does not cover exactly the accepted criteria"
-        )
-
-    attributed: str | None = None
-    references: list[EvidenceReference] = []
-    for item in sorted(readout.items, key=lambda entry: entry.criterion):
-        if item.outcome not in OUTCOMES:
-            raise CompletionRefused(REFUSED_MALFORMED, "an evidence outcome is outside its shape")
-        if item.outcome != OUTCOME_PROVEN:
-            raise CompletionRefused(REFUSED_UNPROVEN, "an accepted criterion is not proven")
-        if not (
-            is_identifier(item.evidence_id)
-            and _is_digest(item.content_digest)
-            and is_identifier(item.collected_by)
-            and is_identifier(item.reviewed_by)
-        ):
-            raise CompletionRefused(REFUSED_MALFORMED, "an evidence identity is outside its shape")
-        if item.collected_by == item.reviewed_by or item.reviewed_by == accepted.implementer_id:
-            raise CompletionRefused(
-                REFUSED_NON_INDEPENDENT, "evidence was not reviewed independently of its collector"
-            )
-        if item.collected_by == accepted.implementer_id:
-            exception = accepted.self_evidence
-            if exception is None or exception.criterion != item.criterion:
-                raise CompletionRefused(
-                    REFUSED_IMPLEMENTER_SELF, "the implementer may not collect this evidence"
-                )
-            attributed = exception.attributed_to
-        references.append(
-            EvidenceReference(
-                criterion=item.criterion,
-                evidence_id=item.evidence_id,
-                content_digest=item.content_digest,
-                collected_by=item.collected_by,
-                reviewed_by=item.reviewed_by,
-            )
-        )
-    # The self-evidence exception covers one criterion; it never covers the whole proof. At least one
-    # raw item must have been collected by someone other than the implementer, even when it is allowed.
-    if all(item.collected_by == accepted.implementer_id for item in readout.items):
-        raise CompletionRefused(
-            REFUSED_IMPLEMENTER_SELF, "no evidence was collected independently of the implementer"
-        )
-
-    return CompletionDecision(
+    return _decide(
+        _snapshot_accepted(accepted),
+        _snapshot_readout(readout),
         workspace_id=workspace_id,
-        run_id=accepted.run_id,
         job_id=job_id,
         run_step_id=run_step_id,
         runtime_attempt_id=runtime_attempt_id,
-        candidate_id=accepted.candidate_id,
-        binding_id=accepted.binding_id,
-        definition_digest=accepted.definition_digest,
-        aggregate_id=accepted.aggregate_id,
-        package_id=accepted.package_id,
-        application_id=accepted.application_id,
-        decided_under_generation=fencing_generation,
-        proven_criteria=tuple(accepted.criteria),
-        evidence=tuple(references),
-        self_evidence_attributed_to=attributed,
+        application_attempt_number=application_attempt_number,
+        fencing_generation=fencing_generation,
+        settled_sequence=settled_sequence,
     )
 
 
@@ -293,6 +271,7 @@ def settle_completion(
     job_id: str,
     run_step_id: str,
     runtime_attempt_id: str,
+    application_attempt_number: int,
     fencing_generation: int,
     decided_at_us: int,
 ) -> StoredCompletionDecision:
@@ -301,54 +280,297 @@ def settle_completion(
     Any refusal raises :class:`CompletionRefused` (or the reader's own error), which the caller's
     fenced transaction turns into a full rollback.
     """
+    if not (
+        _text(workspace_id, is_identifier)
+        and _text(run_id, is_identifier)
+        and _text(job_id, is_identifier)
+        and _text(run_step_id, is_identifier)
+        and _text(runtime_attempt_id, is_identifier)
+        and _exact_int(application_attempt_number)
+        and _exact_int(fencing_generation)
+    ):
+        raise CompletionRefused(REFUSED_MALFORMED, "the settlement is outside its closed shape")
     if gate is None:
         raise CompletionRefused(REFUSED_NO_GATE, "final completion has no configured completion gate")
-    accepted = gate.accepted(run_id)
-    if accepted is None or accepted.run_id != run_id:
+    accepted_value = gate.accepted(run_id)
+    if accepted_value is None:
+        raise CompletionRefused(REFUSED_NO_CRITERIA, "the run has no accepted completion criteria")
+    accepted = _snapshot_accepted(accepted_value)
+    if accepted.run_id != run_id:
         raise CompletionRefused(REFUSED_NO_CRITERIA, "the run has no accepted completion criteria")
     try:
-        readout = gate.reader.read(connection, workspace_id=workspace_id, run_id=run_id)
+        readout = gate.reader.read(
+            workspace_id=workspace_id, run_id=run_id, fencing_generation=fencing_generation
+        )
     except CompletionEvidenceUnavailable as error:
         raise CompletionRefused(REFUSED_UNAVAILABLE, "the evidence boundary is unavailable") from error
-    decision = decide_completion(
+    decision = _decide(
         accepted,
-        readout,
+        _snapshot_readout(readout),
         workspace_id=workspace_id,
         job_id=job_id,
         run_step_id=run_step_id,
         runtime_attempt_id=runtime_attempt_id,
+        application_attempt_number=application_attempt_number,
         fencing_generation=fencing_generation,
+        settled_sequence=_next_event_sequence(connection, workspace_id=workspace_id, run_id=run_id),
     )
     return record_decision(connection, decision=decision, decided_at_us=decided_at_us)
 
 
-def _is_digest(value: object) -> bool:
+def _decide(
+    accepted: _Accepted,
+    observed: _Observed,
+    *,
+    workspace_id: str,
+    job_id: str,
+    run_step_id: str,
+    runtime_attempt_id: str,
+    application_attempt_number: int,
+    fencing_generation: int,
+    settled_sequence: int,
+) -> CompletionDecision:
+    """The rule itself, over snapshots only. Every value compared here is an exact, checked type."""
+    if not (
+        _text(workspace_id, is_identifier)
+        and _text(job_id, is_identifier)
+        and _text(run_step_id, is_identifier)
+        and _text(runtime_attempt_id, is_identifier)
+        and _exact_int(application_attempt_number)
+        and _exact_int(fencing_generation)
+        and _exact_int(settled_sequence)
+    ):
+        raise CompletionRefused(REFUSED_MALFORMED, "the settlement is outside its closed shape")
+    if observed.fencing_generation != fencing_generation:
+        raise CompletionRefused(REFUSED_STALE_FENCE, "the observation is not under the current fence")
+    if observed.complete is not True:
+        raise CompletionRefused(REFUSED_INCOMPLETE, "the observation is partial")
+    if observed.workspace_id != workspace_id or observed.run_id != accepted.run_id or (
+        observed.candidate_id,
+        observed.binding_id,
+        observed.definition_digest,
+        observed.aggregate_id,
+        observed.package_id,
+        observed.application_id,
+    ) != (
+        accepted.candidate_id,
+        accepted.binding_id,
+        accepted.definition_digest,
+        accepted.aggregate_id,
+        accepted.package_id,
+        accepted.application_id,
+    ):
+        raise CompletionRefused(REFUSED_IDENTITY, "the observation does not name the accepted identities")
+
+    names = [item.criterion for item in observed.items]
+    if len(set(names)) != len(names) or set(names) != set(accepted.criteria):
+        raise CompletionRefused(
+            REFUSED_CRITERIA, "the observation does not cover exactly the accepted criteria"
+        )
+
+    attributed: str | None = None
+    references: list[EvidenceReference] = []
+    for item in sorted(observed.items, key=lambda entry: entry.criterion):
+        if item.outcome not in OUTCOMES:
+            raise CompletionRefused(REFUSED_MALFORMED, "an evidence outcome is outside its shape")
+        if item.outcome != OUTCOME_PROVEN:
+            raise CompletionRefused(REFUSED_UNPROVEN, "an accepted criterion is not proven")
+        if not (
+            _text(item.evidence_id, is_identifier)
+            and _text(item.content_digest, _is_digest)
+            and _text(item.collected_by, is_identifier)
+            and _text(item.reviewed_by, is_identifier)
+        ):
+            raise CompletionRefused(REFUSED_MALFORMED, "an evidence identity is outside its shape")
+        if item.collected_by == item.reviewed_by or item.reviewed_by == accepted.implementer_id:
+            raise CompletionRefused(
+                REFUSED_NON_INDEPENDENT, "evidence was not reviewed independently of its collector"
+            )
+        if item.collected_by == accepted.implementer_id:
+            if accepted.self_evidence is None or accepted.self_evidence[0] != item.criterion:
+                raise CompletionRefused(
+                    REFUSED_IMPLEMENTER_SELF, "the implementer may not collect this evidence"
+                )
+            attributed = accepted.self_evidence[1]
+        references.append(
+            EvidenceReference(
+                criterion=item.criterion,
+                # Each identity was checked as an exact `str` above, before any of them was compared.
+                evidence_id=cast(str, item.evidence_id),
+                content_digest=cast(str, item.content_digest),
+                collected_by=cast(str, item.collected_by),
+                reviewed_by=cast(str, item.reviewed_by),
+            )
+        )
+    # The self-evidence exception covers one criterion; it never covers the whole proof. At least one
+    # raw item must have been collected by someone other than the implementer, even when it is allowed.
+    if all(item.collected_by == accepted.implementer_id for item in observed.items):
+        raise CompletionRefused(
+            REFUSED_IMPLEMENTER_SELF, "no evidence was collected independently of the implementer"
+        )
+
+    return CompletionDecision(
+        workspace_id=workspace_id,
+        run_id=accepted.run_id,
+        job_id=job_id,
+        run_step_id=run_step_id,
+        runtime_attempt_id=runtime_attempt_id,
+        application_attempt_number=application_attempt_number,
+        candidate_id=accepted.candidate_id,
+        binding_id=accepted.binding_id,
+        definition_digest=accepted.definition_digest,
+        aggregate_id=accepted.aggregate_id,
+        package_id=accepted.package_id,
+        application_id=accepted.application_id,
+        decided_under_generation=fencing_generation,
+        settled_sequence=settled_sequence,
+        proven_criteria=accepted.criteria,
+        evidence=tuple(references),
+        self_evidence_attributed_to=attributed,
+    )
+
+
+def _snapshot_accepted(accepted: object) -> _Accepted:
+    """Read one accepted completion exactly once, refusing any field outside its exact type."""
+    if type(accepted) is not AcceptedCompletion:
+        raise CompletionRefused(REFUSED_MALFORMED, "the accepted completion is outside its closed shape")
+    run_id = accepted.run_id
+    candidate_id = accepted.candidate_id
+    binding_id = accepted.binding_id
+    definition_digest = accepted.definition_digest
+    aggregate_id = accepted.aggregate_id
+    package_id = accepted.package_id
+    application_id = accepted.application_id
+    implementer_id = accepted.implementer_id
+    raw_criteria = accepted.criteria
+    raw_self = accepted.self_evidence
+    self_evidence: tuple[str, str] | None = None
+    if raw_self is not None:
+        if type(raw_self) is not SelfEvidenceException:
+            raise CompletionRefused(REFUSED_MALFORMED, "the accepted completion is outside its closed shape")
+        self_evidence = (raw_self.criterion, raw_self.attributed_to)
+    if not (
+        all(
+            _text(value, is_identifier)
+            for value in (
+                run_id,
+                candidate_id,
+                binding_id,
+                aggregate_id,
+                package_id,
+                application_id,
+                implementer_id,
+            )
+        )
+        and _text(definition_digest, _is_digest)
+        and type(raw_criteria) is tuple
+        and all(_text(name, is_identifier) for name in raw_criteria)
+        and (self_evidence is None or all(_text(value, is_identifier) for value in self_evidence))
+    ):
+        raise CompletionRefused(REFUSED_MALFORMED, "the accepted completion is outside its closed shape")
+    return _Accepted(
+        run_id=run_id,
+        candidate_id=candidate_id,
+        binding_id=binding_id,
+        definition_digest=definition_digest,
+        aggregate_id=aggregate_id,
+        package_id=package_id,
+        application_id=application_id,
+        implementer_id=implementer_id,
+        criteria=raw_criteria,
+        self_evidence=self_evidence,
+    )
+
+
+def _snapshot_readout(readout: object) -> _Observed:
+    """Read one observation exactly once, into plain values, before anything compares them."""
+    if type(readout) is not EvidenceReadout:
+        raise CompletionRefused(REFUSED_MALFORMED, "the observation is outside its closed shape")
+    workspace_id = readout.workspace_id
+    run_id = readout.run_id
+    candidate_id = readout.candidate_id
+    binding_id = readout.binding_id
+    definition_digest = readout.definition_digest
+    aggregate_id = readout.aggregate_id
+    package_id = readout.package_id
+    application_id = readout.application_id
+    fencing_generation = readout.fencing_generation
+    complete = readout.complete
+    raw_items = readout.items
+    if not (
+        _text(workspace_id, is_identifier)
+        and _text(run_id, is_identifier)
+        and all(
+            _stated(value, is_identifier)
+            for value in (candidate_id, binding_id, aggregate_id, package_id, application_id)
+        )
+        and _stated(definition_digest, _is_digest)
+        and _exact_int(fencing_generation)
+        and type(complete) is bool
+        and type(raw_items) is tuple
+    ):
+        raise CompletionRefused(REFUSED_MALFORMED, "the observation is outside its closed shape")
+    items: list[_Item] = []
+    for raw in raw_items:
+        if type(raw) is not EvidenceItem:
+            raise CompletionRefused(REFUSED_MALFORMED, "the observation is outside its closed shape")
+        criterion = raw.criterion
+        outcome = raw.outcome
+        if not (_text(criterion, is_identifier) and type(outcome) is str):
+            raise CompletionRefused(REFUSED_MALFORMED, "the observation is outside its closed shape")
+        items.append(
+            _Item(
+                criterion=criterion,
+                outcome=outcome,
+                evidence_id=raw.evidence_id,
+                content_digest=raw.content_digest,
+                collected_by=raw.collected_by,
+                reviewed_by=raw.reviewed_by,
+            )
+        )
+    return _Observed(
+        workspace_id=workspace_id,
+        run_id=run_id,
+        candidate_id=candidate_id,
+        binding_id=binding_id,
+        definition_digest=definition_digest,
+        aggregate_id=aggregate_id,
+        package_id=package_id,
+        application_id=application_id,
+        fencing_generation=fencing_generation,
+        complete=complete,
+        items=tuple(items),
+    )
+
+
+def _next_event_sequence(connection: sqlite3.Connection, *, workspace_id: str, run_id: str) -> int:
+    """The sequence the run's next event takes, which is the one a settlement's event must take."""
+    row = connection.execute(
+        "SELECT COALESCE(MAX(sequence), -1) + 1 FROM omnivia_runtime_events "
+        "WHERE workspace_id = ? AND run_id = ?",
+        (workspace_id, run_id),
+    ).fetchone()
+    return int(row[0])
+
+
+def _text(value: object, check: Callable[[str], bool]) -> bool:
+    # Exact `str` only: a subclass can carry its own `__eq__`, which is user code.
+    return type(value) is str and check(value)
+
+
+def _stated(value: object, check: Callable[[str], bool]) -> bool:
+    return value is None or _text(value, check)
+
+
+def _exact_int(value: object) -> bool:
+    # Exact `int` only: a subclass of int compares equal to an ordinary integer and runs its own code.
+    return type(value) is int
+
+
+def _is_digest(value: str) -> bool:
+    # Called only on an exact `str`, through `_text`.
     return (
-        isinstance(value, str)
-        and len(value) == 71
+        len(value) == 71
         and value.startswith("sha256:")
         and all(char in "0123456789abcdef" for char in value[7:])
-    )
-
-
-def _is_readout(readout: object) -> bool:
-    # Checked before any comparison or set operation, so a boundary that returns a malformed value
-    # is refused by name rather than raising an incidental TypeError or AttributeError.
-    return (
-        isinstance(readout, EvidenceReadout)
-        and is_identifier(readout.workspace_id)
-        and is_identifier(readout.run_id)
-        and isinstance(readout.fencing_generation, int)
-        and not isinstance(readout.fencing_generation, bool)
-        and isinstance(readout.complete, bool)
-        and isinstance(readout.items, tuple)
-        and all(_is_item(item) for item in readout.items)
-    )
-
-
-def _is_item(item: object) -> bool:
-    return (
-        isinstance(item, EvidenceItem)
-        and is_identifier(item.criterion)
-        and isinstance(item.outcome, str)
     )

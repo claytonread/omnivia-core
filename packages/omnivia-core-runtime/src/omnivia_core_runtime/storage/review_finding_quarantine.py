@@ -9,7 +9,9 @@ generation, workspace or run is kept as evidence with its reason, and that reaso
 Identity is the canonical envelope. `finding_digest` is the SHA-256 of the envelope's canonical
 JSON, so an exact resubmission returns the existing row and different evidence bytes or different
 reason or binding facts create a new one. `idempotency_key` is unique per workspace and bound to
-one envelope: the same key with different bytes is an `ReviewFindingConflict`.
+one envelope: the same key with different bytes is an `ReviewFindingConflict`, and so is the same
+bytes under a second key. A key is therefore only ever observed for the one digest it is stored
+under, which is what makes a key's binding durable rather than a matter of which call came first.
 
 Refusals name fields, never values. The reader applies the same checks to a stored row and
 verifies its digest, so a row that does not reproduce its own identity is refused.
@@ -116,9 +118,10 @@ def record_finding(
 ) -> QuarantinedFinding:
     """Quarantine `envelope` under the caller's fence and return its canonical record.
 
-    An exact resubmission, or the same bytes under another key, returns the existing row. The same
-    key with different bytes is refused. The row binds the current fencing generation, so it names
-    the authority it was accepted under.
+    An exact resubmission returns the existing row. The same key with different bytes is refused,
+    and so are the same bytes under a different key: that second key would otherwise be observed
+    for a digest it was never bound to. Both refusals happen before any write. The row binds the
+    current fencing generation, so it names the authority it was accepted under.
     """
     if envelope.workspace_id != workspace_id:
         raise ReviewFindingInvalid("a finding must name the open workspace")
@@ -129,11 +132,16 @@ def record_finding(
             f"review finding envelope is outside its closed shape: {refused}"
         )
     digest = _finding_digest(envelope)
-    existing = _by_digest(connection, workspace_id, digest)
-    if existing is not None:
-        return existing
-    if _by_key(connection, workspace_id, idempotency_key) is not None:
+    # The key is checked before the digest, so a key is never observed for a digest it does not bind.
+    bound = _by_key(connection, workspace_id, idempotency_key)
+    if bound is not None:
+        if bound.finding_digest == digest:
+            return bound
         raise ReviewFindingConflict("the idempotency key is bound to different evidence")
+    if _by_digest(connection, workspace_id, digest) is not None:
+        raise ReviewFindingConflict(
+            "this evidence is already quarantined under another idempotency key"
+        )
     values: dict[str, object] = {
         **asdict(envelope),
         "finding_digest": digest,

@@ -60,7 +60,9 @@ from omnivia_core.contracts.v1 import (
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.completion_gate import (
+    REFUSED_NO_GATE,
     CompletionGate,
+    CompletionRefused,
     settle_completion,
 )
 from omnivia_core_runtime.service.jobs import (
@@ -254,6 +256,10 @@ class RuntimeScheduler:
     #: run can terminalize as succeeded: the final settlement is refused, not accepted on the
     #: caller's word. See :mod:`omnivia_core_runtime.service.completion_gate`.
     completion: CompletionGate | None = None
+    #: Whether this scheduler settles Workflow runs, which only the gate can complete. Such a
+    #: scheduler refuses to claim or settle anything while `completion` is absent, before any write,
+    #: so it can never take a Workflow job it cannot finish. The base scheduler leaves this false.
+    requires_completion: bool = False
 
     def claim_next(self) -> RuntimeClaim | None:
         """Atomically claim the oldest runnable runtime-bound durable job.
@@ -261,6 +267,7 @@ class RuntimeScheduler:
         ``None`` is the ordinary polling result when no pending step is runnable.
         Corrupt canonical history raises instead of being silently treated as blocked.
         """
+        self._require_completion_authority()
         with fenced_transaction(
             self.connection,
             self.identity,
@@ -380,7 +387,14 @@ class RuntimeScheduler:
         there raises :class:`~omnivia_core_runtime.service.completion_gate.CompletionRefused`
         and rolls back the whole final settlement, so the claim stays open and a later valid
         proof can settle it. Intermediate steps are not affected.
+
+        **Final success is closed in one order.** The attempt and its step settle, then the
+        decision is recorded, then the run's ``run_succeeded`` event names that decision, and only
+        then is the application job terminalized. Migration 0066 admits exactly that order and
+        refuses the job's terminal observation unless the event already exists, so a run cannot be
+        recorded as succeeded without its job, nor a job without its run.
         """
+        self._require_completion_authority()
         self._require_scheduler_claim(claim)
         with fenced_transaction(
             self.connection,
@@ -436,8 +450,17 @@ class RuntimeScheduler:
                 job_id=claim.job_id,
                 run_step_id=claim.run_step_id,
                 runtime_attempt_id=claim.runtime_attempt_id,
+                application_attempt_number=claim.application_attempt_number,
                 fencing_generation=self.fencing_generation,
                 decided_at_us=now_us,
+            )
+            self._append_event(
+                claim,
+                now_us=now_us,
+                event_kind=_EVENT_RUN_SUCCEEDED,
+                run_status=RUN_STATUS_SUCCEEDED,
+                message="runtime scheduler settled the run as succeeded",
+                completion_decision_digest=decision.decision_digest,
             )
             _terminalize_application_job(
                 self.connection,
@@ -450,14 +473,6 @@ class RuntimeScheduler:
                 result_kind=result_kind,
                 result=result,
                 _transaction_open=True,
-            )
-            self._append_event(
-                claim,
-                now_us=now_us,
-                event_kind=_EVENT_RUN_SUCCEEDED,
-                run_status=RUN_STATUS_SUCCEEDED,
-                message="runtime scheduler settled the run as succeeded",
-                completion_decision_digest=decision.decision_digest,
             )
         return None
 
@@ -939,6 +954,19 @@ class RuntimeScheduler:
         if str(row[0]) in RUN_TERMINAL_STATUSES:
             raise RuntimeSchedulingError(
                 f"run {claim.run_id!r} is {str(row[0])!r} and admits no further settlement"
+            )
+
+    def _require_completion_authority(self) -> None:
+        """Refuse Workflow scheduling before any write when no completion gate is configured.
+
+        Raised before the fenced transaction opens, so a refused claim or settlement leaves the
+        job, its application attempt, the runtime attempt, the step and the event stream untouched.
+        The message is fixed and names no run, job or identity: an unconfigured process learns only
+        that it has no authority, not what work it was refused.
+        """
+        if self.requires_completion and self.completion is None:
+            raise CompletionRefused(
+                REFUSED_NO_GATE, "workflow scheduling requires a configured completion gate"
             )
 
     def _now_us(self) -> int:
