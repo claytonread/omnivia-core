@@ -31,6 +31,11 @@ dependencies = [
     # only < 1.1.0).
     "duckdb==1.5.5",
     "sqlglot==30.20.0",
+    # duckdb 1.5.5 cannot materialise a TIMESTAMPTZ value without pytz, and then
+    # returns datetimes whose tzinfo is a pytz object. `analysis/result_artifact.py`
+    # admits exactly those library-owned zones (proven by identity, never called),
+    # so the exact reviewed pin lives here and in the wheelhouse constraints.
+    "pytz==2026.5",
 ]
 
 [project.scripts]
