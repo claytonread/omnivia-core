@@ -249,6 +249,7 @@ def _dispatcher(
     *,
     resolve_command: object = _UNSET,
     execute_generation: object = _UNSET,
+    wall: int | None = None,
 ) -> Any:
     fields: dict[str, Any] = {
         "service": holder,
@@ -256,7 +257,9 @@ def _dispatcher(
         "installation_id": INSTALLATION_ID,
         "workspace_id": WORKSPACE_ID,
         "fallback": _fallback(),
-        "clock": FakeClock(wall=WALL),
+        "clock": FakeClock(
+            wall=WALL if wall is None else datetime.fromtimestamp(wall / 1_000_000, tz=UTC)
+        ),
         "execute_generation": (
             (lambda **_fields: None)
             if execute_generation is _UNSET
@@ -3545,3 +3548,139 @@ def test_save_draft_of_the_edit_mode_requires_an_existing_source_message(
     )
     assert draft is not None
     assert draft.source_message_id == ROOT_MESSAGE_ID
+
+
+DRAFT_OPERATION = "chat.draft"
+DRAFT_ENTRY = get_operation_metadata(DRAFT_OPERATION)
+
+
+def _draft_read_request(
+    *,
+    draft_id: str = "draft-c5a-read",
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = PRINCIPAL,
+    request_id: str = "req-c5a-draft-read",
+    **query_extra: Any,
+) -> RequestEnvelope:
+    query = {
+        "requestId": request_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "draftId": draft_id,
+    }
+    query.update(query_extra)
+    operation_input = {
+        "draft_id": draft_id,
+        "draft_query": query,
+    }
+    return s0.envelope_for(
+        DRAFT_ENTRY,
+        operation_input=operation_input,
+        request_id=request_id,
+        correlation_id=f"cor-{request_id}",
+        trace_id=f"trc-{request_id}",
+        purpose=CHAT_FAMILY_PURPOSES[DRAFT_OPERATION],
+        workspace_id=WORKSPACE_ID,
+    )
+
+
+def test_chat_draft_read_back_returns_the_saved_composer_draft(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-read"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-read-save",
+            request_id="req-c5a-read-save",
+        )
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _draft_read_request(draft_id="draft-c5a-read", request_id="req-c5a-draft-read")
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result["conversation_id"] == CONVERSATION_ID
+    draft_result = response.result["draft_result"]
+    assert draft_result["found"] is True
+    assert draft_result["draft"]["draftId"] == "draft-c5a-read"
+    assert draft_result["draft"]["text"] == "a draft the actor composed"
+    assert draft_result["draft"]["attachmentReferences"] == []
+    assert draft_result["draft"]["contextReferences"] == []
+
+
+def test_chat_draft_read_back_after_the_discard_reads_not_found(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-gone"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-gone-save",
+            request_id="req-c5a-gone-save",
+        )
+    )
+    _dispatcher(seeded).dispatch(
+        _request(
+            _discard_draft_command(command_id="cmd-c5a-gone-discard", draft_id="draft-c5a-gone"),
+            command_name="DiscardDraft",
+            idempotency_key="idem-c5a-gone-discard",
+            request_id="req-c5a-gone-discard",
+        )
+    )
+
+    # The read's clock is the service's own, advanced past the discard's
+    # settlement: the expiry written by the discard has passed, and the read
+    # reports the draft gone.
+    response = _dispatcher(seeded, wall=BASE_US + 2_000_000).dispatch(
+        _draft_read_request(draft_id="draft-c5a-gone", request_id="req-c5a-gone-read")
+    )
+
+    draft_result = response.result["draft_result"]
+    assert draft_result["found"] is False
+    assert "draft" not in draft_result
+
+
+def test_chat_draft_read_back_of_another_actors_query_refuses(
+    seeded: m1.Owned,
+) -> None:
+    # The query names ANOTHER actor: the frozen query must name the principal
+    # the request was authenticated as, so this is refused (invalid_request),
+    # the same rule the snapshot query's decode applies -- the read-back never
+    # discloses anyone else's composition either way.
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-mine"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-mine-save",
+            request_id="req-c5a-mine-save",
+        )
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _draft_read_request(
+            draft_id="draft-c5a-mine",
+            actor_id="actor-someone-else",
+            request_id="req-c5a-foreign-read",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+
+
+def test_chat_draft_read_back_refuses_a_malformed_query(
+    seeded: m1.Owned,
+) -> None:
+    response = _dispatcher(seeded).dispatch(
+        _draft_read_request(
+            draft_id="draft-c5a-mine",
+            request_id="req-c5a-bad-read",
+            surprise="no",
+        )
+    )
+    # A field the frozen query does not define: refused, never guessed.
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"

@@ -3293,6 +3293,45 @@ export interface ChatSnapshotResult {
 }
 
 /**
+ * Input for `chat.draft`: reads back the saved ComposerDraft the request names, the answer a
+ * caller takes after a reconnect when its own composition state is gone. `draft_query` is the
+ * Chat Contract v1 `ComposerDraftQuery` document, carried verbatim and opaque to this envelope,
+ * for the same reason `chat.command` carries its command and `chat.snapshot` carries its query
+ * that way -- Chat's draft shape is already frozen in `contracts/chat/v1`, and restating it here
+ * would create a second, drifting copy. `draft_id` is the addressed draft stated natively, so
+ * authorization and audit read one identifier rather than parsing a document this boundary does
+ * not validate. Workspace-scoped through the request envelope's selected workspace, so this
+ * payload never carries a second, independent workspace identifier.
+ */
+export interface ChatDraftReadInput {
+  /**
+   * Identifier of the draft to read back. Must be the draft `draft_query` names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The Chat Contract v1 `ComposerDraftQuery` document, carried verbatim.
+   */
+  readonly draft_query: JsonObject;
+}
+
+/**
+ * Result of `chat.draft`: the Chat Contract v1 `ComposerDraftResult` document the query produced
+ * -- `found` and, when found, the actor's saved ComposerDraft -- carried opaquely for the same
+ * reason the request is, and echoed with the conversation it answers. A read-back is a point-in-
+ * time observation of the draft store, not a continuation, so there is no cursor to honour.
+ */
+export interface ChatDraftReadResult {
+  /**
+   * Identifier of the conversation this read-back answers. Echoes the request.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The Chat Contract v1 `ComposerDraftResult` document, carried verbatim.
+   */
+  readonly draft_result: JsonObject;
+}
+
+/**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
  * an authorization input.
  */
@@ -11034,6 +11073,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.draft",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftReadResult",
     required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },

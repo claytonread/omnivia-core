@@ -186,6 +186,8 @@ __all__ = [
     "ChatCommandInput",
     "ChatCommandResult",
     "ChatConversationExpectation",
+    "ChatDraftReadInput",
+    "ChatDraftReadResult",
     "ChatEventsInput",
     "ChatEventsResult",
     "ChatGenerationEvent",
@@ -4610,6 +4612,98 @@ class ChatSnapshotResult:
         return cls(
             conversation_id=field_conversation_id,
             snapshot=field_snapshot,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatDraftReadInput:
+    """Input for `chat.draft`: reads back the saved ComposerDraft the request names, the answer
+    a caller takes after a reconnect when its own composition state is gone. `draft_query` is
+    the Chat Contract v1 `ComposerDraftQuery` document, carried verbatim and opaque to this
+    envelope, for the same reason `chat.command` carries its command and `chat.snapshot`
+    carries its query that way -- Chat's draft shape is already frozen in
+    `contracts/chat/v1`, and restating it here would create a second, drifting copy.
+    `draft_id` is the addressed draft stated natively, so authorization and audit read one
+    identifier rather than parsing a document this boundary does not validate. Workspace-
+    scoped through the request envelope's selected workspace, so this payload never carries a
+    second, independent workspace identifier.
+    """
+
+    draft_id: Identifier
+    draft_query: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["draft_id"] = self.draft_id
+        wire["draft_query"] = _encode_json_object(self.draft_query)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatDraftReadInput") -> ChatDraftReadInput:
+        """Decode a wire payload into a ChatDraftReadInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_draft_query = _decode_json_object(
+            _require_field(mapping, "draft_query", path),
+            f"{path}.draft_query",
+        )
+        return cls(
+            draft_id=field_draft_id,
+            draft_query=field_draft_query,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatDraftReadResult:
+    """Result of `chat.draft`: the Chat Contract v1 `ComposerDraftResult` document the query
+    produced -- `found` and, when found, the actor's saved ComposerDraft -- carried opaquely
+    for the same reason the request is, and echoed with the conversation it answers. A read-
+    back is a point-in-time observation of the draft store, not a continuation, so there is
+    no cursor to honour.
+    """
+
+    conversation_id: Identifier
+    draft_result: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["conversation_id"] = self.conversation_id
+        wire["draft_result"] = _encode_json_object(self.draft_result)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatDraftReadResult") -> ChatDraftReadResult:
+        """Decode a wire payload into a ChatDraftReadResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_conversation_id = _decode_str(
+            _require_field(mapping, "conversation_id", path),
+            f"{path}.conversation_id",
+        )
+        field_draft_result = _decode_json_object(
+            _require_field(mapping, "draft_result", path),
+            f"{path}.draft_result",
+        )
+        return cls(
+            conversation_id=field_conversation_id,
+            draft_result=field_draft_result,
         )
 
 
@@ -21466,6 +21560,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         result_schema_ref=(
             "https://contracts.omnivia.dev/application/v1/chat.schema.json"
             "#/$defs/ChatSnapshotResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.draft",
+        scope=OperationScope(
+            required_scopes=("chat:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatDraftReadInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatDraftReadResult"
         ),
         required_capability=CapabilityRequirement(
             id="chat.read",

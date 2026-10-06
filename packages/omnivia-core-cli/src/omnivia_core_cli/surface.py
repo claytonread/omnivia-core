@@ -132,6 +132,7 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(("chat", "command"), "chat.command", "chat_authoring"),
     ApplicationCommand(("chat", "events"), "chat.events", "chat_observation"),
     ApplicationCommand(("chat", "snapshot"), "chat.snapshot", "chat_observation"),
+    ApplicationCommand(("chat", "draft"), "chat.draft", "chat_observation"),
     ApplicationCommand(("workflow", "start"), "workflow.start", "workflow_execution"),
     ApplicationCommand(
         ("workflow", "inspect"), "workflow.inspect", "workflow_observation"

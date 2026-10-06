@@ -61,7 +61,8 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
-from omnivia_core_runtime.service.chat_snapshot import resolve_chat_snapshot
+from omnivia_core.contracts.v1.generated import ChatDraftReadInput
+from omnivia_core_runtime.service.chat_snapshot import resolve_chat_draft, resolve_chat_snapshot
 from omnivia_core_runtime.service.chat_submit import (
     RETRY_GENERATION_COMMAND,
     SUBMIT_MESSAGE_COMMAND,
@@ -82,10 +83,11 @@ from omnivia_core_runtime.storage.chat import (
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 
 CHAT_COMMAND_OPERATION: Final = "chat.command"
+CHAT_DRAFT_OPERATION: Final = "chat.draft"
 CHAT_EVENTS_OPERATION: Final = "chat.events"
 CHAT_SNAPSHOT_OPERATION: Final = "chat.snapshot"
 CHAT_FAMILY_OPERATIONS: Final = frozenset(
-    {CHAT_COMMAND_OPERATION, CHAT_EVENTS_OPERATION, CHAT_SNAPSHOT_OPERATION}
+    {CHAT_COMMAND_OPERATION, CHAT_DRAFT_OPERATION, CHAT_EVENTS_OPERATION, CHAT_SNAPSHOT_OPERATION}
 )
 
 _MESSAGE_INVALID: Final = "the request payload is not valid for this chat operation"
@@ -407,9 +409,22 @@ class ChatHandlers:
         connection, _identity, _guard = self._authority()
         return resolve_chat_snapshot(connection, request, context)
 
+    def chat_draft_read(self, context: OperationContext) -> Mapping[str, Any]:
+        request: ChatDraftReadInput | None = None
+        try:
+            request = ChatDraftReadInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError):
+            pass
+        if request is None:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection, _identity, _guard = self._authority()
+        now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
+        return resolve_chat_draft(connection, request, context, now_us=now_us)
+
 
 __all__ = [
     "CHAT_COMMAND_OPERATION",
+    "CHAT_DRAFT_OPERATION",
     "CHAT_EVENTS_OPERATION",
     "CHAT_FAMILY_OPERATIONS",
     "CHAT_SNAPSHOT_OPERATION",
