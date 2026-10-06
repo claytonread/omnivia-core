@@ -1741,6 +1741,27 @@ class ChatWriter:
         )
         _require_cas_match(cursor, "draft", draft_id)
 
+    def discard_draft(self, *, draft_id: str, updated_at_us: int) -> None:
+        """Expire one draft row: the schema-forbidden DELETE, done as a state.
+
+        0029's `omnivia_guard_chat_drafts_delete` aborts EVERY delete on this
+        table, with no writer-guard allowance, so a discard is the row's own
+        expiry: `version` still advances (the row's audit trail continues), and
+        `expires_at_us` is set one microsecond past the settlement instant -- the
+        smallest value 0029's own CHECK (`expires_at_us > updated_at_us`) admits,
+        so the draft reads back as gone from that instant on. The write is
+        CAS-free on purpose: the discard's intent covers whatever the row
+        currently holds, and a save the actor makes later starts a new version
+        of its own.
+        """
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_drafts SET version = version + 1, "
+            "updated_at_us = ?, expires_at_us = ? "
+            "WHERE workspace_id = ? AND draft_id = ?",
+            (updated_at_us, updated_at_us + 1, self.workspace_id, draft_id),
+        )
+        _require_cas_match(cursor, "draft", draft_id)
+
     def update_queued_submission(
         self,
         *,
@@ -2936,16 +2957,64 @@ def read_active_draft(
     workspace_id: str,
     conversation_id: str,
     actor_id: str,
+    now_us: int,
     device_id: str = "",
     mode: str = "normal",
 ) -> Draft | None:
+    """The one active draft row for this actor/device/mode, or nothing.
+
+    `now_us` is the caller's clock, and the expiry is the read's own: 0029 forbids
+    `DELETE` on this table outright (`omnivia_guard_chat_drafts_delete` has no
+    writer-guard allowance), so a discarded draft is one whose `expires_at_us` has
+    passed, and this read is what makes that the visible state. A read without the
+    clock would report a discarded draft as an active one, so the parameter is
+    required rather than defaulted.
+    """
     row = connection.execute(
         f"SELECT {_DRAFT_COLUMNS} FROM omnivia_chat_drafts "
         "WHERE workspace_id = ? AND conversation_id = ? AND actor_id = ? "
-        "AND device_id = ? AND mode = ?",
-        (workspace_id, conversation_id, actor_id, device_id, mode),
+        "AND device_id = ? AND mode = ? "
+        "AND (expires_at_us IS NULL OR expires_at_us > ?)",
+        (workspace_id, conversation_id, actor_id, device_id, mode, now_us),
     ).fetchone()
     return None if row is None else _draft_from_row(row)
+
+
+def read_draft_by_id(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    draft_id: str,
+) -> Draft | None:
+    """The draft row this workspace's own `draft_id` names, expired or not.
+
+    `draftId` is the row's PRIMARY KEY within the workspace (0029), so a
+    `DiscardDraft` names its target through it directly rather than through the
+    actor/device/mode key -- the request carries no mode, and the discard must
+    find the draft it names whatever mode it was composed in.
+    """
+    row = connection.execute(
+        f"SELECT {_DRAFT_COLUMNS} FROM omnivia_chat_drafts "
+        "WHERE workspace_id = ? AND draft_id = ?",
+        (workspace_id, draft_id),
+    ).fetchone()
+    return None if row is None else _draft_from_row(row)
+
+
+def message_exists(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    message_id: str,
+) -> bool:
+    """Whether the committed Message this conversation names exists, at all."""
+    row = connection.execute(
+        "SELECT 1 FROM omnivia_chat_messages "
+        "WHERE workspace_id = ? AND conversation_id = ? AND message_id = ?",
+        (workspace_id, conversation_id, message_id),
+    ).fetchone()
+    return row is not None
 
 
 _QUEUED_SUBMISSION_COLUMNS = (
