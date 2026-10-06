@@ -14,33 +14,64 @@ U-029 trusted bootstrap and the D04 admission conditions as executable code:
   over the registered tables: no INTO, no locks, no mutating CTE bodies, no
   `SET`/`ATTACH`/`PRAGMA`/extension/UDF/file-function surface, no
   multi-statement input.
+- **UTC session** — the trusted bootstrap pins the engine session `TimeZone`
+  to `UTC` and re-verifies it, so `TIMESTAMPTZ` cells are unambiguous instants.
 - **No canonical authority** — this module never opens the workspace SQLite
   database and never imports the storage layer; it produces candidate
-  artifacts for the service writer to commit.
+  artifacts for the service writer to commit. `execute_result_artifact` stages
+  one fixed-leaf candidate in the attempt directory and returns its handle.
 
-The module is standard-library plus the two admitted dependencies only.
+The module is standard-library, the two admitted dependencies, and the pure
+Core contracts and result artifact protocol only.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
+import ctypes
+import errno
 import os
+import re
 import shutil
+import stat
+import sys
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import duckdb
 import sqlglot
 from sqlglot import exp
+from sqlglot.tokenizer_core import Token, TokenType
+
+from omnivia_core.contracts.v1 import is_identifier
+from omnivia_core_runtime.analysis.result_artifact import (
+    LOGICAL_BOOLEAN,
+    LOGICAL_BYTES,
+    LOGICAL_DATE,
+    LOGICAL_DECIMAL,
+    LOGICAL_FLOAT,
+    LOGICAL_INTEGER,
+    LOGICAL_STRING,
+    LOGICAL_TIMESTAMPTZ,
+    MAX_RESULT_BYTES_CEILING,
+    MAX_RESULT_COLUMNS,
+    MAX_RESULT_ROWS_CEILING,
+    AnalysisExecutionEcho,
+    AnalysisResultArtifactCandidate,
+    AnalysisResultArtifactRefused,
+    AnalysisResultColumn,
+    encode_analysis_result_artifact,
+    validate_analysis_result_artifact_candidate,
+)
 
 __all__ = [
     "BOUNDARY_REFUSAL_CODE",
     "RESOURCE_REFUSAL_CODE",
     "AnalysisWorker",
+    "StagedAnalysisResult",
     "WorkerBootstrapConfig",
     "WorkerRefusal",
     "open_analysis_worker",
@@ -106,13 +137,87 @@ _FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
 )
 
 
+#: The one staged result leaf; callers never choose a name or a path.
+_RESULT_LEAF: Final = "analysis-result.json"
+_PRIVATE_DIRECTORY_MODE: Final = 0o700
+_PRIVATE_FILE_MODE: Final = 0o600
+#: Windows leaf create: exclusive (CREATE_NEW), unshared, and never following a link
+#: (FILE_FLAG_OPEN_REPARSE_POINT). The CRT flags adopt the handle as write-only.
+_WIN_GENERIC_WRITE: Final = 0x40000000
+_WIN_CREATE_NEW: Final = 1
+_WIN_CREATE_FLAGS: Final = (
+    0x00200080  # FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT
+)
+_WIN_CRT_FLAGS: Final = 0x00008081  # _O_WRONLY | _O_NOINHERIT | _O_BINARY
+_WIN_INVALID_HANDLE: Final = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
+#: Native resource exhaustion and write failures; every other code is topology.
+_WIN_RESOURCE_CODES: Final = frozenset(
+    {4, 8, 14, 29, 31, 39, 110, 112, 223, 1117, 1127, 1295, *range(1450, 1456), 1816}
+)
+
+#: The closed `str(DuckDBPyType)` vocabulary the artifact admits. Everything else
+#: (unsigned, UUID, JSON, naive temporal, interval, enum, collections) refuses.
+_COLUMN_TYPES: Final = {
+    "BOOLEAN": LOGICAL_BOOLEAN,
+    "TINYINT": LOGICAL_INTEGER,
+    "SMALLINT": LOGICAL_INTEGER,
+    "INTEGER": LOGICAL_INTEGER,
+    "BIGINT": LOGICAL_INTEGER,
+    "HUGEINT": LOGICAL_INTEGER,
+    "FLOAT": LOGICAL_FLOAT,
+    "DOUBLE": LOGICAL_FLOAT,
+    "VARCHAR": LOGICAL_STRING,
+    "BLOB": LOGICAL_BYTES,
+    "DATE": LOGICAL_DATE,
+    "TIMESTAMP WITH TIME ZONE": LOGICAL_TIMESTAMPTZ,
+}
+#: Failures that are resource, limit or I/O pressure, not topology or mode.
+_RESOURCE_ERRNOS: Final = frozenset(
+    getattr(errno, name)
+    for name in (
+        "ENOSPC",
+        "EDQUOT",
+        "EIO",
+        "EMFILE",
+        "ENFILE",
+        "ENOMEM",
+        "EFBIG",
+        "EOVERFLOW",
+    )
+    if hasattr(errno, name)
+)
+_DECIMAL_TYPE: Final = re.compile(r"DECIMAL\(([1-9][0-9]?),(0|[1-9][0-9]?)\)")
+
+_REFUSE_UTC: Final = "the engine session time zone is not UTC"
+_REFUSE_AUTHORITY: Final = "the result artifact authority is not admitted"
+_REFUSE_BOUNDS: Final = "the result artifact bounds are not admitted"
+_REFUSE_SCHEMA: Final = "the result columns are not admitted"
+_REFUSE_TOPOLOGY: Final = "the attempt directory or result leaf is not safe"
+_REFUSE_RESULT: Final = "the result exceeds its admitted bounds"
+_REFUSE_WRITE: Final = "the result artifact could not be staged"
+
+
 class WorkerRefusal(Exception):
-    """A handler-visible refusal: the worker refuses the request and did nothing."""
+    """A handler-visible refusal: the worker did not produce an authoritative result.
+
+    Refusals before the fixed result leaf is exclusively created leave no new leaf.
+    A refusal after that point retains whatever occupies the leaf name: possibly
+    partial, complete or foreign, and never authoritative. Only a returned
+    `StagedAnalysisResult` is; retry in a fresh attempt directory.
+    """
 
     def __init__(self, code: str, reason: str) -> None:
         super().__init__(reason)
         self.code = code
         self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class StagedAnalysisResult:
+    """One staged result: the validated Phase A candidate and its fixed relative handle."""
+
+    candidate: AnalysisResultArtifactCandidate
+    handle: str
 
 
 @dataclass(frozen=True)
@@ -189,7 +294,7 @@ class AnalysisWorker:
 
     def _bootstrap(self) -> duckdb.DuckDBPyConnection:
         config = self._config
-        config.attempt_directory.mkdir(parents=True, exist_ok=True)
+        _prepare_attempt_directory(config.attempt_directory)
         config.temp_directory.mkdir(parents=True, exist_ok=True)
         # Step 1: open with the admitted resource configuration. No connection
         # string, no extension path, no filesystem knob beyond the admitted
@@ -203,6 +308,9 @@ class AnalysisWorker:
                 "autoload_known_extensions": False,
             },
         )
+        # Pin the session to UTC before anything else runs, so every TIMESTAMPTZ
+        # the engine returns is an unambiguous UTC instant.
+        _require_utc_session(con, pin=True)
         # Step 2: register the admitted inputs during trusted setup, while file
         # access is still possible. The engine reads each admitted file through
         # its own reader; the worker never passes file paths at execute time.
@@ -246,6 +354,7 @@ class AnalysisWorker:
             raise
         except Exception:  # noqa: BLE001, S110 - refused by the engine: the required outcome
             pass
+        _require_utc_session(con, pin=False)  # the probes above must not move it
         # Step 5: start the host watchdog — wall-time and spill quota. The
         # engine's own settings are not a binding control (Q39d/F-5 evidence).
         self._watchdog = threading.Thread(target=self._watch, daemon=True)
@@ -278,17 +387,116 @@ class AnalysisWorker:
         analysed before the engine sees it, and the engine is interrupted by
         the host watchdog when it exceeds the admitted resources.
         """
+        return self._execute_once(sql, parameters, limit=None, aliased=False)[1]
+
+    def execute_result_artifact(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        echo: AnalysisExecutionEcho,
+        units: tuple[str | None, ...],
+        max_rows: int,
+        max_bytes: int,
+    ) -> StagedAnalysisResult:
+        """Execute one read statement and stage its whole result as one candidate.
+
+        Everything the artifact needs is proven before the engine sees the SQL:
+        the exact echo, the ordinal units and the bounds. The result is fetched
+        once, bounded by `max_rows` plus one sentinel row, encoded only through
+        the Phase A protocol, validated again immediately before the fixed leaf
+        in the attempt directory is created, and returned as that validated
+        snapshot with its relative handle. Nothing here ever returns a path. A
+        refusal after the leaf is created retains it, non-authoritative.
+        """
+        expected_echo = _echo_snapshot(echo)
+        if expected_echo is None or type(parameters) is not tuple:
+            raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_AUTHORITY)
+        if not _admitted_units(units):
+            raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_AUTHORITY)
+        if not (
+            _bounded_int(max_rows, 0, MAX_RESULT_ROWS_CEILING)
+            and _bounded_int(max_bytes, 1, MAX_RESULT_BYTES_CEILING)
+        ):
+            raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_BOUNDS)
+        description, rows = self._execute_once(
+            sql, parameters, limit=max_rows + 1, aliased=True
+        )
+        if len(rows) > max_rows:
+            raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_RESULT)
+        self._check_interrupted()
+        schema = _result_columns(description, units)
+        if schema is None:
+            raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_SCHEMA)
+        try:
+            candidate: AnalysisResultArtifactCandidate | None = (
+                encode_analysis_result_artifact(
+                    schema,
+                    rows,
+                    echo=expected_echo,
+                    max_rows=max_rows,
+                    max_bytes=max_bytes,
+                )
+            )
+        except AnalysisResultArtifactRefused:
+            candidate = None
+        if candidate is None:
+            raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_RESULT)
+        # The proof and the stage are adjacent: only the returned snapshot is used.
+        try:
+            snapshot: AnalysisResultArtifactCandidate | None = (
+                validate_analysis_result_artifact_candidate(candidate)
+            )
+        except AnalysisResultArtifactRefused:
+            snapshot = None
+        if (
+            snapshot is None
+            or snapshot.schema != schema
+            or snapshot.echo != expected_echo
+        ):
+            raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_AUTHORITY)
+        self._check_interrupted()
+        _stage_leaf(
+            self._config.attempt_directory,
+            snapshot.artifact_bytes,
+            self._check_interrupted,
+        )
+        return StagedAnalysisResult(candidate=snapshot, handle=_RESULT_LEAF)
+
+    def _check_interrupted(self) -> None:
         if self._interrupted_reason is not None:
             raise WorkerRefusal(RESOURCE_REFUSAL_CODE, self._interrupted_reason)
-        self._grammar_check(sql)
+
+    def _execute_once(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...],
+        *,
+        limit: int | None,
+        aliased: bool,
+    ) -> tuple[tuple[tuple[object, str], ...], list[tuple[Any, ...]]]:
+        """Grammar-check once, execute the caller's SQL once, and fetch it.
+
+        Returns the cursor's own description (name, `str(type)`) and the rows;
+        `limit=None` fetches everything, otherwise exactly one `fetchmany`. The
+        engine can fail lazily at fetch, so both calls sit in one handler.
+        """
+        self._check_interrupted()
+        parsed, tokens = self._grammar_check(sql)
+        if aliased:
+            _require_explicit_aliases(parsed, tokens)
         try:
-            rows = self._con.execute(sql, list(parameters)).fetchall()
+            cursor = self._con.execute(sql, list(parameters))
+            description = tuple(
+                (column[0], str(column[1])) for column in (cursor.description or ())
+            )
+            rows = cursor.fetchall() if limit is None else cursor.fetchmany(limit)
         except WorkerRefusal:
             raise
         except duckdb.Error as error:
             reason = self._interrupted_reason or f"engine error: {str(error)[:120]}"
             raise WorkerRefusal(RESOURCE_REFUSAL_CODE, reason) from error
-        return rows
+        return description, rows
 
     def registered_tables(self) -> dict[str, int]:
         """The admitted tables and their row counts, for the attempt receipt."""
@@ -324,9 +532,13 @@ class AnalysisWorker:
 
     # -- grammar ---------------------------------------------------------------
 
-    def _grammar_check(self, sql: str) -> None:
+    def _grammar_check(self, sql: str) -> tuple[exp.Expr, list[Token]]:
         try:
-            statements = sqlglot.parse(sql, read="duckdb")
+            # The one tokenization and the one parse, exactly what `sqlglot.parse`
+            # does; the tokens stay so an alias can be bound to its source `AS`.
+            dialect = sqlglot.Dialect.get_or_raise("duckdb")
+            tokens = dialect.tokenize(sql)
+            statements = dialect.parser().parse(tokens, sql)
         except Exception as error:
             raise WorkerRefusal(
                 BOUNDARY_REFUSAL_CODE, f"unparseable statement: {str(error)[:90]}"
@@ -404,6 +616,7 @@ class AnalysisWorker:
                     BOUNDARY_REFUSAL_CODE,
                     f"reader function {key!r} is not admitted",
                 )
+        return parsed, tokens
 
 
 def _tree_size(path: Path) -> int:
@@ -423,40 +636,360 @@ def open_analysis_worker(config: WorkerBootstrapConfig) -> AnalysisWorker:
     return AnalysisWorker(config)
 
 
-def write_artifact(
-    rows: list[tuple[Any, ...]], columns: list[str], output_path: Path
-) -> dict[str, Any]:
-    """Write the result artifact host-side (the engine stays closed).
+def _bounded_int(value: object, low: int, high: int) -> bool:
+    return type(value) is int and low <= value <= high  # never a bool
 
-    The worker writes JSON-lines output itself from fetched rows — the engine
-    is not asked to touch the filesystem after the close. Returns the artifact
-    identity the service verifies before committing.
+
+def _close_quietly(con: duckdb.DuckDBPyConnection) -> None:
+    try:
+        con.close()
+    except Exception:  # noqa: BLE001, S110 - best-effort release on a refused bootstrap
+        pass
+
+
+def _session_is_utc(con: duckdb.DuckDBPyConnection) -> bool:
+    row = con.execute("SELECT current_setting('TimeZone')").fetchone()
+    return row is not None and len(row) == 1 and type(row[0]) is str and row[0] == "UTC"
+
+
+def _require_utc_session(con: duckdb.DuckDBPyConnection, *, pin: bool) -> None:
+    """Pin (optionally) and verify the exact `UTC` session, or close and refuse."""
+    try:
+        if pin:
+            con.execute("SET TimeZone='UTC'")
+        utc = _session_is_utc(con)
+    except Exception:  # noqa: BLE001
+        utc = False
+    if not utc:
+        _close_quietly(con)
+        raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_UTC)
+
+
+def _echo_snapshot(echo: object) -> AnalysisExecutionEcho | None:
+    """Rebuild the exact Phase A echo once, so later mutation cannot reach the worker."""
+    if type(echo) is not AnalysisExecutionEcho:
+        return None
+    try:
+        return replace(echo)
+    except Exception:  # noqa: BLE001 - a forged or malformed echo is just refused
+        return None
+
+
+def _admitted_units(units: object) -> bool:
+    return (
+        type(units) is tuple
+        and 1 <= len(units) <= MAX_RESULT_COLUMNS
+        and all(
+            unit is None or (type(unit) is str and is_identifier(unit))
+            for unit in units
+        )
+    )
+
+
+def _require_explicit_aliases(parsed: exp.Expr, tokens: list[Token]) -> None:
+    """Every computed final projection needs the literal `AS <identifier>`; the
+    engine's own label for an expression can look like a valid name and must not
+    be trusted. The AST gives `AS x` and a bare `x` the same Alias, so the alias
+    identifier's source position is bound to the token just before it: only an
+    `AS` token directly ahead of that exact identifier counts (comments are not
+    tokens, and a CTE, table or cast `AS` is never that token)."""
+    index_by_start = {token.start: index for index, token in enumerate(tokens)}
+    for projection in parsed.expressions:
+        if isinstance(projection, (exp.Column, exp.Star)):
+            continue
+        if isinstance(projection, exp.Alias) and is_identifier(projection.alias):
+            if isinstance(projection.this, exp.Column):
+                continue  # a renamed direct column: the cursor name is the alias
+            start = projection.args["alias"].meta.get("start")
+            index = index_by_start.get(start) if type(start) is int else None
+            if index and tokens[index - 1].token_type == TokenType.ALIAS:
+                continue
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_SCHEMA)
+
+
+def _result_columns(
+    description: tuple[tuple[object, str], ...], units: tuple[str | None, ...]
+) -> tuple[AnalysisResultColumn, ...] | None:
+    """Phase A columns from the cursor's metadata and ordinal units, or None."""
+    if not 1 <= len(description) <= MAX_RESULT_COLUMNS or len(units) != len(
+        description
+    ):
+        return None
+    names = [name for name, _ in description]
+    if not all(type(name) is str and is_identifier(name) for name in names):
+        return None
+    if len({str(name).casefold() for name in names}) != len(names):
+        return None
+    columns: list[AnalysisResultColumn] = []
+    try:
+        for (name, type_text), unit in zip(description, units, strict=True):
+            logical = _COLUMN_TYPES.get(type_text)
+            precision = scale = None
+            if logical is None:
+                decimal = _DECIMAL_TYPE.fullmatch(type_text)
+                if decimal is None:
+                    return None
+                logical = LOGICAL_DECIMAL
+                precision, scale = int(decimal[1]), int(decimal[2])
+            columns.append(
+                AnalysisResultColumn(str(name), logical, True, precision, scale, unit)
+            )
+    except AnalysisResultArtifactRefused:
+        return None
+    return tuple(columns)
+
+
+def _is_unsafe_directory(info: os.stat_result) -> bool:
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or bool(getattr(info, "st_file_attributes", 0) & reparse)
+    )
+
+
+def _lstat_directory(path: Path) -> os.stat_result | None:
+    """The directory's own lstat, None when absent; a link, reparse point or
+    non-directory is a boundary refusal and is never followed."""
+    info: os.stat_result | None = None
+    unsafe = False
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        unsafe = True
+    if unsafe or info is None or _is_unsafe_directory(info):
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+    return info
+
+
+def _prepare_attempt_directory(path: Path) -> None:
+    """lstat, then create owner-private if absent, then lstat again."""
+    if _lstat_directory(path) is None:
+        path.mkdir(mode=_PRIVATE_DIRECTORY_MODE, parents=True, exist_ok=True)
+        if _lstat_directory(path) is None:
+            raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+
+
+def _open_verified_directory(path: Path, before: os.stat_result) -> int:
+    """POSIX: an fd on the very directory lstat saw, owner-private, or a refusal.
+
+    Resource or I/O pressure is the write refusal; an unsafe, missing or replaced
+    directory and any permission or mode problem is the boundary refusal.
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    digest = hashlib.sha256()
-    with output_path.open("wb") as handle:
-        header = json.dumps({"columns": columns}).encode("utf-8")
-        digest.update(header + b"\n")
-        handle.write(header + b"\n")
-        for row in rows:
-            line = json.dumps(
-                [_encodable(value) for value in row], separators=(",", ":")
-            ).encode("utf-8")
-            digest.update(line + b"\n")
-            handle.write(line + b"\n")
-            count += 1
-    return {
-        "path": str(output_path),
-        "rows": count,
-        "columns": columns,
-        "sha256": digest.hexdigest(),
-    }
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    safe = False
+    resource = False
+    try:
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+        safe = (
+            stat.S_ISDIR(info.st_mode)
+            and (info.st_dev, info.st_ino) == (before.st_dev, before.st_ino)
+            and info.st_uid == os.geteuid()
+        )
+        if safe and stat.S_IMODE(info.st_mode) != _PRIVATE_DIRECTORY_MODE:
+            os.fchmod(fd, _PRIVATE_DIRECTORY_MODE)
+            safe = stat.S_IMODE(os.fstat(fd).st_mode) == _PRIVATE_DIRECTORY_MODE
+    except OSError as error:
+        safe = False
+        resource = error.errno in _RESOURCE_ERRNOS
+    if not safe:
+        _close_directory_fd(fd if fd >= 0 else None)  # the refusal below stands
+        if resource:
+            raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE)
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+    return fd
 
 
-def _encodable(value: Any) -> Any:
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    if hasattr(value, "hex"):  # bytes/BLOB
-        return value.hex()
-    return value
+def _stage_leaf(directory: Path, data: bytes, check: Callable[[], None]) -> None:
+    """Create the one fixed leaf exclusively and write `data`, or refuse.
+
+    The directory is re-lstat immediately before staging. Where the platform
+    allows, the leaf is created relative to a verified directory fd so a parent
+    swap cannot redirect it. An existing object of any kind is a boundary refusal
+    and is kept. Once the exclusive create succeeds nothing here ever mutates the
+    pathname again: no portable API unlinks a name only if it still identifies one
+    inode, so a check-then-unlink could delete a foreign object swapped in between.
+    Every later refusal closes its descriptors and retains whatever occupies the
+    fixed name, which is non-authoritative; only a returned stage is authoritative.
+    On Windows the leaf is created by full path with CREATE_NEW, which closes the
+    leaf race but establishes no parent-directory DACL or private-directory
+    guarantee; attempt-directory trust on Windows is a separate, open question.
+    """
+    before = _lstat_directory(directory)
+    if before is None:
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+    dir_fd = (
+        _open_verified_directory(directory, before)
+        if os.open in os.supports_dir_fd
+        else None
+    )
+    try:
+        _create_leaf(directory, dir_fd, data, check)
+    except BaseException:
+        _close_directory_fd(dir_fd)  # best-effort: the refusal in flight stands
+        raise
+    if not _close_directory_fd(dir_fd):
+        raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE)
+    check()  # the last success boundary: the close itself can outlast the deadline
+
+
+def _close_directory_fd(dir_fd: int | None) -> bool:
+    """Close the directory descriptor (never the result leaf's); False if the close failed."""
+    if dir_fd is None:
+        return True
+    try:
+        os.close(dir_fd)
+    except OSError:
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class _Win32Api:
+    """The native calls the fixed leaf needs: real on Windows, injected in tests."""
+
+    create_file: Callable[..., int | None]
+    close_handle: Callable[[int], object]
+    last_error: Callable[[], int]
+    open_osfhandle: Callable[[int, int], int]
+
+
+def _win32_api() -> _Win32Api:
+    """kernel32 and the CRT, loaded only on Windows; no other host imports them."""
+    if sys.platform != "win32":
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    return _Win32Api(
+        create_file=create_file,
+        close_handle=close_handle,
+        last_error=ctypes.get_last_error,
+        open_osfhandle=msvcrt.open_osfhandle,
+    )
+
+
+def _create_native_leaf(path: str, api: _Win32Api) -> int:
+    """Atomically create the leaf with CREATE_NEW and return its CRT descriptor, or refuse.
+
+    The create never follows a link (the reparse point is opened, so an existing
+    file, link or dangling link fails CREATE_NEW). Once the handle is native, the
+    CRT descriptor owns it and `os.close` is the only close; if the conversion
+    fails the handle is closed here, once, and the refusal stands.
+    """
+    handle = api.create_file(
+        path, _WIN_GENERIC_WRITE, 0, None, _WIN_CREATE_NEW, _WIN_CREATE_FLAGS, None
+    )
+    if handle in (None, 0, _WIN_INVALID_HANDLE):
+        # First call after the failed create: nothing runs before the error is read.
+        code = api.last_error()
+        if code in _WIN_RESOURCE_CODES:
+            raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE)
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+    try:
+        fd = api.open_osfhandle(handle, _WIN_CRT_FLAGS)
+    except BaseException:  # noqa: BLE001 - audit hooks may raise any BaseException; the handle is closed below
+        fd = -1
+    if fd == -1:
+        try:
+            api.close_handle(handle)  # the only close of this handle
+        except BaseException:  # noqa: BLE001, S110 - the refusal below stands even if this fails
+            pass
+        raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE)
+    return fd
+
+
+def _acquire_leaf(directory: Path, dir_fd: int | None) -> int:
+    """Exclusively create the fixed leaf and return its open descriptor, or refuse.
+
+    POSIX creates it relative to the verified directory fd with O_NOFOLLOW. Windows
+    uses the native atomic create above. Neither path ever stats or unlinks the name.
+    """
+    if sys.platform == "win32":
+        return _create_native_leaf(os.fspath(directory / _RESULT_LEAF), _win32_api())
+    target = _RESULT_LEAF if dir_fd is not None else os.fspath(directory / _RESULT_LEAF)
+    flags = (
+        os.O_CREAT
+        | os.O_EXCL
+        | os.O_WRONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        return os.open(target, flags, _PRIVATE_FILE_MODE, dir_fd=dir_fd)
+    except OSError as error:
+        # Resource or I/O pressure is a write refusal; an existing leaf (file,
+        # link or broken link), an unsafe or vanished directory and any mode
+        # problem is the boundary refusal. Nothing is ours either way.
+        if error.errno in _RESOURCE_ERRNOS:
+            raise WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE) from error
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY) from error
+
+
+def _create_leaf(
+    directory: Path, dir_fd: int | None, data: bytes, check: Callable[[], None]
+) -> None:
+    """Acquire and fill the leaf, or refuse; a refusal after acquisition retains the leaf."""
+    fd = _acquire_leaf(directory, dir_fd)
+    # The leaf now exists. Every failure below closes `fd` and refuses without
+    # touching the name: the retained object may be partial, complete or foreign,
+    # and is non-authoritative. A retry must use a fresh attempt directory.
+    failure: WorkerRefusal | None = None
+    try:
+        _fill_leaf(fd, data, check)
+    except WorkerRefusal as refusal:
+        failure = refusal
+    except OSError:
+        failure = WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE)
+    try:
+        os.close(fd)
+    except OSError:
+        failure = failure or WorkerRefusal(RESOURCE_REFUSAL_CODE, _REFUSE_WRITE)
+    if failure is None:
+        try:
+            check()  # the last safe success boundary: a late deadline still refuses
+        except WorkerRefusal as refusal:
+            failure = refusal
+    if failure is not None:
+        raise failure
+
+
+def _fill_leaf(fd: int, data: bytes, check: Callable[[], None]) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        check()
+        written = os.write(fd, view[offset:])
+        if written < 1:
+            raise OSError("no progress writing the result leaf")
+        offset += written
+    check()
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, _PRIVATE_FILE_MODE)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or (
+        os.name == "posix" and stat.S_IMODE(info.st_mode) != _PRIVATE_FILE_MODE
+    ):
+        raise WorkerRefusal(BOUNDARY_REFUSAL_CODE, _REFUSE_TOPOLOGY)
+    if info.st_size != len(data):
+        raise OSError("result leaf size differs from the bytes written")
+    os.fsync(fd)
+    check()  # a watchdog interruption that landed during the durable write

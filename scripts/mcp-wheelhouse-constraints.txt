@@ -51,6 +51,10 @@ cryptography==50.0.0
 # platform-specific binary wheel per target; sqlglot is pure Python.
 duckdb==1.5.5
 sqlglot==30.20.0
+# Declared by omnivia-core-runtime: duckdb 1.5.5 needs pytz to materialise a
+# TIMESTAMPTZ value, and the result artifact encoder admits its zone objects.
+# Pure Python (py2.py3 wheel), exact pin.
+pytz==2026.5
 h11==0.16.0
 httpcore2==2.9.1
 httpx2==2.9.1
