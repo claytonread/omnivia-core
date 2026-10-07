@@ -136,3 +136,58 @@ to a startable service") is satisfied twice over:
   `chat.py` writer primitives, migration `0029` drafts table.
 - No Core or Platform behaviour changed by this trace; the only commits are
   documentation (this file) and the Platform lane noted in §4.4.
+
+---
+
+## 7. Addendum — the implementation slice landed on this lane (same day)
+
+Written after the trace, on the same branch:
+
+1. **§4.1 done, in `service/chat_submit.py`** (the established single home for
+   the served Chat commands): `SaveDraft` and `DiscardDraft` decoded field-by-field
+   to `commands.schema.json#/$defs/{SaveDraftRequest,DiscardDraftRequest}` (closed
+   field sets, protocol negotiation, mode/source pairing mirroring 0029's own
+   CHECKs, references held to the `referenceId`/`sourceRevision` grammar, target
+   kinds, bounded text in BOTH characters and bytes, optional `expectedVersion`),
+   actor bound to the authenticated principal, workspace bound to the authorized
+   one — then settled through `execute_chat_command` unchanged (seam replay, grant,
+   fence, audit, stored outcome all inherited, no new durable statement).
+2. **Slot semantics** (the design the schema admits): one draft per
+   `(conversation, actor, device='', mode)` — empty slot inserts (named `draftId`
+   or derived `{commandId}.draft`), the slot's own row CAS-updates in place,
+   an occupied slot with a foreign identity is a `conflict`, a stale
+   `expectedVersion` conflicts without writing.
+3. **§4.1's DiscardDraft, resolved honestly under 0029's delete guard:** the
+   migration's trigger forbids DELETE outright, so discard is the CAS update that
+   empties the row in place (text `""`, references `[]`, target cleared) — the
+   schema carries no discarded state, and inventing one would be a contract
+   change. A later save overwrites the same row; a client hydrating an emptied
+   draft composes an empty composer. Recorded as a design note for the owner.
+4. **§2.3's reader gap:** `storage.chat.read_draft` added (identity read, used by
+   DiscardDraft, which must not guess the slot).
+5. **§4.3/§4.4 NOT done — blocked, not skipped:** `ConversationSnapshotResult`
+   is `additionalProperties: false` with no `composerDraft` member, and a new
+   `chat draft` CLI leaf means a new `OPERATION_CATALOGUE` entry in the
+   generated Application Contract. Both are governance-bound contract changes
+   (`GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001` binds the schema bytes); they
+   need the owner decision the plan reserves to the owner, and C5B should not
+   proceed against an unpacked wire. The draft's `version` is therefore not
+   echoed in the command result either — the frozen envelope has no place for
+   the typed `DraftSavedResult` — and `resultRef` is `draft:<draftId>`, the
+   same opaque convention `queued-submission:<id>` established.
+6. **Tests:** `tests/phase3/runtime/test_chat_drafts.py`, 11 tests, all passing:
+   insert + idempotent replay; in-place version advance; stale `expectedVersion`
+   conflict without writes; same idempotency key with different content →
+   `idempotency_conflict`; foreign actor, malformed mode/source pairings, bad
+   reference shape refused before writing; discard in place + discard replay;
+   save-after-discard identity continuity; discard of a foreign/missing draft →
+   conflict; and the GB-05-style real restart (fresh bootstrap, close, re-own,
+   read back, seam replay after restart with no second row).
+7. **Regression slice** (the C0 plan's baseline): `test_chat_offline_queue.py` +
+   `test_chat_submit_message_resolver.py` + `test_chat_snapshot.py` — 134 passed
+   after the change.
+8. **Verification environment note:** the shared venv's editable installs point
+   at `/Users/claytonread/Projects/omnivia-core`; running this worktree's tests
+   needs the `PYTHONPATH` shadow the pytest harness itself prints. Not run yet:
+   the full `./scripts/preflight` (Core merges on GitHub-CI green per AGENTS.md,
+   and opening the PR is the owner's step).

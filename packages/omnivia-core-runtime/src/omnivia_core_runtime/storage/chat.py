@@ -110,6 +110,7 @@ __all__ = [
     "insert_queue_order_projection",
     "insert_view_state",
     "read_active_draft",
+    "read_draft",
     "read_active_queue_for_actor",
     "read_actor_view_state",
     "read_branch",
@@ -2944,6 +2945,27 @@ def read_active_draft(
         "WHERE workspace_id = ? AND conversation_id = ? AND actor_id = ? "
         "AND device_id = ? AND mode = ?",
         (workspace_id, conversation_id, actor_id, device_id, mode),
+    ).fetchone()
+    return None if row is None else _draft_from_row(row)
+
+
+def read_draft(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    draft_id: str,
+) -> Draft | None:
+    """One draft row by its own identity, whatever slot it lives in.
+
+    `read_active_draft` answers the composer-slot question; `DiscardDraft` names a
+    `draftId` directly and must not guess which slot holds it, so this is the
+    identity read. It does not filter on expiry or content: a discarded (emptied)
+    row is still addressable until a later save overwrites it in place.
+    """
+    row = connection.execute(
+        f"SELECT {_DRAFT_COLUMNS} FROM omnivia_chat_drafts "
+        "WHERE workspace_id = ? AND draft_id = ?",
+        (workspace_id, draft_id),
     ).fetchone()
     return None if row is None else _draft_from_row(row)
 
