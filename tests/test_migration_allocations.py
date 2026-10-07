@@ -256,10 +256,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     64: "cecb879bda649e8323d218d0c7927a50cc299b9e",
     # 0065 is the C13 review-finding quarantine candidate, pinned to the commit that
     # introduced its SQL. 0066 was introduced by de6724f0, repinned to its
-    # completion-authority hardening a3319bd2, then to its exact-lineage repair
-    # 32fe9562, which is where its current content lives.
+    # completion-authority hardening a3319bd2, its exact-lineage repair 32fe9562,
+    # then its closed-event-shape repair b1193aaa, where its current content lives.
     65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
-    66: "32fe9562e6a317643c7282eafce6e0ae4e407e2f",
+    66: "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
