@@ -13557,6 +13557,66 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "description": "chat.draft answers a well-formed read-back on the success branch (C5A).",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "chat.draft/primary-success",
+      "operation": "chat.draft",
+      "request": {
+        "input": {
+          "draft_id": "cmd-chat-draft-save.draft",
+          "draft_query": {
+            "actorId": "actor-alice",
+            "conversationId": "conv-chat-1",
+            "draftId": "cmd-chat-draft-save.draft",
+            "requestId": "req-chat.draft-success",
+            "workspaceId": "ws-1"
+          }
+        },
+        "metadata": {
+          "request_id": "req-chat.draft-success",
+          "required_capabilities": [
+            {
+              "id": "chat.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.draft"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-chat.draft-success"
+        },
+        "result": {
+          "draft": {
+            "workspaceId": "ws-1",
+            "conversationId": "conv-chat-1",
+            "actorId": "actor-alice",
+            "draftId": "cmd-chat-draft-save.draft",
+            "mode": "normal",
+            "text": "a composition still being typed",
+            "attachmentReferences": [],
+            "contextReferences": [],
+            "schemaVersion": 1,
+            "updatedAt": "2024-01-01T00:01:00Z",
+            "version": 1
+          },
+          "found": true
+        }
+      },
+      "trusted": {
+        "draft_id": "cmd-chat-draft-save.draft",
+        "workspace_id": "ws-1"
+      }
     }
   ],
   "contract_version": "1.0",

@@ -188,7 +188,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **79 application operations** and binds
+`operations.schema.json` names exactly **80 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -199,35 +199,35 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Seventy-seven are workspace-scoped:
+Seventy-eight are workspace-scoped:
 
 ```text
 analysis.start                     candidate.approve                  candidate.reject
-chat.command                       chat.events                        chat.snapshot
-context.priority.set               context_pack.build                 continuity.checkpoint.append
-continuity.handoff.read            continuity.session.close           continuity.session.register
-decision.definition.disable        decision.definition.get            decision.definition.list
-decision.definition.publish        decision.evaluate                  decision.model.activate
-decision.model.install             decision.model.list                decision.model.remove
-decision.outcome.submit            decision.record.get                decision.record.list
-decision.result_use.evaluate       decision.settings.get              decision.settings.update
-decision.status                    engineering.context.build          engineering.expand
-engineering.repository.register    engineering.review.record          engineering.search
-engineering.source.capture.commit  engineering.source.record          evidence.capture
-evidence.search                    graph.traverse                     import.start
-job.cancel                         job.events                         job.get
-job.retry                          knowledge.propose                  knowledge.search
-knowledge.share.decide             knowledge.share.lineage            knowledge.share.propose
-knowledge.share.read               memory.create                      memory.get
-memory.list                        memory.search                      outcome.request.create
-outcome.request.read               project.context.read               project.context.switch
-record.supersede                   skills.draft.create                skills.draft.update
-skills.install                     skills.proposal.submit             skills.remove
-skills.resolve                     skills.version.deprecate           skills.version.publish
-task_context.export                task_context.export.read           trigger.declare
-trigger.health                     trigger.ingest                     trigger.lifecycle
-workflow.control                   workflow.inspect                   workflow.review
-workflow.start                     workspace.inspect
+chat.command                       chat.draft                         chat.events
+chat.snapshot                      context.priority.set               context_pack.build
+continuity.checkpoint.append       continuity.handoff.read            continuity.session.close
+continuity.session.register        decision.definition.disable        decision.definition.get
+decision.definition.list           decision.definition.publish        decision.evaluate
+decision.model.activate            decision.model.install             decision.model.list
+decision.model.remove              decision.outcome.submit            decision.record.get
+decision.record.list               decision.result_use.evaluate       decision.settings.get
+decision.settings.update           decision.status                    engineering.context.build
+engineering.expand                 engineering.repository.register    engineering.review.record
+engineering.search                 engineering.source.capture.commit  engineering.source.record
+evidence.capture                   evidence.search                    graph.traverse
+import.start                       job.cancel                         job.events
+job.get                            job.retry                          knowledge.propose
+knowledge.search                   knowledge.share.decide             knowledge.share.lineage
+knowledge.share.propose            knowledge.share.read               memory.create
+memory.get                         memory.list                        memory.search
+outcome.request.create             outcome.request.read               project.context.read
+project.context.switch             record.supersede                   skills.draft.create
+skills.draft.update                skills.install                     skills.proposal.submit
+skills.remove                      skills.resolve                     skills.version.deprecate
+skills.version.publish             task_context.export                task_context.export.read
+trigger.declare                    trigger.health                     trigger.ingest
+trigger.lifecycle                  workflow.control                   workflow.inspect
+workflow.review                    workflow.start                     workspace.inspect
 ```
 
 `service.health`, `service.readiness`, and `service.discover` are **not** in

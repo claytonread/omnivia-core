@@ -1435,6 +1435,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("chat:write",), "update", "chat.command",
         "chat", "ChatCommand", "CHAT_MUT", False,
     ),
+    "chat.draft": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatDraft", "POINT_READ", False,
+    ),
     "chat.events": FrozenOperation(
         "workspace", ("chat:read",), "none", "chat.read",
         "chat", "ChatEvents", "JOB_EVENTS", False,

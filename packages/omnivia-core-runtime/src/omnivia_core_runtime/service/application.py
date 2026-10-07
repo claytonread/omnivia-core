@@ -83,6 +83,7 @@ from omnivia_core_runtime.service.chat_submit import resolve_chat_command
 from omnivia_core_runtime.service.handlers.analysis import analysis_start
 from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
+    CHAT_DRAFT_OPERATION,
     CHAT_EVENTS_OPERATION,
     CHAT_FAMILY_OPERATIONS,
     CHAT_SNAPSHOT_OPERATION,
@@ -383,6 +384,7 @@ CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         CHAT_COMMAND_OPERATION: MUTATION_PURPOSES[CHAT_COMMAND_OPERATION],
         CHAT_EVENTS_OPERATION: CHAT_OBSERVATION_PURPOSE,
+        CHAT_DRAFT_OPERATION: CHAT_OBSERVATION_PURPOSE,
         CHAT_SNAPSHOT_OPERATION: CHAT_OBSERVATION_PURPOSE,
     }
 )
@@ -1428,6 +1430,9 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     registry = ApplicationOperationRegistry()
     registry.register(
         CHAT_COMMAND_OPERATION, cast(OperationHandler, handlers.chat_command)
+    )
+    registry.register(
+        CHAT_DRAFT_OPERATION, cast(OperationHandler, handlers.chat_draft)
     )
     registry.register(
         CHAT_EVENTS_OPERATION, cast(OperationHandler, handlers.chat_events)

@@ -200,6 +200,8 @@ __all__ = [
     "ChatCommandInput",
     "ChatCommandResult",
     "ChatConversationExpectation",
+    "ChatDraftInput",
+    "ChatDraftResult",
     "ChatEventsInput",
     "ChatEventsResult",
     "ChatGenerationEvent",
@@ -4893,6 +4895,100 @@ class ChatSnapshotResult:
         return cls(
             conversation_id=field_conversation_id,
             snapshot=field_snapshot,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatDraftInput:
+    """Input for `chat.draft`: the read-back of one saved ComposerDraft, the answer a caller
+    takes when it reconnects or reloads and must restore its unsent composition (C5A).
+    `draft_query` is the Chat Contract v1 `ComposerDraftQuery` document, carried verbatim and
+    opaque to this envelope, for the same reason `chat.command` carries its command that way
+    -- the draft shape is already frozen in `contracts/chat/v1`, and restating it here would
+    create a second, drifting copy. `draft_id` is the addressed draft stated natively, so
+    authorization and audit read one identifier rather than parsing a document this boundary
+    does not validate. Workspace-scoped through the request envelope's selected workspace, so
+    this payload never carries a second, independent workspace identifier.
+    """
+
+    draft_id: Identifier
+    draft_query: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["draft_id"] = self.draft_id
+        wire["draft_query"] = _encode_json_object(self.draft_query)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatDraftInput") -> ChatDraftInput:
+        """Decode a wire payload into a ChatDraftInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_draft_id = _decode_str(_require_field(mapping, "draft_id", path), f"{path}.draft_id")
+        field_draft_query = _decode_json_object(
+            _require_field(mapping, "draft_query", path),
+            f"{path}.draft_query",
+        )
+        return cls(
+            draft_id=field_draft_id,
+            draft_query=field_draft_query,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatDraftResult:
+    """Result of `chat.draft`: the Chat Contract v1 `ComposerDraftResult` the query produced --
+    whether a draft was found, and the ComposerDraft record itself, carried opaquely for the
+    same reason the request is. `found: false` with no `draft` is the authoritative "no such
+    draft for this actor" answer, not an error: a draft the actor saved and discarded, or one
+    that belongs to another actor, is absent rather than refused, so a reconnecting caller
+    restores an empty composer without learning whether anyone else ever held a draft here.
+    """
+
+    found: bool
+    draft: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["found"] = self.found
+        if self.draft is not None:
+            wire["draft"] = _encode_json_object(self.draft)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatDraftResult") -> ChatDraftResult:
+        """Decode a wire payload into a ChatDraftResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_found = _decode_bool(_require_field(mapping, "found", path), f"{path}.found")
+        field_draft: JsonObject | None = None
+        if "draft" in mapping:
+            raw_draft = mapping["draft"]
+            if raw_draft is None:
+                raise ContractDecodeError(
+                    f"{path}.draft: null is not a valid value"
+                )
+            field_draft = _decode_json_object(raw_draft, f"{path}.draft")
+        return cls(
+            found=field_found,
+            draft=field_draft,
         )
 
 
@@ -25682,6 +25778,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.draft",
+        scope=OperationScope(
+            required_scopes=("chat:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatDraftInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatDraftResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

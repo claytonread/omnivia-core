@@ -3861,6 +3861,49 @@ export interface ChatSnapshotResult {
 }
 
 /**
+ * Input for `chat.draft`: the read-back of one saved ComposerDraft, the answer a caller takes
+ * when it reconnects or reloads and must restore its unsent composition (C5A). `draft_query` is
+ * the Chat Contract v1 `ComposerDraftQuery` document, carried verbatim and opaque to this
+ * envelope, for the same reason `chat.command` carries its command that way -- the draft shape
+ * is already frozen in `contracts/chat/v1`, and restating it here would create a second,
+ * drifting copy. `draft_id` is the addressed draft stated natively, so authorization and audit
+ * read one identifier rather than parsing a document this boundary does not validate. Workspace-
+ * scoped through the request envelope's selected workspace, so this payload never carries a
+ * second, independent workspace identifier.
+ */
+export interface ChatDraftInput {
+  /**
+   * Identifier of the draft to read back. Must be the draft `draft_query` names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The Chat Contract v1 `ComposerDraftQuery` document, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly draft_query: JsonObject;
+}
+
+/**
+ * Result of `chat.draft`: the Chat Contract v1 `ComposerDraftResult` the query produced --
+ * whether a draft was found, and the ComposerDraft record itself, carried opaquely for the same
+ * reason the request is. `found: false` with no `draft` is the authoritative "no such draft for
+ * this actor" answer, not an error: a draft the actor saved and discarded, or one that belongs
+ * to another actor, is absent rather than refused, so a reconnecting caller restores an empty
+ * composer without learning whether anyone else ever held a draft here.
+ */
+export interface ChatDraftResult {
+  /**
+   * Whether the named draft exists for this actor.
+   */
+  readonly found: boolean;
+  /**
+   * The Chat Contract v1 `ComposerDraft` document, carried verbatim. Required exactly when
+   * `found` is true.
+   */
+  readonly draft?: JsonObject;
+}
+
+/**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
  * an authorization input.
  */
@@ -13254,6 +13297,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.draft",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

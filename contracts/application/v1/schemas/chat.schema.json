@@ -222,6 +222,45 @@
         "snapshot"
       ],
       "unevaluatedProperties": false
+    },
+    "ChatDraftInput": {
+      "title": "ChatDraftInput",
+      "description": "Input for `chat.draft`: the read-back of one saved ComposerDraft, the answer a caller takes when it reconnects or reloads and must restore its unsent composition (C5A). `draft_query` is the Chat Contract v1 `ComposerDraftQuery` document, carried verbatim and opaque to this envelope, for the same reason `chat.command` carries its command that way -- the draft shape is already frozen in `contracts/chat/v1`, and restating it here would create a second, drifting copy. `draft_id` is the addressed draft stated natively, so authorization and audit read one identifier rather than parsing a document this boundary does not validate. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the draft to read back. Must be the draft `draft_query` names."
+        },
+        "draft_query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ComposerDraftQuery` document, carried verbatim. Decoded and validated against the chat contract, never against this one."
+        }
+      },
+      "required": [
+        "draft_id",
+        "draft_query"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatDraftResult": {
+      "title": "ChatDraftResult",
+      "description": "Result of `chat.draft`: the Chat Contract v1 `ComposerDraftResult` the query produced -- whether a draft was found, and the ComposerDraft record itself, carried opaquely for the same reason the request is. `found: false` with no `draft` is the authoritative \"no such draft for this actor\" answer, not an error: a draft the actor saved and discarded, or one that belongs to another actor, is absent rather than refused, so a reconnecting caller restores an empty composer without learning whether anyone else ever held a draft here.",
+      "type": "object",
+      "properties": {
+        "found": {
+          "type": "boolean",
+          "description": "Whether the named draft exists for this actor."
+        },
+        "draft": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ComposerDraft` document, carried verbatim. Required exactly when `found` is true."
+        }
+      },
+      "required": [
+        "found"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

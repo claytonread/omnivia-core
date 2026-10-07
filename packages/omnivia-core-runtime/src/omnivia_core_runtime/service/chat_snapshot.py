@@ -61,7 +61,12 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
 )
-from omnivia_core.contracts.v1.generated import ChatSnapshotInput, ChatSnapshotResult
+from omnivia_core.contracts.v1.generated import (
+    ChatDraftInput,
+    ChatDraftResult,
+    ChatSnapshotInput,
+    ChatSnapshotResult,
+)
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
     ActiveQueueEntry,
@@ -73,9 +78,10 @@ from omnivia_core_runtime.storage.chat import (
     MessagePart,
     ViewState,
     read_conversation_snapshot_inputs,
+    read_draft,
 )
 
-__all__ = ["resolve_chat_snapshot"]
+__all__ = ["composer_draft", "resolve_chat_snapshot", "resolve_draft_readback"]
 
 #: `common.schema.json#/$defs/WorkspaceScopedId`, the grammar every identifier in this
 #: query is spelled in. The same pattern `service/chat_submit.py` holds a command's
@@ -377,7 +383,7 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     return document
 
 
-def _composer_draft(draft: Draft) -> Mapping[str, Any]:
+def composer_draft(draft: Draft) -> Mapping[str, Any]:
     """One `ComposerDraft`: the actor's own unsent composition state (C5A).
 
     Deliberately narrower than nothing: the draft row IS the projection, held to
@@ -459,9 +465,84 @@ def resolve_chat_snapshot(
     # them), so a snapshot remains exactly one observation of one revision window.
     if inputs.drafts:
         snapshot["composerDrafts"] = [
-            _composer_draft(draft) for draft in inputs.drafts
+            composer_draft(draft) for draft in inputs.drafts
         ]
     return ChatSnapshotResult(
         conversation_id=query.conversation_id,
         snapshot=snapshot,
     ).to_wire()
+
+
+_DRAFT_QUERY_FIELDS: Final = frozenset(
+    {"requestId", "workspaceId", "conversationId", "actorId", "draftId"}
+)
+_DRAFT_QUERY_REQUIRED: Final = (
+    "requestId",
+    "workspaceId",
+    "conversationId",
+    "actorId",
+    "draftId",
+)
+
+
+def _decode_draft_query(
+    query: Mapping[str, Any], context: OperationContext
+) -> tuple[str, str, str]:
+    """Decode one `ComposerDraftQuery`, or refuse it as an invalid request.
+
+    The same strictness in both directions `_decode` holds a snapshot query to:
+    a field the frozen query does not define is refused, a required field that is
+    absent, wrongly typed or not an identifier is refused the same way, and the
+    facts the envelope already decided must *agree* with it. The conversation is
+    stated only by the query document -- `ChatDraftInput` carries no native
+    conversation -- so it is bound at the lookup below: a draft that lives in a
+    different conversation answers `found: false` rather than being served
+    cross-conversation.
+    """
+    unknown = sorted(set(query) - _DRAFT_QUERY_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this query")
+    for field in _DRAFT_QUERY_REQUIRED:
+        if field not in query:
+            raise _invalid(field, "is required")
+        _identifier(query, field)
+    if query["workspaceId"] != context.workspace_id:
+        raise _invalid(
+            "workspaceId", "is not the workspace this request was authorized for"
+        )
+    if query["actorId"] != context.principal:
+        raise _invalid(
+            "actorId", "is not the principal this request was authenticated as"
+        )
+    if query["requestId"] != context.request.metadata.request_id:
+        raise _invalid("requestId", "is not the identifier of this request")
+    return query["conversationId"], context.principal, query["draftId"]
+
+
+def resolve_draft_readback(
+    connection: sqlite3.Connection,
+    request: ChatDraftInput,
+    context: OperationContext,
+) -> Mapping[str, Any]:
+    """One `chat.draft` request, as the `ChatDraftResult` wire mapping.
+
+    Raises `invalid_request` for a query document this contract does not admit or
+    that disagrees with the envelope it arrived in. A draft this actor does not
+    hold -- never saved, one that lives in another conversation, or one another
+    actor holds -- answers `found: false` without a `draft`, so the absence is
+    authoritative rather than an error and never an oracle for whether anyone
+    else ever saved here. (A draft emptied by an acknowledged `DiscardDraft`
+    still answers `found: true` with its emptied composition: the row is the
+    truth, and its `version` keeps advancing.)
+    """
+    conversation_id, actor_id, draft_id = _decode_draft_query(
+        request.draft_query, context
+    )
+    draft = read_draft(
+        connection,
+        workspace_id=context.workspace_id,
+        draft_id=draft_id,
+    )
+    if draft is None or draft.conversation_id != conversation_id or draft.actor_id != actor_id:
+        return ChatDraftResult(found=False).to_wire()
+    return ChatDraftResult(found=True, draft=composer_draft(draft)).to_wire()

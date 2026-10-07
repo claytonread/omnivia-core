@@ -130,6 +130,7 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         ("context-pack", "build"), "context_pack.build", "knowledge_retrieval"
     ),
     ApplicationCommand(("chat", "command"), "chat.command", "chat_authoring"),
+    ApplicationCommand(("chat", "draft"), "chat.draft", "chat_observation"),
     ApplicationCommand(("chat", "events"), "chat.events", "chat_observation"),
     ApplicationCommand(("chat", "snapshot"), "chat.snapshot", "chat_observation"),
     ApplicationCommand(("workflow", "start"), "workflow.start", "workflow_execution"),

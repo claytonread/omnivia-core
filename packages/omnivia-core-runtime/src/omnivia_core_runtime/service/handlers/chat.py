@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import CHAT_COMMAND_NAMES, ChatEvent
+from omnivia_core.contracts.v1.generated import ChatDraftInput
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -61,7 +62,10 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
-from omnivia_core_runtime.service.chat_snapshot import resolve_chat_snapshot
+from omnivia_core_runtime.service.chat_snapshot import (
+    resolve_chat_snapshot,
+    resolve_draft_readback,
+)
 from omnivia_core_runtime.service.chat_submit import (
     RETRY_GENERATION_COMMAND,
     SUBMIT_MESSAGE_COMMAND,
@@ -82,10 +86,16 @@ from omnivia_core_runtime.storage.chat import (
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 
 CHAT_COMMAND_OPERATION: Final = "chat.command"
+CHAT_DRAFT_OPERATION: Final = "chat.draft"
 CHAT_EVENTS_OPERATION: Final = "chat.events"
 CHAT_SNAPSHOT_OPERATION: Final = "chat.snapshot"
 CHAT_FAMILY_OPERATIONS: Final = frozenset(
-    {CHAT_COMMAND_OPERATION, CHAT_EVENTS_OPERATION, CHAT_SNAPSHOT_OPERATION}
+    {
+        CHAT_COMMAND_OPERATION,
+        CHAT_DRAFT_OPERATION,
+        CHAT_EVENTS_OPERATION,
+        CHAT_SNAPSHOT_OPERATION,
+    }
 )
 
 _MESSAGE_INVALID: Final = "the request payload is not valid for this chat operation"
@@ -407,9 +417,28 @@ class ChatHandlers:
         connection, _identity, _guard = self._authority()
         return resolve_chat_snapshot(connection, request, context)
 
+    def chat_draft(self, context: OperationContext) -> Mapping[str, Any]:
+        """One `chat.draft` read-back (C5A).
+
+        The same shape `chat_snapshot` is: a pure read behind the one authority
+        check, with the whole domain -- query decode, envelope agreement and the
+        found/absent answer -- owned by
+        :func:`~service.chat_snapshot.resolve_draft_readback`.
+        """
+        request: ChatDraftInput | None = None
+        try:
+            request = ChatDraftInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError):
+            pass
+        if request is None:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection, _identity, _guard = self._authority()
+        return resolve_draft_readback(connection, request, context)
+
 
 __all__ = [
     "CHAT_COMMAND_OPERATION",
+    "CHAT_DRAFT_OPERATION",
     "CHAT_EVENTS_OPERATION",
     "CHAT_FAMILY_OPERATIONS",
     "CHAT_SNAPSHOT_OPERATION",

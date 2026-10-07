@@ -861,6 +861,12 @@
     "ChatGenerationEvent": {
       "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
     },
+    "ChatDraftInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftInput"
+    },
+    "ChatDraftResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftResult"
+    },
     "ChatEventsInput": {
       "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput"
     },
