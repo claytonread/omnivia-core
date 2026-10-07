@@ -20,7 +20,7 @@ human recorded authoring intent for exactly its principal and workspace, and tha
 row is written by `mcp.configure`. The credential this module files is its own:
 :data:`SECRET`, put straight into the protected store under :data:`PRINCIPAL`,
 which no `mcp.configure` ever issued and which therefore no protected authoring
-record names. The twenty-nine are so asserted at the seam where the wire's answer
+record names. The thirty-five are so asserted at the seam where the wire's answer
 arrives -- what `_qualification` returned -- and the *restricted* half of the
 same rule is proved live, by a child that really does ask the protected authority
 and really is told no. The live authoring path is proved end to end in
@@ -137,8 +137,8 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Installed]:
 
 
 def test_the_expected_inventory_is_the_requirement_s_own_two_numbers() -> None:
-    """The current manifest fixes 14 and 29; this catches inventory drift."""
-    assert server.EXPECTED_TOOL_COUNT == {"restricted": 14, "authoring": 29}
+    """The current manifest fixes 14 and 35; this catches inventory drift."""
+    assert server.EXPECTED_TOOL_COUNT == {"restricted": 14, "authoring": 35}
 
 
 def test_the_qualification_budget_outlasts_the_child_s_own_startup() -> None:
@@ -186,7 +186,7 @@ def test_an_authoring_inventory_qualifies_and_reports_twenty_five_tools(
         mutation_enabled=True,
         allowed_purposes=list(AUTHORING_PURPOSES),
     )
-    assert server.verify_installed_setup(path) == 29
+    assert server.verify_installed_setup(path) == 35
 
 
 def test_an_authoring_ceiling_the_protected_authority_will_not_raise_is_refused(
@@ -197,7 +197,7 @@ def test_an_authoring_ceiling_the_protected_authority_will_not_raise_is_refused(
     The child really does ask the protected authority, over the session's own
     endpoint, with the bearer this installation filed, and is really told no. So
     it settles on `restricted`, advertises fourteen tools and nine purposes -- and this
-    configuration allows seventeen. A setup that published it would advertise a
+    configuration allows twenty-one. A setup that published it would advertise a
     surface whose purposes its own calls would be refused for.
     """
     path = installed.write(

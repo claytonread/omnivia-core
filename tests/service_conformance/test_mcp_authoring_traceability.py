@@ -35,7 +35,7 @@ The final section holds the v1.4 completion addendum and its reference chain. Th
 addendum is a dated snapshot: its inventory, classification and version statements
 are held to its own values (manifest 2.3, thirteen and eighteen tools, 57 operations,
 four mutations) and to the catalogue entries they name. The live contract -- manifest
-2.6, 73 operations, fourteen restricted and twenty-nine authoring tools, twelve
+2.8, 79 operations, fourteen restricted and thirty-five authoring tools, fifteen
 admitted mutations -- is held to the current manifest source, the catalogue and the
 current traceability record, so a later version cannot leave this module green by
 drifting.
@@ -442,7 +442,7 @@ def _require_historical_pair(records: dict[tuple[str, str], dict[str, Any]]) -> 
 def _require_expired_for_current(records: dict[tuple[str, str], dict[str, Any]]) -> None:
     """Assert every retained record is stale for the live candidate and claims no current bytes.
 
-    The live candidate is manifest 2.6 with 14 restricted and 29 authoring tools, bound to the
+    The live candidate is manifest 2.8 with 14 restricted and 35 authoring tools, bound to the
     current harness and schema digests. A retained record must match none of those.
     """
     harness, schema = _sha256(_HARNESS), _sha256(_RECORD_SCHEMA_PATH)
@@ -745,8 +745,8 @@ ADDENDUM_ENTRIES = [
 ]
 
 #: The live contract, as the current manifest source and traceability record state it.
-CURRENT_MANIFEST_VERSION = "2.6"
-CURRENT_CATALOGUE_COUNT = 73
+CURRENT_MANIFEST_VERSION = "2.8"
+CURRENT_CATALOGUE_COUNT = 79
 CURRENT_RESTRICTED_INVENTORY = (*RESTRICTED_INVENTORY, ("trigger_health", "trigger.health"))
 CURRENT_ADDITIONS_INVENTORY = (
     ("memory_create", "memory.create"),
@@ -764,6 +764,12 @@ CURRENT_ADDITIONS_INVENTORY = (
     ("knowledge_share_decide", "knowledge.share.decide"),
     ("knowledge_share_read", "knowledge.share.read"),
     ("knowledge_share_lineage", "knowledge.share.lineage"),
+    ("task_context_export", "task_context.export"),
+    ("task_context_export_read", "task_context.export.read"),
+    ("outcome_request_create", "outcome.request.create"),
+    ("outcome_request_read", "outcome.request.read"),
+    ("project_context_read", "project.context.read"),
+    ("project_context_switch", "project.context.switch"),
 )
 CURRENT_MUTATIONS = frozenset(
     {
@@ -779,6 +785,9 @@ CURRENT_MUTATIONS = frozenset(
         "skills.proposal.submit",
         "knowledge.share.propose",
         "knowledge.share.decide",
+        "task_context.export",
+        "outcome.request.create",
+        "project.context.switch",
     }
 )
 #: The section-7 sentinels the real-host harness probes, and the exclusion arithmetic that
@@ -817,21 +826,21 @@ def test_the_live_inventories_are_the_fourteen_and_twenty_five_the_current_recor
         CURRENT_ADDITIONS_INVENTORY
     )
     assert len(RESTRICTED) == 14
-    assert len(AUTHORING) == 29
+    assert len(AUTHORING) == 35
     assert "exactly fourteen restricted tools" in DOCUMENT
-    assert "exactly twenty-nine tools" in DOCUMENT
+    assert "exactly thirty-five tools" in DOCUMENT
 
 
 # The name keeps its original figures because the dated traceability ledger cites it.
 def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_5() -> None:
     assert f"`{ADDENDUM_MANIFEST_VERSION}`" in ADDENDUM
-    assert MANIFEST_VERSION == CURRENT_MANIFEST_VERSION == "2.6"
+    assert MANIFEST_VERSION == CURRENT_MANIFEST_VERSION == "2.8"
 
 
 # The name keeps its original figures because the dated traceability ledger cites it.
 def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_sixty_nine() -> None:
     assert f"{ADDENDUM_CATALOGUE_COUNT} operations" in ADDENDUM
-    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 73
+    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 79
     assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
     assert "fifty-four" not in MANIFEST_SOURCE
 
@@ -904,7 +913,7 @@ def test_the_side_effecting_operations_are_exactly_the_admitted_mutations() -> N
     assert addendum == ADDENDUM_MUTATIONS
     live = {entry["operation"] for entry in AUTHORING if _side_effect(entry["operation"]) != "none"}
     assert live == ADMITTED_MUTATIONS == CURRENT_MUTATIONS
-    assert len(CURRENT_MUTATIONS) == 12
+    assert len(CURRENT_MUTATIONS) == 15
 
 
 def test_memory_create_is_documented_as_proposed_only() -> None:
@@ -1019,10 +1028,10 @@ def test_the_plans_declare_no_completion_while_no_current_host_pair_exists() -> 
 
 # The name keeps its original figures because the dated traceability ledger cites it.
 def test_both_completion_plans_state_the_13_18_history_and_an_unqualified_live_14_25() -> None:
-    """Each status line names the 13/18 ``0d8cf362`` evidence as historical and the live 14/29 candidate as unqualified."""
+    """Each status line names the 13/18 ``0d8cf362`` evidence as historical and the live 14/35 candidate as unqualified."""
     for index, text in enumerate(COMPLETION_PLANS):
         status = _status_line(text)
-        for fact in ("historical", "0d8cf362", "13/18", "14/29", "not qualified"):
+        for fact in ("historical", "0d8cf362", "13/18", "14/35", "not qualified"):
             assert fact in status.lower(), (index, fact)
         assert not _completion_claims(status), (index, status)
 
@@ -1040,7 +1049,7 @@ def test_the_matrix_is_the_frozen_baseline_and_every_host_gate_is_pending() -> N
 
 def test_the_manifest_docstring_names_a_bounded_restricted_surface() -> None:
     assert "bounded non-authoring surface rather than the wider one" in MANIFEST_SOURCE
-    assert "twelve named mutations" in MANIFEST_SOURCE
+    assert "fifteen named mutations" in MANIFEST_SOURCE
 
 
 def test_the_interoperability_guide_states_the_live_profile_and_exclusion_counts() -> None:
@@ -1048,10 +1057,10 @@ def test_the_interoperability_guide_states_the_live_profile_and_exclusion_counts
     unexposed = len(CATALOGUE_ENTRIES) - len(AUTHORING)
     restricted_excluded = unexposed + SECTION7_SENTINEL_COUNT + len(ADDITIONS)
     authoring_excluded = unexposed + SECTION7_SENTINEL_COUNT
-    assert (unexposed, restricted_excluded, authoring_excluded) == (44, 77, 62)
+    assert (unexposed, restricted_excluded, authoring_excluded) == (44, 83, 62)
     assert "restricted fourteen-tool inventory" in text
-    assert "twenty-nine-tool inventory: the restricted fourteen plus:" in text
+    assert "thirty-five-tool inventory: the restricted fourteen plus:" in text
     assert f"has {restricted_excluded} such names and the authoring profile {authoring_excluded}" in text
     assert f"the {unexposed} catalogue operations outside the authoring manifest" in text
     assert "eighteen deterministic qualification sentinels" in text
-    assert "the fifteen authoring additions" in text
+    assert "the twenty-one authoring additions" in text

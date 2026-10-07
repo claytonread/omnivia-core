@@ -266,7 +266,7 @@
           ],
           "properties": {
             "tool_count": {
-              "const": 29
+              "const": 35
             },
             "tools": {
               "type": "array",
@@ -357,11 +357,29 @@
                 },
                 {
                   "const": "knowledge_share_lineage"
+                },
+                {
+                  "const": "task_context_export"
+                },
+                {
+                  "const": "task_context_export_read"
+                },
+                {
+                  "const": "outcome_request_create"
+                },
+                {
+                  "const": "outcome_request_read"
+                },
+                {
+                  "const": "project_context_read"
+                },
+                {
+                  "const": "project_context_switch"
                 }
               ],
               "items": false,
-              "minItems": 29,
-              "maxItems": 29
+              "minItems": 35,
+              "maxItems": 35
             }
           }
         }

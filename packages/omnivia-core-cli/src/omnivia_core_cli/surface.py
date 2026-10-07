@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The seventy-three application commands map onto the
-seventy-three operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The seventy-nine application commands map onto the
+seventy-nine operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -293,6 +293,30 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         ("knowledge", "share-lineage"),
         "knowledge.share.lineage",
         "knowledge_share_observation",
+    ),
+    # Task-context exports and outcome requests (DEV-REQ-159, DEV-REQ-008). Exporting and requesting an
+    # outcome are separate acts, and a read of either is an observation that no writing grant carries.
+    ApplicationCommand(
+        ("task-context", "export"), "task_context.export", "task_context_export"
+    ),
+    ApplicationCommand(
+        ("task-context", "export-read"),
+        "task_context.export.read",
+        "task_context_observation",
+    ),
+    ApplicationCommand(
+        ("outcome", "request-create"), "outcome.request.create", "outcome_request"
+    ),
+    ApplicationCommand(
+        ("outcome", "request-read"), "outcome.request.read", "task_context_observation"
+    ),
+    # The project context: a read of the active Project is an observation, and switching it is a
+    # mutation under its own purpose.
+    ApplicationCommand(
+        ("project-context", "read"), "project.context.read", "task_context_observation"
+    ),
+    ApplicationCommand(
+        ("project-context", "switch"), "project.context.switch", "project_context"
     ),
 )
 

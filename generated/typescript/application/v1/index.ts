@@ -1775,6 +1775,254 @@ export function isKnowledgeShareState(value: unknown): value is KnowledgeShareSt
 }
 
 /**
+ * The opaque token naming one Workspace's active Project context generation: the prefix
+ * `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning
+ * from it.
+ */
+export type ProjectContextToken = string;
+
+/**
+ * The closed state of a Workspace's active Project context: `none` when no Project is active,
+ * `active` when one is.
+ */
+export type ProjectContextStateKind = string;
+
+/**
+ * The closed `ProjectContextStateKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const PROJECT_CONTEXT_STATE_KIND_VALUES = [
+  "none",
+  "active",
+] as const;
+
+/**
+ * Return whether a value is a declared `ProjectContextStateKind`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isProjectContextStateKind(value: unknown): value is ProjectContextStateKind {
+  return (
+    typeof value === "string" &&
+    (PROJECT_CONTEXT_STATE_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Input for `project.context.read`. The caller names nothing: the Workspace and the principal
+ * are the authenticated caller's, and the read observes the active Project context without
+ * changing it.
+ */
+export interface ProjectContextReadInput {
+}
+
+/**
+ * The revision of the reviewed admission summary. It is the positive integer that identity
+ * covers. Any integer below 1 is refused.
+ */
+export type AdmissionRevision = number;
+
+/**
+ * One requested scope of an admitted outcome, from the closed vocabulary Core defines.
+ */
+export type AdmissionScope = string;
+
+/**
+ * The closed `AdmissionScope` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_SCOPE_VALUES = [
+  "read",
+  "prepare",
+  "execute",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionScope`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isAdmissionScope(value: unknown): value is AdmissionScope {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_SCOPE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The adapter that produced the summary. Only `dev-task-admission` is accepted.
+ */
+export type AdmissionAdapter = string;
+
+/**
+ * The closed `AdmissionAdapter` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_ADAPTER_VALUES = [
+  "dev-task-admission",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionAdapter`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionAdapter(value: unknown): value is AdmissionAdapter {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_ADAPTER_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The disposition of a summary: it is a draft for review, never an accepted outcome.
+ */
+export type AdmissionDisposition = string;
+
+/**
+ * The closed `AdmissionDisposition` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_DISPOSITION_VALUES = [
+  "draft-for-review",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionDisposition`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionDisposition(value: unknown): value is AdmissionDisposition {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_DISPOSITION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The execution state of a summary. A summary never authorizes execution.
+ */
+export type AdmissionExecutionState = string;
+
+/**
+ * The closed `AdmissionExecutionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_EXECUTION_STATE_VALUES = [
+  "not-authorized",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionExecutionState`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionExecutionState(value: unknown): value is AdmissionExecutionState {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_EXECUTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The status of the declared bindings. Dev declares them and does not verify them; Core checks
+ * them itself.
+ */
+export type AdmissionBindingStatus = string;
+
+/**
+ * The closed `AdmissionBindingStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_BINDING_STATUS_VALUES = [
+  "declared-not-verified",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionBindingStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionBindingStatus(value: unknown): value is AdmissionBindingStatus {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_BINDING_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The status of the requested scopes. A summary requests scopes and grants none.
+ */
+export type AdmissionScopeStatus = string;
+
+/**
+ * The closed `AdmissionScopeStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_SCOPE_STATUS_VALUES = [
+  "requested-not-granted",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionScopeStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionScopeStatus(value: unknown): value is AdmissionScopeStatus {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_SCOPE_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The status of the declared roles. They are claims and never authenticate the caller.
+ */
+export type AdmissionRoleStatus = string;
+
+/**
+ * The closed `AdmissionRoleStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_ROLE_STATUS_VALUES = [
+  "declared-not-authenticated",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionRoleStatus`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionRoleStatus(value: unknown): value is AdmissionRoleStatus {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_ROLE_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The token estimator the budgets are sized with: ceil(UTF-8 bytes / 4).
+ */
+export type AdmissionTokenEstimator = string;
+
+/**
+ * The closed `AdmissionTokenEstimator` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_TOKEN_ESTIMATOR_VALUES = [
+  "utf8-ceil4-v1",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionTokenEstimator`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionTokenEstimator(value: unknown): value is AdmissionTokenEstimator {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_TOKEN_ESTIMATOR_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The canonical identity of an admission summary: the lowercase hexadecimal SHA-256 of the
+ * summary's canonical JSON.
+ */
+export type AdmissionIdentity = string;
+
+/**
  * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
  * or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add
  * record types without breaking existing decoders.
@@ -5466,6 +5714,301 @@ export interface KnowledgeShareLineageInput {
 }
 
 /**
+ * Input for `task_context.export`. The caller hands over one assembled task-context handoff and
+ * the explicit budgets the export must fit. The handoff is data: Core verifies its recorded
+ * identity against its content and projects one fixed set of content sections under Core's
+ * redaction patterns. The workspace, the exporting principal, the fencing generation and the
+ * policy are the server's own and are never stated here. An export is never truncated: a handoff
+ * that does not fit its budgets is refused.
+ */
+export interface TaskContextExportInput {
+  /**
+   * The assembled task-context handoff, carried verbatim as data. It must be in the closed
+   * handoff shape and recompute to its own recorded content identity.
+   */
+  readonly handoff: JsonObject;
+  /**
+   * The explicit token budget the export must fit, under the `utf8-ceil4-v1` estimator.
+   */
+  readonly token_budget: number;
+  /**
+   * The explicit byte budget the canonical export document must fit.
+   */
+  readonly byte_budget: number;
+}
+
+/**
+ * Result of `task_context.export`: one immutable export as recorded. `export_id` names exactly
+ * the canonical document carried in `document`, so the identity can be checked by any holder of
+ * the result. A replay under the same idempotency key returns this result without a second
+ * write.
+ */
+export interface TaskContextExportResult {
+  /**
+   * The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The content identity of the handoff this export projects, as the handoff recorded and Core
+   * recomputed it.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the export, as the authenticated caller.
+   */
+  readonly exported_by: Identifier;
+  /**
+   * The digest of the one export policy this build serves.
+   */
+  readonly policy_digest: Identifier;
+  /**
+   * The workspace fencing generation the export was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * The token budget the export was checked against.
+   */
+  readonly token_budget: number;
+  /**
+   * The byte budget the export was checked against.
+   */
+  readonly byte_budget: number;
+  /**
+   * The token estimate of the canonical document, under `utf8-ceil4-v1`.
+   */
+  readonly token_estimate: number;
+  /**
+   * The byte length of the canonical document.
+   */
+  readonly byte_estimate: number;
+  /**
+   * When the export settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The canonical export document: the allowlisted content sections after redaction, the
+   * withheld field names and the redaction counts.
+   */
+  readonly document: JsonObject;
+}
+
+/**
+ * Input for `task_context.export.read`. The caller names one export by its identifier and
+ * nothing else. The workspace is the request envelope's selected workspace, and an export
+ * recorded in another workspace reads as not found.
+ */
+export interface TaskContextExportReadInput {
+  /**
+   * The export to read.
+   */
+  readonly export_id: Identifier;
+}
+
+/**
+ * Input for `outcome.request.read`. The caller names one outcome request by its identifier and
+ * nothing else. A request recorded in another workspace reads as not found.
+ */
+export interface OutcomeRequestReadInput {
+  /**
+   * The outcome request to read.
+   */
+  readonly outcome_request_id: Identifier;
+}
+
+/**
+ * Result of `task_context.export.read`: one immutable export as recorded, read back by its
+ * identifier. Its identity is re-derived from the stored document before it is served.
+ */
+export interface TaskContextExportReadResult {
+  /**
+   * The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The content identity of the handoff this export projects, as the handoff recorded and Core
+   * recomputed it.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the export, as the authenticated caller.
+   */
+  readonly exported_by: Identifier;
+  /**
+   * The digest of the one export policy this build serves.
+   */
+  readonly policy_digest: Identifier;
+  /**
+   * The workspace fencing generation the export was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * The token budget the export was checked against.
+   */
+  readonly token_budget: number;
+  /**
+   * The byte budget the export was checked against.
+   */
+  readonly byte_budget: number;
+  /**
+   * The token estimate of the canonical document, under `utf8-ceil4-v1`.
+   */
+  readonly token_estimate: number;
+  /**
+   * The byte length of the canonical document.
+   */
+  readonly byte_estimate: number;
+  /**
+   * When the export settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The canonical export document: the allowlisted content sections after redaction, the
+   * withheld field names and the redaction counts.
+   */
+  readonly document: JsonObject;
+}
+
+/**
+ * Result of `project.context.read` and `project.context.switch`: the Workspace's active Core
+ * Project and its opaque context generation, or the typed empty state `none` when no Project is
+ * active. `project_id` and `context_generation` are present only with state `active`.
+ */
+export interface ProjectContextReadResult {
+  /**
+   * Whether a Project is active in this Workspace.
+   */
+  readonly state: ProjectContextStateKind;
+  /**
+   * The active Core Project. Present only when a Project is active.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * The opaque generation of the active Project context. Present only when a Project is
+   * active.
+   */
+  readonly context_generation?: ProjectContextToken;
+}
+
+/**
+ * Result of `project.context.read` and `project.context.switch`: the Workspace's active Core
+ * Project and its opaque context generation, or the typed empty state `none` when no Project is
+ * active. `project_id` and `context_generation` are present only with state `active`.
+ */
+export interface ProjectContextSwitchResult {
+  /**
+   * Whether a Project is active in this Workspace.
+   */
+  readonly state: ProjectContextStateKind;
+  /**
+   * The active Core Project. Present only when a Project is active.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * The opaque generation of the active Project context. Present only when a Project is
+   * active.
+   */
+  readonly context_generation?: ProjectContextToken;
+}
+
+/**
+ * Input for `project.context.switch`. The caller names the Core Project to make active in the
+ * authenticated Workspace and nothing else. The Project must be bound for this Workspace and the
+ * authenticated principal must be one of its owners or members.
+ */
+export interface ProjectContextSwitchInput {
+  /**
+   * The Core Project to make active.
+   */
+  readonly project_id: Identifier;
+}
+
+/**
+ * The typed initiating App context of an admission: which App asked for the outcome, and from
+ * which surface.
+ */
+export interface AdmissionAppContext {
+  /**
+   * The initiating App.
+   */
+  readonly appId: Identifier;
+  /**
+   * The App surface the outcome was requested from.
+   */
+  readonly surfaceId: Identifier;
+}
+
+/**
+ * The Project, Workspace, Work and source facts a summary declares. Declared, not verified: Core
+ * checks each one against its own bindings before it admits anything.
+ */
+export interface AdmissionDeclaredBindings {
+  /**
+   * The Core Project the outcome is made for.
+   */
+  readonly projectId: Identifier;
+  /**
+   * The Workspace the outcome belongs to. It must be the authenticated caller's Workspace.
+   */
+  readonly workspaceId: WorkspaceId;
+  /**
+   * The Work within the Project.
+   */
+  readonly workId: Identifier;
+  /**
+   * The source target the Work reads from. Opaque to Core, and bound by the Project's
+   * admission bindings.
+   */
+  readonly sourceTarget: string;
+  /**
+   * The immutable revision of the source target the Work reads.
+   */
+  readonly sourceRevision: Identifier;
+  /**
+   * The Project context generation the summary was reviewed against. It must equal the active
+   * generation.
+   */
+  readonly expectedContextGeneration: ProjectContextToken;
+}
+
+/**
+ * The three accountable principals a summary declares. Each is a claim that Core checks against
+ * the Project's bindings. None is an identity for the caller.
+ */
+export interface AdmissionRoles {
+  /**
+   * The accountable owner declared for the outcome.
+   */
+  readonly owner: Identifier;
+  /**
+   * The accountable executor declared for the outcome.
+   */
+  readonly executor: Identifier;
+  /**
+   * The accountable reviewer declared for the outcome.
+   */
+  readonly reviewer: Identifier;
+}
+
+/**
+ * The explicit budgets of an admission and the estimator they are sized with. The serialized
+ * summary must fit both.
+ */
+export interface AdmissionBudgets {
+  /**
+   * The token budget for the outcome.
+   */
+  readonly tokenBudget: number;
+  /**
+   * The byte budget for the outcome.
+   */
+  readonly byteBudget: number;
+  /**
+   * The estimator the budgets use.
+   */
+  readonly tokenEstimator: AdmissionTokenEstimator;
+}
+
+/**
  * Input for `memory.get`. Workspace-scoped: the workspace is the request envelope's selected
  * workspace; this payload never carries a second, independent workspace identifier.
  */
@@ -9098,6 +9641,77 @@ export interface KnowledgeShareLineageResult {
 }
 
 /**
+ * One reviewed, canonical summary of an outcome admission, in the closed shape Dev produces: the
+ * revision, the fixed status labels, the objective, the initiating App, the declared bindings
+ * and roles, the assumptions, constraints, requested scopes (in ascending order) and budgets.
+ * Dev grants no authority; Core admits it only against its own bindings.
+ */
+export interface OutcomeAdmissionSummary {
+  /**
+   * The summary revision, a positive integer.
+   */
+  readonly revision: AdmissionRevision;
+  /**
+   * The producing adapter.
+   */
+  readonly adapter: AdmissionAdapter;
+  /**
+   * Always a draft for review.
+   */
+  readonly disposition: AdmissionDisposition;
+  /**
+   * Always not authorized.
+   */
+  readonly executionState: AdmissionExecutionState;
+  /**
+   * Always declared, not verified.
+   */
+  readonly bindingStatus: AdmissionBindingStatus;
+  /**
+   * Always requested, not granted.
+   */
+  readonly scopeStatus: AdmissionScopeStatus;
+  /**
+   * Always declared, not authenticated.
+   */
+  readonly roleStatus: AdmissionRoleStatus;
+  /**
+   * The objective, which must equal the request's top-level objective.
+   */
+  readonly outcomeObjective: string;
+  /**
+   * The App that initiated the outcome, and its surface.
+   */
+  readonly appContext: AdmissionAppContext;
+  /**
+   * The declared Project, Workspace, Work and source facts.
+   */
+  readonly declaredBindings: AdmissionDeclaredBindings;
+  /**
+   * The declared owner, executor and reviewer.
+   */
+  readonly declaredRoles: AdmissionRoles;
+  /**
+   * The assumptions the summary rests on, in the order given. Items are non-blank, and their
+   * total UTF-8 size with the constraints is bounded.
+   */
+  readonly assumptions: readonly string[];
+  /**
+   * The constraints the outcome must respect, in the order given. Items are non-blank, and
+   * their total UTF-8 size with the assumptions is bounded.
+   */
+  readonly constraints: readonly string[];
+  /**
+   * The requested scopes, distinct and in ascending order.
+   */
+  readonly requestedScopes: readonly AdmissionScope[];
+  /**
+   * The explicit budgets and their estimator.
+   */
+  readonly budgets: AdmissionBudgets;
+}
+
+/**
  * Input for `memory.list`. Workspace-scoped: the workspace is the request envelope's selected
  * workspace; this payload never carries a second, independent workspace identifier.
  */
@@ -10590,6 +11204,21 @@ export interface JobTerminalCancellation {
 }
 
 /**
+ * A structured outcome admission: one closed reviewed summary and the identity the caller claims
+ * for it. Core recomputes the identity from the summary and refuses a mismatch.
+ */
+export interface OutcomeAdmission {
+  /**
+   * The reviewed canonical summary.
+   */
+  readonly summary: OutcomeAdmissionSummary;
+  /**
+   * The claimed canonical identity of the summary.
+   */
+  readonly identity: AdmissionIdentity;
+}
+
+/**
  * Who is asserting a governed record's claim, when, and on what evidence, plus the validity
  * window they propose for it. This is caller-supplied provenance for the claim -- carried into
  * `memory.create` and `record.supersede` inputs, and preserved on the resulting record's
@@ -11447,6 +12076,126 @@ export interface JobRetryResult {
    * What this call actually did: scheduled a retry, scheduled a resume, or refused.
    */
   readonly recovery_disposition: JobRecoveryDisposition;
+}
+
+/**
+ * Input for `outcome.request.create`. The caller asks for an outcome against one stored task-
+ * context export, carrying a bounded natural-language objective verbatim. The export is named by
+ * identifier only. The workspace and the requesting principal are the authenticated caller's,
+ * and the export must be in this workspace, recorded under the current fencing generation and
+ * produced under the policy this build serves.
+ */
+export interface OutcomeRequestCreateInput {
+  /**
+   * The objective, kept verbatim. It must not be empty and must fit the Core byte bound.
+   */
+  readonly objective: string;
+  /**
+   * The export this request is made against.
+   */
+  readonly export_id: Identifier;
+  /**
+   * Optional structured admission. Absent for a legacy request. When present, it is one closed
+   * reviewed summary and its claimed identity, and Core admits the request only if every
+   * declared fact holds at the time of the request.
+   */
+  readonly admission?: OutcomeAdmission;
+}
+
+/**
+ * Result of `outcome.request.create`: one received outcome request as recorded. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface OutcomeRequestCreateResult {
+  /**
+   * The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body.
+   */
+  readonly outcome_request_id: Identifier;
+  /**
+   * The export the request names.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The source handoff identity the named export records.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the request, as the authenticated caller.
+   */
+  readonly requested_by: Identifier;
+  /**
+   * The objective, verbatim.
+   */
+  readonly objective: string;
+  /**
+   * Where the request stands. `received` is the only value this build records.
+   */
+  readonly status: string;
+  /**
+   * The workspace fencing generation the request was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * When the request settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The admission this request was accepted under. Absent for a legacy request.
+   */
+  readonly admission?: OutcomeAdmission;
+  /**
+   * The active Project context generation the admission was accepted under. Absent for a
+   * legacy request.
+   */
+  readonly context_generation?: ProjectContextToken;
+}
+
+/**
+ * Result of `outcome.request.read`: one received outcome request as recorded, re-derived from
+ * its stored fields before it is served.
+ */
+export interface OutcomeRequestReadResult {
+  /**
+   * The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body.
+   */
+  readonly outcome_request_id: Identifier;
+  /**
+   * The export the request names.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The source handoff identity the named export records.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the request, as the authenticated caller.
+   */
+  readonly requested_by: Identifier;
+  /**
+   * The objective, verbatim.
+   */
+  readonly objective: string;
+  /**
+   * Where the request stands. `received` is the only value this build records.
+   */
+  readonly status: string;
+  /**
+   * The workspace fencing generation the request was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * When the request settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The admission this request was accepted under. Absent for a legacy request.
+   */
+  readonly admission?: OutcomeAdmission;
+  /**
+   * The active Project context generation the admission was accepted under. Absent for a
+   * legacy request.
+   */
+  readonly context_generation?: ProjectContextToken;
 }
 
 /**
@@ -14873,6 +15622,221 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "not_found",
       "rate_limited",
       "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "task_context.export",
+    scope: {
+      required_scopes: ["task_context:export"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportResult",
+    required_capability: { id: "task_context.export", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "task_context.export.read",
+    scope: {
+      required_scopes: ["task_context:export_read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadResult",
+    required_capability: { id: "task_context.export_read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "outcome.request.create",
+    scope: { required_scopes: ["outcome:request"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateResult",
+    required_capability: { id: "outcome.request", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "outcome.request.read",
+    scope: {
+      required_scopes: ["outcome:request_read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadResult",
+    required_capability: { id: "outcome.request_read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "project.context.read",
+    scope: {
+      required_scopes: ["project_context:read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadResult",
+    required_capability: { id: "project_context.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "project.context.switch",
+    scope: {
+      required_scopes: ["project_context:switch"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchResult",
+    required_capability: { id: "project_context.switch", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

@@ -33,6 +33,7 @@ from omnivia_core_runtime.service.application import (
     KNOWLEDGE_SHARING_FAMILY_PURPOSES,
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
+    build_task_context_application_dispatcher,
     compose_production_application_surface,
 )
 from omnivia_core_runtime.service.authorization import AuthenticatedSession, Grant
@@ -262,20 +263,21 @@ def harness(owned: m1.Owned) -> Harness:
 # -- the family in the exact production registry ----------------------------------------
 
 
-def test_the_four_operations_are_the_last_catalogue_entries_and_are_distinct() -> None:
+def test_the_four_operations_sit_at_their_frozen_positions_and_are_distinct() -> None:
     names = [entry.name for entry in OPERATION_CATALOGUE]
-    assert tuple(names[-4:]) == (
+    # The task-context family was appended after this one, so the sharing family is no longer last.
+    assert tuple(names[69:73]) == (
         "knowledge.share.propose",
         "knowledge.share.decide",
         "knowledge.share.read",
         "knowledge.share.lineage",
     )
-    assert SHARING_OPERATIONS == tuple(names[-4:])
-    assert len(names) == len(set(names)) == 73
+    assert SHARING_OPERATIONS == tuple(names[69:73])
+    assert len(names) == len(set(names)) == 79
 
 
 def test_appending_the_family_changed_no_earlier_operation_contract() -> None:
-    prior = [entry.to_wire() for entry in OPERATION_CATALOGUE[:-4]]
+    prior = [entry.to_wire() for entry in OPERATION_CATALOGUE[:69]]
     digest = hashlib.sha256(
         json.dumps(prior, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -288,7 +290,7 @@ def test_the_production_registry_holds_the_four_operations_under_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 73
+    assert len(surface.registry.operations) == 79
     assert set(SHARING_OPERATIONS) <= surface.registry.operations
     families = {id(surface._routes[name]) for name in SHARING_OPERATIONS}
     assert len(families) == 1
@@ -324,6 +326,15 @@ def test_the_sharing_family_cannot_be_registered_twice_or_under_another_name(
         "knowledge_sharing": sharing,
         "probe": harness.surface.probe,
     }
+    started = SimpleNamespace(**vars(harness.holder), workspace_id=WS, clock=SystemClock())
+    kwargs["task_context"] = build_task_context_application_dispatcher(
+        service=started,
+        principal_id=PRINCIPAL,
+        installation_id=s0.INSTALLATION_ID,
+        workspace_id=WS,
+        fallback=sharing,
+        clock=started.clock,
+    )
     compose_production_application_surface(**kwargs).registry.assert_complete()
     with pytest.raises(ValueError, match="already registered"):
         compose_production_application_surface(**{**kwargs, "governance": sharing})

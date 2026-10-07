@@ -165,7 +165,11 @@ from omnivia_core.contracts.v1 import (
     KnowledgeShareLineageInput,
     KnowledgeShareProposeInput,
     KnowledgeShareReadInput,
+    OutcomeRequestCreateInput,
+    OutcomeRequestReadInput,
     PrincipalClaim,
+    ProjectContextReadInput,
+    ProjectContextSwitchInput,
     RequestEnvelope,
     RequestMetadata,
     ResponseEnvelope,
@@ -173,6 +177,8 @@ from omnivia_core.contracts.v1 import (
     SkillDraftUpdateInput,
     SkillProposalSubmitInput,
     SuccessResponseEnvelope,
+    TaskContextExportInput,
+    TaskContextExportReadInput,
     TriggerDeclareInput,
     TriggerHealthInput,
     TriggerIngestInput,
@@ -303,7 +309,8 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 #: Each newer operation needs a local canonical decoder: the authoring additions
 #: (memory, evidence, import and the two job reads), the four decision tools, the
 #: three Engineering Memory reads, the four trigger operations, the three skill
-#: authoring mutations and the four knowledge sharing operations.
+#: authoring mutations, the four knowledge sharing operations and the four task-context
+#: operations.
 #: The original six reads are unchanged accepted behaviour and are
 #: validated where they always were -- at the service, which answers with its
 #: own typed refusal. The newer reads decode through the generated contract
@@ -333,6 +340,12 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "knowledge.share.decide": KnowledgeShareDecideInput.from_wire,
     "knowledge.share.read": KnowledgeShareReadInput.from_wire,
     "knowledge.share.lineage": KnowledgeShareLineageInput.from_wire,
+    "task_context.export": TaskContextExportInput.from_wire,
+    "task_context.export.read": TaskContextExportReadInput.from_wire,
+    "outcome.request.create": OutcomeRequestCreateInput.from_wire,
+    "outcome.request.read": OutcomeRequestReadInput.from_wire,
+    "project.context.read": ProjectContextReadInput.from_wire,
+    "project.context.switch": ProjectContextSwitchInput.from_wire,
 }
 
 
@@ -1464,7 +1477,7 @@ async def serve(*, session: ConnectedSession) -> None:
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
     RESTRICTED_PROFILE: 14,
-    AUTHORING_PROFILE: 29,
+    AUTHORING_PROFILE: 35,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

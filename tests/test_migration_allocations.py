@@ -179,6 +179,7 @@ EXPECTED_ALLOCATION = (
     (65, "0065_review_finding_quarantine.sql", "Agent Runtime", "candidate"),
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
+    (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -263,6 +264,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     66: "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
     # 0067 is the DEV-REQ-081 knowledge-share candidate, pinned to its introducing commit.
     67: "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
+    # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
+    # repinned to its current-content repair 9807ce91, which is where its current content lives.
+    68: "9807ce91bcfe25db29d09757364105378fd58bda",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

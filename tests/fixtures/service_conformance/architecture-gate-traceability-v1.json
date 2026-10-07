@@ -232,7 +232,13 @@
         "knowledge.share.propose",
         "knowledge.share.decide",
         "knowledge.share.read",
-        "knowledge.share.lineage"
+        "knowledge.share.lineage",
+        "task_context.export",
+        "task_context.export.read",
+        "outcome.request.create",
+        "outcome.request.read",
+        "project.context.read",
+        "project.context.switch"
       ]
     },
     {
@@ -373,7 +379,10 @@
         "skills.install",
         "skills.remove",
         "knowledge.share.propose",
-        "knowledge.share.decide"
+        "knowledge.share.decide",
+        "task_context.export",
+        "outcome.request.create",
+        "project.context.switch"
       ]
     },
     {
@@ -423,7 +432,10 @@
         "skills.install",
         "skills.remove",
         "knowledge.share.propose",
-        "knowledge.share.decide"
+        "knowledge.share.decide",
+        "task_context.export",
+        "outcome.request.create",
+        "project.context.switch"
       ]
     },
     {
@@ -532,7 +544,13 @@
         "knowledge.share.propose",
         "knowledge.share.decide",
         "knowledge.share.read",
-        "knowledge.share.lineage"
+        "knowledge.share.lineage",
+        "task_context.export",
+        "task_context.export.read",
+        "outcome.request.create",
+        "outcome.request.read",
+        "project.context.read",
+        "project.context.switch"
       ]
     },
     {
@@ -614,7 +632,13 @@
         "knowledge.share.propose",
         "knowledge.share.decide",
         "knowledge.share.read",
-        "knowledge.share.lineage"
+        "knowledge.share.lineage",
+        "task_context.export",
+        "task_context.export.read",
+        "outcome.request.create",
+        "outcome.request.read",
+        "project.context.read",
+        "project.context.switch"
       ]
     },
     {

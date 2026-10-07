@@ -115,6 +115,10 @@ AUTHORING_PURPOSES = [
     "skill_authoring",
     "knowledge_sharing",
     "knowledge_share_observation",
+    "task_context_export",
+    "task_context_observation",
+    "outcome_request",
+    "project_context",
 ]
 
 #: The smallest call each tool the authoring profile adds actually accepts.
@@ -276,6 +280,25 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
     },
     "knowledge_share_read": {"share_id": "share-1"},
     "knowledge_share_lineage": {"share_id": "share-1"},
+    "task_context_export": {
+        "input": {
+            "handoff": {"handoff_identity": "handoff-1"},
+            "token_budget": 4000,
+            "byte_budget": 65536,
+        },
+        "idempotency_key": "k-13",
+    },
+    "task_context_export_read": {"export_id": "tcx-1"},
+    "outcome_request_create": {
+        "input": {"objective": "summarise the handoff", "export_id": "tcx-1"},
+        "idempotency_key": "k-14",
+    },
+    "outcome_request_read": {"outcome_request_id": "outreq-1"},
+    "project_context_read": {},
+    "project_context_switch": {
+        "input": {"project_id": "project-1"},
+        "idempotency_key": "k-15",
+    },
 }
 
 
@@ -961,16 +984,16 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_nine() -> None:
+def test_the_two_inventories_are_the_frozen_fourteen_and_thirty_five() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
-    does not merely omit the fifteen authoring tools: it cannot resolve their names
+    does not merely omit the nineteen authoring tools: it cannot resolve their names
     at all, which is what makes the refusal below a policy rather than a message.
     """
     restricted, authoring = session(), authoring_session()
     assert len(listed(restricted)) == 14
-    assert len(listed(authoring)) == 29
+    assert len(listed(authoring)) == 35
     assert listed(authoring)[:14] == listed(restricted)
     assert listed(authoring)[14:] == [
         "memory_create",
@@ -988,6 +1011,12 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_nine() -> None:
         "knowledge_share_decide",
         "knowledge_share_read",
         "knowledge_share_lineage",
+        "task_context_export",
+        "task_context_export_read",
+        "outcome_request_create",
+        "outcome_request_read",
+        "project_context_read",
+        "project_context_switch",
     ]
 
 
@@ -1009,6 +1038,12 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_nine() -> None:
         "knowledge_share_decide",
         "knowledge_share_read",
         "knowledge_share_lineage",
+        "task_context_export",
+        "task_context_export_read",
+        "outcome_request_create",
+        "outcome_request_read",
+        "project_context_read",
+        "project_context_switch",
     ],
 )
 def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) -> None:
@@ -1113,11 +1148,12 @@ def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability()
     None
 ):
     """Read off the frozen catalogue entry and the manifest, never transcribed --
-    for the fifteen wider tools as much as for the fourteen shared tools.
+    for the nineteen wider tools as much as for the fourteen shared tools.
 
     The purposes are the service's own (`memory_authoring`, `content_ingestion`,
     `trigger_configuration`, `trigger_ingestion`, `job_observation`,
-    `skill_authoring`, `knowledge_sharing`, `knowledge_share_observation`, and the
+    `skill_authoring`, `knowledge_sharing`, `knowledge_share_observation`,
+    `task_context_export`, `task_context_observation`, `outcome_request`, and the
     shared `trigger_observation`), so a request states the claim the grant is checked
     against rather than one this package invented.
     """

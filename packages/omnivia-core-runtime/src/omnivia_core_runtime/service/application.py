@@ -146,6 +146,28 @@ from omnivia_core_runtime.service.handlers.skills import (
     SKILL_VERSION_PUBLISH_OPERATION,
     SkillHandlers,
 )
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_EXPORT as TASK_CONTEXT_EXPORT_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_EXPORT_READ as TASK_CONTEXT_EXPORT_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_OUTCOME_CREATE as OUTCOME_CREATE_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_OUTCOME_READ as OUTCOME_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_PROJECT_CONTEXT_READ as PROJECT_CONTEXT_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_PROJECT_CONTEXT_SWITCH as PROJECT_CONTEXT_SWITCH_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    TASK_CONTEXT_FAMILY_OPERATIONS,
+    TaskContextHandlers,
+)
 from omnivia_core_runtime.service.handlers.trigger import (
     TRIGGER_DECLARE_OPERATION,
     TRIGGER_FAMILY_OPERATIONS,
@@ -209,6 +231,10 @@ from omnivia_core_runtime.service.operations import (
     failure,
     server_capability_snapshot,
     success,
+)
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.storage import continuity as continuity_storage
@@ -1610,6 +1636,100 @@ def knowledge_sharing_family_session(
     )
 
 
+#: Task-context exports and outcome requests (DEV-REQ-159, DEV-REQ-008): the export and the outcome
+#: request are the two writes, each under its own mutation purpose. Their reads are observations that no
+#: writing grant carries, so the family's read purpose is one observation purpose of its own.
+TASK_CONTEXT_OBSERVATION_PURPOSE: Final = "task_context_observation"
+TASK_CONTEXT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        TASK_CONTEXT_EXPORT_OPERATION: MUTATION_PURPOSES[TASK_CONTEXT_EXPORT_OPERATION],
+        TASK_CONTEXT_EXPORT_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        OUTCOME_CREATE_OPERATION: MUTATION_PURPOSES[OUTCOME_CREATE_OPERATION],
+        OUTCOME_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        # Reading the active Project is an observation. Choosing one is a contributor's act with its own purpose.
+        PROJECT_CONTEXT_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        PROJECT_CONTEXT_SWITCH_OPERATION: MUTATION_PURPOSES[PROJECT_CONTEXT_SWITCH_OPERATION],
+    }
+)
+
+
+def task_context_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor ceiling for one workspace's export and outcome surface.
+
+    Holding these four operations says only that a session may ask. The workspace is the one the
+    session names, and the principal is the authenticated caller's; neither is a request field.
+    """
+    return _contributor_family_session(
+        operations=TASK_CONTEXT_FAMILY_OPERATIONS,
+        purposes=TASK_CONTEXT_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_task_context_registry(handlers: TaskContextHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    for operation, handler in (
+        (TASK_CONTEXT_EXPORT_OPERATION, handlers.task_context_export),
+        (TASK_CONTEXT_EXPORT_READ_OPERATION, handlers.task_context_export_read),
+        (OUTCOME_CREATE_OPERATION, handlers.outcome_request_create),
+        (OUTCOME_READ_OPERATION, handlers.outcome_request_read),
+        (PROJECT_CONTEXT_READ_OPERATION, handlers.project_context_read),
+        (PROJECT_CONTEXT_SWITCH_OPERATION, handlers.project_context_switch),
+    ):
+        registry.register(operation, cast(OperationHandler, handler))
+    return registry
+
+
+def build_task_context_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    admission: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the six task-context operations around the existing router.
+
+    `admission` is the server's outcome-admission authority for this Workspace. It has no default other than empty,
+    which admits nothing, and no request, session or grant can add to it.
+    """
+    session = task_context_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_task_context_registry(
+        TaskContextHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+            allocate_identifier=allocate_identifier,
+            admission=admission,
+        )
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_knowledge_sharing_registry(
     handlers: KnowledgeSharingHandlers,
 ) -> ApplicationOperationRegistry:
@@ -1830,7 +1950,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 73/73 complete.
+    is anything other than 77/77 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1849,9 +1969,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 13:
+        if len(distinct_routes) != 14:
             raise ValueError(
-                "the production surface requires exactly thirteen authority families"
+                "the production surface requires exactly fourteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -1921,6 +2041,7 @@ def compose_production_application_surface(
     skill_resolution: ApplicationDispatcher,
     engineering: ApplicationDispatcher,
     knowledge_sharing: ApplicationDispatcher,
+    task_context: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -1939,6 +2060,7 @@ def compose_production_application_surface(
         skill_resolution,
         engineering,
         knowledge_sharing,
+        task_context,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -2664,6 +2786,7 @@ __all__ = [
     "build_memory_registry",
     "build_skill_application_dispatcher",
     "build_skill_resolution_application_dispatcher",
+    "build_task_context_application_dispatcher",
     "build_trigger_application_dispatcher",
     "build_trigger_registry",
     "build_workflow_application_dispatcher",
@@ -2674,6 +2797,7 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "task_context_family_session",
     "trigger_family_session",
     "workflow_family_session",
 ]

@@ -8424,6 +8424,1608 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "OutcomeRequestCreateInput",
+        "description": "Input for `outcome.request.create`. The caller asks for an outcome against one stored task-context export, carrying a bounded natural-language objective verbatim. The export is named by identifier only. The workspace and the requesting principal are the authenticated caller's, and the export must be in this workspace, recorded under the current fencing generation and produced under the policy this build serves.",
+        "type": "object",
+        "properties": {
+            "objective": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The objective, kept verbatim. It must not be empty and must fit the Core byte bound.",
+            },
+            "export_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The export this request is made against.",
+            },
+            "admission": {
+                "$ref": "#/$defs/knowledge__OutcomeAdmission",
+                "description": "Optional structured admission. Absent for a legacy request. When present, it is one closed reviewed summary and its claimed identity, and Core admits the request only if every declared fact holds at the time of the request.",
+            },
+        },
+        "required": [
+            "objective",
+            "export_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "knowledge__AdmissionAdapter": {
+                "title": "AdmissionAdapter",
+                "description": "The adapter that produced the summary. Only `dev-task-admission` is accepted.",
+                "type": "string",
+                "enum": [
+                    "dev-task-admission",
+                ],
+            },
+            "knowledge__AdmissionAppContext": {
+                "title": "AdmissionAppContext",
+                "description": "The typed initiating App context of an admission: which App asked for the outcome, and from which surface.",
+                "type": "object",
+                "properties": {
+                    "appId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The initiating App.",
+                    },
+                    "surfaceId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The App surface the outcome was requested from.",
+                    },
+                },
+                "required": [
+                    "appId",
+                    "surfaceId",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionBindingStatus": {
+                "title": "AdmissionBindingStatus",
+                "description": "The status of the declared bindings. Dev declares them and does not verify them; Core checks them itself.",
+                "type": "string",
+                "enum": [
+                    "declared-not-verified",
+                ],
+            },
+            "knowledge__AdmissionBudgets": {
+                "title": "AdmissionBudgets",
+                "description": "The explicit budgets of an admission and the estimator they are sized with. The serialized summary must fit both.",
+                "type": "object",
+                "properties": {
+                    "tokenBudget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4000000,
+                        "description": "The token budget for the outcome.",
+                    },
+                    "byteBudget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16777216,
+                        "description": "The byte budget for the outcome.",
+                    },
+                    "tokenEstimator": {
+                        "$ref": "#/$defs/knowledge__AdmissionTokenEstimator",
+                        "description": "The estimator the budgets use.",
+                    },
+                },
+                "required": [
+                    "tokenBudget",
+                    "byteBudget",
+                    "tokenEstimator",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionDeclaredBindings": {
+                "title": "AdmissionDeclaredBindings",
+                "description": "The Project, Workspace, Work and source facts a summary declares. Declared, not verified: Core checks each one against its own bindings before it admits anything.",
+                "type": "object",
+                "properties": {
+                    "projectId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The Core Project the outcome is made for.",
+                    },
+                    "workspaceId": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "The Workspace the outcome belongs to. It must be the authenticated caller's Workspace.",
+                    },
+                    "workId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The Work within the Project.",
+                    },
+                    "sourceTarget": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512,
+                        "description": "The source target the Work reads from. Opaque to Core, and bound by the Project's admission bindings.",
+                    },
+                    "sourceRevision": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The immutable revision of the source target the Work reads.",
+                    },
+                    "expectedContextGeneration": {
+                        "$ref": "#/$defs/knowledge__ProjectContextToken",
+                        "description": "The Project context generation the summary was reviewed against. It must equal the active generation.",
+                    },
+                },
+                "required": [
+                    "projectId",
+                    "workspaceId",
+                    "workId",
+                    "sourceTarget",
+                    "sourceRevision",
+                    "expectedContextGeneration",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionDisposition": {
+                "title": "AdmissionDisposition",
+                "description": "The disposition of a summary: it is a draft for review, never an accepted outcome.",
+                "type": "string",
+                "enum": [
+                    "draft-for-review",
+                ],
+            },
+            "knowledge__AdmissionExecutionState": {
+                "title": "AdmissionExecutionState",
+                "description": "The execution state of a summary. A summary never authorizes execution.",
+                "type": "string",
+                "enum": [
+                    "not-authorized",
+                ],
+            },
+            "knowledge__AdmissionIdentity": {
+                "title": "AdmissionIdentity",
+                "description": "The canonical identity of an admission summary: the lowercase hexadecimal SHA-256 of the summary's canonical JSON.",
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64,
+            },
+            "knowledge__AdmissionRevision": {
+                "title": "AdmissionRevision",
+                "description": "The revision of the reviewed admission summary. It is the positive integer that identity covers. Any integer below 1 is refused.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+            },
+            "knowledge__AdmissionRoleStatus": {
+                "title": "AdmissionRoleStatus",
+                "description": "The status of the declared roles. They are claims and never authenticate the caller.",
+                "type": "string",
+                "enum": [
+                    "declared-not-authenticated",
+                ],
+            },
+            "knowledge__AdmissionRoles": {
+                "title": "AdmissionRoles",
+                "description": "The three accountable principals a summary declares. Each is a claim that Core checks against the Project's bindings. None is an identity for the caller.",
+                "type": "object",
+                "properties": {
+                    "owner": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable owner declared for the outcome.",
+                    },
+                    "executor": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable executor declared for the outcome.",
+                    },
+                    "reviewer": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable reviewer declared for the outcome.",
+                    },
+                },
+                "required": [
+                    "owner",
+                    "executor",
+                    "reviewer",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionScope": {
+                "title": "AdmissionScope",
+                "description": "One requested scope of an admitted outcome, from the closed vocabulary Core defines.",
+                "type": "string",
+                "enum": [
+                    "read",
+                    "prepare",
+                    "execute",
+                ],
+            },
+            "knowledge__AdmissionScopeStatus": {
+                "title": "AdmissionScopeStatus",
+                "description": "The status of the requested scopes. A summary requests scopes and grants none.",
+                "type": "string",
+                "enum": [
+                    "requested-not-granted",
+                ],
+            },
+            "knowledge__AdmissionTokenEstimator": {
+                "title": "AdmissionTokenEstimator",
+                "description": "The token estimator the budgets are sized with: ceil(UTF-8 bytes / 4).",
+                "type": "string",
+                "enum": [
+                    "utf8-ceil4-v1",
+                ],
+            },
+            "knowledge__OutcomeAdmission": {
+                "title": "OutcomeAdmission",
+                "description": "A structured outcome admission: one closed reviewed summary and the identity the caller claims for it. Core recomputes the identity from the summary and refuses a mismatch.",
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "$ref": "#/$defs/knowledge__OutcomeAdmissionSummary",
+                        "description": "The reviewed canonical summary.",
+                    },
+                    "identity": {
+                        "$ref": "#/$defs/knowledge__AdmissionIdentity",
+                        "description": "The claimed canonical identity of the summary.",
+                    },
+                },
+                "required": [
+                    "summary",
+                    "identity",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__OutcomeAdmissionSummary": {
+                "title": "OutcomeAdmissionSummary",
+                "description": "One reviewed, canonical summary of an outcome admission, in the closed shape Dev produces: the revision, the fixed status labels, the objective, the initiating App, the declared bindings and roles, the assumptions, constraints, requested scopes (in ascending order) and budgets. Dev grants no authority; Core admits it only against its own bindings.",
+                "type": "object",
+                "properties": {
+                    "revision": {
+                        "$ref": "#/$defs/knowledge__AdmissionRevision",
+                        "description": "The summary revision, a positive integer.",
+                    },
+                    "adapter": {
+                        "$ref": "#/$defs/knowledge__AdmissionAdapter",
+                        "description": "The producing adapter.",
+                    },
+                    "disposition": {
+                        "$ref": "#/$defs/knowledge__AdmissionDisposition",
+                        "description": "Always a draft for review.",
+                    },
+                    "executionState": {
+                        "$ref": "#/$defs/knowledge__AdmissionExecutionState",
+                        "description": "Always not authorized.",
+                    },
+                    "bindingStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionBindingStatus",
+                        "description": "Always declared, not verified.",
+                    },
+                    "scopeStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionScopeStatus",
+                        "description": "Always requested, not granted.",
+                    },
+                    "roleStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionRoleStatus",
+                        "description": "Always declared, not authenticated.",
+                    },
+                    "outcomeObjective": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The objective, which must equal the request's top-level objective.",
+                    },
+                    "appContext": {
+                        "$ref": "#/$defs/knowledge__AdmissionAppContext",
+                        "description": "The App that initiated the outcome, and its surface.",
+                    },
+                    "declaredBindings": {
+                        "$ref": "#/$defs/knowledge__AdmissionDeclaredBindings",
+                        "description": "The declared Project, Workspace, Work and source facts.",
+                    },
+                    "declaredRoles": {
+                        "$ref": "#/$defs/knowledge__AdmissionRoles",
+                        "description": "The declared owner, executor and reviewer.",
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 512,
+                        },
+                        "maxItems": 16,
+                        "description": "The assumptions the summary rests on, in the order given. Items are non-blank, and their total UTF-8 size with the constraints is bounded.",
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 512,
+                        },
+                        "maxItems": 16,
+                        "description": "The constraints the outcome must respect, in the order given. Items are non-blank, and their total UTF-8 size with the assumptions is bounded.",
+                    },
+                    "requestedScopes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/knowledge__AdmissionScope",
+                        },
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "description": "The requested scopes, distinct and in ascending order.",
+                    },
+                    "budgets": {
+                        "$ref": "#/$defs/knowledge__AdmissionBudgets",
+                        "description": "The explicit budgets and their estimator.",
+                    },
+                },
+                "required": [
+                    "revision",
+                    "adapter",
+                    "disposition",
+                    "executionState",
+                    "bindingStatus",
+                    "scopeStatus",
+                    "roleStatus",
+                    "outcomeObjective",
+                    "appContext",
+                    "declaredBindings",
+                    "declaredRoles",
+                    "assumptions",
+                    "constraints",
+                    "requestedScopes",
+                    "budgets",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__ProjectContextToken": {
+                "title": "ProjectContextToken",
+                "description": "The opaque token naming one Workspace's active Project context generation: the prefix `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning from it.",
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 26,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "OutcomeRequestCreateResult",
+        "description": "Result of `outcome.request.create`: one received outcome request as recorded. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "outcome_request_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body.",
+            },
+            "export_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The export the request names.",
+            },
+            "source_handoff_identity": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The source handoff identity the named export records.",
+            },
+            "requested_by": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The principal that made the request, as the authenticated caller.",
+            },
+            "objective": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The objective, verbatim.",
+            },
+            "status": {
+                "type": "string",
+                "description": "Where the request stands. `received` is the only value this build records.",
+            },
+            "fencing_generation": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The workspace fencing generation the request was recorded under.",
+            },
+            "created_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the request settled.",
+            },
+            "admission": {
+                "$ref": "#/$defs/knowledge__OutcomeAdmission",
+                "description": "The admission this request was accepted under. Absent for a legacy request.",
+            },
+            "context_generation": {
+                "$ref": "#/$defs/knowledge__ProjectContextToken",
+                "description": "The active Project context generation the admission was accepted under. Absent for a legacy request.",
+            },
+        },
+        "required": [
+            "outcome_request_id",
+            "export_id",
+            "source_handoff_identity",
+            "requested_by",
+            "objective",
+            "status",
+            "fencing_generation",
+            "created_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "knowledge__AdmissionAdapter": {
+                "title": "AdmissionAdapter",
+                "description": "The adapter that produced the summary. Only `dev-task-admission` is accepted.",
+                "type": "string",
+                "enum": [
+                    "dev-task-admission",
+                ],
+            },
+            "knowledge__AdmissionAppContext": {
+                "title": "AdmissionAppContext",
+                "description": "The typed initiating App context of an admission: which App asked for the outcome, and from which surface.",
+                "type": "object",
+                "properties": {
+                    "appId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The initiating App.",
+                    },
+                    "surfaceId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The App surface the outcome was requested from.",
+                    },
+                },
+                "required": [
+                    "appId",
+                    "surfaceId",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionBindingStatus": {
+                "title": "AdmissionBindingStatus",
+                "description": "The status of the declared bindings. Dev declares them and does not verify them; Core checks them itself.",
+                "type": "string",
+                "enum": [
+                    "declared-not-verified",
+                ],
+            },
+            "knowledge__AdmissionBudgets": {
+                "title": "AdmissionBudgets",
+                "description": "The explicit budgets of an admission and the estimator they are sized with. The serialized summary must fit both.",
+                "type": "object",
+                "properties": {
+                    "tokenBudget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4000000,
+                        "description": "The token budget for the outcome.",
+                    },
+                    "byteBudget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16777216,
+                        "description": "The byte budget for the outcome.",
+                    },
+                    "tokenEstimator": {
+                        "$ref": "#/$defs/knowledge__AdmissionTokenEstimator",
+                        "description": "The estimator the budgets use.",
+                    },
+                },
+                "required": [
+                    "tokenBudget",
+                    "byteBudget",
+                    "tokenEstimator",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionDeclaredBindings": {
+                "title": "AdmissionDeclaredBindings",
+                "description": "The Project, Workspace, Work and source facts a summary declares. Declared, not verified: Core checks each one against its own bindings before it admits anything.",
+                "type": "object",
+                "properties": {
+                    "projectId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The Core Project the outcome is made for.",
+                    },
+                    "workspaceId": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "The Workspace the outcome belongs to. It must be the authenticated caller's Workspace.",
+                    },
+                    "workId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The Work within the Project.",
+                    },
+                    "sourceTarget": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512,
+                        "description": "The source target the Work reads from. Opaque to Core, and bound by the Project's admission bindings.",
+                    },
+                    "sourceRevision": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The immutable revision of the source target the Work reads.",
+                    },
+                    "expectedContextGeneration": {
+                        "$ref": "#/$defs/knowledge__ProjectContextToken",
+                        "description": "The Project context generation the summary was reviewed against. It must equal the active generation.",
+                    },
+                },
+                "required": [
+                    "projectId",
+                    "workspaceId",
+                    "workId",
+                    "sourceTarget",
+                    "sourceRevision",
+                    "expectedContextGeneration",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionDisposition": {
+                "title": "AdmissionDisposition",
+                "description": "The disposition of a summary: it is a draft for review, never an accepted outcome.",
+                "type": "string",
+                "enum": [
+                    "draft-for-review",
+                ],
+            },
+            "knowledge__AdmissionExecutionState": {
+                "title": "AdmissionExecutionState",
+                "description": "The execution state of a summary. A summary never authorizes execution.",
+                "type": "string",
+                "enum": [
+                    "not-authorized",
+                ],
+            },
+            "knowledge__AdmissionIdentity": {
+                "title": "AdmissionIdentity",
+                "description": "The canonical identity of an admission summary: the lowercase hexadecimal SHA-256 of the summary's canonical JSON.",
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64,
+            },
+            "knowledge__AdmissionRevision": {
+                "title": "AdmissionRevision",
+                "description": "The revision of the reviewed admission summary. It is the positive integer that identity covers. Any integer below 1 is refused.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+            },
+            "knowledge__AdmissionRoleStatus": {
+                "title": "AdmissionRoleStatus",
+                "description": "The status of the declared roles. They are claims and never authenticate the caller.",
+                "type": "string",
+                "enum": [
+                    "declared-not-authenticated",
+                ],
+            },
+            "knowledge__AdmissionRoles": {
+                "title": "AdmissionRoles",
+                "description": "The three accountable principals a summary declares. Each is a claim that Core checks against the Project's bindings. None is an identity for the caller.",
+                "type": "object",
+                "properties": {
+                    "owner": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable owner declared for the outcome.",
+                    },
+                    "executor": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable executor declared for the outcome.",
+                    },
+                    "reviewer": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable reviewer declared for the outcome.",
+                    },
+                },
+                "required": [
+                    "owner",
+                    "executor",
+                    "reviewer",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionScope": {
+                "title": "AdmissionScope",
+                "description": "One requested scope of an admitted outcome, from the closed vocabulary Core defines.",
+                "type": "string",
+                "enum": [
+                    "read",
+                    "prepare",
+                    "execute",
+                ],
+            },
+            "knowledge__AdmissionScopeStatus": {
+                "title": "AdmissionScopeStatus",
+                "description": "The status of the requested scopes. A summary requests scopes and grants none.",
+                "type": "string",
+                "enum": [
+                    "requested-not-granted",
+                ],
+            },
+            "knowledge__AdmissionTokenEstimator": {
+                "title": "AdmissionTokenEstimator",
+                "description": "The token estimator the budgets are sized with: ceil(UTF-8 bytes / 4).",
+                "type": "string",
+                "enum": [
+                    "utf8-ceil4-v1",
+                ],
+            },
+            "knowledge__OutcomeAdmission": {
+                "title": "OutcomeAdmission",
+                "description": "A structured outcome admission: one closed reviewed summary and the identity the caller claims for it. Core recomputes the identity from the summary and refuses a mismatch.",
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "$ref": "#/$defs/knowledge__OutcomeAdmissionSummary",
+                        "description": "The reviewed canonical summary.",
+                    },
+                    "identity": {
+                        "$ref": "#/$defs/knowledge__AdmissionIdentity",
+                        "description": "The claimed canonical identity of the summary.",
+                    },
+                },
+                "required": [
+                    "summary",
+                    "identity",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__OutcomeAdmissionSummary": {
+                "title": "OutcomeAdmissionSummary",
+                "description": "One reviewed, canonical summary of an outcome admission, in the closed shape Dev produces: the revision, the fixed status labels, the objective, the initiating App, the declared bindings and roles, the assumptions, constraints, requested scopes (in ascending order) and budgets. Dev grants no authority; Core admits it only against its own bindings.",
+                "type": "object",
+                "properties": {
+                    "revision": {
+                        "$ref": "#/$defs/knowledge__AdmissionRevision",
+                        "description": "The summary revision, a positive integer.",
+                    },
+                    "adapter": {
+                        "$ref": "#/$defs/knowledge__AdmissionAdapter",
+                        "description": "The producing adapter.",
+                    },
+                    "disposition": {
+                        "$ref": "#/$defs/knowledge__AdmissionDisposition",
+                        "description": "Always a draft for review.",
+                    },
+                    "executionState": {
+                        "$ref": "#/$defs/knowledge__AdmissionExecutionState",
+                        "description": "Always not authorized.",
+                    },
+                    "bindingStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionBindingStatus",
+                        "description": "Always declared, not verified.",
+                    },
+                    "scopeStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionScopeStatus",
+                        "description": "Always requested, not granted.",
+                    },
+                    "roleStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionRoleStatus",
+                        "description": "Always declared, not authenticated.",
+                    },
+                    "outcomeObjective": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The objective, which must equal the request's top-level objective.",
+                    },
+                    "appContext": {
+                        "$ref": "#/$defs/knowledge__AdmissionAppContext",
+                        "description": "The App that initiated the outcome, and its surface.",
+                    },
+                    "declaredBindings": {
+                        "$ref": "#/$defs/knowledge__AdmissionDeclaredBindings",
+                        "description": "The declared Project, Workspace, Work and source facts.",
+                    },
+                    "declaredRoles": {
+                        "$ref": "#/$defs/knowledge__AdmissionRoles",
+                        "description": "The declared owner, executor and reviewer.",
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 512,
+                        },
+                        "maxItems": 16,
+                        "description": "The assumptions the summary rests on, in the order given. Items are non-blank, and their total UTF-8 size with the constraints is bounded.",
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 512,
+                        },
+                        "maxItems": 16,
+                        "description": "The constraints the outcome must respect, in the order given. Items are non-blank, and their total UTF-8 size with the assumptions is bounded.",
+                    },
+                    "requestedScopes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/knowledge__AdmissionScope",
+                        },
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "description": "The requested scopes, distinct and in ascending order.",
+                    },
+                    "budgets": {
+                        "$ref": "#/$defs/knowledge__AdmissionBudgets",
+                        "description": "The explicit budgets and their estimator.",
+                    },
+                },
+                "required": [
+                    "revision",
+                    "adapter",
+                    "disposition",
+                    "executionState",
+                    "bindingStatus",
+                    "scopeStatus",
+                    "roleStatus",
+                    "outcomeObjective",
+                    "appContext",
+                    "declaredBindings",
+                    "declaredRoles",
+                    "assumptions",
+                    "constraints",
+                    "requestedScopes",
+                    "budgets",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__ProjectContextToken": {
+                "title": "ProjectContextToken",
+                "description": "The opaque token naming one Workspace's active Project context generation: the prefix `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning from it.",
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 26,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "OutcomeRequestReadInput",
+        "description": "Input for `outcome.request.read`. The caller names one outcome request by its identifier and nothing else. A request recorded in another workspace reads as not found.",
+        "type": "object",
+        "properties": {
+            "outcome_request_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The outcome request to read.",
+            },
+        },
+        "required": [
+            "outcome_request_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "OutcomeRequestReadResult",
+        "description": "Result of `outcome.request.read`: one received outcome request as recorded, re-derived from its stored fields before it is served.",
+        "type": "object",
+        "properties": {
+            "outcome_request_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body.",
+            },
+            "export_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The export the request names.",
+            },
+            "source_handoff_identity": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The source handoff identity the named export records.",
+            },
+            "requested_by": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The principal that made the request, as the authenticated caller.",
+            },
+            "objective": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The objective, verbatim.",
+            },
+            "status": {
+                "type": "string",
+                "description": "Where the request stands. `received` is the only value this build records.",
+            },
+            "fencing_generation": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The workspace fencing generation the request was recorded under.",
+            },
+            "created_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the request settled.",
+            },
+            "admission": {
+                "$ref": "#/$defs/knowledge__OutcomeAdmission",
+                "description": "The admission this request was accepted under. Absent for a legacy request.",
+            },
+            "context_generation": {
+                "$ref": "#/$defs/knowledge__ProjectContextToken",
+                "description": "The active Project context generation the admission was accepted under. Absent for a legacy request.",
+            },
+        },
+        "required": [
+            "outcome_request_id",
+            "export_id",
+            "source_handoff_identity",
+            "requested_by",
+            "objective",
+            "status",
+            "fencing_generation",
+            "created_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "common__WorkspaceId": {
+                "title": "WorkspaceId",
+                "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "knowledge__AdmissionAdapter": {
+                "title": "AdmissionAdapter",
+                "description": "The adapter that produced the summary. Only `dev-task-admission` is accepted.",
+                "type": "string",
+                "enum": [
+                    "dev-task-admission",
+                ],
+            },
+            "knowledge__AdmissionAppContext": {
+                "title": "AdmissionAppContext",
+                "description": "The typed initiating App context of an admission: which App asked for the outcome, and from which surface.",
+                "type": "object",
+                "properties": {
+                    "appId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The initiating App.",
+                    },
+                    "surfaceId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The App surface the outcome was requested from.",
+                    },
+                },
+                "required": [
+                    "appId",
+                    "surfaceId",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionBindingStatus": {
+                "title": "AdmissionBindingStatus",
+                "description": "The status of the declared bindings. Dev declares them and does not verify them; Core checks them itself.",
+                "type": "string",
+                "enum": [
+                    "declared-not-verified",
+                ],
+            },
+            "knowledge__AdmissionBudgets": {
+                "title": "AdmissionBudgets",
+                "description": "The explicit budgets of an admission and the estimator they are sized with. The serialized summary must fit both.",
+                "type": "object",
+                "properties": {
+                    "tokenBudget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4000000,
+                        "description": "The token budget for the outcome.",
+                    },
+                    "byteBudget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16777216,
+                        "description": "The byte budget for the outcome.",
+                    },
+                    "tokenEstimator": {
+                        "$ref": "#/$defs/knowledge__AdmissionTokenEstimator",
+                        "description": "The estimator the budgets use.",
+                    },
+                },
+                "required": [
+                    "tokenBudget",
+                    "byteBudget",
+                    "tokenEstimator",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionDeclaredBindings": {
+                "title": "AdmissionDeclaredBindings",
+                "description": "The Project, Workspace, Work and source facts a summary declares. Declared, not verified: Core checks each one against its own bindings before it admits anything.",
+                "type": "object",
+                "properties": {
+                    "projectId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The Core Project the outcome is made for.",
+                    },
+                    "workspaceId": {
+                        "$ref": "#/$defs/common__WorkspaceId",
+                        "description": "The Workspace the outcome belongs to. It must be the authenticated caller's Workspace.",
+                    },
+                    "workId": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The Work within the Project.",
+                    },
+                    "sourceTarget": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512,
+                        "description": "The source target the Work reads from. Opaque to Core, and bound by the Project's admission bindings.",
+                    },
+                    "sourceRevision": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The immutable revision of the source target the Work reads.",
+                    },
+                    "expectedContextGeneration": {
+                        "$ref": "#/$defs/knowledge__ProjectContextToken",
+                        "description": "The Project context generation the summary was reviewed against. It must equal the active generation.",
+                    },
+                },
+                "required": [
+                    "projectId",
+                    "workspaceId",
+                    "workId",
+                    "sourceTarget",
+                    "sourceRevision",
+                    "expectedContextGeneration",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionDisposition": {
+                "title": "AdmissionDisposition",
+                "description": "The disposition of a summary: it is a draft for review, never an accepted outcome.",
+                "type": "string",
+                "enum": [
+                    "draft-for-review",
+                ],
+            },
+            "knowledge__AdmissionExecutionState": {
+                "title": "AdmissionExecutionState",
+                "description": "The execution state of a summary. A summary never authorizes execution.",
+                "type": "string",
+                "enum": [
+                    "not-authorized",
+                ],
+            },
+            "knowledge__AdmissionIdentity": {
+                "title": "AdmissionIdentity",
+                "description": "The canonical identity of an admission summary: the lowercase hexadecimal SHA-256 of the summary's canonical JSON.",
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64,
+            },
+            "knowledge__AdmissionRevision": {
+                "title": "AdmissionRevision",
+                "description": "The revision of the reviewed admission summary. It is the positive integer that identity covers. Any integer below 1 is refused.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+            },
+            "knowledge__AdmissionRoleStatus": {
+                "title": "AdmissionRoleStatus",
+                "description": "The status of the declared roles. They are claims and never authenticate the caller.",
+                "type": "string",
+                "enum": [
+                    "declared-not-authenticated",
+                ],
+            },
+            "knowledge__AdmissionRoles": {
+                "title": "AdmissionRoles",
+                "description": "The three accountable principals a summary declares. Each is a claim that Core checks against the Project's bindings. None is an identity for the caller.",
+                "type": "object",
+                "properties": {
+                    "owner": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable owner declared for the outcome.",
+                    },
+                    "executor": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable executor declared for the outcome.",
+                    },
+                    "reviewer": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accountable reviewer declared for the outcome.",
+                    },
+                },
+                "required": [
+                    "owner",
+                    "executor",
+                    "reviewer",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__AdmissionScope": {
+                "title": "AdmissionScope",
+                "description": "One requested scope of an admitted outcome, from the closed vocabulary Core defines.",
+                "type": "string",
+                "enum": [
+                    "read",
+                    "prepare",
+                    "execute",
+                ],
+            },
+            "knowledge__AdmissionScopeStatus": {
+                "title": "AdmissionScopeStatus",
+                "description": "The status of the requested scopes. A summary requests scopes and grants none.",
+                "type": "string",
+                "enum": [
+                    "requested-not-granted",
+                ],
+            },
+            "knowledge__AdmissionTokenEstimator": {
+                "title": "AdmissionTokenEstimator",
+                "description": "The token estimator the budgets are sized with: ceil(UTF-8 bytes / 4).",
+                "type": "string",
+                "enum": [
+                    "utf8-ceil4-v1",
+                ],
+            },
+            "knowledge__OutcomeAdmission": {
+                "title": "OutcomeAdmission",
+                "description": "A structured outcome admission: one closed reviewed summary and the identity the caller claims for it. Core recomputes the identity from the summary and refuses a mismatch.",
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "$ref": "#/$defs/knowledge__OutcomeAdmissionSummary",
+                        "description": "The reviewed canonical summary.",
+                    },
+                    "identity": {
+                        "$ref": "#/$defs/knowledge__AdmissionIdentity",
+                        "description": "The claimed canonical identity of the summary.",
+                    },
+                },
+                "required": [
+                    "summary",
+                    "identity",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__OutcomeAdmissionSummary": {
+                "title": "OutcomeAdmissionSummary",
+                "description": "One reviewed, canonical summary of an outcome admission, in the closed shape Dev produces: the revision, the fixed status labels, the objective, the initiating App, the declared bindings and roles, the assumptions, constraints, requested scopes (in ascending order) and budgets. Dev grants no authority; Core admits it only against its own bindings.",
+                "type": "object",
+                "properties": {
+                    "revision": {
+                        "$ref": "#/$defs/knowledge__AdmissionRevision",
+                        "description": "The summary revision, a positive integer.",
+                    },
+                    "adapter": {
+                        "$ref": "#/$defs/knowledge__AdmissionAdapter",
+                        "description": "The producing adapter.",
+                    },
+                    "disposition": {
+                        "$ref": "#/$defs/knowledge__AdmissionDisposition",
+                        "description": "Always a draft for review.",
+                    },
+                    "executionState": {
+                        "$ref": "#/$defs/knowledge__AdmissionExecutionState",
+                        "description": "Always not authorized.",
+                    },
+                    "bindingStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionBindingStatus",
+                        "description": "Always declared, not verified.",
+                    },
+                    "scopeStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionScopeStatus",
+                        "description": "Always requested, not granted.",
+                    },
+                    "roleStatus": {
+                        "$ref": "#/$defs/knowledge__AdmissionRoleStatus",
+                        "description": "Always declared, not authenticated.",
+                    },
+                    "outcomeObjective": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The objective, which must equal the request's top-level objective.",
+                    },
+                    "appContext": {
+                        "$ref": "#/$defs/knowledge__AdmissionAppContext",
+                        "description": "The App that initiated the outcome, and its surface.",
+                    },
+                    "declaredBindings": {
+                        "$ref": "#/$defs/knowledge__AdmissionDeclaredBindings",
+                        "description": "The declared Project, Workspace, Work and source facts.",
+                    },
+                    "declaredRoles": {
+                        "$ref": "#/$defs/knowledge__AdmissionRoles",
+                        "description": "The declared owner, executor and reviewer.",
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 512,
+                        },
+                        "maxItems": 16,
+                        "description": "The assumptions the summary rests on, in the order given. Items are non-blank, and their total UTF-8 size with the constraints is bounded.",
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 512,
+                        },
+                        "maxItems": 16,
+                        "description": "The constraints the outcome must respect, in the order given. Items are non-blank, and their total UTF-8 size with the assumptions is bounded.",
+                    },
+                    "requestedScopes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/knowledge__AdmissionScope",
+                        },
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "description": "The requested scopes, distinct and in ascending order.",
+                    },
+                    "budgets": {
+                        "$ref": "#/$defs/knowledge__AdmissionBudgets",
+                        "description": "The explicit budgets and their estimator.",
+                    },
+                },
+                "required": [
+                    "revision",
+                    "adapter",
+                    "disposition",
+                    "executionState",
+                    "bindingStatus",
+                    "scopeStatus",
+                    "roleStatus",
+                    "outcomeObjective",
+                    "appContext",
+                    "declaredBindings",
+                    "declaredRoles",
+                    "assumptions",
+                    "constraints",
+                    "requestedScopes",
+                    "budgets",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "knowledge__ProjectContextToken": {
+                "title": "ProjectContextToken",
+                "description": "The opaque token naming one Workspace's active Project context generation: the prefix `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning from it.",
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 26,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ProjectContextReadInput",
+        "description": "Input for `project.context.read`. The caller names nothing: the Workspace and the principal are the authenticated caller's, and the read observes the active Project context without changing it.",
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "unevaluatedProperties": False,
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ProjectContextReadResult",
+        "description": "Result of `project.context.read` and `project.context.switch`: the Workspace's active Core Project and its opaque context generation, or the typed empty state `none` when no Project is active. `project_id` and `context_generation` are present only with state `active`.",
+        "type": "object",
+        "properties": {
+            "state": {
+                "$ref": "#/$defs/knowledge__ProjectContextStateKind",
+                "description": "Whether a Project is active in this Workspace.",
+            },
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The active Core Project. Present only when a Project is active.",
+            },
+            "context_generation": {
+                "$ref": "#/$defs/knowledge__ProjectContextToken",
+                "description": "The opaque generation of the active Project context. Present only when a Project is active.",
+            },
+        },
+        "required": [
+            "state",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "knowledge__ProjectContextStateKind": {
+                "title": "ProjectContextStateKind",
+                "description": "The closed state of a Workspace's active Project context: `none` when no Project is active, `active` when one is.",
+                "type": "string",
+                "enum": [
+                    "none",
+                    "active",
+                ],
+            },
+            "knowledge__ProjectContextToken": {
+                "title": "ProjectContextToken",
+                "description": "The opaque token naming one Workspace's active Project context generation: the prefix `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning from it.",
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 26,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ProjectContextSwitchInput",
+        "description": "Input for `project.context.switch`. The caller names the Core Project to make active in the authenticated Workspace and nothing else. The Project must be bound for this Workspace and the authenticated principal must be one of its owners or members.",
+        "type": "object",
+        "properties": {
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Core Project to make active.",
+            },
+        },
+        "required": [
+            "project_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ProjectContextSwitchResult",
+        "description": "Result of `project.context.read` and `project.context.switch`: the Workspace's active Core Project and its opaque context generation, or the typed empty state `none` when no Project is active. `project_id` and `context_generation` are present only with state `active`.",
+        "type": "object",
+        "properties": {
+            "state": {
+                "$ref": "#/$defs/knowledge__ProjectContextStateKind",
+                "description": "Whether a Project is active in this Workspace.",
+            },
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The active Core Project. Present only when a Project is active.",
+            },
+            "context_generation": {
+                "$ref": "#/$defs/knowledge__ProjectContextToken",
+                "description": "The opaque generation of the active Project context. Present only when a Project is active.",
+            },
+        },
+        "required": [
+            "state",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "knowledge__ProjectContextStateKind": {
+                "title": "ProjectContextStateKind",
+                "description": "The closed state of a Workspace's active Project context: `none` when no Project is active, `active` when one is.",
+                "type": "string",
+                "enum": [
+                    "none",
+                    "active",
+                ],
+            },
+            "knowledge__ProjectContextToken": {
+                "title": "ProjectContextToken",
+                "description": "The opaque token naming one Workspace's active Project context generation: the prefix `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning from it.",
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 26,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TaskContextExportInput",
+        "description": "Input for `task_context.export`. The caller hands over one assembled task-context handoff and the explicit budgets the export must fit. The handoff is data: Core verifies its recorded identity against its content and projects one fixed set of content sections under Core's redaction patterns. The workspace, the exporting principal, the fencing generation and the policy are the server's own and are never stated here. An export is never truncated: a handoff that does not fit its budgets is refused.",
+        "type": "object",
+        "properties": {
+            "handoff": {
+                "$ref": "#/$defs/common__JsonObject",
+                "description": "The assembled task-context handoff, carried verbatim as data. It must be in the closed handoff shape and recompute to its own recorded content identity.",
+            },
+            "token_budget": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4000000,
+                "description": "The explicit token budget the export must fit, under the `utf8-ceil4-v1` estimator.",
+            },
+            "byte_budget": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1048576,
+                "description": "The explicit byte budget the canonical export document must fit.",
+            },
+        },
+        "required": [
+            "handoff",
+            "token_budget",
+            "byte_budget",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TaskContextExportReadInput",
+        "description": "Input for `task_context.export.read`. The caller names one export by its identifier and nothing else. The workspace is the request envelope's selected workspace, and an export recorded in another workspace reads as not found.",
+        "type": "object",
+        "properties": {
+            "export_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The export to read.",
+            },
+        },
+        "required": [
+            "export_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TaskContextExportReadResult",
+        "description": "Result of `task_context.export.read`: one immutable export as recorded, read back by its identifier. Its identity is re-derived from the stored document before it is served.",
+        "type": "object",
+        "properties": {
+            "export_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document.",
+            },
+            "source_handoff_identity": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The content identity of the handoff this export projects, as the handoff recorded and Core recomputed it.",
+            },
+            "exported_by": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The principal that made the export, as the authenticated caller.",
+            },
+            "policy_digest": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The digest of the one export policy this build serves.",
+            },
+            "fencing_generation": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The workspace fencing generation the export was recorded under.",
+            },
+            "token_budget": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The token budget the export was checked against.",
+            },
+            "byte_budget": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The byte budget the export was checked against.",
+            },
+            "token_estimate": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The token estimate of the canonical document, under `utf8-ceil4-v1`.",
+            },
+            "byte_estimate": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The byte length of the canonical document.",
+            },
+            "created_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the export settled.",
+            },
+            "document": {
+                "$ref": "#/$defs/common__JsonObject",
+                "description": "The canonical export document: the allowlisted content sections after redaction, the withheld field names and the redaction counts.",
+            },
+        },
+        "required": [
+            "export_id",
+            "source_handoff_identity",
+            "exported_by",
+            "policy_digest",
+            "fencing_generation",
+            "token_budget",
+            "byte_budget",
+            "token_estimate",
+            "byte_estimate",
+            "created_at",
+            "document",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TaskContextExportResult",
+        "description": "Result of `task_context.export`: one immutable export as recorded. `export_id` names exactly the canonical document carried in `document`, so the identity can be checked by any holder of the result. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "export_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document.",
+            },
+            "source_handoff_identity": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The content identity of the handoff this export projects, as the handoff recorded and Core recomputed it.",
+            },
+            "exported_by": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The principal that made the export, as the authenticated caller.",
+            },
+            "policy_digest": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The digest of the one export policy this build serves.",
+            },
+            "fencing_generation": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The workspace fencing generation the export was recorded under.",
+            },
+            "token_budget": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The token budget the export was checked against.",
+            },
+            "byte_budget": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The byte budget the export was checked against.",
+            },
+            "token_estimate": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The token estimate of the canonical document, under `utf8-ceil4-v1`.",
+            },
+            "byte_estimate": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The byte length of the canonical document.",
+            },
+            "created_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the export settled.",
+            },
+            "document": {
+                "$ref": "#/$defs/common__JsonObject",
+                "description": "The canonical export document: the allowlisted content sections after redaction, the withheld field names and the redaction counts.",
+            },
+        },
+        "required": [
+            "export_id",
+            "source_handoff_identity",
+            "exported_by",
+            "policy_digest",
+            "fencing_generation",
+            "token_budget",
+            "byte_budget",
+            "token_estimate",
+            "byte_estimate",
+            "created_at",
+            "document",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__JsonObject": {
+                "title": "JsonObject",
+                "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
+                "type": "object",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "MemoryCreateInput",

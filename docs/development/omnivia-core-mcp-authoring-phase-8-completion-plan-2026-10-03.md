@@ -1,7 +1,7 @@
 # OmniVia Core MCP authoring Phase 8 completion plan
 
 **Date:** 2026-10-03
-**Status:** Historical 13/18 closeout evidence at `0d8cf362`; the live 14/29 candidate is not qualified; exact-head acceptance pending
+**Status:** Historical 13/18 closeout evidence at `0d8cf362`; the live 14/35 candidate is not qualified; exact-head acceptance pending
 **Owner:** Codex (orchestration, review, acceptance); Claude Code (bounded implementation)
 **Target repository:** `omnivia-core`
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
@@ -14,8 +14,8 @@ of the harness, checkpointed on the working branch)
 The exact candidate passed its restricted, authoring and lifecycle journeys and
 both pinned real hosts produced schema-valid passing records. Those records are
 historical: they carry the 13/18-tool inventories and superseded harness and
-schema digests. They do not qualify the live candidate, which is manifest 2.6
-with 14 restricted and 29 authoring tools. Current-candidate installed-wheel and
+schema digests. They do not qualify the live candidate, which is manifest 2.8
+with 14 restricted and 35 authoring tools. Current-candidate installed-wheel and
 real-host qualification is an external credentialed residual. Full preflight and
 hosted checks remain before exact-head acceptance.
 
@@ -53,8 +53,8 @@ revision only and closes no current row. H-5 through H-7 and B-12 stay partial
 until the current release candidate is retested at one exact frozen commit,
 because the repository has changed since the merge.
 
-The live candidate is manifest 2.6, with fourteen restricted and twenty-nine
-authoring tools and twelve admitted mutations. Every gate below applies to that
+The live candidate is manifest 2.8, with fourteen restricted and thirty-five
+authoring tools and fifteen admitted mutations. Every gate below applies to that
 candidate. The 13/18 evidence at `0d8cf362` is historical: it satisfied the
 13/18 rows at that snapshot and satisfies none of them for the live candidate.
 
@@ -62,7 +62,7 @@ The remaining functional and release gates for the live candidate are:
 
 | Gate | Required outcome |
 |---|---|
-| H-6 | An installed-wheel journey exercises the live twenty-nine-tool authoring profile, not only the restricted profile. The eighteen-tool run at `0d8cf362` is historical and does not close this row. |
+| H-6 | An installed-wheel journey exercises the live thirty-five-tool authoring profile, not only the restricted profile. The eighteen-tool run at `0d8cf362` is historical and does not close this row. |
 | B-12 | A retained qualification record for the live candidate contains only the approved redacted fields. The `0d8cf362` records are historical, bound to superseded digests, and are not a live-candidate record. |
 | I-1 | Install the exact live release artifact on the supported macOS qualification account/environment. |
 | I-2 | Configure restricted and authoring profiles using native Claude Code and Codex CLI settings. |
@@ -95,13 +95,13 @@ forward by assumption.
 ### WP1 — Repair documentation and inventory drift
 
 Status: executed for the 13/18 snapshot. For the live candidate the same items
-apply to fourteen restricted and twenty-nine authoring tools; the v1.4 addendum
+apply to fourteen restricted and thirty-five authoring tools; the v1.4 addendum
 records only the 13/18 snapshot.
 
 1. Update the MCP package README to describe the restricted profile and the
    authoring profile, including the authoring additions. At the 13/18 snapshot
    that was thirteen restricted tools and eighteen authoring tools with five
-   additions; the live profiles are fourteen and twenty-nine, with fifteen
+   additions; the live profiles are fourteen and thirty-five, with twenty-one
    additions.
 2. Update the interoperability guide so installed-wheel evidence and real-host
    evidence are explicitly separate.
@@ -120,7 +120,7 @@ authoring mode beside `scripts/run-standard-journey.py`. It must run only from
 installed wheels in an isolated installation and must prove:
 
 1. exact discovery of the authoring profile: eighteen tools at the 13/18
-   snapshot, twenty-nine for the live candidate;
+   snapshot, thirty-five for the live candidate;
 2. direct evidence capture and immediate evidence search;
 3. evidence-backed proposed-memory creation;
 4. default invisibility and candidate-view visibility;
@@ -356,7 +356,7 @@ WP1 and WP2 were implemented at the 13/18 snapshot. The candidate builder then r
 both the restricted installed-wheel journey and a separate eighteen-tool authoring
 journey, retained the authoring result, and validated it against a closed redaction
 schema. That retained-record gate was implemented locally only. No record exists for
-the live 14/29 candidate, so B-12 and H-5 through H-7 stay partial. The package
+the live 14/35 candidate, so B-12 and H-5 through H-7 stay partial. The package
 README, interoperability guide, manifest commentary, and Phase 7 traceability
 record distinguished installed-wheel evidence from real-host evidence and described
 the thirteen-tool restricted and eighteen-tool authoring profiles of that snapshot.
@@ -526,7 +526,7 @@ this evidence-only reconciliation, prove the diff from `0d8cf362` contains no
 executable or acceptance-rule change, then run full preflight, push PR #167 and
 obtain fresh hosted checks.
 
-Live next step for the manifest 2.6 candidate (fourteen restricted, twenty-nine
+Live next step for the manifest 2.8 candidate (fourteen restricted, thirty-five
 authoring): freeze a clean exact tip, build and install its release-form wheels,
 run the restricted and authoring installed-wheel journeys against them, run both
 real hosts against that same tip to retain new records bound to the current

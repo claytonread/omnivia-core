@@ -188,7 +188,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **73 application operations** and binds
+`operations.schema.json` names exactly **79 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -199,7 +199,7 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Seventy-one are workspace-scoped:
+Seventy-seven are workspace-scoped:
 
 ```text
 analysis.start                     candidate.approve                  candidate.reject
@@ -219,10 +219,12 @@ job.cancel                         job.events                         job.get
 job.retry                          knowledge.propose                  knowledge.search
 knowledge.share.decide             knowledge.share.lineage            knowledge.share.propose
 knowledge.share.read               memory.create                      memory.get
-memory.list                        memory.search                      record.supersede
-skills.draft.create                skills.draft.update                skills.install
-skills.proposal.submit             skills.remove                      skills.resolve
-skills.version.deprecate           skills.version.publish             trigger.declare
+memory.list                        memory.search                      outcome.request.create
+outcome.request.read               project.context.read               project.context.switch
+record.supersede                   skills.draft.create                skills.draft.update
+skills.install                     skills.proposal.submit             skills.remove
+skills.resolve                     skills.version.deprecate           skills.version.publish
+task_context.export                task_context.export.read           trigger.declare
 trigger.health                     trigger.ingest                     trigger.lifecycle
 workflow.control                   workflow.inspect                   workflow.review
 workflow.start                     workspace.inspect

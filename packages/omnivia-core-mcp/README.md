@@ -3,7 +3,7 @@
 The Model Context Protocol server for OmniVia Core: a stdio MCP server that
 gives an AI host curated, profile-bound access to one local OmniVia Core
 workspace. The default `restricted` profile exposes fourteen reviewed tools;
-the explicitly enabled `authoring` profile exposes twenty-nine. `restricted` is
+the explicitly enabled `authoring` profile exposes thirty-five. `restricted` is
 bounded and non-authoring, not read-only: `decision_evaluate` writes durable
 evaluation, job and audit records, though it never mutates business records or
 executes actions.
@@ -116,7 +116,7 @@ command line — drives it with the official SDK's `stdio_client` and
 a host would use. The peer must identify itself as `omnivia-core` at this
 package's version; the advertised inventory must be exactly one profile's own
 tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — fourteen or
-twenty-nine; and the document's `allowed_purposes` must be exactly that profile's
+thirty-five; and the document's `allowed_purposes` must be exactly that profile's
 manifest purposes. Which profile is in force is read off the inventory the child
 advertised, never assumed from the document, so a `mutation_enabled: true`
 configuration the protected authority declines to admit is refused here.
@@ -152,7 +152,7 @@ path, so the server cannot supply the `--workspace` value itself.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-Manifest version `2.6` advertises fourteen tools under the `restricted` profile,
+Manifest version `2.8` advertises fourteen tools under the `restricted` profile,
 in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
@@ -172,7 +172,7 @@ in this order:
 | `decision_status` | `decision.status` | `decision_status` | `decision:read` | `decision.read` ≥ 1.0 |
 | `trigger_health` | `trigger.health` | `trigger_observation` | `trigger:read` | `trigger.read` ≥ 1.0 |
 
-The `authoring` profile advertises those fourteen, then these fifteen, in this order:
+The `authoring` profile advertises those fourteen, then these twenty-one, in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -191,16 +191,24 @@ The `authoring` profile advertises those fourteen, then these fifteen, in this o
 | `knowledge_share_decide` | `knowledge.share.decide` | `knowledge_sharing` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
 | `knowledge_share_read` | `knowledge.share.read` | `knowledge_share_observation` | `knowledge:share_read` | `knowledge.share_read` ≥ 1.0 |
 | `knowledge_share_lineage` | `knowledge.share.lineage` | `knowledge_share_observation` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
+| `task_context_export` | `task_context.export` | `task_context_export` | `task_context:export` | `task_context.export` ≥ 1.0 |
+| `task_context_export_read` | `task_context.export.read` | `task_context_observation` | `task_context:export_read` | `task_context.export_read` ≥ 1.0 |
+| `outcome_request_create` | `outcome.request.create` | `outcome_request` | `outcome:request` | `outcome.request` ≥ 1.0 |
+| `outcome_request_read` | `outcome.request.read` | `task_context_observation` | `outcome:request_read` | `outcome.request_read` ≥ 1.0 |
+| `project_context_read` | `project.context.read` | `task_context_observation` | `project_context:read` | `project_context.read` ≥ 1.0 |
+| `project_context_switch` | `project.context.switch` | `project_context` | `project_context:switch` | `project_context.switch` ≥ 1.0 |
 
 Every read declares `side_effect: none` and `audit_category: read` in the operation
-catalogue. Twelve operations are side-effecting -- `decision.evaluate`,
+catalogue. Fifteen operations are side-effecting -- `decision.evaluate`,
 `memory.create`, `evidence.capture`, `import.start`, the three trigger
-mutations, the three skill authoring mutations and the two knowledge sharing
-mutations (`knowledge.share.propose` and `knowledge.share.decide`) -- and the
-manifest admits exactly those by name rather than by catalogue metadata,
-refusing at import any other entry that is not a read. Each of the twelve
-requires a caller-chosen idempotency key, and `import.start` always answers
-with a job that `job.get` and the paged `job.events` observe.
+mutations, the three skill authoring mutations, the two knowledge sharing
+mutations (`knowledge.share.propose` and `knowledge.share.decide`), the two
+task-context mutations (`task_context.export` and `outcome.request.create`) and
+the Project-context mutation (`project.context.switch`) -- and the manifest
+admits exactly those by name rather than by catalogue metadata, refusing at
+import any other entry that is not a read. Each of the fifteen requires a
+caller-chosen idempotency key, and `import.start` always answers with a job that
+`job.get` and the paged `job.events` observe.
 
 The authoring additions are available only after the installed owner path
 records explicit authoring intent and Core grants the dedicated MCP principal
@@ -256,7 +264,7 @@ operation absent from it is not callable.
 
 Read-first is enforced at import: an entry whose catalogue metadata is not
 `side_effect="none"` and `audit_category="read"` makes the package fail to load,
-unless it is one of the twelve named mutations.
+unless it is one of the fifteen named mutations.
 
 ## Lifecycle
 
@@ -293,14 +301,17 @@ restricted tools over stdio against one governed workspace whose evidence,
 governed records and sealed relations were written through the accepted fenced
 Runtime writers in `tests/_mcp_v06_3_fixture.py` — the only place in this
 package's tests that imports the runtime at all. The source-tree acceptance
-suites cover all fourteen restricted tools and the fifteen authoring additions,
+suites cover all fourteen restricted tools and the twenty-one authoring additions,
 including empty-workspace capture, proposed-memory visibility, durable import
-observation, replay, conflict, restart, revocation, and knowledge-share
-propose/decide/read/lineage. The installed
+observation, replay, conflict, restart, revocation, knowledge-share
+propose/decide/read/lineage, and task-context export, outcome-request and
+Project-context read/switch. The installed
 qualification is driven from a clean wheel-only environment and retains a closed
 redacted record. Qualification by actual Claude Code and Codex CLI processes is
 tracked separately from those SDK-driven tests and must not be inferred from a
-configuration-form round trip.
+configuration-form round trip. The retained real-host records are historical
+evidence for manifest `2.3` (thirteen restricted and eighteen authoring tools);
+they do not qualify the live `2.8` candidate.
 
 **The shared-client integration is closed.** `server.connect` composes
 `ServiceClient` for both managed-local and remote mode. The shared client owns
