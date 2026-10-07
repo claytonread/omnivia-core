@@ -264,7 +264,8 @@ CANDIDATE_INTRODUCED_COMMITS = {
     66: "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
     # 0067 is the DEV-REQ-081 knowledge-share candidate, pinned to its introducing commit.
     67: "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
-    # 0068 is the governed task-context outcomes candidate, pinned to its introducing commit.
+    # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
+    # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
 }
 

@@ -201,14 +201,14 @@ The `authoring` profile advertises those fourteen, then these twenty-one, in thi
 Every read declares `side_effect: none` and `audit_category: read` in the operation
 catalogue. Fifteen operations are side-effecting -- `decision.evaluate`,
 `memory.create`, `evidence.capture`, `import.start`, the three trigger
-mutations, the three skill authoring mutations and the two knowledge sharing
+mutations, the three skill authoring mutations, the two knowledge sharing
 mutations (`knowledge.share.propose` and `knowledge.share.decide`), the two
 task-context mutations (`task_context.export` and `outcome.request.create`) and
-the project-context mutation (`project.context.switch`) -- and the
-manifest admits exactly those by name rather than by catalogue metadata,
-refusing at import any other entry that is not a read. Each of the fifteen
-requires a caller-chosen idempotency key, and `import.start` always answers
-with a job that `job.get` and the paged `job.events` observe.
+the Project-context mutation (`project.context.switch`) -- and the manifest
+admits exactly those by name rather than by catalogue metadata, refusing at
+import any other entry that is not a read. Each of the fifteen requires a
+caller-chosen idempotency key, and `import.start` always answers with a job that
+`job.get` and the paged `job.events` observe.
 
 The authoring additions are available only after the installed owner path
 records explicit authoring intent and Core grants the dedicated MCP principal
@@ -303,12 +303,15 @@ Runtime writers in `tests/_mcp_v06_3_fixture.py` — the only place in this
 package's tests that imports the runtime at all. The source-tree acceptance
 suites cover all fourteen restricted tools and the twenty-one authoring additions,
 including empty-workspace capture, proposed-memory visibility, durable import
-observation, replay, conflict, restart, revocation, and knowledge-share
-propose/decide/read/lineage. The installed
+observation, replay, conflict, restart, revocation, knowledge-share
+propose/decide/read/lineage, and task-context export, outcome-request and
+Project-context read/switch. The installed
 qualification is driven from a clean wheel-only environment and retains a closed
 redacted record. Qualification by actual Claude Code and Codex CLI processes is
 tracked separately from those SDK-driven tests and must not be inferred from a
-configuration-form round trip.
+configuration-form round trip. The retained real-host records are historical
+evidence for manifest `2.3` (thirteen restricted and eighteen authoring tools);
+they do not qualify the live `2.8` candidate.
 
 **The shared-client integration is closed.** `server.connect` composes
 `ServiceClient` for both managed-local and remote mode. The shared client owns

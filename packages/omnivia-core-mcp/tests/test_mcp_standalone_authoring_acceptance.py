@@ -39,7 +39,7 @@ checksum over its UTF-8 bytes and the byte count both come back -- the session
 keeps calling as the principal the installation minted rather than the `root` the
 body names, every answer is scoped to the minted workspace rather than the
 `ws-elsewhere` the body names, and the advertised surface after the writes is the
-same thirty-three it was before.
+same thirty-five it was before.
 
 **No assertion message carries anything it could leak.** Every message below is a
 fixed sentence: no paths, no bearers, no references, no service envelopes and no
@@ -77,7 +77,7 @@ PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "omnivia-core"
 SERVER_MODULE = "omnivia_core_mcp.server"
 
-#: The thirty-three tools an authoring installation advertises, in manifest order and
+#: The thirty-five tools an authoring installation advertises, in manifest order and
 #: spelled out. The literal is what section 13.B's acceptance asks for; the
 #: cross-check against `exposure_manifest("authoring")` in the test is what keeps
 #: it a claim about the manifest rather than a copy of it that can drift.
@@ -394,7 +394,7 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
       the minted workspace, and prints a snippet that is a command line and a
       configuration path;
     * a real SDK client completes a pinned 2025-06-18 handshake against the module
-      a host launches, and is advertised exactly the thirty-three the authoring manifest
+      a host launches, and is advertised exactly the thirty-five the authoring manifest
       declares;
     * the three searches it makes before writing anything answer with nothing, so
       the emptiness the rest of this rests on is read rather than assumed;
@@ -415,7 +415,7 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
       conflict;
     * the hostile-looking body changed nothing: the actor is still the minted
       principal, every answer is scoped to the minted workspace, and the surface
-      is still the same thirty-three;
+      is still the same thirty-five;
     * and the service that answered all of it is the same process afterwards and
       still answers its own health probe, both checked after the session closes
       and before the fixture is allowed to tear it down.

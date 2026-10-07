@@ -20,7 +20,7 @@ human recorded authoring intent for exactly its principal and workspace, and tha
 row is written by `mcp.configure`. The credential this module files is its own:
 :data:`SECRET`, put straight into the protected store under :data:`PRINCIPAL`,
 which no `mcp.configure` ever issued and which therefore no protected authoring
-record names. The thirty-three are so asserted at the seam where the wire's answer
+record names. The thirty-five are so asserted at the seam where the wire's answer
 arrives -- what `_qualification` returned -- and the *restricted* half of the
 same rule is proved live, by a child that really does ask the protected authority
 and really is told no. The live authoring path is proved end to end in
@@ -197,7 +197,7 @@ def test_an_authoring_ceiling_the_protected_authority_will_not_raise_is_refused(
     The child really does ask the protected authority, over the session's own
     endpoint, with the bearer this installation filed, and is really told no. So
     it settles on `restricted`, advertises fourteen tools and nine purposes -- and this
-    configuration allows twenty. A setup that published it would advertise a
+    configuration allows twenty-one. A setup that published it would advertise a
     surface whose purposes its own calls would be refused for.
     """
     path = installed.write(
