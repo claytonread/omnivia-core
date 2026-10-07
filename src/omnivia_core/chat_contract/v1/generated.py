@@ -98,11 +98,11 @@ PROTOCOL_MAJOR: Final[str] = '1'
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
 #: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 168 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 170
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 172
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '0df1e61e9ea824d88df7a95fe50f9536325b15b48c33f6320606a1532ad5ce1c'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '83cdd36d6559a8792a36ff932afd79d3be71b36e5423ba0ad1af30137fea826a'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (

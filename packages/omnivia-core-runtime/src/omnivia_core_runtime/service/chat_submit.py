@@ -2310,6 +2310,11 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
+        if save.attachment_references or save.context_references:
+            # The same Gate-B posture every other command here holds: this build
+            # carries no reference facts, so a draft that states any is a
+            # dependency_unavailable refusal, not a silent drop.
+            return None
         return _save_draft(save)
     if request.command_name == DISCARD_DRAFT_COMMAND:
         discard = _decode_discard_draft(request.command)

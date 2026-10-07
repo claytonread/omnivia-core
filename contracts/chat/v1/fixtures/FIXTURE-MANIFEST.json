@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 169,
-    "valid": 78,
-    "invalid": 91
+    "total": 171,
+    "valid": 79,
+    "invalid": 92
   },
   "fixtures": [
     {
@@ -1697,6 +1697,18 @@
       "focus": "additionalProperties:false rejects an injected Provider credential field; a minimised live delta admits no endpoint, model, header, credential, raw body or arbitrary metadata.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
       "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/valid/snapshot-composer-drafts-present.json",
+      "expect": "valid",
+      "focus": "A ConversationSnapshotResult carrying the actor's own active ComposerDrafts (C5A snapshot inclusion).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-composer-drafts-zero-version-rejected.json",
+      "expect": "invalid",
+      "focus": "A ComposerDraft projection whose `version` is below the governed minimum is refused whole (C5A snapshot inclusion).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult"
     }
   ]
 }

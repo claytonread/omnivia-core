@@ -267,6 +267,12 @@
           "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/QueuedSubmissionProjection" },
           "maxItems": 200,
           "description": "The authenticated actor's own active queued submissions, ordered by `position` then `queuedSubmissionId` (W5 GB-05). Optional and compatible: an existing snapshot consumer that has never seen this field stays valid, and its absence here means the actor's active queue is empty, not that it was skipped. The answering authority MUST either state the actor's complete active queue or fail the whole snapshot closed (`size_limit_exceeded`) rather than publish a partial one bounded by this array's own `maxItems`."
+        },
+        "composerDrafts": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" },
+          "maxItems": 3,
+          "description": "The authenticated actor's own active ComposerDrafts for this conversation at the queried device, one per `ComposerDraftMode`, ordered by `mode` then `draftId` (C5A). Optional and compatible: an existing snapshot consumer that has never seen this field stays valid, and its absence here means the actor holds no active draft, not that it was skipped. A draft is composition state, never a committed Message fact (REF-042 \u00a77.8); its `version` is the optimistic token a later SaveDraft's `expectedVersion` states. The mode vocabulary is closed at three, so no snapshot can be partial: the answering authority either states every active draft or fails the whole snapshot closed."
         }
       }
     },

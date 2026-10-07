@@ -1,0 +1,78 @@
+{
+  "conversation": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "createdBy": "principal-s0",
+    "createdAt": "2052-05-22T14:13:20Z",
+    "state": "active",
+    "graphRevision": 1,
+    "latestConversationSequence": 1,
+    "schemaVersion": 1
+  },
+  "path": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "branchId": "branch-gb01-main",
+    "headMessageId": "msg-gb01-root",
+    "graphRevision": 1,
+    "messages": [
+      {
+        "workspaceId": "ws-m1-audit-0001",
+        "conversationId": "conv-gb01-01",
+        "messageId": "msg-gb01-root",
+        "role": "user",
+        "authorType": "human",
+        "conversationSequence": 1,
+        "schemaVersion": 1,
+        "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "completionStatus": "complete",
+        "visibility": "standard",
+        "parts": [],
+        "createdAt": "2052-05-22T14:13:20Z",
+        "committedAt": "2052-05-22T14:13:20Z",
+        "authorId": "principal-s0"
+      }
+    ],
+    "generationJobIds": [],
+    "viewStateVersion": 1
+  },
+  "branch": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "branchId": "branch-gb01-main",
+    "originKind": "original",
+    "initialHeadMessageId": "msg-gb01-root",
+    "currentHeadMessageId": "msg-gb01-root",
+    "createdBy": "principal-s0",
+    "createdAt": "2052-05-22T14:13:20Z",
+    "createdConversationSequence": 1,
+    "headVersion": 1,
+    "schemaVersion": 1,
+    "state": "open"
+  },
+  "viewState": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "actorId": "principal-s0",
+    "activeBranchId": "branch-gb01-main",
+    "lastSeenGraphRevision": 1,
+    "schemaVersion": 1,
+    "updatedAt": "2052-05-22T14:13:20Z",
+    "version": 1
+  },
+  "composerDrafts": [
+    {
+      "workspaceId": "ws-m1-audit-0001",
+      "conversationId": "conv-gb01-01",
+      "actorId": "principal-s0",
+      "draftId": "cmd-fixture-save.draft",
+      "mode": "normal",
+      "text": "a composition still being typed",
+      "attachmentReferences": [],
+      "contextReferences": [],
+      "schemaVersion": 1,
+      "updatedAt": "2052-05-22T14:13:21Z",
+      "version": 1
+    }
+  ]
+}

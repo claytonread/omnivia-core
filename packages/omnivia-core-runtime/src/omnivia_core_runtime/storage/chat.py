@@ -111,6 +111,7 @@ __all__ = [
     "insert_view_state",
     "read_active_draft",
     "read_draft",
+    "read_active_drafts",
     "read_active_queue_for_actor",
     "read_actor_view_state",
     "read_branch",
@@ -684,6 +685,7 @@ class ConversationSnapshotInputs:
     generation_job_ids_truncated: bool
     queued_submissions: tuple[ActiveQueueEntry, ...]
     queued_submissions_truncated: bool
+    drafts: tuple[Draft, ...] = ()
 
 
 # --- writer -----------------------------------------------------------------------
@@ -2970,6 +2972,31 @@ def read_draft(
     return None if row is None else _draft_from_row(row)
 
 
+def read_active_drafts(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+    device_id: str = "",
+) -> tuple[Draft, ...]:
+    """Every draft the slot vocabulary holds for one actor/device, all modes.
+
+    The snapshot projection's read: the mode vocabulary is closed at three and the
+    slot UNIQUE keeps one row per mode, so this answers at most three rows and can
+    never be partial -- the completeness rule `ConversationSnapshotResult` states
+    for it. Ordered by mode then draft id, which is the order the projection
+    publishes.
+    """
+    rows = connection.execute(
+        f"SELECT {_DRAFT_COLUMNS} FROM omnivia_chat_drafts "
+        "WHERE workspace_id = ? AND conversation_id = ? AND actor_id = ? "
+        "AND device_id = ? ORDER BY mode, draft_id",
+        (workspace_id, conversation_id, actor_id, device_id),
+    ).fetchall()
+    return tuple(_draft_from_row(row) for row in rows)
+
+
 _QUEUED_SUBMISSION_COLUMNS = (
     "workspace_id, conversation_id, actor_id, queued_submission_id, queue_sequence, "
     "branch_id, editable_parts_json, references_json, idempotency_key, state, "
@@ -3966,6 +3993,13 @@ def read_conversation_snapshot_inputs(
                 generation_job_ids_truncated=len(job_ids) > _BRANCH_JOB_SNAPSHOT_LIMIT,
                 queued_submissions=queue_rows[:_QUEUE_SNAPSHOT_LIMIT],
                 queued_submissions_truncated=len(queue_rows) > _QUEUE_SNAPSHOT_LIMIT,
+                drafts=read_active_drafts(
+                    connection,
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    actor_id=actor_id,
+                    device_id=device_id,
+                ),
             )
     except BaseException:
         if owns_transaction:

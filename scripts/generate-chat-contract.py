@@ -65,8 +65,18 @@
 #     BridgeSnapshotItem, and a valid and an oversize-rejected
 #     host/chat.snapshot-page F2bCarrierEnvelope each carrying one
 #     queued_submission item.
-# All four are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
-# COMPATIBILITY-AND-MIGRATION.md §3, and all four must be carried back to the
+#   queries.schema.json#/$defs/ConversationSnapshotResult -- one new optional
+#     `composerDrafts` member (owner authorization, Clayton Read, 7 October
+#     2026): the authenticated actor's own active ComposerDrafts for the
+#     conversation at the queried device, typed by
+#     viewstate.schema.json#/$defs/ComposerDraft, maxItems 3 (the mode
+#     vocabulary is closed at three, so a snapshot cannot be partial).
+#     Required members are unchanged, so every document that validated before
+#     still validates. Two governed fixtures (one valid, one invalid) are added
+#     with it. Carried back to the Masterdocs authority before the next tag,
+#     with the other four widenings this header already names.
+# All five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
+# COMPATIBILITY-AND-MIGRATION.md §3, and all five must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
 # deliberately not byte-identical to architecture-v1.4.0, and the digest is
 # what says so.
@@ -146,19 +156,19 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 170  # FIXTURE-MANIFEST.json + 169 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 169
-EXPECTED_FIXTURE_VALID_COUNT = 78
-EXPECTED_FIXTURE_INVALID_COUNT = 91
+EXPECTED_FIXTURE_TREE_COUNT = 172  # FIXTURE-MANIFEST.json + 171 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 171
+EXPECTED_FIXTURE_VALID_COUNT = 79
+EXPECTED_FIXTURE_INVALID_COUNT = 92
 
 #: Pinned over the approved bytes verified byte-for-byte against the tagged
-#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the four
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the five
 #: authorized additive widenings the header names. Recomputed on every run by
 #: :func:`compute_resource_inventory_digest` and compared; any changed, missing
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "0df1e61e9ea824d88df7a95fe50f9536325b15b48c33f6320606a1532ad5ce1c"
+    "83cdd36d6559a8792a36ff932afd79d3be71b36e5423ba0ad1af30137fea826a"
 )
 
 

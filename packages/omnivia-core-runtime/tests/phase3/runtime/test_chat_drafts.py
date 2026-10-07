@@ -9,6 +9,9 @@ replay, and the identity-continuity save-after-discard cycle.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_chat_offline_queue as gb05
@@ -17,6 +20,7 @@ from omnivia_core_runtime.storage import chat
 from test_chat_offline_queue import owned, seeded  # noqa: F401  (pytest fixtures)
 from test_chat_submit_message_resolver import (
     ACTOR_ID,
+    BASE_US,
     CHAT_TABLES,
     CONVERSATION_ID,
     PRINCIPAL,
@@ -252,10 +256,47 @@ def test_a_mode_source_pairing_the_table_would_refuse_is_refused_before_writing(
     seeded: m1.Owned,
 ) -> None:
     before = _counts(seeded)
-    for command in (
-        _save_command(mode="edit_message"),  # no sourceMessageId
-        _save_command(source_message_id=ROOT_MESSAGE_ID),  # normal with a source
+    malformed = (
+        (_save_command(mode="edit_message"), "invalid_request"),  # no sourceMessageId
+        (
+            _save_command(source_message_id=ROOT_MESSAGE_ID),
+            "invalid_request",
+        ),  # normal mode with a source
+    )
+    for command, expected_code in malformed:
+        response = _save(
+            seeded,
+            command,
+            idempotency_key=f"idem-{command['commandId']}",
+            request_id=f"req-{command['commandId']}",
+        )
+        assert isinstance(response, ErrorResponseEnvelope), response
+        assert response.error.code == expected_code
+    assert _counts(seeded) == before
+
+    # An unknown source message is a conflict inside the transaction, not a decode
+    # refusal: the identity is well-formed, it just names nothing this
+    # conversation holds.
+    before = _counts(seeded)
+    response = _save(
+        seeded,
         _save_command(mode="edit_message", source_message_id="msg-not-here"),
+        idempotency_key="idem-c5a-unknown-source",
+        request_id="req-c5a-unknown-source",
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+
+
+def test_a_well_formed_but_unimplemented_reference_is_dependency_unavailable(
+    seeded: m1.Owned,
+) -> None:
+    """The same Gate-B posture every other command in this build holds."""
+    before = _counts(seeded)
+    for command in (
+        _save_command(attachment_references=[{"referenceId": "att-c5a-1"}]),
+        _save_command(context_references=[{"referenceId": "ctx-c5a-1"}]),
     ):
         response = _save(
             seeded,
@@ -264,9 +305,7 @@ def test_a_mode_source_pairing_the_table_would_refuse_is_refused_before_writing(
             request_id=f"req-{command['commandId']}",
         )
         assert isinstance(response, ErrorResponseEnvelope), response
-        assert response.error.code == "conflict" if "msg-not-here" in str(
-            command
-        ) else response.error.code == "invalid_request"
+        assert response.error.code == "dependency_unavailable"
     assert _counts(seeded) == before
 
 
@@ -348,7 +387,78 @@ def test_discarding_a_draft_that_is_not_this_actor_s_is_a_conflict(
     assert _counts(seeded) == before
 
 
-# --- 6. Restart: the draft survives a fresh connection to the same database ----------
+# --- 7. The snapshot carries the actor's active drafts ------------------------------
+
+
+def _snapshot(holder: m1.Owned, *, request_id: str) -> Mapping[str, Any]:
+    return gb05._snapshot(holder, request_id=request_id)
+
+
+def _draft_projection_errors(document: Any) -> list[str]:
+    return gb05._snapshot_schema_errors(document)
+
+
+def test_the_snapshot_carries_the_actor_s_active_drafts_and_conforms_to_the_contract(
+    seeded: m1.Owned,
+) -> None:
+    _save(seeded, _save_command())
+    gb05._give_principal_a_view_state(seeded)
+    snapshot = _snapshot(seeded, request_id="req-c5a-snapshot-1")
+
+    drafts = snapshot["composerDrafts"]
+    assert [draft["draftId"] for draft in drafts] == ["cmd-c5a-save.draft"]
+    assert drafts[0]["mode"] == "normal"
+    assert drafts[0]["text"] == "a composition worth keeping"
+    assert drafts[0]["version"] == 1
+    assert drafts[0]["attachmentReferences"] == []
+    assert drafts[0]["contextReferences"] == []
+    assert "sourceMessageId" not in drafts[0]
+    assert _draft_projection_errors(snapshot) == []
+
+    # Another actor's draft never leaks into this snapshot.
+    with chat.chat_writer(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+    ) as writer:
+        writer.insert_draft(
+            draft_id="draft-c5a-foreign",
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+            mode="normal",
+            text_content="someone else's composition",
+            references=(),
+            schema_version=1,
+            updated_at_us=BASE_US + 9,
+        )
+    snapshot2 = _snapshot(seeded, request_id="req-c5a-snapshot-2")
+    assert [draft["draftId"] for draft in snapshot2["composerDrafts"]] == [
+        "cmd-c5a-save.draft"
+    ]
+
+
+def test_a_discarded_draft_reads_back_emptied_with_its_advanced_version(
+    seeded: m1.Owned,
+) -> None:
+    _save(seeded, _save_command())
+    _discard(seeded, draft_id="cmd-c5a-save.draft")
+    gb05._give_principal_a_view_state(seeded)
+
+    drafts = _snapshot(seeded, request_id="req-c5a-snapshot-3")["composerDrafts"]
+    assert [draft["draftId"] for draft in drafts] == ["cmd-c5a-save.draft"]
+    assert drafts[0]["text"] == ""
+    assert drafts[0]["version"] == 2
+
+
+def test_a_snapshot_without_drafts_names_no_draft_member(seeded: m1.Owned) -> None:
+    gb05._give_principal_a_view_state(seeded)
+    snapshot = _snapshot(seeded, request_id="req-c5a-snapshot-4")
+    assert "composerDrafts" not in snapshot
+    assert _draft_projection_errors(snapshot) == []
+
+
+# --- 8. Restart: the draft survives a fresh connection to the same database ----------
 
 
 def test_a_saved_draft_survives_a_restart_and_replays_against_it(

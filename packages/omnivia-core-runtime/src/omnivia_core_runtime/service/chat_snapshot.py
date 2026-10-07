@@ -68,6 +68,7 @@ from omnivia_core_runtime.storage.chat import (
     Branch,
     Conversation,
     ConversationSnapshotInputs,
+    Draft,
     Message,
     MessagePart,
     ViewState,
@@ -376,6 +377,36 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     return document
 
 
+def _composer_draft(draft: Draft) -> Mapping[str, Any]:
+    """One `ComposerDraft`: the actor's own unsent composition state (C5A).
+
+    Deliberately narrower than nothing: the draft row IS the projection, held to
+    `viewstate.schema.json#/$defs/ComposerDraft`'s closed field set. The stored
+    `references_json` is always empty in this build -- a draft that stated any
+    reference is a `dependency_unavailable` refusal (`service/chat_submit.py`) --
+    so both wire reference arrays are stated empty rather than projected from a
+    combined store that could not honestly tell the two kinds apart. A discarded
+    draft reads back exactly as it was emptied: text `""`, references `[]`.
+    """
+    document: dict[str, Any] = {
+        "workspaceId": draft.workspace_id,
+        "conversationId": draft.conversation_id,
+        "actorId": draft.actor_id,
+        "draftId": draft.draft_id,
+        "mode": draft.mode,
+        "text": draft.text_content,
+        "attachmentReferences": [],
+        "contextReferences": [],
+        "schemaVersion": draft.schema_version,
+        "updatedAt": _timestamp(draft.updated_at_us),
+        "version": draft.version,
+    }
+    _optional(document, "sourceMessageId", draft.source_message_id)
+    _optional(document, "targetReference", draft.target)
+    _optional(document, "stashedFromDraftId", draft.stashed_from_draft_id)
+    return document
+
+
 def resolve_chat_snapshot(
     connection: sqlite3.Connection,
     request: ChatSnapshotInput,
@@ -422,6 +453,13 @@ def resolve_chat_snapshot(
     if inputs.queued_submissions:
         snapshot["queuedSubmissions"] = [
             _queued_submission(entry) for entry in inputs.queued_submissions
+        ]
+    # The actor's drafts for this conversation, device and principal, read inside
+    # the one authoritative read (`read_conversation_snapshot_inputs` now carries
+    # them), so a snapshot remains exactly one observation of one revision window.
+    if inputs.drafts:
+        snapshot["composerDrafts"] = [
+            _composer_draft(draft) for draft in inputs.drafts
         ]
     return ChatSnapshotResult(
         conversation_id=query.conversation_id,
