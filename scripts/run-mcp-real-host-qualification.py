@@ -213,7 +213,7 @@ UNEXPOSED_TOOLS: Final = tuple(
     operation.replace(".", "_")
     for operation in (
         "analysis.start", "candidate.approve", "candidate.reject", "chat.command",
-        "chat.events", "chat.snapshot", "context.priority.set",
+        "chat.draft", "chat.events", "chat.snapshot", "context.priority.set",
         "continuity.checkpoint.append", "continuity.handoff.read",
         "continuity.session.close", "continuity.session.register",
         "decision.definition.disable", "decision.definition.get",
