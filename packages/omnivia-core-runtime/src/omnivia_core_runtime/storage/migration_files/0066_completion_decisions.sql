@@ -25,8 +25,13 @@
 -- on a job the scheduler never claimed is not governed here.
 --
 -- Identity. `decision_digest` is `sha256:` over the canonical decision body, which excludes the time
--- it was recorded. The insert trigger recomputes it with `omnivia_sha256_hex`, a connection function
--- the service registers, so a stored digest that does not name its body is refused by the database.
+-- it was recorded and the service instance that recorded it. Both sit in their own columns: the job's
+-- claimant is cleared when the job terminalizes, so this row is the only durable record of who decided.
+-- The insert guard binds that instance to the current lease and the job's claimant, and the closure
+-- guards bind the succeeded event's service instance and runtime attempt number to this row and to the
+-- immutable runtime attempt, by exact JSON type and value. The insert trigger recomputes the digest
+-- with `omnivia_sha256_hex`, a connection function the service registers, so a stored digest that
+-- does not name its body is refused by the database.
 -- `(workspace_id, run_id)` is unique, so a run carries at most one decision; an exact replay dedups in
 -- the storage layer and a different body is refused there.
 --
@@ -68,6 +73,7 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_completion_decisions (
     decision_body               TEXT    NOT NULL,
     decided_under_generation    INTEGER NOT NULL,
     decided_at_us               INTEGER NOT NULL,
+    service_instance_id         TEXT    NOT NULL,
 
     CHECK (typeof(workspace_id) = 'text' AND length(workspace_id) BETWEEN 1 AND 128
            AND workspace_id GLOB '[A-Za-z0-9]*'
@@ -102,6 +108,10 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_completion_decisions (
     CHECK (typeof(decided_under_generation) = 'integer'
            AND decided_under_generation BETWEEN 1 AND 9223372036854775807),
     CHECK (typeof(decided_at_us) = 'integer' AND decided_at_us BETWEEN 1 AND 9223372036854775807),
+    CHECK (typeof(service_instance_id) = 'text' AND length(service_instance_id) BETWEEN 1 AND 128
+           AND service_instance_id GLOB '[A-Za-z0-9]*'
+           AND service_instance_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(service_instance_id, char(0)) = 0),
 
     PRIMARY KEY (workspace_id, decision_digest),
     UNIQUE (workspace_id, run_id),
@@ -222,6 +232,8 @@ BEGIN
         WHERE j.job_id = NEW.job_id AND j.state = 'claimed'
           AND j.fencing_generation = NEW.decided_under_generation
           AND j.claimed_by_service_instance = l.service_instance_id
+          AND j.claimed_by_service_instance = NEW.service_instance_id
+          AND l.service_instance_id = NEW.service_instance_id
           AND l.fencing_generation = NEW.decided_under_generation);
     SELECT RAISE(ABORT, 'omnivia: a run settled by a completion decision has no workflow completion record')
     WHERE EXISTS (
@@ -268,7 +280,14 @@ BEGIN
           AND json_type(NEW.details_json, '$.application_attempt_number') = 'integer'
           AND d.application_attempt_number IS json_extract(NEW.details_json, '$.application_attempt_number')
           AND json_type(NEW.details_json, '$.fencing_generation') = 'integer'
-          AND d.decided_under_generation IS json_extract(NEW.details_json, '$.fencing_generation'));
+          AND d.decided_under_generation IS json_extract(NEW.details_json, '$.fencing_generation')
+          AND json_type(NEW.details_json, '$.runtime_attempt_number') = 'integer'
+          AND json_extract(NEW.details_json, '$.runtime_attempt_number') IS (
+              SELECT ra.attempt_number FROM omnivia_runtime_attempts ra
+              WHERE ra.workspace_id = d.workspace_id AND ra.run_id = d.run_id
+                AND ra.run_step_id = d.run_step_id AND ra.attempt_id = d.runtime_attempt_id)
+          AND json_type(NEW.details_json, '$.service_instance_id') = 'text'
+          AND d.service_instance_id IS json_extract(NEW.details_json, '$.service_instance_id'));
 END;
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_events_decision_sequence
@@ -312,7 +331,14 @@ BEGIN
           AND json_type(e.details_json, '$.application_attempt_number') = 'integer'
           AND d.application_attempt_number IS json_extract(e.details_json, '$.application_attempt_number')
           AND json_type(e.details_json, '$.fencing_generation') = 'integer'
-          AND d.decided_under_generation IS json_extract(e.details_json, '$.fencing_generation'));
+          AND d.decided_under_generation IS json_extract(e.details_json, '$.fencing_generation')
+          AND json_type(e.details_json, '$.runtime_attempt_number') = 'integer'
+          AND json_extract(e.details_json, '$.runtime_attempt_number') IS (
+              SELECT ra.attempt_number FROM omnivia_runtime_attempts ra
+              WHERE ra.workspace_id = d.workspace_id AND ra.run_id = d.run_id
+                AND ra.run_step_id = d.run_step_id AND ra.attempt_id = d.runtime_attempt_id)
+          AND json_type(e.details_json, '$.service_instance_id') = 'text'
+          AND d.service_instance_id IS json_extract(e.details_json, '$.service_instance_id'));
 END;
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_workflow_run_completions_decided_run

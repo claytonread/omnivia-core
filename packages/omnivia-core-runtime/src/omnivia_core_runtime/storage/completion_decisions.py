@@ -20,7 +20,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from omnivia_core.contracts.v1 import is_identifier, to_canonical_json
 
@@ -49,6 +49,7 @@ _COLUMNS: Final = (
     "decision_body",
     "decided_under_generation",
     "decided_at_us",
+    "service_instance_id",
 )
 _SELECT: Final = ", ".join(_COLUMNS)
 _INSERT: Final = (
@@ -197,19 +198,30 @@ class StoredCompletionDecision:
 
     decision_digest: str
     decided_at_us: int
+    #: The scheduler instance that decided, kept outside the digest because no later row can say it.
+    service_instance_id: str
     decision: CompletionDecision
 
 
 def record_decision(
-    connection: sqlite3.Connection, *, decision: CompletionDecision, decided_at_us: int
+    connection: sqlite3.Connection,
+    *,
+    decision: CompletionDecision,
+    decided_at_us: int,
+    service_instance_id: str,
 ) -> StoredCompletionDecision:
     """Persist `decision` under the caller's fence, or return the exact row already stored.
+
+    `service_instance_id` is the scheduler instance writing now. It is stored beside the decision, outside
+    its digest, and an exact replay returns the stored row without comparing it to a later owner.
 
     A different body for a run that already has one is refused, and nothing is written. An exact replay
     returns the stored row only after `read_decision` has verified it against its settling event.
     """
     if not _bounded(decided_at_us, 1):
         raise CompletionDecisionInvalid("decided_at_us is outside its closed shape")
+    if not _text(service_instance_id, is_identifier):
+        raise CompletionDecisionInvalid("service_instance_id is outside its closed shape")
     # The public read, so an existing row is returned only once its settling event agrees with it.
     existing = read_decision(connection, workspace_id=decision.workspace_id, run_id=decision.run_id)
     if existing is not None:
@@ -232,11 +244,13 @@ def record_decision(
             "decision_body": to_canonical_json(decision.to_body()),
             "decided_under_generation": decision.decided_under_generation,
             "decided_at_us": decided_at_us,
+            "service_instance_id": service_instance_id,
         },
     )
     return StoredCompletionDecision(
         decision_digest=decision.decision_digest,
         decided_at_us=decided_at_us,
+        service_instance_id=service_instance_id,
         decision=decision,
     )
 
@@ -249,6 +263,8 @@ def read_decision(
     The decided time sits outside the digest, so it is checked here against the event it was written
     with: the succeeded event at the decision's own sequence must state the same step and the same instant,
     and its details must be the closed shape the scheduler wrote, naming this decision and its lineage.
+    The event's runtime attempt number is the immutable one of the decision's attempt, and its service
+    instance is the one stored with the decision. Neither depends on who owns the workspace now.
     """
     row = connection.execute(
         f"SELECT {_SELECT} FROM {_TABLE} WHERE workspace_id = ? AND run_id = ?",
@@ -296,10 +312,19 @@ def _require_settling_event(connection: sqlite3.Connection, stored: StoredComple
         or event[3] != stored.decided_at_us
     ):
         raise CompletionDecisionInvalid(_EVENT_MISMATCH)
-    _require_settling_details(event[4], stored)
+    attempt = connection.execute(
+        "SELECT attempt_number FROM omnivia_runtime_attempts "
+        "WHERE workspace_id = ? AND run_id = ? AND run_step_id = ? AND attempt_id = ?",
+        (decision.workspace_id, decision.run_id, decision.run_step_id, decision.runtime_attempt_id),
+    ).fetchone()
+    if attempt is None:
+        raise CompletionDecisionInvalid(_EVENT_MISMATCH)
+    _require_settling_details(event[4], stored, attempt[0])
 
 
-def _require_settling_details(details_text: object, stored: StoredCompletionDecision) -> None:
+def _require_settling_details(
+    details_text: object, stored: StoredCompletionDecision, runtime_attempt_number: object
+) -> None:
     """The event's details are the closed shape the scheduler wrote, and name this decision and its lineage.
 
     The details are canonical JSON, so the text must re-serialize to itself. That refuses a duplicate key,
@@ -315,8 +340,8 @@ def _require_settling_details(details_text: object, stored: StoredCompletionDeci
         raise CompletionDecisionInvalid(_EVENT_MISMATCH) from error
     if type(details) is not dict or set(details) != _EVENT_DETAIL_KEYS:
         raise CompletionDecisionInvalid(_EVENT_MISMATCH)
-    # The event's `fencing_generation` is the decision's `decided_under_generation`. The attempt number and
-    # the service instance are not carried by the decision, so they are checked for shape only.
+    # The event's `fencing_generation` is the decision's `decided_under_generation`. Its attempt number is
+    # the decision's runtime attempt's own, and its service instance is the one stored with the decision.
     if not (
         _same(details["completion_decision_digest"], stored.decision_digest)
         and _same(details["workspace_id"], decision.workspace_id)
@@ -326,8 +351,9 @@ def _require_settling_details(details_text: object, stored: StoredCompletionDeci
         and _same(details["runtime_attempt_id"], decision.runtime_attempt_id)
         and _same(details["application_attempt_number"], decision.application_attempt_number)
         and _same(details["fencing_generation"], decision.decided_under_generation)
-        and _bounded(details["runtime_attempt_number"], 1)
-        and type(details["service_instance_id"]) is str
+        and _bounded(runtime_attempt_number, 1)
+        and _same(details["runtime_attempt_number"], cast(int, runtime_attempt_number))
+        and _same(details["service_instance_id"], stored.service_instance_id)
     ):
         raise CompletionDecisionInvalid(_EVENT_MISMATCH)
     if to_canonical_json(details) != details_text:
@@ -343,6 +369,7 @@ def _record(row: tuple[Any, ...]) -> StoredCompletionDecision:
         or values["decision"] != DECISION_ACCEPTED
         or values["closure_state"] != CLOSURE_SUCCEEDED
         or not _bounded(values["decided_at_us"], 1)
+        or not _text(values["service_instance_id"], is_identifier)
     ):
         raise CompletionDecisionInvalid("stored completion decision is malformed")
     try:
@@ -366,6 +393,7 @@ def _record(row: tuple[Any, ...]) -> StoredCompletionDecision:
     return StoredCompletionDecision(
         decision_digest=values["decision_digest"],
         decided_at_us=values["decided_at_us"],
+        service_instance_id=values["service_instance_id"],
         decision=decision,
     )
 

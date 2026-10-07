@@ -550,6 +550,7 @@ def _settle(
         application_attempt_number=application_attempt_number,
         fencing_generation=GENERATION,
         decided_at_us=DECIDED_US,
+        service_instance_id="svc-settle-helper",
     )
 
 
@@ -994,7 +995,12 @@ def _record(owned: m1.Owned, decision: CompletionDecision, *, decided_at_us: int
         workspace_id=WORKSPACE_ID,
         fencing_generation=owned.generation,
     ) as fenced:
-        return record_decision(fenced, decision=decision, decided_at_us=decided_at_us)
+        return record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=decided_at_us,
+            service_instance_id=owned.identity.service_instance_id,
+        )
 
 
 def _count(owned: m1.Owned) -> int:
@@ -1043,8 +1049,8 @@ def _terminal(owned: m1.Owned, claim: RuntimeClaim, *, state: str = "succeeded")
 _RAW_INSERT = (
     f"INSERT INTO {TABLE} (workspace_id, decision_digest, run_id, job_id, run_step_id, "
     "runtime_attempt_id, application_attempt_number, closure_state, settled_sequence, decision, "
-    "decision_body, decided_under_generation, decided_at_us) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, 'succeeded', ?, 'accepted', ?, ?, ?)"
+    "decision_body, decided_under_generation, decided_at_us, service_instance_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, 'succeeded', ?, 'accepted', ?, ?, ?, ?)"
 )
 
 
@@ -1087,6 +1093,7 @@ def _settle_raw(
                 body_text,
                 owned.generation,
                 DECIDED_US,
+                owned.identity.service_instance_id,
             ),
         )
         transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
@@ -1104,7 +1111,9 @@ def _settle_raw(
                 "job_id": claim.job_id,
                 "run_step_id": claim.run_step_id,
                 "runtime_attempt_id": claim.runtime_attempt_id,
+                "runtime_attempt_number": claim.runtime_attempt_number,
                 "application_attempt_number": claim.application_attempt_number,
+                "service_instance_id": owned.identity.service_instance_id,
                 "fencing_generation": owned.generation,
             },
         )
@@ -1206,7 +1215,12 @@ def test_a_decision_and_its_event_without_the_terminal_observation_fail_at_commi
             workspace_id=WORKSPACE_ID,
             fencing_generation=owned.generation,
         ) as fenced:
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
         transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
             run_id=claim.run_id,
             runtime_event_id=f"evt-no-observation-{claim.run_id}",
@@ -1248,7 +1262,12 @@ def test_a_terminal_observation_before_its_event_is_refused_by_the_database(owne
             workspace_id=WORKSPACE_ID,
             fencing_generation=owned.generation,
         ) as fenced:
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
         _terminalize_application_job(
             fenced,
             owned.identity,
@@ -1273,7 +1292,9 @@ def _detail_lineage(owned: m1.Owned, claim: RuntimeClaim, decision: CompletionDe
         "job_id": decision.job_id,
         "run_step_id": decision.run_step_id,
         "runtime_attempt_id": decision.runtime_attempt_id,
+        "runtime_attempt_number": claim.runtime_attempt_number,
         "application_attempt_number": decision.application_attempt_number,
+        "service_instance_id": owned.identity.service_instance_id,
         "fencing_generation": decision.decided_under_generation,
     }
 
@@ -1518,6 +1539,11 @@ _EVENT_SUBSTITUTIONS = [
     pytest.param({"details": {"job_id": "job-other"}}, id="job"),
     pytest.param({"details": {"runtime_attempt_id": "attempt-other"}}, id="runtime-attempt"),
     pytest.param({"details": {"application_attempt_number": 2}}, id="application-attempt"),
+    pytest.param({"details": {"runtime_attempt_number": 2}}, id="runtime-attempt-number"),
+    pytest.param({"details": {"runtime_attempt_number": True}}, id="runtime-attempt-number-boolean"),
+    pytest.param({"details": {"runtime_attempt_number": 1.0}}, id="runtime-attempt-number-real"),
+    pytest.param({"details": {"service_instance_id": "svc-other"}}, id="service-instance"),
+    pytest.param({"details": {"service_instance_id": 1}}, id="service-instance-number"),
     pytest.param({"details": {"fencing_generation": GENERATION + 1}}, id="generation"),
     pytest.param({"details": {"fencing_generation": True}}, id="generation-boolean-reads-as-one"),
     pytest.param({"details": {"application_attempt_number": True}}, id="application-attempt-boolean-reads-as-one"),
@@ -1552,17 +1578,27 @@ def test_a_succeeded_event_that_substitutes_any_settled_fact_is_refused_with_its
     elif details is not None:
         event_details = details
 
-    with pytest.raises(sqlite3.DatabaseError), fenced_transaction(
+    expected_error = (
+        "must be run_succeeded"
+        if overrides.get("event_kind") == "run_completed"
+        else "must carry the completion decision"
+    )
+    with pytest.raises(sqlite3.DatabaseError, match=expected_error), fenced_transaction(
         owned.connection,
         owned.identity,
         workspace_id=WORKSPACE_ID,
         fencing_generation=owned.generation,
     ) as fenced:
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
         transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
             run_id=first.run_id,
             runtime_event_id=f"evt-substitute-{first.run_id}",
-            occurred_at_us=overrides.get("occurred_at_us", BASE_US),
+            occurred_at_us=overrides.get("occurred_at_us", DECIDED_US),
             event_kind=overrides.get("event_kind", SETTLED),
             run_status="succeeded",
             run_step_id=overrides.get("run_step_id", first.run_step_id),
@@ -1584,7 +1620,12 @@ def test_a_decision_sequence_admits_only_its_succeeded_event(owned: m1.Owned) ->
             workspace_id=WORKSPACE_ID,
             fencing_generation=owned.generation,
         ) as fenced:
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
         transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
             run_id=claim.run_id,
             runtime_event_id="evt-reserved-failed",
@@ -1715,6 +1756,7 @@ def test_the_schema_refuses_an_unguarded_write_a_foreign_binding_and_any_update_
                 body,
                 owned.generation,
                 DECIDED_US,
+                owned.identity.service_instance_id,
             ),
         )
 
@@ -1728,6 +1770,7 @@ def test_the_schema_refuses_an_unguarded_write_a_foreign_binding_and_any_update_
             fenced,
             decision=replace(decision, workspace_id=OTHER_WORKSPACE_ID),
             decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
         )
 
     with pytest.raises(sqlite3.DatabaseError, match="current fencing generation"), fenced_transaction(
@@ -1740,6 +1783,7 @@ def test_the_schema_refuses_an_unguarded_write_a_foreign_binding_and_any_update_
             fenced,
             decision=replace(decision, decided_under_generation=owned.generation + 1),
             decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
         )
 
     assert _count(owned) == 0
@@ -1792,7 +1836,12 @@ def test_a_failed_or_cancelled_observation_cannot_stand_in_for_the_succeeded_clo
             workspace_id=WORKSPACE_ID,
             fencing_generation=owned.generation,
         ) as fenced:
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
         transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
             run_id=claim.run_id,
             runtime_event_id=f"evt-stand-in-{state}-{claim.run_id}",
@@ -1872,7 +1921,12 @@ def test_a_succeeded_observation_cannot_precede_a_decision_that_then_names_its_e
             result={"ok": True},
             _transaction_open=True,
         )
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
     assert _count(owned) == 0
     assert _state(owned, claim) == CLOSED_STATE
 
@@ -1903,7 +1957,12 @@ def test_a_boolean_that_json_reads_as_one_is_refused_by_the_observation_guard(
             workspace_id=WORKSPACE_ID,
             fencing_generation=owned.generation,
         ) as fenced:
-        record_decision(fenced, decision=decision, decided_at_us=DECIDED_US)
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
         transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
             run_id=claim.run_id,
             runtime_event_id=f"evt-bool-{claim.run_id}",
@@ -2001,7 +2060,12 @@ def test_record_decision_refuses_to_replay_a_stored_row_whose_time_no_longer_mat
             workspace_id=WORKSPACE_ID,
             fencing_generation=reopened.generation,
         ) as fenced:
-            record_decision(fenced, decision=stored.decision, decided_at_us=stored.decided_at_us)
+            record_decision(
+                fenced,
+                decision=stored.decision,
+                decided_at_us=stored.decided_at_us,
+                service_instance_id=reopened.identity.service_instance_id,
+            )
     finally:
         reopened.connection.close()
 
@@ -2036,6 +2100,10 @@ _EVENT_DETAIL_CORRUPTIONS = [
     pytest.param(_with(fencing_generation=True), id="generation-boolean"),
     pytest.param(_with(fencing_generation=float(GENERATION)), id="generation-float"),
     pytest.param(_with(runtime_attempt_number="1"), id="attempt-number-text"),
+    pytest.param(_with(runtime_attempt_number=2), id="attempt-number-other"),
+    pytest.param(_with(runtime_attempt_number=True), id="attempt-number-boolean"),
+    pytest.param(_with(service_instance_id="svc-other"), id="service-instance-other"),
+    pytest.param(_with(service_instance_id=1), id="service-instance-number"),
     pytest.param(_with(unexpected="extra"), id="extra-key"),
     pytest.param(_without("completion_decision_digest"), id="digest-absent"),
     pytest.param(_shadowed_duplicate, id="duplicate-key"),
@@ -2094,6 +2162,76 @@ def test_a_settled_event_whose_details_are_altered_out_of_band_is_refused_by_rea
             workspace_id=WORKSPACE_ID,
             fencing_generation=reopened.generation,
         ) as fenced:
-            record_decision(fenced, decision=stored.decision, decided_at_us=stored.decided_at_us)
+            record_decision(
+                fenced,
+                decision=stored.decision,
+                decided_at_us=stored.decided_at_us,
+                service_instance_id=reopened.identity.service_instance_id,
+            )
     finally:
         reopened.connection.close()
+
+
+def _succeeded_details(owned: m1.Owned, run: str) -> dict[str, Any]:
+    (text,) = owned.connection.execute(
+        "SELECT details_json FROM omnivia_runtime_events WHERE workspace_id = ? AND run_id = ? "
+        "AND run_status = 'succeeded'",
+        (WORKSPACE_ID, run),
+    ).fetchone()
+    return json.loads(text)  # type: ignore[no-any-return]
+
+
+def test_a_final_completion_on_the_second_runtime_attempt_states_and_reads_back_that_number(
+    owned: m1.Owned,
+) -> None:
+    _claim(owned, "run-attempt-two")
+    successor = rt106._takeover(owned)
+    assert [job.requeued for job in _scheduler(successor, None).recover_stranded()] == [True]
+    newer = _scheduler(successor, None).claim_next()
+    assert newer is not None and newer.runtime_attempt_number == 2
+
+    _scheduler(successor, gate()).complete(newer, result_kind="runtime_completion", result={"ok": True})
+
+    stored = read_decision(successor.connection, workspace_id=WORKSPACE_ID, run_id=newer.run_id)
+    assert stored is not None
+    assert stored.service_instance_id == successor.identity.service_instance_id
+    details = _succeeded_details(successor, newer.run_id)
+    assert details["runtime_attempt_number"] == 2
+    assert details["service_instance_id"] == successor.identity.service_instance_id
+
+
+def test_a_settled_decision_reads_and_replays_after_a_different_service_instance_takes_over(
+    owned: m1.Owned,
+) -> None:
+    claim = _claim(owned, "run-historical")
+    _scheduler(owned, gate()).complete(claim, result_kind="runtime_completion", result={"ok": True})
+    successor = rt106._takeover(owned)
+    assert successor.identity.service_instance_id != owned.identity.service_instance_id
+
+    stored = read_decision(successor.connection, workspace_id=WORKSPACE_ID, run_id=claim.run_id)
+
+    assert stored is not None
+    assert stored.service_instance_id == owned.identity.service_instance_id
+    replayed = _record(successor, stored.decision, decided_at_us=BASE_US + 7)
+    assert replayed.service_instance_id == owned.identity.service_instance_id
+    assert replayed.decided_at_us == stored.decided_at_us
+    assert _count(successor) == 1
+
+
+def test_the_database_refuses_a_decision_stored_under_another_service_instance(
+    owned: m1.Owned,
+) -> None:
+    claim = _claim(owned, "run-foreign-service")
+    _close(owned, claim, attempt=SUCCEEDED, step=SUCCEEDED)
+    decision = _decision(owned, claim)
+
+    with pytest.raises(sqlite3.DatabaseError, match="claimed by the current writer"), fenced_transaction(
+        owned.connection,
+        owned.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=owned.generation,
+    ) as fenced:
+        record_decision(
+            fenced, decision=decision, decided_at_us=DECIDED_US, service_instance_id="svc-other"
+        )
+    assert _count(owned) == 0

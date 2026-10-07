@@ -274,6 +274,7 @@ def settle_completion(
     application_attempt_number: int,
     fencing_generation: int,
     decided_at_us: int,
+    service_instance_id: str,
 ) -> StoredCompletionDecision:
     """Read proof, decide, and persist the decision. Call only inside the scheduler's fence.
 
@@ -286,6 +287,7 @@ def settle_completion(
         and _text(job_id, is_identifier)
         and _text(run_step_id, is_identifier)
         and _text(runtime_attempt_id, is_identifier)
+        and _text(service_instance_id, is_identifier)
         and _exact_int(application_attempt_number)
         and _exact_int(fencing_generation)
     ):
@@ -315,7 +317,12 @@ def settle_completion(
         fencing_generation=fencing_generation,
         settled_sequence=_next_event_sequence(connection, workspace_id=workspace_id, run_id=run_id),
     )
-    return record_decision(connection, decision=decision, decided_at_us=decided_at_us)
+    return record_decision(
+        connection,
+        decision=decision,
+        decided_at_us=decided_at_us,
+        service_instance_id=service_instance_id,
+    )
 
 
 def _decide(

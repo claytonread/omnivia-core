@@ -453,6 +453,7 @@ class RuntimeScheduler:
                 application_attempt_number=claim.application_attempt_number,
                 fencing_generation=self.fencing_generation,
                 decided_at_us=now_us,
+                service_instance_id=self.identity.service_instance_id,
             )
             self._append_event(
                 claim,
