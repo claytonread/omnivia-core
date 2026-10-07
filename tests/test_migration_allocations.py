@@ -256,13 +256,16 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0064 was introduced by 29ae6c85 and repinned to its binding-generations
     # repair cecb879b, which is where its current content lives.
     64: "cecb879bda649e8323d218d0c7927a50cc299b9e",
-    # 0065 and 0066 are the C13 review-finding quarantine and completion-decision
-    # candidates, each pinned to the commit that introduced its SQL.
+    # 0065 is the C13 review-finding quarantine candidate, pinned to the commit that
+    # introduced its SQL. 0066 was introduced by de6724f0, repinned to its
+    # completion-authority hardening a3319bd2, its exact-lineage repair 32fe9562,
+    # then its closed-event-shape repair b1193aaa, where its current content lives.
     65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
-    66: "de6724f0bbad1209c8c0af035d662f697db278b7",
+    66: "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
     # 0067 is the DEV-REQ-081 knowledge-share candidate, pinned to its introducing commit.
     67: "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
-    # 0068 is the governed task-context outcomes candidate, pinned to its introducing commit.
+    # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
+    # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
 }
 

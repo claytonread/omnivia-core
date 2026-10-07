@@ -16,6 +16,7 @@ import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service.application import (
+    DECISION_RESULT_USE_PURPOSE,
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
     build_task_context_application_dispatcher,
@@ -30,7 +31,12 @@ from omnivia_core_runtime.service.operations import (
 )
 from test_v06_5_s2_memory_migration import _apply_through
 
-from omnivia_core.contracts.v1 import OPERATION_CATALOGUE
+from omnivia_core.contracts.v1 import (
+    OPERATION_CATALOGUE,
+    ErrorResponseEnvelope,
+    decode_request,
+    encode_response,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 CORPUS = (
@@ -44,7 +50,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "1dae4941dfe0da76463381067b803430c04b257d52da52795ce91b1976fe5c41"
+CORPUS_SHA256 = "57241fb5c57bc22dc43e3dbc56dc81735031e007c745a668ac449467d21e6a77"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -97,7 +103,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 77
+    assert len(catalogue) == len(set(catalogue)) == 79
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -152,7 +158,7 @@ def test_v06_5_s5_every_handler_is_production_callable(
         ) or handler.__module__.startswith(
             "omnivia_core_runtime.service.application"
         ) or handler.__module__ == __name__, operation
-    assert len(identities) == 77
+    assert len(identities) == 79
     assert not any(
         token in identity.lower()
         for identity in identities.values()
@@ -217,7 +223,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 205
+    assert len(corpus["cases"]) == 209
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -239,10 +245,37 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 615
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 627
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )
+
+
+def test_v06_5_s5_result_use_unsupported_minor_matches_corpus(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """One corpus case through the production bridge: the error the adapters return
+    is the corpus's own text, not a message re-typed beside the handler."""
+    document = _document(CORPUS)
+    case = next(
+        item
+        for item in document["cases"]
+        if item["id"] == "error/due-unsupported-minor"
+    )
+    request = case["request"]
+    wire = {
+        "operation": request["operation"],
+        "input": request["input"],
+        "metadata": {
+            **document["defaults"]["request_metadata"],
+            **request["metadata"],
+            "workspace_id": m1.WORKSPACE_ID,
+            "purpose": DECISION_RESULT_USE_PURPOSE,
+        },
+    }
+    response = surface.dispatch(decode_request(wire))
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert encode_response(response)["error"] == case["response"]["error"]
 
 
 def test_the_production_surface_installs_the_chat_generation_executor(

@@ -334,11 +334,15 @@ class OutcomeAdmissionAuthority:
         if revision not in source.revisions:
             raise OutcomeAdmissionRefused(REFUSED_UNKNOWN_REVISION)
         # A string is refused too: its characters are never a scope name, so it fails the subset check.
+        # Raised after the handler exits: inside it, the caught error would stay reachable on `__context__`.
+        malformed = False
         try:
             requested = tuple(scopes)
             distinct = set(requested)
         except TypeError:
-            raise OutcomeAdmissionRefused(REFUSED_SCOPE) from None
+            malformed = True
+        if malformed:
+            raise OutcomeAdmissionRefused(REFUSED_SCOPE)
         if (
             not requested
             or len(distinct) != len(requested)

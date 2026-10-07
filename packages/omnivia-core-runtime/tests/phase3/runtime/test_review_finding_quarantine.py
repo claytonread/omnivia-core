@@ -171,14 +171,36 @@ def test_an_exact_resubmission_returns_the_canonical_record(owned: m2.Owned) -> 
     assert _count(owned.connection) == 1
 
 
-def test_the_same_bytes_under_another_key_deduplicate_to_the_existing_record(
+def test_the_same_bytes_under_another_key_are_refused_and_bind_that_key_to_nothing(
     owned: m2.Owned,
 ) -> None:
     first = _quarantine(owned, _envelope(owned), key="key-1")
-    other = _quarantine(owned, _envelope(owned), key="key-2")
+    before = _authority(owned.connection)
 
-    assert other.finding_digest == first.finding_digest
+    with pytest.raises(quarantine.ReviewFindingConflict):
+        _quarantine(owned, _envelope(owned), key="key-2")
+
     assert _count(owned.connection) == 1
+    assert quarantine.read_findings(owned.connection, workspace_id=WORKSPACE_ID) == (first,)
+    _assert_authority_unchanged(before, _authority(owned.connection))
+
+
+def test_three_calls_bind_each_observed_key_to_exactly_one_digest(owned: m2.Owned) -> None:
+    """The regression: (e1,k1), (e1,k2), (e2,k2). The second call used to return e1 with k2 unbound,
+    so the third bound k2 to e2 as well. Now k2 is first observed for e2 alone."""
+    first = _quarantine(owned, _envelope(owned), key="k1")
+    other = _envelope(owned, content_digest=DIGEST_B)
+    with pytest.raises(quarantine.ReviewFindingConflict):
+        _quarantine(owned, _envelope(owned), key="k2")
+    second = _quarantine(owned, other, key="k2")
+
+    bindings = {
+        (record.idempotency_key, record.finding_digest)
+        for record in quarantine.read_findings(owned.connection, workspace_id=WORKSPACE_ID)
+    }
+    assert bindings == {("k1", first.finding_digest), ("k2", second.finding_digest)}
+    assert _count(owned.connection) == 2
+    assert _quarantine(owned, other, key="k2") == second
 
 
 def test_different_bytes_or_binding_facts_produce_distinct_records(owned: m2.Owned) -> None:
@@ -548,3 +570,39 @@ def test_quarantined_records_are_durable_and_readable_from_a_fresh_process(
          r.envelope.observed_generation, r.quarantined_under_generation]
         for r in expected
     ]
+
+
+_BINDINGS_READER = """
+import json, sys
+from pathlib import Path
+from omnivia_core_runtime.storage.connection import OpenMode, open_database
+from omnivia_core_runtime.storage.review_finding_quarantine import read_findings
+connection = open_database(Path(sys.argv[1]), OpenMode.READ_ONLY)
+print(json.dumps(sorted([r.idempotency_key, r.finding_digest] for r in read_findings(connection, workspace_id=sys.argv[2]))))
+"""
+
+
+def test_the_key_and_evidence_bindings_hold_across_conflicts_and_a_fresh_process(
+    owned: m2.Owned,
+) -> None:
+    """A/k1; A/k2 refused; B/k2; A/k2 refused again. Each key ends bound to one digest, in a fresh process."""
+    a = _quarantine(owned, _envelope(owned), key="k1")
+    with pytest.raises(quarantine.ReviewFindingConflict):
+        _quarantine(owned, _envelope(owned), key="k2")
+    b = _quarantine(owned, _envelope(owned, content_digest=DIGEST_B), key="k2")
+    with pytest.raises(quarantine.ReviewFindingConflict):
+        _quarantine(owned, _envelope(owned), key="k2")
+    assert _quarantine(owned, _envelope(owned), key="k1") == a
+    path = owned.path
+    owned.connection.close()
+
+    completed = subprocess.run(
+        [sys.executable, "-c", _BINDINGS_READER, str(path), WORKSPACE_ID],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert json.loads(completed.stdout) == sorted(
+        [["k1", a.finding_digest], ["k2", b.finding_digest]]
+    )

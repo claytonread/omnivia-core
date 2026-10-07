@@ -414,8 +414,9 @@ def workflow_runtime_scheduler(
     added is the dependency gate and the plan observation. A build that composed this for
     a workspace with no Workflow runs would behave exactly as the bare scheduler does.
 
-    `completion` is the final-settlement authority. Left as `None` it refuses every run's
-    final completion, so a caller must configure proof before a Workflow run can succeed.
+    `completion` is the final-settlement authority, and this scheduler requires it: left as `None`
+    the scheduler refuses to claim or settle any work before it writes anything, so a process
+    without proof configured cannot take a Workflow job it could never finish.
     """
     # The assignment is also where `WorkflowStepPlan` is checked against
     # `RuntimeStepPlan`: the scheduler's field is typed as the protocol, so a signature
@@ -429,4 +430,5 @@ def workflow_runtime_scheduler(
         clock=clock,
         plan=WorkflowStepPlan(workspace_id),
         completion=completion,
+        requires_completion=True,
     )

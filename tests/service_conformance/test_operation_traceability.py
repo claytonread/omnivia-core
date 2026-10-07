@@ -10,12 +10,12 @@ claiming a result.
 
 MCP and CLI are not service adapters here. Each is a single top-level
 client-surface decision, never a per-operation applicability claim. Format
-``v1.1`` records the accepted MCP mapping: the thirty-three operations the curated
+``v1.1`` records the accepted MCP mapping: the thirty-five operations the curated
 MCP exposure manifest allow-lists, each with its tool name, and every other
 catalogue operation as an intentional omission with its reason. The CLI
 mapping is still not decided, and neither surface's evidence is evaluated
 here. This module proves that split holds and stays in step with the frozen
-seventy-seven-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
+seventy-nine-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
 recorded mapping to ``omnivia_core_mcp.manifest`` itself, which this module
 may not import.
 
@@ -137,7 +137,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 TRACEABILITY = _load_json(FIXTURE_PATH)
 CATALOGUE_BY_NAME = {entry.name: entry for entry in OPERATION_CATALOGUE}
 #: ``(operation name, fixture entry)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of seventy-seven.
+#: failure names the operation rather than an index into a list of seventy-nine.
 FIXTURE_OPERATIONS: list[dict[str, Any]] = TRACEABILITY["operations"]
 FIXTURE_NAMES = [op["contract"]["name"] for op in FIXTURE_OPERATIONS]
 FIXTURE_CASES = list(zip(FIXTURE_NAMES, FIXTURE_OPERATIONS))
