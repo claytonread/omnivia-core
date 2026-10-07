@@ -21,7 +21,8 @@ twenty-two, with three trigger mutations. `2.5` adds the three skill authoring
 mutations: the authoring twenty-five. `2.6` adds the four knowledge sharing
 operations, two mutations and two reads: the authoring twenty-nine. `2.7` adds
 the four task-context operations, two mutations and two reads: the authoring
-thirty-three.
+thirty-three. `2.8` adds the project-context read and mutation: the authoring
+thirty-five.
 Everything below that reads as new coverage rather than as a rewrite is the
 difference between those facts.
 """

@@ -172,7 +172,7 @@ in this order:
 | `decision_status` | `decision.status` | `decision_status` | `decision:read` | `decision.read` ≥ 1.0 |
 | `trigger_health` | `trigger.health` | `trigger_observation` | `trigger:read` | `trigger.read` ≥ 1.0 |
 
-The `authoring` profile advertises those fourteen, then these fifteen, in this order:
+The `authoring` profile advertises those fourteen, then these twenty-one, in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -191,14 +191,22 @@ The `authoring` profile advertises those fourteen, then these fifteen, in this o
 | `knowledge_share_decide` | `knowledge.share.decide` | `knowledge_sharing` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
 | `knowledge_share_read` | `knowledge.share.read` | `knowledge_share_observation` | `knowledge:share_read` | `knowledge.share_read` ≥ 1.0 |
 | `knowledge_share_lineage` | `knowledge.share.lineage` | `knowledge_share_observation` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
+| `task_context_export` | `task_context.export` | `task_context_export` | `task_context:export` | `task_context.export` ≥ 1.0 |
+| `task_context_export_read` | `task_context.export.read` | `task_context_observation` | `task_context:export_read` | `task_context.export_read` ≥ 1.0 |
+| `outcome_request_create` | `outcome.request.create` | `outcome_request` | `outcome:request` | `outcome.request` ≥ 1.0 |
+| `outcome_request_read` | `outcome.request.read` | `task_context_observation` | `outcome:request_read` | `outcome.request_read` ≥ 1.0 |
+| `project_context_read` | `project.context.read` | `task_context_observation` | `project_context:read` | `project_context.read` ≥ 1.0 |
+| `project_context_switch` | `project.context.switch` | `project_context` | `project_context:switch` | `project_context.switch` ≥ 1.0 |
 
 Every read declares `side_effect: none` and `audit_category: read` in the operation
-catalogue. Twelve operations are side-effecting -- `decision.evaluate`,
+catalogue. Fifteen operations are side-effecting -- `decision.evaluate`,
 `memory.create`, `evidence.capture`, `import.start`, the three trigger
 mutations, the three skill authoring mutations and the two knowledge sharing
-mutations (`knowledge.share.propose` and `knowledge.share.decide`) -- and the
+mutations (`knowledge.share.propose` and `knowledge.share.decide`), the two
+task-context mutations (`task_context.export` and `outcome.request.create`) and
+the project-context mutation (`project.context.switch`) -- and the
 manifest admits exactly those by name rather than by catalogue metadata,
-refusing at import any other entry that is not a read. Each of the twelve
+refusing at import any other entry that is not a read. Each of the fifteen
 requires a caller-chosen idempotency key, and `import.start` always answers
 with a job that `job.get` and the paged `job.events` observe.
 
@@ -256,7 +264,7 @@ operation absent from it is not callable.
 
 Read-first is enforced at import: an entry whose catalogue metadata is not
 `side_effect="none"` and `audit_category="read"` makes the package fail to load,
-unless it is one of the twelve named mutations.
+unless it is one of the fifteen named mutations.
 
 ## Lifecycle
 
@@ -293,7 +301,7 @@ restricted tools over stdio against one governed workspace whose evidence,
 governed records and sealed relations were written through the accepted fenced
 Runtime writers in `tests/_mcp_v06_3_fixture.py` — the only place in this
 package's tests that imports the runtime at all. The source-tree acceptance
-suites cover all fourteen restricted tools and the fifteen authoring additions,
+suites cover all fourteen restricted tools and the twenty-one authoring additions,
 including empty-workspace capture, proposed-memory visibility, durable import
 observation, replay, conflict, restart, revocation, and knowledge-share
 propose/decide/read/lineage. The installed

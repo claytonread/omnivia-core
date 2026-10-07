@@ -255,7 +255,7 @@ SECTION7_TOOLS: Final = tuple(
     tool for sentinels in SECTION7_SENTINELS.values() for tool in sentinels
 )
 #: Every excluded name each profile must prove undispatchable.  The restricted
-#: profile also excludes the fifteen authoring additions it does not expose.
+#: profile also excludes the twenty-one authoring additions it does not expose.
 EXCLUDED_TOOLS: Final = {
     "restricted": (*AUTHORING_TOOLS[RESTRICTED_TOOL_COUNT:], *UNEXPOSED_TOOLS, *SECTION7_TOOLS),
     "authoring": (*UNEXPOSED_TOOLS, *SECTION7_TOOLS),
