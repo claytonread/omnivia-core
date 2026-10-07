@@ -161,6 +161,10 @@ from omnivia_core.contracts.v1 import (
     EngineeringExpandInput,
     EngineeringSearchInput,
     EvidenceCaptureSizeLimitError,
+    KnowledgeShareDecideInput,
+    KnowledgeShareLineageInput,
+    KnowledgeShareProposeInput,
+    KnowledgeShareReadInput,
     PrincipalClaim,
     RequestEnvelope,
     RequestMetadata,
@@ -298,8 +302,8 @@ RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
 #:
 #: Each newer operation needs a local canonical decoder: the authoring additions
 #: (memory, evidence, import and the two job reads), the four decision tools, the
-#: three Engineering Memory reads, the four trigger operations and the three skill
-#: authoring mutations.
+#: three Engineering Memory reads, the four trigger operations, the three skill
+#: authoring mutations and the four knowledge sharing operations.
 #: The original six reads are unchanged accepted behaviour and are
 #: validated where they always were -- at the service, which answers with its
 #: own typed refusal. The newer reads decode through the generated contract
@@ -325,6 +329,10 @@ _CANONICAL_INPUT: Final[dict[str, Callable[[object], object]]] = {
     "skills.draft.create": SkillDraftCreateInput.from_wire,
     "skills.draft.update": SkillDraftUpdateInput.from_wire,
     "skills.proposal.submit": SkillProposalSubmitInput.from_wire,
+    "knowledge.share.propose": KnowledgeShareProposeInput.from_wire,
+    "knowledge.share.decide": KnowledgeShareDecideInput.from_wire,
+    "knowledge.share.read": KnowledgeShareReadInput.from_wire,
+    "knowledge.share.lineage": KnowledgeShareLineageInput.from_wire,
 }
 
 
@@ -1456,7 +1464,7 @@ async def serve(*, session: ConnectedSession) -> None:
 #: this check rather than certifying itself.
 EXPECTED_TOOL_COUNT: Final[dict[str, int]] = {
     RESTRICTED_PROFILE: 14,
-    AUTHORING_PROFILE: 25,
+    AUTHORING_PROFILE: 29,
 }
 
 _UNEXPECTED_INVENTORY: Final = (

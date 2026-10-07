@@ -266,7 +266,7 @@
           ],
           "properties": {
             "tool_count": {
-              "const": 25
+              "const": 29
             },
             "tools": {
               "type": "array",
@@ -345,11 +345,23 @@
                 },
                 {
                   "const": "skills_proposal_submit"
+                },
+                {
+                  "const": "knowledge_share_propose"
+                },
+                {
+                  "const": "knowledge_share_decide"
+                },
+                {
+                  "const": "knowledge_share_read"
+                },
+                {
+                  "const": "knowledge_share_lineage"
                 }
               ],
               "items": false,
-              "minItems": 25,
-              "maxItems": 25
+              "minItems": 29,
+              "maxItems": 29
             }
           }
         }

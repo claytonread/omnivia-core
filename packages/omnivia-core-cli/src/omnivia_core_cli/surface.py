@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The sixty-one application commands map onto the
-sixty-one operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The seventy-three application commands map onto the
+seventy-three operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -278,6 +278,22 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(("skills", "install"), "skills.install", "skill_installation"),
     ApplicationCommand(("skills", "remove"), "skills.remove", "skill_installation"),
     ApplicationCommand(("skills", "resolve"), "skills.resolve", "skill_resolution"),
+    # Cross-Project knowledge sharing (DEV-REQ-081). Proposing and deciding share one purpose; the
+    # recipient read and the owner's lineage read are observations, which no sharing grant carries.
+    ApplicationCommand(
+        ("knowledge", "share-propose"), "knowledge.share.propose", "knowledge_sharing"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-decide"), "knowledge.share.decide", "knowledge_sharing"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-read"), "knowledge.share.read", "knowledge_share_observation"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-lineage"),
+        "knowledge.share.lineage",
+        "knowledge_share_observation",
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (

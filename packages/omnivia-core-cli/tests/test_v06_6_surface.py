@@ -119,6 +119,10 @@ EXPECTED_COMMANDS = (
     (("skills", "install"), "skills.install", "skill_installation"),
     (("skills", "remove"), "skills.remove", "skill_installation"),
     (("skills", "resolve"), "skills.resolve", "skill_resolution"),
+    (("knowledge", "share-propose"), "knowledge.share.propose", "knowledge_sharing"),
+    (("knowledge", "share-decide"), "knowledge.share.decide", "knowledge_sharing"),
+    (("knowledge", "share-read"), "knowledge.share.read", "knowledge_share_observation"),
+    (("knowledge", "share-lineage"), "knowledge.share.lineage", "knowledge_share_observation"),
 )
 
 EXPECTED_PROBES = (
@@ -167,14 +171,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_sixty_nine_application_commands_are_declared_in_order() -> None:
+def test_the_seventy_three_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 69
+    assert len(APPLICATION_COMMANDS) == 73
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

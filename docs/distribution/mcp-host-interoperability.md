@@ -63,7 +63,7 @@ bounded non-authoring profile, not a universal read-only claim.
 `scripts/run-mcp-authoring-qualification.py` runs beside the restricted journey
 from the same isolated installed-wheel environment. It configures explicit
 authoring authority through `omnivia mcp configure`, then proves the exact
-twenty-five-tool inventory: the restricted fourteen plus:
+twenty-nine-tool inventory: the restricted fourteen plus:
 
 1. `memory_create`
 2. `evidence_capture`
@@ -76,6 +76,10 @@ twenty-five-tool inventory: the restricted fourteen plus:
 9. `skills_draft_create`
 10. `skills_draft_update`
 11. `skills_proposal_submit`
+12. `knowledge_share_propose`
+13. `knowledge_share_decide`
+14. `knowledge_share_read`
+15. `knowledge_share_lineage`
 
 The qualification uses two isolated workspaces:
 
@@ -206,10 +210,10 @@ model's report:
   surface and no decision record.
 - **Excluded names:** the harness dispatches every name a profile does not expose
   through the proxy itself, so no model choice is involved. The restricted profile
-  has 73 such names and the authoring profile 62. Those sets comprise the 44
+  has 77 such names and the authoring profile 62. Those sets comprise the 44
   catalogue operations outside the authoring manifest, eighteen deterministic
   qualification sentinels spanning all nine section-7 administrative capability
-  categories, and (for restricted only) the eleven authoring additions. Sentinels
+  categories, and (for restricted only) the fifteen authoring additions. Sentinels
   are probe names, not catalogue operations. Each name must be answered
   `not_exposed`, and none may appear in the host's listed inventory. Restricted
   and authoring absence/dispatch results are retained as four separate booleans.
@@ -274,7 +278,7 @@ supported CLI verified on 2026-10-04, replacing the Phase 8 start value
 values qualify nothing by themselves; they become evidence only after the
 corresponding real-host run passes at the frozen candidate commit. The records
 committed under `docs/development/qualification/` are historical: they cover the
-13/18-tool snapshot at `0d8cf362` and do not qualify the live 14/25 candidate.
+13/18-tool snapshot at `0d8cf362` and do not qualify the live 14/29 candidate.
 
 The executable harness is `scripts/run-mcp-real-host-qualification.py`. A run
 names one host, its installed binary, one clean candidate directory, one

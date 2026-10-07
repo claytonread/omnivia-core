@@ -749,7 +749,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the thirty-nine, explicitly, with a mismatch failing closed for each."""
+    """Exactly the forty-one, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -790,10 +790,12 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "skills.version.deprecate",
         "skills.install",
         "skills.remove",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 39
+    assert len(MUTATION_PURPOSES) == 41
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -823,7 +825,9 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # (SPEC-CORE-ENGMEM-001). Triggers add two more (C21): configuration, which
     # declaring and moving a subscription share, and ingestion, which delivering
     # a stimulus holds alone, so a configuration grant never delivers one.
-    assert len(set(MUTATION_PURPOSES.values())) == 21
+    # Knowledge sharing adds one more: proposing a share and deciding one are both
+    # held under `knowledge_sharing`, distinct from the governance family's purpose.
+    assert len(set(MUTATION_PURPOSES.values())) == 22
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1807,6 +1811,8 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "skills.version.deprecate": "skill_publisher",
         "skills.install": "workspace_operator",
         "skills.remove": "workspace_operator",
+        "knowledge.share.propose": "workspace_contributor",
+        "knowledge.share.decide": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

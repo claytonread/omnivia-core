@@ -12516,6 +12516,374 @@
           ]
         }
       }
+    },
+    {
+      "id": "knowledge.share.propose/primary-success",
+      "operation": "knowledge.share.propose",
+      "description": "knowledge.share.propose proposes sharing one governed record's sealed canonical version with one other Project, leaving it proposed on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.propose-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.share.propose"
+        },
+        "operation": "knowledge.share.propose",
+        "input": {
+          "share_id": "share-1",
+          "record_id": "rec-1",
+          "recipient_project_id": "project-recipient"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.propose-success",
+          "audit_reference": "audit-knowledge.share.propose"
+        },
+        "result": {
+          "share_id": "share-1",
+          "source_project_id": "project-source",
+          "recipient_project_id": "project-recipient",
+          "record_id": "rec-1",
+          "governed_record_version_id": "version-1",
+          "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "proposed",
+          "proposed_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.propose/honest-replay",
+      "operation": "knowledge.share.propose",
+      "description": "knowledge.share.propose repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "knowledge.share.propose/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.propose-replay",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.share.propose"
+        },
+        "operation": "knowledge.share.propose",
+        "input": {
+          "share_id": "share-1",
+          "record_id": "rec-1",
+          "recipient_project_id": "project-recipient"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.propose-replay",
+          "audit_reference": "audit-knowledge.share.propose"
+        },
+        "result": {
+          "share_id": "share-1",
+          "source_project_id": "project-source",
+          "recipient_project_id": "project-recipient",
+          "record_id": "rec-1",
+          "governed_record_version_id": "version-1",
+          "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "proposed",
+          "proposed_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.propose/idempotency-conflict",
+      "operation": "knowledge.share.propose",
+      "description": "knowledge.share.propose reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "knowledge.share.propose/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.propose-conflict",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.share.propose"
+        },
+        "operation": "knowledge.share.propose",
+        "input": {
+          "share_id": "share-1",
+          "record_id": "rec-1",
+          "recipient_project_id": "project-other"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.propose-conflict",
+          "audit_reference": "audit-knowledge.share.propose"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.decide/primary-success",
+      "operation": "knowledge.share.decide",
+      "description": "knowledge.share.decide records an owner's acceptance of a proposed share on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.decide-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.share.decide"
+        },
+        "operation": "knowledge.share.decide",
+        "input": {
+          "share_id": "share-1",
+          "decision": "accepted"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.decide-success",
+          "audit_reference": "audit-knowledge.share.decide"
+        },
+        "result": {
+          "share_id": "share-1",
+          "decision": "accepted",
+          "state": "accepted",
+          "decided_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.decide/honest-replay",
+      "operation": "knowledge.share.decide",
+      "description": "knowledge.share.decide repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "knowledge.share.decide/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.decide-replay",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.share.decide"
+        },
+        "operation": "knowledge.share.decide",
+        "input": {
+          "share_id": "share-1",
+          "decision": "accepted"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.decide-replay",
+          "audit_reference": "audit-knowledge.share.decide"
+        },
+        "result": {
+          "share_id": "share-1",
+          "decision": "accepted",
+          "state": "accepted",
+          "decided_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.decide/idempotency-conflict",
+      "operation": "knowledge.share.decide",
+      "description": "knowledge.share.decide reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "knowledge.share.decide/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.decide-conflict",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.share.decide"
+        },
+        "operation": "knowledge.share.decide",
+        "input": {
+          "share_id": "share-1",
+          "decision": "revoked"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.decide-conflict",
+          "audit_reference": "audit-knowledge.share.decide"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.read/primary-success",
+      "operation": "knowledge.share.read",
+      "description": "knowledge.share.read serves the shared version to a member of the recipient Project while the share is accepted and unrevoked.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.read-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share_read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share_read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "knowledge.share.read",
+        "input": {
+          "share_id": "share-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.read-success"
+        },
+        "result": {
+          "share_id": "share-1",
+          "source_project_id": "project-source",
+          "recipient_project_id": "project-recipient",
+          "record_id": "rec-1",
+          "governed_record_version_id": "version-1",
+          "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "domain_scope": "project.roadmap",
+          "content": {
+            "statement": "A durable claim"
+          }
+        }
+      }
+    },
+    {
+      "id": "knowledge.share.lineage/primary-success",
+      "operation": "knowledge.share.lineage",
+      "description": "knowledge.share.lineage reads a share and every decision recorded against it, to an owner of its source Project.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.share.lineage-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.share",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "knowledge:share"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "knowledge.share.lineage",
+        "input": {
+          "share_id": "share-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.share.lineage-success"
+        },
+        "result": {
+          "share_id": "share-1",
+          "source_project_id": "project-source",
+          "recipient_project_id": "project-recipient",
+          "record_id": "rec-1",
+          "governed_record_version_id": "version-1",
+          "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "accepted",
+          "proposed_by": "owner-proposer",
+          "decisions": [
+            {
+              "decision": "accepted",
+              "decided_by": "owner-approver",
+              "decided_at": "2026-10-04T03:05:00.000000Z"
+            }
+          ]
+        }
+      }
     }
   ],
   "contract_version": "1.0",

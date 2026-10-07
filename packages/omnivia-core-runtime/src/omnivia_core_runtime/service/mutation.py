@@ -89,9 +89,9 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.operations import OperationError
 
 #: The purpose each mutating catalogue operation is served under, and the only purposes
-#: a mutation grant may ever carry. Six values over ten operations: a purpose names a
-#: coherent operation family rather than restating an operation name, which is the same
-#: shape `application.OPERATION_PURPOSES` uses for the read operations.
+#: a mutation grant may ever carry. Twenty-two values over forty-one operations: a
+#: purpose names a coherent operation family rather than restating an operation name,
+#: which is the same shape `application.OPERATION_PURPOSES` uses for the read operations.
 #:
 #: Every mutating operation is listed explicitly. There is no prefix rule, no fallback
 #: and no default: an operation absent from this map cannot be granted at all, and a
@@ -138,6 +138,10 @@ TRIGGER_INGESTION_PURPOSE: Final = "trigger_ingestion"
 SKILL_AUTHORING_PURPOSE: Final = "skill_authoring"
 SKILL_PUBLICATION_PURPOSE: Final = "skill_publication"
 SKILL_INSTALLATION_PURPOSE: Final = "skill_installation"
+#: Cross-Project knowledge sharing (DEV-REQ-081). Proposing a share and deciding one are a Project
+#: owner's two acts on one share, so one purpose. Which Project the caller owns is a server binding
+#: and is not decided by this purpose or by the role below.
+KNOWLEDGE_SHARING_PURPOSE: Final = "knowledge_sharing"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -184,6 +188,8 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "skills.version.deprecate": SKILL_PUBLICATION_PURPOSE,
         "skills.install": SKILL_INSTALLATION_PURPOSE,
         "skills.remove": SKILL_INSTALLATION_PURPOSE,
+        "knowledge.share.propose": KNOWLEDGE_SHARING_PURPOSE,
+        "knowledge.share.decide": KNOWLEDGE_SHARING_PURPOSE,
     }
 )
 
@@ -266,6 +272,11 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "skills.version.deprecate": SKILL_PUBLISHER_ROLE,
         "skills.install": WORKSPACE_OPERATOR_ROLE,
         "skills.remove": WORKSPACE_OPERATOR_ROLE,
+        # Sharing writes a proposal or a decision about one record and publishes nothing by itself.
+        # Whether the caller may do it for that record is the server's Project binding, which no
+        # role here can state or widen.
+        "knowledge.share.propose": WORKSPACE_CONTRIBUTOR_ROLE,
+        "knowledge.share.decide": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

@@ -46,6 +46,7 @@ from omnivia_core_runtime.service.application import (
     build_engineering_application_dispatcher,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
+    build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
     build_skill_application_dispatcher,
     build_skill_resolution_application_dispatcher,
@@ -95,6 +96,11 @@ from omnivia_core_runtime.service.installation_bootstrap import (
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
 )
+from omnivia_core_runtime.service.knowledge_projects import (
+    KnowledgeProjectsRefused,
+    load_project_authorities,
+)
+from omnivia_core_runtime.service.knowledge_sharing import NO_PROJECTS, ProjectAuthority
 from omnivia_core_runtime.service.legacy_import import (
     LegacyImportRefused,
     LegacyImportResult,
@@ -283,6 +289,7 @@ def _build_production_application_surface(
     execute_chat_generation: ChatGenerationExecution | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    project_authority: ProjectAuthority = NO_PROJECTS,
 ) -> ProductionApplicationSurface:
     """Compose the exact production route for one live service.
 
@@ -297,6 +304,12 @@ def _build_production_application_surface(
 
     `resolve_workflow_release` is an override rather than a dependency: left out, the
     Workflow release authority is composed here (founder Ruling 2). See below.
+
+    `project_authority` is the server's Project binding for cross-Project knowledge sharing
+    (DEV-REQ-081): who owns a Project's domain scope and who is a member of it. It is composition
+    state, not a request field. `serve` takes it from the installation's own Project document
+    (`service/knowledge_projects.py`), and a service with no document binds no Project, so every
+    `knowledge.share.*` operation refuses.
     """
     if started.workspace_id is None:
         raise ValueError("a production application surface needs a workspace")
@@ -440,6 +453,15 @@ def _build_production_application_surface(
             provenance=ContinuityAssociationProvenance.CORE_LOCAL_CONNECTION,
         ),
     )
+    knowledge_sharing = build_knowledge_sharing_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=engineering,
+        projects=project_authority,
+        clock=started.clock,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -453,6 +475,7 @@ def _build_production_application_surface(
         skill=skill,
         skill_resolution=skill_resolution,
         engineering=engineering,
+        knowledge_sharing=knowledge_sharing,
         probe=probe,
     )
 
@@ -940,6 +963,16 @@ def main(
         )
         return 2
 
+    # The Project bindings each served workspace is composed with. Read here, before anything can be
+    # advertised, and not for --check-only, which serves nothing. A refusal is a refusal to start.
+    project_authorities: Mapping[str, ProjectAuthority] = {}
+    if not args.check_only:
+        try:
+            project_authorities = load_project_authorities(settings.installation_root)
+        except KnowledgeProjectsRefused as refused:
+            sys.stderr.write(f"refusing to serve: {refused}\n")
+            return 2
+
     source_work: Callable[[], object] | None = None
 
     def serve(started: ServiceRunner) -> None:
@@ -1020,6 +1053,9 @@ def main(
             installation=installation,
             resolve_workflow_release=resolve_workflow_release,
             workflow_wait_policy=workflow_wait_policy,
+            project_authority=project_authorities.get(
+                started.workspace_id, NO_PROJECTS
+            ),
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

@@ -490,6 +490,8 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
             "engineering_search",
             "job_observation",
             "knowledge_retrieval",
+            "knowledge_share_observation",
+            "knowledge_sharing",
             "memory_authoring",
             "skill_authoring",
             "trigger_configuration",

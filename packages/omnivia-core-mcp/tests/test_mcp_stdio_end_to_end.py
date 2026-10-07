@@ -239,6 +239,8 @@ AUTHORING_PURPOSES = (
     "trigger_ingestion",
     "job_observation",
     "skill_authoring",
+    "knowledge_sharing",
+    "knowledge_share_observation",
 )
 
 
@@ -496,7 +498,7 @@ def test_every_advertised_tool_is_read_only_and_closed(
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.5"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.6"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -921,7 +923,7 @@ SKILL_MANIFEST: dict[str, Any] = {
 
 
 def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """The eleven additions' calls, bound to the dedicated principal the installation issued.
+    """The fifteen additions' calls, bound to the dedicated principal the installation issued.
 
     A function rather than a constant because one of them names an actor, and the
     only actor an installed session may name is the principal its bearer resolves
@@ -1073,6 +1075,29 @@ def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
                 "idempotency_key": "mcp-authoring-skill-submit-001",
             },
         ),
+        (
+            "knowledge_share_propose",
+            {
+                "input": {
+                    "share_id": "share-not-in-this-workspace",
+                    "record_id": "record-not-in-this-workspace",
+                    "recipient_project_id": "project-2",
+                },
+                "idempotency_key": "mcp-authoring-share-propose-001",
+            },
+        ),
+        (
+            "knowledge_share_decide",
+            {
+                "input": {
+                    "share_id": "share-not-in-this-workspace",
+                    "decision": "accepted",
+                },
+                "idempotency_key": "mcp-authoring-share-decide-001",
+            },
+        ),
+        ("knowledge_share_read", {"share_id": "share-not-in-this-workspace"}),
+        ("knowledge_share_lineage", {"share_id": "share-not-in-this-workspace"}),
     ]
 
 
@@ -1145,6 +1170,7 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
+# The name keeps its original figures because the dated traceability ledger cites it.
 def test_an_admitted_authoring_session_lists_twenty_five_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
@@ -1160,7 +1186,7 @@ def test_an_admitted_authoring_session_lists_twenty_five_and_calls_every_new_too
 
     What each call proves, in one session:
 
-    * the listing is the twenty-five, in manifest order, and the ten authoring
+    * the listing is the twenty-nine, in manifest order, and the twelve authoring
       mutations advertise the closed wrapper with the read hints inverted;
     * `evidence_capture` writes -- the content travels in the call, with no path,
       URL or credential anywhere in it -- and the artifact is then findable
@@ -1204,6 +1230,8 @@ def test_an_admitted_authoring_session_lists_twenty_five_and_calls_every_new_too
         "skills_draft_create",
         "skills_draft_update",
         "skills_proposal_submit",
+        "knowledge_share_propose",
+        "knowledge_share_decide",
     ):
         advertised = next(tool for tool in observed["tools"] if tool["name"] == name)
         assert set(advertised["input_schema"]["properties"]) == {

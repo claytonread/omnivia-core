@@ -21,7 +21,7 @@
     "verdict": {"const": "pass"},
     "profile": {"const": "authoring"},
     "protocol_version": {"const": "2025-06-18"},
-    "tool_count": {"const": 25},
+    "tool_count": {"const": 29},
     "tools": {
       "type": "array",
       "prefixItems": [
@@ -49,11 +49,15 @@
         {"const": "job_events"},
         {"const": "skills_draft_create"},
         {"const": "skills_draft_update"},
-        {"const": "skills_proposal_submit"}
+        {"const": "skills_proposal_submit"},
+        {"const": "knowledge_share_propose"},
+        {"const": "knowledge_share_decide"},
+        {"const": "knowledge_share_read"},
+        {"const": "knowledge_share_lineage"}
       ],
       "items": false,
-      "minItems": 25,
-      "maxItems": 25
+      "minItems": 29,
+      "maxItems": 29
     },
     "sdk_versions": {
       "type": "object",

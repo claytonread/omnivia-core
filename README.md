@@ -188,7 +188,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **69 application operations** and binds
+`operations.schema.json` names exactly **73 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -199,7 +199,7 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Sixty-seven are workspace-scoped:
+Seventy-one are workspace-scoped:
 
 ```text
 analysis.start                     candidate.approve                  candidate.reject
@@ -217,14 +217,15 @@ engineering.source.capture.commit  engineering.source.record          evidence.c
 evidence.search                    graph.traverse                     import.start
 job.cancel                         job.events                         job.get
 job.retry                          knowledge.propose                  knowledge.search
-memory.create                      memory.get                         memory.list
-memory.search                      record.supersede                   skills.draft.create
-skills.draft.update                skills.install                     skills.proposal.submit
-skills.remove                      skills.resolve                     skills.version.deprecate
-skills.version.publish             trigger.declare                    trigger.health
-trigger.ingest                     trigger.lifecycle                  workflow.control
-workflow.inspect                   workflow.review                    workflow.start
-workspace.inspect
+knowledge.share.decide             knowledge.share.lineage            knowledge.share.propose
+knowledge.share.read               memory.create                      memory.get
+memory.list                        memory.search                      record.supersede
+skills.draft.create                skills.draft.update                skills.install
+skills.proposal.submit             skills.remove                      skills.resolve
+skills.version.deprecate           skills.version.publish             trigger.declare
+trigger.health                     trigger.ingest                     trigger.lifecycle
+workflow.control                   workflow.inspect                   workflow.review
+workflow.start                     workspace.inspect
 ```
 
 `service.health`, `service.readiness`, and `service.discover` are **not** in

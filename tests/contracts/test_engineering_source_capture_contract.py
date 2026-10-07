@@ -327,7 +327,7 @@ def test_result_unknown_keys_are_refused() -> None:
 
 
 def test_the_operation_catalogue_accepts_capture_commit_as_entry_53() -> None:
-    assert len(OPERATION_CATALOGUE) == 69
+    assert len(OPERATION_CATALOGUE) == 73
     entry = next(
         item
         for item in OPERATION_CATALOGUE

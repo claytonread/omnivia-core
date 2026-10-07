@@ -546,6 +546,17 @@
       "sha256": "770b8395d757665338f25f8fdb0db8c7dd5de0ce1c74968e1a48c9976bd9135e",
       "introduced_commit": "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
       "accepted_commit": null
+    },
+    {
+      "number": 67,
+      "filename": "0067_knowledge_shares.sql",
+      "owner": "Agent Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 66,
+      "sha256": "af2e93cc180c0f1eb5a480306775e460ee57dd3b4e904670f8a13e2764075136",
+      "introduced_commit": "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
+      "accepted_commit": null
     }
   ]
 }

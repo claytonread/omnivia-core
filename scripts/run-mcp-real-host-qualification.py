@@ -60,7 +60,7 @@ SDK_PINS: Final = {"mcp": "2.0.0", "mcp-types": "2.0.0"}
 HOST_VERSIONS: Final = {"claude-code": "2.1.289", "codex-cli": "0.146.0"}
 SCRIPT_PATH: Final = Path(__file__).resolve()
 RESTRICTED_TOOL_COUNT: Final = 14
-AUTHORING_TOOL_COUNT: Final = 25
+AUTHORING_TOOL_COUNT: Final = 29
 QUALIFICATION_TOKEN: Final = "omnivia-real-host-qualification-v1"
 DIRECT_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-direct-source"
 INTERRUPTED_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-interrupted-source"
@@ -196,15 +196,15 @@ def _authoring_tools() -> tuple[str, ...]:
 
 
 AUTHORING_TOOLS: Final = _authoring_tools()
-#: The authoring profile is the restricted profile plus eleven additions, in the
+#: The authoring profile is the restricted profile plus fifteen additions, in the
 #: manifest's exposure order.
 RESTRICTED_TOOLS: Final = AUTHORING_TOOLS[:RESTRICTED_TOOL_COUNT]
 PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_TOOLS}
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
-#: The forty-four of the sixty-nine catalogue operations that the exposure
-#: manifest does not admit (the other twenty-five are the authoring inventory),
+#: The forty-four of the seventy-three catalogue operations that the exposure
+#: manifest does not admit (the other twenty-nine are the authoring inventory),
 #: under their MCP-facing names.  The manifest
 #: stays the authority; ``test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest``
 #: in ``tests/package_qualification/test_mcp_real_host_qualification.py`` checks
@@ -253,7 +253,7 @@ SECTION7_TOOLS: Final = tuple(
     tool for sentinels in SECTION7_SENTINELS.values() for tool in sentinels
 )
 #: Every excluded name each profile must prove undispatchable.  The restricted
-#: profile also excludes the eleven authoring additions it does not expose.
+#: profile also excludes the fifteen authoring additions it does not expose.
 EXCLUDED_TOOLS: Final = {
     "restricted": (*AUTHORING_TOOLS[RESTRICTED_TOOL_COUNT:], *UNEXPOSED_TOOLS, *SECTION7_TOOLS),
     "authoring": (*UNEXPOSED_TOOLS, *SECTION7_TOOLS),

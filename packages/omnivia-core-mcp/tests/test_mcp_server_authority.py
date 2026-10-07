@@ -113,6 +113,8 @@ AUTHORING_PURPOSES = [
     "trigger_ingestion",
     "job_observation",
     "skill_authoring",
+    "knowledge_sharing",
+    "knowledge_share_observation",
 ]
 
 #: The smallest call each tool the authoring profile adds actually accepts.
@@ -260,6 +262,20 @@ AUTHORING_CALLS: dict[str, dict[str, Any]] = {
         },
         "idempotency_key": "k-10",
     },
+    "knowledge_share_propose": {
+        "input": {
+            "share_id": "share-1",
+            "record_id": "rec-1",
+            "recipient_project_id": "project-2",
+        },
+        "idempotency_key": "k-11",
+    },
+    "knowledge_share_decide": {
+        "input": {"share_id": "share-1", "decision": "accepted"},
+        "idempotency_key": "k-12",
+    },
+    "knowledge_share_read": {"share_id": "share-1"},
+    "knowledge_share_lineage": {"share_id": "share-1"},
 }
 
 
@@ -945,16 +961,16 @@ def test_an_ambiguous_workspace_is_refused_before_the_admission_is_asked(
     assert admission.seen == []
 
 
-def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_five() -> None:
+def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_nine() -> None:
     """What each profile advertises *and* what each can dispatch, as one fact.
 
     The listing and the lookup are the same allow-list, so a restricted server
-    does not merely omit the eleven authoring tools: it cannot resolve their names
+    does not merely omit the fifteen authoring tools: it cannot resolve their names
     at all, which is what makes the refusal below a policy rather than a message.
     """
     restricted, authoring = session(), authoring_session()
     assert len(listed(restricted)) == 14
-    assert len(listed(authoring)) == 25
+    assert len(listed(authoring)) == 29
     assert listed(authoring)[:14] == listed(restricted)
     assert listed(authoring)[14:] == [
         "memory_create",
@@ -968,6 +984,10 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_five() -> None:
         "skills_draft_create",
         "skills_draft_update",
         "skills_proposal_submit",
+        "knowledge_share_propose",
+        "knowledge_share_decide",
+        "knowledge_share_read",
+        "knowledge_share_lineage",
     ]
 
 
@@ -985,6 +1005,10 @@ def test_the_two_inventories_are_the_frozen_fourteen_and_twenty_five() -> None:
         "skills_draft_create",
         "skills_draft_update",
         "skills_proposal_submit",
+        "knowledge_share_propose",
+        "knowledge_share_decide",
+        "knowledge_share_read",
+        "knowledge_share_lineage",
     ],
 )
 def test_an_authoring_tool_is_uncallable_on_a_restricted_server(tool_name: str) -> None:
@@ -1089,11 +1113,12 @@ def test_every_authoring_call_states_the_catalogues_own_purpose_and_capability()
     None
 ):
     """Read off the frozen catalogue entry and the manifest, never transcribed --
-    for the eleven wider tools as much as for the fourteen shared tools.
+    for the fifteen wider tools as much as for the fourteen shared tools.
 
     The purposes are the service's own (`memory_authoring`, `content_ingestion`,
     `trigger_configuration`, `trigger_ingestion`, `job_observation`,
-    `skill_authoring`, and the shared `trigger_observation`), so a request states the claim the grant is checked
+    `skill_authoring`, `knowledge_sharing`, `knowledge_share_observation`, and the
+    shared `trigger_observation`), so a request states the claim the grant is checked
     against rather than one this package invented.
     """
     from omnivia_core.contracts.v1 import get_operation_metadata

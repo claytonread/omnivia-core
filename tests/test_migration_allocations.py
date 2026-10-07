@@ -178,6 +178,7 @@ EXPECTED_ALLOCATION = (
     (64, "0064_managed_skills_registry.sql", "Agent Runtime", "candidate"),
     (65, "0065_review_finding_quarantine.sql", "Agent Runtime", "candidate"),
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
+    (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -260,6 +261,8 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # then its closed-event-shape repair b1193aaa, where its current content lives.
     65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
     66: "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
+    # 0067 is the DEV-REQ-081 knowledge-share candidate, pinned to its introducing commit.
+    67: "a2a7651dea4a69fe295a1659506cdd68c1eeb165",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

@@ -1,8 +1,8 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds sixty-nine operations. This module names fourteen of them in the
-``restricted`` profile and twenty-five in the ``authoring`` profile. A newly
+holds seventy-three operations. This module names fourteen of them in the
+``restricted`` profile and twenty-nine in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -20,14 +20,19 @@ Engineering Memory reads, the four decision tools, and the trigger health read.
 ``decision.evaluate`` is the one side-effecting operation in this profile; it is
 admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring twenty-five** are those fourteen plus exactly nine mutations --
+**The authoring twenty-nine** are those fourteen plus exactly eleven mutations: nine
+named here and the two knowledge sharing mutations named below --
 ``memory.create``, ``evidence.capture``, ``import.start``, the three trigger
 mutations ``trigger.declare``, ``trigger.lifecycle`` and ``trigger.ingest``, and
 the three skill authoring mutations ``skills.draft.create``,
 ``skills.draft.update`` and ``skills.proposal.submit`` -- and the two job
 observations, ``job.get`` and ``job.events``, that make an asynchronous import
-followable. Those nine, with ``decision.evaluate``, are the *only*
-side-effecting operations this module can admit, and they are named as a literal
+followable. The two knowledge sharing mutations, ``knowledge.share.propose`` and
+``knowledge.share.decide``, and the two sharing reads, ``knowledge.share.read`` and
+``knowledge.share.lineage``, are here so that a principal can propose, accept and
+read a share. Which Projects a principal may act for is decided by the server's
+Project document, never by this profile. Those eleven, with ``decision.evaluate``,
+are the *only* side-effecting operations this module can admit, and they are named as a literal
 set: another mutation cannot arrive through a contract or audit-category change.
 Publishing, deprecating, installing and removing a skill are not here: they need
 the publisher and workspace operator roles, which this profile never holds.
@@ -41,7 +46,7 @@ read-only: it carries ``decision.evaluate``, which has durable effects.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
 any entry that is neither a catalogue read (``side_effect="none"`` *and*
-``audit_category="read"``) nor one of the ten named mutations. A future editor
+``audit_category="read"``) nor one of the twelve named mutations. A future editor
 who adds ``record.supersede`` here does not ship a destructive tool with a wrong
 comment; the package fails to import.
 
@@ -104,8 +109,9 @@ __all__ = [
 #: without accepting caller-owned binding identity; ``2.4`` adds the trigger
 #: operations -- ``trigger_health`` to the restricted profile, and the three
 #: trigger mutations to the authoring profile; ``2.5`` adds the three skill
-#: authoring mutations to the authoring profile.
-MANIFEST_VERSION: Final = "2.5"
+#: authoring mutations to the authoring profile; ``2.6`` adds the four knowledge
+#: sharing operations to the authoring profile, two as mutations and two as reads.
+MANIFEST_VERSION: Final = "2.6"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -137,6 +143,8 @@ ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
         "skills.draft.create",
         "skills.draft.update",
         "skills.proposal.submit",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
     }
 )
 
@@ -368,7 +376,10 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #: The purposes are the service's own -- `memory_authoring` for memory,
 #: `content_ingestion` for both ways content enters a workspace,
 #: `trigger_configuration` for declaring and changing triggers, `trigger_ingestion`
-#: for admitting a stimulus, and `job_observation` for watching what that produced.
+#: for admitting a stimulus, `skill_authoring` for drafting and submitting a skill,
+#: and `job_observation` for watching what that produced.
+#: `knowledge_sharing` proposes and accepts a share, and `knowledge_share_observation`
+#: reads one.
 #: A purpose invented here would be refused at the first call rather than caught
 #: by review.
 _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
@@ -502,10 +513,56 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
             "cited. Submitting grants no publication."
         ),
     ),
+    ExposedOperation(
+        tool_name="knowledge_share_propose",
+        operation="knowledge.share.propose",
+        purpose="knowledge_sharing",
+        title="Propose sharing a governed record with another Project",
+        description=(
+            "Propose sharing one sealed, canonical governed record from a Project this "
+            "principal owns to a recipient Project. Writes. An owner of the source Project "
+            "other than the proposer must accept it before a member of the recipient Project "
+            "can read it. The call takes an outer object with the operation input under "
+            "`input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_decide",
+        operation="knowledge.share.decide",
+        purpose="knowledge_sharing",
+        title="Accept or revoke a knowledge share",
+        description=(
+            "Accept a proposed share, or revoke an accepted one, as an owner of its source "
+            "Project. Writes. A proposer cannot accept its own share, and a revoked share "
+            "cannot be accepted again. The call takes an outer object with the operation "
+            "input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_read",
+        operation="knowledge.share.read",
+        purpose="knowledge_share_observation",
+        title="Read a share to a Project this principal belongs to",
+        description=(
+            "Return the shared governed version to a member of the recipient Project, only "
+            "while the share is accepted, unrevoked and still names the sealed version it was "
+            "proposed under. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_lineage",
+        operation="knowledge.share.lineage",
+        purpose="knowledge_share_observation",
+        title="Read the lineage of a share from a Project this principal owns",
+        description=(
+            "Return one share, its state and every decision recorded against it, revoked "
+            "ones included, to an owner of its source Project. Reads only."
+        ),
+    ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then eleven
-#: additions (25 tools total).
+#: The `authoring` profile: the restricted surface, in its order, then fifteen
+#: additions (29 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
@@ -657,7 +714,7 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the twenty-five deletes anything: the mutations create or
+            # None of the twenty-nine deletes anything: the mutations create or
             # move a subscription's state, and supersession and cancellation are
             # not exposed at all.
             destructive_hint=False,
