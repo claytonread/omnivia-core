@@ -5527,6 +5527,55 @@ export interface GovernanceRationale {
 }
 
 /**
+ * Input for `candidate.decision.get`: the one workspace-scoped governed record whose latest
+ * governance decision is read back. Workspace-scoped through the request envelope's selected
+ * workspace; a record of another workspace is indistinguishable from an unknown one.
+ */
+export interface CandidateDecisionGetInput {
+  /**
+   * Identifier of the governed record whose latest decision is read.
+   */
+  readonly record_id: RecordId;
+}
+
+/**
+ * Result of `candidate.decision.get`: the latest governance decision metadata of one governed
+ * record and nothing else. It carries no record content, no rejected-candidate content, no
+ * rationale text and no earlier history, and it never widens what the canonical-only
+ * `memory.get` views serve.
+ */
+export interface CandidateDecisionGetResult {
+  /**
+   * The governed record this result describes.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The latest governed version of the record, whichever governance state it is in.
+   */
+  readonly version: RecordVersion;
+  /**
+   * The state the latest governance act left the record in: `proposed` (a candidate with no
+   * decision), `accepted` (approved), `rejected`, or `superseded` (an accepted record later
+   * corrected by a replacement).
+   */
+  readonly governance_state: GovernanceState;
+  /**
+   * The principal that took the latest decision, as the server authenticated it. Absent while
+   * the record is `proposed`, because nothing has yet been decided.
+   */
+  readonly decision_actor_id?: Identifier;
+  /**
+   * Open code naming the kind of that principal, such as `user`. Present exactly when
+   * `decision_actor_id` is.
+   */
+  readonly decision_actor_kind?: OpenCode;
+  /**
+   * When Core recorded the latest decision. Present exactly when `decision_actor_id` is.
+   */
+  readonly decided_at?: Timestamp;
+}
+
+/**
  * One decision recorded against a share, kept after a later revocation so a source owner can
  * still read how the share was authorised.
  */
@@ -16012,6 +16061,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "candidate.decision.get",
+    scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateDecisionGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateDecisionGetResult",
+    required_capability: { id: "knowledge.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

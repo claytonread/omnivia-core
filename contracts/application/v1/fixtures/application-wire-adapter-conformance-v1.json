@@ -13798,6 +13798,47 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "id": "candidate.decision.get/primary-success",
+      "operation": "candidate.decision.get",
+      "description": "candidate.decision.get answers the latest governance decision of one record, and nothing else, on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-candidate.decision.get-primary-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "candidate.decision.get",
+        "input": {
+          "record_id": "rec-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-candidate.decision.get-primary-success"
+        },
+        "result": {
+          "record_id": "rec-1",
+          "version": "v2",
+          "governance_state": "rejected",
+          "decision_actor_id": "reviewer-1",
+          "decision_actor_kind": "user",
+          "decided_at": "2024-01-02T00:00:00Z"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

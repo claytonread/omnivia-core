@@ -1,7 +1,8 @@
-"""Production handlers for the four V06-5 S4 governed transitions."""
+"""Production handlers for V06-5 S4 governance transitions and decision reads."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -12,6 +13,8 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     CandidateApproveInput,
     CandidateApproveResult,
+    CandidateDecisionGetInput,
+    CandidateDecisionGetResult,
     CandidateRejectInput,
     CandidateRejectResult,
     ContractDecodeError,
@@ -21,11 +24,13 @@ from omnivia_core.contracts.v1 import (
     RecordSupersedeInput,
     RecordSupersedeResult,
     decode_candidate_approve_input,
+    decode_candidate_decision_get_input,
     decode_candidate_reject_input,
     decode_knowledge_propose_input,
     decode_record_supersede_input,
     idempotency_equivalence,
     validate_candidate_approve_result,
+    validate_candidate_decision_get_result,
     validate_candidate_reject_result,
     validate_knowledge_propose_result,
     validate_record_supersede_result,
@@ -48,10 +53,12 @@ from omnivia_core_runtime.service.operations import (
 )
 from omnivia_core_runtime.storage.governance import (
     CANDIDATE_APPROVE_OPERATION,
+    CANDIDATE_DECISION_GET_OPERATION,
     CANDIDATE_REJECT_OPERATION,
     KNOWLEDGE_PROPOSE_OPERATION,
     RECORD_SUPERSEDE_OPERATION,
     apply_governance_transition,
+    read_candidate_decision,
     read_governance_precondition,
 )
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
@@ -61,6 +68,7 @@ GOVERNANCE_FAMILY_OPERATIONS: Final = frozenset(
     {
         KNOWLEDGE_PROPOSE_OPERATION,
         CANDIDATE_APPROVE_OPERATION,
+        CANDIDATE_DECISION_GET_OPERATION,
         CANDIDATE_REJECT_OPERATION,
         RECORD_SUPERSEDE_OPERATION,
     }
@@ -108,6 +116,31 @@ class GovernanceHandlers:
             operation=CANDIDATE_REJECT_OPERATION,
             decode=decode_candidate_reject_input,
         )
+
+    def candidate_decision_get(self, context: OperationContext) -> Mapping[str, Any]:
+        """Read one record's latest sealed governance decision without its content."""
+        request: CandidateDecisionGetInput | None = None
+        try:
+            request = decode_candidate_decision_get_input(context.request.input)
+        except (ContractDecodeError, ContractSemanticError):
+            pass
+        if request is None:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection = getattr(self.service, "connection", None)
+        if connection is None:
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+            )
+        wire = read_candidate_decision(
+            connection,
+            workspace_id=context.workspace_id,
+            record_id=request.record_id,
+        )
+        if wire is None:
+            raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+        result = CandidateDecisionGetResult.from_wire(wire)
+        validate_candidate_decision_get_result(result, request)
+        return result.to_wire()
 
     def record_supersede(self, context: OperationContext) -> AuditedOperationResult:
         return self._transition(
@@ -261,6 +294,7 @@ class GovernanceHandlers:
 
 
 __all__ = [
+    "CANDIDATE_DECISION_GET_OPERATION",
     "GOVERNANCE_FAMILY_OPERATIONS",
     "GovernanceHandlers",
 ]

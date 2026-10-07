@@ -188,6 +188,8 @@ __all__ = [
     "CandidateApproveInput",
     "CandidateApproveResult",
     "CandidateAssertion",
+    "CandidateDecisionGetInput",
+    "CandidateDecisionGetResult",
     "CandidateExtractionMetadata",
     "CandidateRejectInput",
     "CandidateRejectResult",
@@ -8783,6 +8785,137 @@ class GovernanceRationale:
         return cls(
             reason_code=field_reason_code,
             comment=field_comment,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateDecisionGetInput:
+    """Input for `candidate.decision.get`: the one workspace-scoped governed record whose latest
+    governance decision is read back. Workspace-scoped through the request envelope's
+    selected workspace; a record of another workspace is indistinguishable from an unknown
+    one.
+    """
+
+    record_id: RecordId
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateDecisionGetInput"
+    ) -> CandidateDecisionGetInput:
+        """Decode a wire payload into a CandidateDecisionGetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        return cls(
+            record_id=field_record_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateDecisionGetResult:
+    """Result of `candidate.decision.get`: the latest governance decision metadata of one
+    governed record and nothing else. It carries no record content, no rejected-candidate
+    content, no rationale text and no earlier history, and it never widens what the
+    canonical-only `memory.get` views serve.
+    """
+
+    record_id: RecordId
+    version: RecordVersion
+    governance_state: GovernanceState
+    decision_actor_id: Identifier | None = None
+    decision_actor_kind: OpenCode | None = None
+    decided_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["version"] = self.version
+        wire["governance_state"] = self.governance_state
+        if self.decision_actor_id is not None:
+            wire["decision_actor_id"] = self.decision_actor_id
+        if self.decision_actor_kind is not None:
+            wire["decision_actor_kind"] = self.decision_actor_kind
+        if self.decided_at is not None:
+            wire["decided_at"] = self.decided_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateDecisionGetResult"
+    ) -> CandidateDecisionGetResult:
+        """Decode a wire payload into a CandidateDecisionGetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_governance_state = _decode_str(
+            _require_field(mapping, "governance_state", path),
+            f"{path}.governance_state",
+        )
+        field_decision_actor_id: Identifier | None = None
+        if "decision_actor_id" in mapping:
+            raw_decision_actor_id = mapping["decision_actor_id"]
+            if raw_decision_actor_id is None:
+                raise ContractDecodeError(
+                    f"{path}.decision_actor_id: null is not a valid value"
+                )
+            field_decision_actor_id = _decode_str(
+                raw_decision_actor_id,
+                f"{path}.decision_actor_id",
+            )
+        field_decision_actor_kind: OpenCode | None = None
+        if "decision_actor_kind" in mapping:
+            raw_decision_actor_kind = mapping["decision_actor_kind"]
+            if raw_decision_actor_kind is None:
+                raise ContractDecodeError(
+                    f"{path}.decision_actor_kind: null is not a valid value"
+                )
+            field_decision_actor_kind = _decode_str(
+                raw_decision_actor_kind,
+                f"{path}.decision_actor_kind",
+            )
+        field_decided_at: Timestamp | None = None
+        if "decided_at" in mapping:
+            raw_decided_at = mapping["decided_at"]
+            if raw_decided_at is None:
+                raise ContractDecodeError(
+                    f"{path}.decided_at: null is not a valid value"
+                )
+            field_decided_at = _decode_str(raw_decided_at, f"{path}.decided_at")
+        return cls(
+            record_id=field_record_id,
+            version=field_version,
+            governance_state=field_governance_state,
+            decision_actor_id=field_decision_actor_id,
+            decision_actor_kind=field_decision_actor_kind,
+            decided_at=field_decided_at,
         )
 
 
@@ -30142,6 +30275,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="candidate.decision.get",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateDecisionGetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateDecisionGetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

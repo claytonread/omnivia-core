@@ -51,6 +51,8 @@ from omnivia_core.contracts.v1.generated import (
     CandidateApproveInput,
     CandidateApproveResult,
     CandidateAssertion,
+    CandidateDecisionGetInput,
+    CandidateDecisionGetResult,
     CandidateExtractionMetadata,
     CandidateRejectInput,
     CandidateRejectResult,
@@ -130,8 +132,13 @@ from omnivia_core.contracts.v1.semantics_evidence import validate_evidence_artif
 KNOWLEDGE_SHARE_DECISIONS: Final[tuple[str, ...]] = ("accepted", "revoked")
 KNOWLEDGE_SHARE_STATES: Final[tuple[str, ...]] = ("proposed", "accepted", "revoked")
 
+#: The four states `candidate.decision.get` reports. `governance_state` is an open code on the wire
+#: (`GovernanceState`), so this operation's closed set is the contract's own copy, not the schema's.
+CANDIDATE_DECISION_STATES: Final[tuple[str, ...]] = ("proposed", "accepted", "rejected", "superseded")
+
 
 __all__ = [
+    "CANDIDATE_DECISION_STATES",
     "CONTEXT_PACK_ARTIFACT_CANONICALIZATION",
     "CONTEXT_PACK_AUTHORIZED_CANDIDATE_SET_FORMAT",
     "CONTEXT_PACK_CANDIDATE_PARTITIONS",
@@ -185,6 +192,7 @@ __all__ = [
     "compute_authorized_candidate_set_checksum",
     "compute_context_pack_artifact_digest",
     "decode_candidate_approve_input",
+    "decode_candidate_decision_get_input",
     "decode_candidate_reject_input",
     "decode_context_pack_build_input",
     "decode_knowledge_propose_input",
@@ -193,6 +201,8 @@ __all__ = [
     "resolve_graph_direction",
     "validate_candidate_approve_input",
     "validate_candidate_approve_result",
+    "validate_candidate_decision_get_input",
+    "validate_candidate_decision_get_result",
     "validate_candidate_reject_input",
     "validate_candidate_reject_result",
     "validate_context_pack_build_input",
@@ -5433,3 +5443,62 @@ def validate_context_pack_build_result_document(
         expected_model_versions=expected_model_versions,
     )
     return result
+
+
+def validate_candidate_decision_get_input(candidate: object) -> None:
+    """Raise unless `candidate` is a shape-valid `candidate.decision.get` input."""
+    _require_type(candidate, CandidateDecisionGetInput, "candidate")
+    assert isinstance(candidate, CandidateDecisionGetInput)
+    _validate_record_id(_require_str(candidate.record_id, "record_id"), "record_id")
+
+
+def decode_candidate_decision_get_input(
+    payload: object, path: str = "CandidateDecisionGetInput"
+) -> CandidateDecisionGetInput:
+    """Decode and fully validate `payload` into a semantically valid `CandidateDecisionGetInput`."""
+    candidate = CandidateDecisionGetInput.from_wire(payload, path)
+    validate_candidate_decision_get_input(candidate)
+    return candidate
+
+
+def validate_candidate_decision_get_result(result: object, request: object) -> None:
+    """Raise unless `result` is a well-formed latest-decision answer to `request`.
+
+    It answers for exactly the requested record, in one of the four closed states. A `proposed`
+    record has no decision yet, so it carries no actor or decision time; every other state is the
+    outcome of a decision, so it carries all three. Nothing else is part of the result.
+    """
+    _require_type(result, CandidateDecisionGetResult, "result")
+    assert isinstance(result, CandidateDecisionGetResult)
+    _require_type(request, CandidateDecisionGetInput, "request")
+    assert isinstance(request, CandidateDecisionGetInput)
+    validate_candidate_decision_get_input(request)
+    record_id = _require_str(result.record_id, "result.record_id")
+    _validate_record_id(record_id, "result.record_id")
+    if record_id != request.record_id:
+        raise ContractSemanticError(
+            f"result.record_id {record_id!r} does not match requested record_id {request.record_id!r}"
+        )
+    _validate_record_version(_require_str(result.version, "result.version"), "result.version")
+    state = _require_str(result.governance_state, "result.governance_state")
+    if state not in CANDIDATE_DECISION_STATES:
+        raise ContractSemanticError(
+            f"result.governance_state {state!r} is not one of {CANDIDATE_DECISION_STATES}"
+        )
+    decision = (result.decision_actor_id, result.decision_actor_kind, result.decided_at)
+    if state == "proposed":
+        if any(value is not None for value in decision):
+            raise ContractSemanticError("a proposed record has no decision to report")
+        return
+    if any(value is None for value in decision):
+        raise ContractSemanticError(
+            f"a {state} record must report its decision actor id, actor kind and decision time"
+        )
+    _validate_identifier(
+        _require_str(result.decision_actor_id, "result.decision_actor_id"), "result.decision_actor_id"
+    )
+    _validate_open_code(
+        _require_str(result.decision_actor_kind, "result.decision_actor_kind"),
+        "result.decision_actor_kind",
+    )
+    _parse_timestamp(_require_str(result.decided_at, "result.decided_at"), "result.decided_at")

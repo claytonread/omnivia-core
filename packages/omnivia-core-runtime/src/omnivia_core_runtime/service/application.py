@@ -103,6 +103,7 @@ from omnivia_core_runtime.service.handlers.evidence import (
     evidence_search,
 )
 from omnivia_core_runtime.service.handlers.governance import (
+    CANDIDATE_DECISION_GET_OPERATION,
     GOVERNANCE_FAMILY_OPERATIONS,
     GovernanceHandlers,
 )
@@ -375,7 +376,14 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 )
 
 GOVERNANCE_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
-    {name: MUTATION_PURPOSES[name] for name in GOVERNANCE_FAMILY_OPERATIONS}
+    {
+        **{
+            name: MUTATION_PURPOSES[name]
+            for name in GOVERNANCE_FAMILY_OPERATIONS
+            if name != CANDIDATE_DECISION_GET_OPERATION
+        },
+        CANDIDATE_DECISION_GET_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+    }
 )
 
 #: The W2-F2 Chat family. Two purposes rather than one, on the same split the job
@@ -1390,6 +1398,10 @@ def build_governance_registry(
     )
     registry.register(
         "candidate.reject", cast(OperationHandler, handlers.candidate_reject)
+    )
+    registry.register(
+        CANDIDATE_DECISION_GET_OPERATION,
+        cast(OperationHandler, handlers.candidate_decision_get),
     )
     registry.register(
         "record.supersede", cast(OperationHandler, handlers.record_supersede)
@@ -2680,7 +2692,7 @@ def build_governance_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the exact four-operation S4 family around the existing router."""
+    """Compose the five-operation S4 governance family around the existing router."""
     session = governance_family_session(
         principal_id=principal_id,
         installation_id=installation_id,

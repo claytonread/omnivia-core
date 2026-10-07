@@ -122,6 +122,8 @@ from omnivia_core.contracts.v1.semantics_jobs import (
 from omnivia_core.contracts.v1.semantics_knowledge import (
     validate_candidate_approve_input,
     validate_candidate_approve_result,
+    validate_candidate_decision_get_input,
+    validate_candidate_decision_get_result,
     validate_candidate_reject_input,
     validate_candidate_reject_result,
     validate_context_pack_build_input,
@@ -178,6 +180,7 @@ _IDEMPOTENCY_CLASSIFICATIONS: Final = frozenset(
 #: shape, which the payload decode already enforces.
 _INPUT_SEMANTICS: Final[dict[str, Callable[[Any], None]]] = {
     "candidate.approve": validate_candidate_approve_input,
+    "candidate.decision.get": validate_candidate_decision_get_input,
     "candidate.reject": validate_candidate_reject_input,
     "context_pack.build": validate_context_pack_build_input,
     "evidence.capture": validate_evidence_capture_input,
@@ -2277,6 +2280,9 @@ def _result_semantics_table() -> dict[str, Callable[[_ResultContext], None]]:
         "candidate.reject": _governance_result(validate_candidate_reject_result),
         "record.supersede": _governance_result(validate_record_supersede_result),
         "knowledge.propose": _governance_result(validate_knowledge_propose_result),
+        "candidate.decision.get": lambda c: validate_candidate_decision_get_result(
+            c.decoded_result, c.decoded_input
+        ),
         "graph.traverse": lambda c: validate_graph_traversal_result(
             c.decoded_result,
             c.decoded_input,

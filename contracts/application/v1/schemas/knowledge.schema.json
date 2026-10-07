@@ -220,6 +220,52 @@
       "required": ["previous_record", "updated_record"],
       "unevaluatedProperties": false
     },
+    "CandidateDecisionGetInput": {
+      "title": "CandidateDecisionGetInput",
+      "description": "Input for `candidate.decision.get`: the one workspace-scoped governed record whose latest governance decision is read back. Workspace-scoped through the request envelope's selected workspace; a record of another workspace is indistinguishable from an unknown one.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the governed record whose latest decision is read."
+        }
+      },
+      "required": ["record_id"],
+      "unevaluatedProperties": false
+    },
+    "CandidateDecisionGetResult": {
+      "title": "CandidateDecisionGetResult",
+      "description": "Result of `candidate.decision.get`: the latest governance decision metadata of one governed record and nothing else. It carries no record content, no rejected-candidate content, no rationale text and no earlier history, and it never widens what the canonical-only `memory.get` views serve.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record this result describes."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersion",
+          "description": "The latest governed version of the record, whichever governance state it is in."
+        },
+        "governance_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceState",
+          "description": "The state the latest governance act left the record in: `proposed` (a candidate with no decision), `accepted` (approved), `rejected`, or `superseded` (an accepted record later corrected by a replacement)."
+        },
+        "decision_actor_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that took the latest decision, as the server authenticated it. Absent while the record is `proposed`, because nothing has yet been decided."
+        },
+        "decision_actor_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the kind of that principal, such as `user`. Present exactly when `decision_actor_id` is."
+        },
+        "decided_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the latest decision. Present exactly when `decision_actor_id` is."
+        }
+      },
+      "required": ["record_id", "version", "governance_state"],
+      "unevaluatedProperties": false
+    },
     "KnowledgeShareDecision": {
       "title": "KnowledgeShareDecision",
       "description": "The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no third decision exists, and a revocation is only recorded against a share that was accepted.",

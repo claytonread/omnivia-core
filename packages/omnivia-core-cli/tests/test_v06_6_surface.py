@@ -47,6 +47,11 @@ EXPECTED_COMMANDS = (
     (("governance", "propose"), "knowledge.propose", "knowledge_governance"),
     (("governance", "approve"), "candidate.approve", "knowledge_governance"),
     (("governance", "reject"), "candidate.reject", "knowledge_governance"),
+    (
+        ("governance", "decision-get"),
+        "candidate.decision.get",
+        "knowledge_retrieval",
+    ),
     (("governance", "supersede"), "record.supersede", "knowledge_governance"),
     (("graph", "traverse"), "graph.traverse", "knowledge_retrieval"),
     (("context-pack", "build"), "context_pack.build", "knowledge_retrieval"),
@@ -178,14 +183,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_eighty_application_commands_are_declared_in_order() -> None:
+def test_the_eighty_one_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 80
+    assert len(APPLICATION_COMMANDS) == 81
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

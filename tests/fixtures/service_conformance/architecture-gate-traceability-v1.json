@@ -239,7 +239,8 @@
         "outcome.request.read",
         "project.context.read",
         "project.context.switch",
-        "knowledge.evaluation.produce"
+        "knowledge.evaluation.produce",
+        "candidate.decision.get"
       ]
     },
     {
@@ -554,7 +555,8 @@
         "outcome.request.read",
         "project.context.read",
         "project.context.switch",
-        "knowledge.evaluation.produce"
+        "knowledge.evaluation.produce",
+        "candidate.decision.get"
       ]
     },
     {
@@ -643,7 +645,8 @@
         "outcome.request.read",
         "project.context.read",
         "project.context.switch",
-        "knowledge.evaluation.produce"
+        "knowledge.evaluation.produce",
+        "candidate.decision.get"
       ]
     },
     {

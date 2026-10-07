@@ -2250,11 +2250,11 @@ def test_the_excluded_sets_are_the_complete_normative_remainder(profile: str, to
     excluded = q.EXCLUDED_TOOLS[profile]
     assert len(set(excluded)) == len(excluded)
     assert set(excluded).isdisjoint(tools)
-    # The restricted profile additionally excludes the nineteen authoring-only tools.
+    # The restricted profile additionally excludes the twenty-one authoring-only tools.
     authoring_only = set(q.AUTHORING_TOOLS) - set(q.RESTRICTED_TOOLS)
     assert (authoring_only <= set(excluded)) is (profile == "restricted")
     # Every catalogue operation outside the manifest, and every section 7 category, is probed.
-    assert len(q.UNEXPOSED_TOOLS) == 80 - q.AUTHORING_TOOL_COUNT
+    assert len(q.UNEXPOSED_TOOLS) == 81 - q.AUTHORING_TOOL_COUNT
     assert set(q.UNEXPOSED_TOOLS) <= set(excluded)
     assert set(q.SECTION7_TOOLS) <= set(excluded)
     assert set(q.SECTION7_SENTINELS) == {
@@ -2269,7 +2269,7 @@ def test_the_excluded_sets_are_the_complete_normative_remainder(profile: str, to
         "connector_mutation",
     }
     assert len(q.SECTION7_TOOLS) == 18
-    assert len(excluded) == (84 if profile == "restricted" else 63)
+    assert len(excluded) == (85 if profile == "restricted" else 64)
     assert "job_cancel" in excluded and "job_retry" in excluded
 
 
@@ -5290,7 +5290,7 @@ def test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest() ->
     catalogue = [entry["name"] for entry in entries]
     exposed = {entry.operation for entry in manifest.AUTHORING_MANIFEST}
     outside = sorted(set(catalogue) - exposed)
-    assert len(catalogue) == 80 and len(outside) == 45
+    assert len(catalogue) == 81 and len(outside) == 46
     assert sorted(name.replace(".", "_") for name in outside) == sorted(q.UNEXPOSED_TOOLS)
     assert {entry.tool_name for entry in manifest.AUTHORING_MANIFEST} == set(q.AUTHORING_TOOLS)
 

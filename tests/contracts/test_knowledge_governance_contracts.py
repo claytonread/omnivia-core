@@ -1,5 +1,6 @@
 """Tests for the A2.3 provider-neutral application-contract slice: `evidence.search`,
 `knowledge.search`, `knowledge.propose`, `candidate.approve`, `candidate.reject`,
+`candidate.decision.get`,
 `record.supersede`, `graph.traverse`, and `context_pack.build` (ADR-039).
 
 Covers the eight operation input/result DTO pairs (schema and tolerant-decoder round
@@ -38,6 +39,8 @@ from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.generated import (
     CandidateApproveInput,
     CandidateApproveResult,
+    CandidateDecisionGetInput,
+    CandidateDecisionGetResult,
     CandidateExtractionMetadata,
     CandidateRejectInput,
     CandidateRejectResult,
@@ -131,6 +134,8 @@ _DEF_SOURCE: dict[str, str] = {
     "CandidateApproveResult": "knowledge",
     "CandidateRejectInput": "knowledge",
     "CandidateRejectResult": "knowledge",
+    "CandidateDecisionGetInput": "knowledge",
+    "CandidateDecisionGetResult": "knowledge",
     "RecordSupersedeInput": "knowledge",
     "RecordSupersedeResult": "knowledge",
     "GraphTraversalInput": "graph",
@@ -1577,6 +1582,23 @@ ROUND_TRIP_CASES: tuple[tuple[str, type, dict[str, Any]], ...] = (
         {"previous_record": _REJECT_PREV, "updated_record": _REJECT_UPD},
     ),
     (
+        "CandidateDecisionGetInput",
+        CandidateDecisionGetInput,
+        {"record_id": "rec-1"},
+    ),
+    (
+        "CandidateDecisionGetResult",
+        CandidateDecisionGetResult,
+        {
+            "record_id": "rec-1",
+            "version": "v-2",
+            "governance_state": "rejected",
+            "decision_actor_id": "user-1",
+            "decision_actor_kind": "user",
+            "decided_at": T1,
+        },
+    ),
+    (
         "RecordSupersedeInput",
         RecordSupersedeInput,
         {
@@ -1637,7 +1659,7 @@ def test_every_operation_payload_is_covered() -> None:
     here, and the union's own codec is covered by
     :func:`test_context_pack_citation_union_decodes_exactly_one_branch`.
     """
-    assert len(ROUND_TRIP_CASES) == 28
+    assert len(ROUND_TRIP_CASES) == 30
 
 
 @pytest.mark.parametrize("def_name,dataclass,wire", ROUND_TRIP_CASES)
@@ -9697,3 +9719,90 @@ def test_memory_search_semantics_are_wired_into_the_conformance_dispatch() -> No
         sem_knowledge.validate_memory_search_input
     )
     assert "memory.search" in conformance._RESULT_SEMANTICS
+
+
+# --- candidate.decision.get: narrow governance metadata only ---------------
+
+
+def _decision_request_contract() -> CandidateDecisionGetInput:
+    return sem_knowledge.decode_candidate_decision_get_input({"record_id": "rec-1"})
+
+
+def test_candidate_decision_get_proposed_result_has_no_decision_actor() -> None:
+    result = CandidateDecisionGetResult(
+        record_id="rec-1",
+        version="v-1",
+        governance_state="proposed",
+    )
+    sem_knowledge.validate_candidate_decision_get_result(
+        result, _decision_request_contract()
+    )
+
+
+@pytest.mark.parametrize("state", ("accepted", "rejected", "superseded"))
+def test_candidate_decision_get_settled_states_require_complete_decision_metadata(
+    state: str,
+) -> None:
+    valid = CandidateDecisionGetResult(
+        record_id="rec-1",
+        version="v-2",
+        governance_state=state,
+        decision_actor_id="user-1",
+        decision_actor_kind="user",
+        decided_at=T1,
+    )
+    sem_knowledge.validate_candidate_decision_get_result(
+        valid, _decision_request_contract()
+    )
+    incomplete = dataclasses.replace(valid, decided_at=None)
+    with pytest.raises(ContractSemanticError, match="must report its decision actor"):
+        sem_knowledge.validate_candidate_decision_get_result(
+            incomplete, _decision_request_contract()
+        )
+
+
+def test_candidate_decision_get_refuses_record_mismatch_and_unknown_state() -> None:
+    request = _decision_request_contract()
+    with pytest.raises(ContractSemanticError, match="does not match requested record_id"):
+        sem_knowledge.validate_candidate_decision_get_result(
+            CandidateDecisionGetResult(
+                record_id="rec-2",
+                version="v-2",
+                governance_state="proposed",
+            ),
+            request,
+        )
+    with pytest.raises(ContractSemanticError, match="is not one of"):
+        sem_knowledge.validate_candidate_decision_get_result(
+            CandidateDecisionGetResult(
+                record_id="rec-1",
+                version="v-2",
+                governance_state="candidate",
+            ),
+            request,
+        )
+
+
+@pytest.mark.parametrize("leaked_field", ("content", "rationale"))
+def test_candidate_decision_get_schema_refuses_content_and_rationale(
+    leaked_field: str,
+) -> None:
+    document: dict[str, Any] = {
+        "record_id": "rec-1",
+        "version": "v-2",
+        "governance_state": "rejected",
+        "decision_actor_id": "user-1",
+        "decision_actor_kind": "user",
+        "decided_at": T1,
+        leaked_field: {"secret": "must not cross the operation boundary"},
+    }
+    assert not _is_schema_valid("CandidateDecisionGetResult", document)
+
+
+def test_candidate_decision_get_semantics_are_wired_into_conformance() -> None:
+    from omnivia_core.contracts.v1 import conformance
+
+    assert conformance._INPUT_SEMANTICS["candidate.decision.get"] is (
+        sem_knowledge.validate_candidate_decision_get_input
+    )
+    assert "candidate.decision.get" in conformance._RESULT_SEMANTICS

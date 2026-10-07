@@ -145,6 +145,7 @@ one, checked at import. Each declares the purpose it calls under.
 | `governance propose` | `knowledge.propose` | `knowledge_governance` |
 | `governance approve` | `candidate.approve` | `knowledge_governance` |
 | `governance reject` | `candidate.reject` | `knowledge_governance` |
+| `governance decision-get` | `candidate.decision.get` | `knowledge_retrieval` |
 | `governance supersede` | `record.supersede` | `knowledge_governance` |
 | `graph traverse` | `graph.traverse` | `knowledge_retrieval` |
 | `context-pack build` | `context_pack.build` | `knowledge_retrieval` |

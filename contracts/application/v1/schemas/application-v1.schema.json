@@ -528,6 +528,12 @@
     "RecordSupersedeResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/RecordSupersedeResult"
     },
+    "CandidateDecisionGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateDecisionGetInput"
+    },
+    "CandidateDecisionGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateDecisionGetResult"
+    },
     "KnowledgeShareDecision": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision"
     },
