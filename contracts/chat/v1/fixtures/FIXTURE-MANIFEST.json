@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 171,
-    "valid": 79,
-    "invalid": 92
+    "total": 179,
+    "valid": 82,
+    "invalid": 97
   },
   "fixtures": [
     {
@@ -999,9 +999,9 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-unsupported-minor-rejected.json",
       "expect": "invalid",
-      "focus": "A version mismatch within the supported major (1.1) is rejected too: the bundle supports exactly 1.0 and never guesses which additive fields an unknown minor added.",
+      "focus": "A version mismatch within the supported major (1.2) is rejected too: the bundle supports exactly 1.1 and never guesses which additive fields an unknown minor added.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '1.0'"
+      "expected_error_contains": "const '1.1'"
     },
     {
       "path": "fixtures/invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json",
@@ -1709,6 +1709,94 @@
       "expect": "invalid",
       "focus": "A ComposerDraft projection whose `version` is below the governed minimum is refused whole (C5A snapshot inclusion).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult"
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-item-composer-draft.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind composer_draft maps its payload to viewstate.schema.json#/$defs/ComposerDraft (C5A, F2b bridge protocol 1.1).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
+      "path": "fixtures/valid/f2b-carrier-envelope-snapshot-page-composer-draft.json",
+      "expect": "valid",
+      "focus": "A host->module snapshot-page carrier whose one item is itemKind composer_draft: the inner bridge protocol is 1.1 while the outer Platform carrier `v` stays 1.0 (independent axes), within the 65536-byte encoded carrier bound (C5A).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-composer-draft-mismatched-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind composer_draft with a Message-shaped payload is rejected: the itemKind/payload mapping is exact for the new member too (C5A).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-composer-draft-invalid-mode-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind composer_draft whose ComposerDraft payload names a mode outside the closed ComposerDraftMode vocabulary is rejected: the payload is validated against the exact ComposerDraft schema, not merely its shape (C5A).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-superseded-1-0-rejected.json",
+      "expect": "invalid",
+      "focus": "Bridge protocol 1.0 is rejected by this 1.1 bundle: the closed 1.0 itemKind grammar cannot carry composer_draft, so the version change is explicit and 1.0 is never silently admitted (C5A).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "const '1.1'"
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-outer-version-bumped-rejected.json",
+      "expect": "invalid",
+      "focus": "The outer Platform carrier `v` stays 1.0: bumping it to 1.1 alongside the inner bridge protocol change is rejected, because the two versions move independently (C5A).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "expected_error_contains": "const '1.0'"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-32-composer-draft-snapshot-context-consistent.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "A snapshot page carrying a composer_draft item whose workspaceId, conversationId and actorId all match the bound context (C5A).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-33-composer-draft-actor-mismatch-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A composer_draft item whose actorId differs from the bound context's actorId is another actor's draft leaking into this context, caught relationally (C5A, F2b freeze §12.9).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches"
+      ],
+      "expected_error_contains": "payload.actorId"
     }
   ]
 }

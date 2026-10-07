@@ -4,7 +4,7 @@
   "kind": "host/chat.telemetry",
   "payload": {
     "messageType": "bridge.snapshot-page",
-    "bridgeProtocolVersion": "1.0",
+    "bridgeProtocolVersion": "1.1",
     "schemaVersion": 1,
     "contextId": "bctx-carrier-03",
     "snapshotId": "bsnap-carrier-03",

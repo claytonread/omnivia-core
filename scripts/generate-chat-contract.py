@@ -4,8 +4,8 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (170 files: FIXTURE-MANIFEST.json
-#                                             plus 169 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (180 files: FIXTURE-MANIFEST.json
+#                                             plus 179 governed fixtures)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -75,8 +75,26 @@
 #     still validates. Two governed fixtures (one valid, one invalid) are added
 #     with it. Carried back to the Masterdocs authority before the next tag,
 #     with the other four widenings this header already names.
-# All five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
-# COMPATIBILITY-AND-MIGRATION.md §3, and all five must be carried back to the
+#   bridge.schema.json -- an EXPLICIT F2b bridge protocol version change from
+#     1.0 to 1.1 (owner authorization, Clayton Read, 8 October 2026), not a
+#     silent widening of the 1.0 grammar. `SupportedBridgeProtocolVersion` is
+#     now exactly "1.1" (this bundle refuses "1.0" whole, as it already refused
+#     any other minor), and `BridgeSnapshotItem.itemKind` gains `composer_draft`,
+#     bound to viewstate.schema.json#/$defs/ComposerDraft so the shipping hosted
+#     renderer can be handed the actor's own draft. Context consistency for that
+#     item covers workspaceId, conversationId and actorId. The outer Platform
+#     carrier `v` (`PlatformCarrierContractVersion`) is an independent axis and
+#     stays "1.0". The `queued_submission` branch of the item binding is now an
+#     explicit `if`, so the final `else` binds only the last enum member. Every
+#     F2b fixture's `bridgeProtocolVersion` moves 1.0 -> 1.1; eight governed
+#     fixtures (three valid, five invalid) are added, and the unsupported-minor
+#     fixture now names 1.2. This is NOT additive-compatible for a 1.0 peer: it
+#     is the version change that says so. `BRIDGE_PROTOCOL_VERSION`,
+#     `PLATFORM_CARRIER_CONTRACT_VERSION` and `BRIDGE_SNAPSHOT_ITEM_KINDS` are
+#     generated from these schema bytes. Carried back to the Masterdocs
+#     authority before the next tag, with the other five widenings.
+# The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
+# COMPATIBILITY-AND-MIGRATION.md §3, and all six must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
 # deliberately not byte-identical to architecture-v1.4.0, and the digest is
 # what says so.
@@ -156,19 +174,19 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 172  # FIXTURE-MANIFEST.json + 171 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 171
-EXPECTED_FIXTURE_VALID_COUNT = 79
-EXPECTED_FIXTURE_INVALID_COUNT = 92
+EXPECTED_FIXTURE_TREE_COUNT = 180  # FIXTURE-MANIFEST.json + 179 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 179
+EXPECTED_FIXTURE_VALID_COUNT = 82
+EXPECTED_FIXTURE_INVALID_COUNT = 97
 
 #: Pinned over the approved bytes verified byte-for-byte against the tagged
-#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the five
-#: authorized additive widenings the header names. Recomputed on every run by
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the six
+#: authorized widenings the header names. Recomputed on every run by
 #: :func:`compute_resource_inventory_digest` and compared; any changed, missing
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "83cdd36d6559a8792a36ff932afd79d3be71b36e5423ba0ad1af30137fea826a"
+    "877390ddd69934e26bc8bfc9bdbb9cb8f29d8726b602a58cf0f50bbcf16658b4"
 )
 
 
@@ -289,8 +307,12 @@ def extract_vocabularies() -> dict[str, tuple[str, ...]]:
     commands = load_schema("commands")
     events = load_schema("events")
     provider = load_schema("provider")
+    bridge = load_schema("bridge")
 
     return {
+        "BRIDGE_SNAPSHOT_ITEM_KINDS": _enum_at(
+            bridge, "$defs", "BridgeSnapshotItem", "properties", "itemKind", "enum"
+        ),
         "CHAT_COMMAND_NAMES": _enum_at(commands, "$defs", "ChatCommandName", "enum"),
         "ERROR_CODES": _enum_at(common, "$defs", "ErrorCode", "enum"),
         "CHAT_EVENT_TYPES": _enum_at(common, "$defs", "ChatEventType", "enum"),
@@ -314,6 +336,21 @@ def extract_vocabularies() -> dict[str, tuple[str, ...]]:
             provider, "$defs", "EstimatedCost", "properties", "pricingSource", "enum"
         ),
     }
+
+
+def extract_bridge_versions() -> tuple[str, str]:
+    """The F2b bridge protocol version and the outer Platform carrier version,
+    read from their schema ``const`` members. Two independent axes: neither is
+    derived from the other, and generation fails if they are not both pinned."""
+    defs = load_schema("bridge")["$defs"]
+    try:
+        bridge = defs["SupportedBridgeProtocolVersion"]["allOf"][1]["const"]
+        carrier = defs["PlatformCarrierContractVersion"]["const"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ChatContractError("bridge version constants are not pinned as `const`") from exc
+    if not isinstance(bridge, str) or not isinstance(carrier, str):
+        raise ChatContractError("bridge version constants must be strings")
+    return bridge, carrier
 
 
 def extract_chat_event_field_metadata() -> tuple[
@@ -582,11 +619,12 @@ def render_generated_module(
     event_schema_refs: dict[str, str],
     validation_schemas: dict[str, Any],
 ) -> str:
+    bridge_protocol_version, platform_carrier_contract_version = extract_bridge_versions()
     header = f'''# GENERATED FILE - DO NOT EDIT.
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (170 files)
+#   contracts/chat/v1/fixtures/**           (180 files)
 # Governed by:
 #   Approval {APPROVAL_ID};
 #   proposal commit {PROPOSAL_COMMIT};
@@ -621,6 +659,8 @@ from typing import Any, Final
 __all__ = [
     "ADDITIVE_DECODE_VOCABULARIES",
     "APPROVAL_ID",
+    "BRIDGE_PROTOCOL_VERSION",
+    "BRIDGE_SNAPSHOT_ITEM_KINDS",
     "CHAT_COMMAND_NAMES",
     "CHAT_EVENT_FIELDS",
     "CHAT_EVENT_REQUIRED_FIELDS",
@@ -639,6 +679,7 @@ __all__ = [
     "F2A_RECONCILIATION_STATES",
     "F2A_ROUTE_DECISIONS",
     "FIXTURE_MANIFEST_SHA256",
+    "PLATFORM_CARRIER_CONTRACT_VERSION",
     "PROPOSAL_COMMIT",
     "PROPOSAL_CONTENT_SET_INVENTORY_SHA256",
     "PROTOCOL_MAJOR",
@@ -678,6 +719,15 @@ CONTRACT_VERSION: Final[str] = {CONTRACT_VERSION!r}
 PROTOCOL_VERSION: Final[str] = {PROTOCOL_VERSION!r}
 #: The major component of :data:`PROTOCOL_VERSION`, the compatibility boundary.
 PROTOCOL_MAJOR: Final[str] = {PROTOCOL_MAJOR!r}
+#: The one F2b hosted-bridge protocol version this bundle supports
+#: (bridge.schema.json SupportedBridgeProtocolVersion). An independent axis from
+#: :data:`PROTOCOL_VERSION` (the D07 wire protocol): a strict F2b decoder
+#: rejects every other version, including the superseded "1.0".
+BRIDGE_PROTOCOL_VERSION: Final[str] = {bridge_protocol_version!r}
+#: The outer Platform Module Host Contract envelope version
+#: (bridge.schema.json PlatformCarrierContractVersion). Independent of
+#: :data:`BRIDGE_PROTOCOL_VERSION`; a bridge protocol change never moves it.
+PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = {platform_carrier_contract_version!r}
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
@@ -698,6 +748,7 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     )
 
     vocab_docs = {
+        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 7 members as of bridge protocol 1.1.",
         "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.",
         "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode), 24 members.",
         "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 16 members. Additive-decode point.",

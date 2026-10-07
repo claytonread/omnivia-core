@@ -1,6 +1,6 @@
 {
   "messageType": "bridge.refusal",
-  "bridgeProtocolVersion": "1.0",
+  "bridgeProtocolVersion": "1.1",
   "schemaVersion": 1,
   "reason": "command_timeout",
   "contextId": "bctx-0001",

@@ -2,7 +2,7 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (170 files)
+#   contracts/chat/v1/fixtures/**           (180 files)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -37,6 +37,8 @@ from typing import Any, Final
 __all__ = [
     "ADDITIVE_DECODE_VOCABULARIES",
     "APPROVAL_ID",
+    "BRIDGE_PROTOCOL_VERSION",
+    "BRIDGE_SNAPSHOT_ITEM_KINDS",
     "CHAT_COMMAND_NAMES",
     "CHAT_EVENT_FIELDS",
     "CHAT_EVENT_REQUIRED_FIELDS",
@@ -55,6 +57,7 @@ __all__ = [
     "F2A_RECONCILIATION_STATES",
     "F2A_ROUTE_DECISIONS",
     "FIXTURE_MANIFEST_SHA256",
+    "PLATFORM_CARRIER_CONTRACT_VERSION",
     "PROPOSAL_COMMIT",
     "PROPOSAL_CONTENT_SET_INVENTORY_SHA256",
     "PROTOCOL_MAJOR",
@@ -94,15 +97,24 @@ CONTRACT_VERSION: Final[str] = '1.0.0-rc.1'
 PROTOCOL_VERSION: Final[str] = '1.0'
 #: The major component of :data:`PROTOCOL_VERSION`, the compatibility boundary.
 PROTOCOL_MAJOR: Final[str] = '1'
+#: The one F2b hosted-bridge protocol version this bundle supports
+#: (bridge.schema.json SupportedBridgeProtocolVersion). An independent axis from
+#: :data:`PROTOCOL_VERSION` (the D07 wire protocol): a strict F2b decoder
+#: rejects every other version, including the superseded "1.0".
+BRIDGE_PROTOCOL_VERSION: Final[str] = '1.1'
+#: The outer Platform Module Host Contract envelope version
+#: (bridge.schema.json PlatformCarrierContractVersion). Independent of
+#: :data:`BRIDGE_PROTOCOL_VERSION`; a bridge protocol change never moves it.
+PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = '1.0'
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
 #: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 168 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 172
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 180
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '83cdd36d6559a8792a36ff932afd79d3be71b36e5423ba0ad1af30137fea826a'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '877390ddd69934e26bc8bfc9bdbb9cb8f29d8726b602a58cf0f50bbcf16658b4'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -138,6 +150,17 @@ SCHEMA_IDS: Final[Mapping[str, str]] = MappingProxyType(
         'sharing': 'https://contracts.omnivia.dev/chat/v1/sharing.schema.json',
         'viewstate': 'https://contracts.omnivia.dev/chat/v1/viewstate.schema.json',
     }
+)
+
+#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 7 members as of bridge protocol 1.1.
+BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
+    'conversation',
+    'message',
+    'message_branch',
+    'view_state',
+    'generation_job',
+    'queued_submission',
+    'composer_draft',
 )
 
 #: The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.

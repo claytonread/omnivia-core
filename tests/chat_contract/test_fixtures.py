@@ -622,7 +622,8 @@ def _f2b_command_context_consistent(content: Document) -> CheckResult:
 def _f2b_event_and_snapshot_context_consistent(content: Document) -> CheckResult:
     """Every carried D07 record's ``workspaceId``/``conversationId`` inside a
     ``bridge.event-batch`` or ``bridge.snapshot-page`` is cross-checked against
-    the currently bound context."""
+    the currently bound context. A ``composer_draft`` item is the bound actor's
+    own draft, so its ``actorId`` is cross-checked too."""
     bound = None
     problems = []
     for i, message in enumerate(content["messages"]):
@@ -644,7 +645,10 @@ def _f2b_event_and_snapshot_context_consistent(content: Document) -> CheckResult
         else:
             continue
         for j, record in carried:
-            for claim in ("workspaceId", "conversationId"):
+            claims = ("workspaceId", "conversationId")
+            if label == "items" and message["items"][j].get("itemKind") == "composer_draft":
+                claims += ("actorId",)
+            for claim in claims:
                 if claim in record and record[claim] != bound.get(claim):
                     suffix = f"payload.{claim}" if label == "items" else claim
                     problems.append(
@@ -941,8 +945,8 @@ def test_each_schema_is_a_valid_draft_2020_12_schema(name: str) -> None:
 
 
 def test_the_manifest_declares_the_governed_counts() -> None:
-    assert MANIFEST["counts"] == {"total": 171, "valid": 79, "invalid": 92}
-    assert len(MANIFEST["fixtures"]) == 171
+    assert MANIFEST["counts"] == {"total": 179, "valid": 82, "invalid": 97}
+    assert len(MANIFEST["fixtures"]) == 179
 
 
 def test_every_check_the_manifest_names_is_implemented() -> None:
@@ -1038,3 +1042,13 @@ def test_the_governed_relational_pair_fixtures_are_all_present() -> None:
     for entry in pairs:
         assert entry["expect"] == "invalid"
         assert entry["checks"], entry["path"]
+
+
+def test_the_bridge_protocol_is_1_1_while_the_outer_carrier_stays_1_0() -> None:
+    """C5A: the explicit F2b protocol change (1.0 -> 1.1) leaves the independent
+    outer Platform carrier version untouched, and `composer_draft` is the one
+    added `itemKind`, bound to ComposerDraft."""
+    defs = SCHEMAS["bridge.schema.json"]["$defs"]
+    assert defs["SupportedBridgeProtocolVersion"]["allOf"][1] == {"const": "1.1"}
+    assert defs["PlatformCarrierContractVersion"]["const"] == "1.0"
+    assert defs["BridgeSnapshotItem"]["properties"]["itemKind"]["enum"][-1] == "composer_draft"

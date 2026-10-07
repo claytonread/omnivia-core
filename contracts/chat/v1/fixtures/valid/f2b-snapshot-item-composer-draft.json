@@ -1,0 +1,16 @@
+{
+  "itemKind": "composer_draft",
+  "payload": {
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "actorId": "actor-alice",
+    "draftId": "cmd-0001.draft",
+    "mode": "normal",
+    "text": "a composition still being typed",
+    "attachmentReferences": [],
+    "contextReferences": [],
+    "schemaVersion": 1,
+    "updatedAt": "2026-08-20T10:00:00Z",
+    "version": 1
+  }
+}

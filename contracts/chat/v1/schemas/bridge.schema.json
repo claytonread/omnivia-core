@@ -13,10 +13,10 @@
     },
     "SupportedBridgeProtocolVersion": {
       "title": "SupportedBridgeProtocolVersion",
-      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"1.0\"**, and nothing else. A strict decoder rejects an unsupported major (\"2.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"1.1\") rather than guessing which additive fields it may ignore. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
+      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"1.1\"**, and nothing else. A strict decoder rejects an unsupported major (\"2.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"1.0\", \"1.2\") rather than guessing which additive fields it may ignore. 1.1 is an explicit protocol version change from 1.0, not a silent widening of the 1.0 grammar: it adds exactly one `BridgeSnapshotItem.itemKind`, `composer_draft` (the closed `itemKind` vocabulary of 1.0 could not carry a ComposerDraft), and this bundle therefore refuses 1.0 whole. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
       "allOf": [
         { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeProtocolVersion" },
-        { "const": "1.0" }
+        { "const": "1.1" }
       ]
     },
     "BridgeSnapshotId": {
@@ -173,12 +173,12 @@
     },
     "BridgeSnapshotItem": {
       "title": "BridgeSnapshotItem",
-      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
+      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05); `composer_draft` -> `viewstate.schema.json#/$defs/ComposerDraft` (C5A, added with bridge protocol 1.1: the actor's own active draft, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
       "type": "object",
       "additionalProperties": false,
       "required": ["itemKind", "payload"],
       "properties": {
-        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission"] },
+        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission", "composer_draft"] },
         "payload": { "type": "object", "additionalProperties": true, "maxProperties": 128 }
       },
       "if": { "properties": { "itemKind": { "const": "conversation" } }, "required": ["itemKind"] },
@@ -196,7 +196,11 @@
               "if": { "properties": { "itemKind": { "const": "generation_job" } }, "required": ["itemKind"] },
               "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" } } },
               "else": {
-                "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/QueuedSubmissionProjection" } }
+                "if": { "properties": { "itemKind": { "const": "queued_submission" } }, "required": ["itemKind"] },
+                "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/QueuedSubmissionProjection" } } },
+                "else": {
+                  "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" } }
+                }
               }
             }
           }

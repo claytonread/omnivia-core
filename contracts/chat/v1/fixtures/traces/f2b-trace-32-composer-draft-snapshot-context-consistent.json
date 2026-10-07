@@ -1,0 +1,53 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.1",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-32",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.1",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-32",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.1",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-32",
+      "snapshotId": "bsnap-t32",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [
+        {
+          "itemKind": "composer_draft",
+          "payload": {
+            "workspaceId": "ws-acme",
+            "conversationId": "conv-0001",
+            "actorId": "actor-alice",
+            "draftId": "cmd-0001.draft",
+            "mode": "normal",
+            "text": "a composition still being typed",
+            "attachmentReferences": [],
+            "contextReferences": [],
+            "schemaVersion": 1,
+            "updatedAt": "2026-08-20T10:00:00Z",
+            "version": 1
+          }
+        }
+      ],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-0"
+    }
+  ]
+}
