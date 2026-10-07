@@ -2,8 +2,11 @@
 
 The Model Context Protocol server for OmniVia Core: a stdio MCP server that
 gives an AI host curated, profile-bound access to one local OmniVia Core
-workspace. The default `restricted` profile exposes thirteen reviewed tools;
-the explicitly enabled `authoring` profile exposes eighteen.
+workspace. The default `restricted` profile exposes fourteen reviewed tools;
+the explicitly enabled `authoring` profile exposes twenty-five. `restricted` is
+bounded and non-authoring, not read-only: `decision_evaluate` writes durable
+evaluation, job and audit records, though it never mutates business records or
+executes actions.
 
 Built on the official Model Context Protocol Python SDK v2 (owner resolution
 004, R004-05). There is no bespoke JSON-RPC or MCP stack in this package, and
@@ -60,12 +63,15 @@ The Standard-profile candidate proves this rather than asserting it. For each
 host profile — `claude_desktop`, `claude_code`, `codex` and
 `official_python_sdk` — it writes that host's native configuration shape, reads
 it back, and starts the server from the launch it yields; one fresh stdio
-session per profile then initialises, lists the exact restricted thirteen and
-exercises their accepted success or typed-refusal behavior. A separate
-installed-wheel authoring qualification configures the eighteen-tool profile
-and covers capture, proposed memory, import observation, restart, replay,
-conflict and revocation. Those installed SDK-driven checks do not claim that a
-third-party host binary ran; real-host evidence is recorded separately. See
+session per profile then initialises, lists exactly the fourteen restricted tools,
+calls all fourteen and exercises their accepted success or typed-refusal behavior,
+and the four manifests are compared. The client throughout is the official
+Python SDK: the Claude Desktop, Claude Code and Codex applications are not
+installed and do not run there. A separate installed-wheel authoring
+qualification configures the authoring profile and covers capture, proposed
+memory, import observation, restart, replay, conflict and revocation. Those
+installed SDK-driven checks do not claim that a third-party host binary ran;
+real-host evidence is recorded separately. See
 [MCP host interoperability](../../docs/distribution/mcp-host-interoperability.md).
 
 There is no default configuration path, environment lookup, or `--home`
@@ -109,8 +115,8 @@ command line — drives it with the official SDK's `stdio_client` and
 `ClientSession`, and completes `initialize` and `tools/list` over the transport
 a host would use. The peer must identify itself as `omnivia-core` at this
 package's version; the advertised inventory must be exactly one profile's own
-tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — thirteen or
-eighteen; and the document's `allowed_purposes` must be exactly that profile's
+tools, in order, at the `EXPECTED_TOOL_COUNT` that profile fixes — fourteen or
+twenty-five; and the document's `allowed_purposes` must be exactly that profile's
 manifest purposes. Which profile is in force is read off the inventory the child
 advertised, never assumed from the document, so a `mutation_enabled: true`
 configuration the protected authority declines to admit is refused here.
@@ -146,7 +152,8 @@ path, so the server cannot supply the `--workspace` value itself.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-The `restricted` profile advertises thirteen tools, in this order:
+Manifest version `2.5` advertises fourteen tools under the `restricted` profile,
+in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -156,23 +163,39 @@ The `restricted` profile advertises thirteen tools, in this order:
 | `memory_search` | `memory.search` | `knowledge_retrieval` | `memory:read` | `memory.read` ≥ 1.0 |
 | `graph_traverse` | `graph.traverse` | `knowledge_retrieval` | `graph:read` | `graph.read` ≥ 1.0 |
 | `context_pack_build` | `context_pack.build` | `knowledge_retrieval` | `memory:read` | `context_pack.build` ≥ 1.0 |
-| `engineering_search` | `engineering.search` | `engineering_search` | catalogue-defined | catalogue-defined |
-| `engineering_expand` | `engineering.expand` | `engineering_expand` | catalogue-defined | catalogue-defined |
-| `engineering_context_build` | `engineering.context.build` | `engineering_context` | catalogue-defined | catalogue-defined |
-| `decision_evaluate` | `decision.evaluate` | `decision_evaluation` | catalogue-defined | catalogue-defined |
-| `decision_record_get` | `decision.record.get` | `decision_record` | catalogue-defined | catalogue-defined |
-| `decision_record_list` | `decision.record.list` | `decision_record` | catalogue-defined | catalogue-defined |
-| `decision_status` | `decision.status` | `decision_status` | catalogue-defined | catalogue-defined |
+| `engineering_search` | `engineering.search` | `engineering_search` | `engineering:read` | `engineering.read` ≥ 1.0 |
+| `engineering_expand` | `engineering.expand` | `engineering_expand` | `engineering:read` | `engineering.read` ≥ 1.0 |
+| `engineering_context_build` | `engineering.context.build` | `engineering_context` | `engineering:read` | `engineering.read` ≥ 1.0 |
+| `decision_evaluate` | `decision.evaluate` | `decision_evaluation` | `decision:invoke` | `decision.invoke` ≥ 1.0 |
+| `decision_record_get` | `decision.record.get` | `decision_record` | `decision:read` | `decision.read` ≥ 1.0 |
+| `decision_record_list` | `decision.record.list` | `decision_record` | `decision:read` | `decision.read` ≥ 1.0 |
+| `decision_status` | `decision.status` | `decision_status` | `decision:read` | `decision.read` ≥ 1.0 |
+| `trigger_health` | `trigger.health` | `trigger_observation` | `trigger:read` | `trigger.read` ≥ 1.0 |
 
-The `authoring` profile is those thirteen plus exactly five additions:
+The `authoring` profile advertises those fourteen, then these eleven, in this order:
 
-| Tool | Operation | Purpose | Behavior |
-|---|---|---|---|
-| `memory_create` | `memory.create` | `memory_authoring` | idempotent mutation |
-| `evidence_capture` | `evidence.capture` | `content_ingestion` | idempotent mutation |
-| `import_start` | `import.start` | `content_ingestion` | idempotent mutation returning a job |
-| `job_get` | `job.get` | `job_observation` | read-only job observation |
-| `job_events` | `job.events` | `job_observation` | read-only paged event observation |
+| Tool | Operation | Purpose | Scopes | Capability |
+|---|---|---|---|---|
+| `memory_create` | `memory.create` | `memory_authoring` | `memory:write` | `memory.write` ≥ 1.0 |
+| `evidence_capture` | `evidence.capture` | `content_ingestion` | `memory:write` | `evidence.write` ≥ 1.0 |
+| `import_start` | `import.start` | `content_ingestion` | `memory:write` | `ingestion.import` ≥ 1.0 |
+| `trigger_declare` | `trigger.declare` | `trigger_configuration` | `trigger:configure` | `trigger.configure` ≥ 1.0 |
+| `trigger_lifecycle` | `trigger.lifecycle` | `trigger_configuration` | `trigger:configure` | `trigger.configure` ≥ 1.0 |
+| `trigger_ingest` | `trigger.ingest` | `trigger_ingestion` | `trigger:invoke` | `trigger.invoke` ≥ 1.0 |
+| `job_get` | `job.get` | `job_observation` | `job:read` | `job.read` ≥ 1.0 |
+| `job_events` | `job.events` | `job_observation` | `job:read` | `job.read` ≥ 1.0 |
+| `skills_draft_create` | `skills.draft.create` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
+| `skills_draft_update` | `skills.draft.update` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
+| `skills_proposal_submit` | `skills.proposal.submit` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
+
+Every read declares `side_effect: none` and `audit_category: read` in the operation
+catalogue. Ten operations are side-effecting -- `decision.evaluate`,
+`memory.create`, `evidence.capture`, `import.start`, the three trigger
+mutations and the three skill authoring mutations -- and the manifest admits
+exactly those by name rather than by catalogue metadata, refusing at import any
+other entry that is not a read. Each of the ten requires a caller-chosen
+idempotency key, and `import.start` always answers with a job that `job.get` and
+the paged `job.events` observe.
 
 The authoring additions are available only after the installed owner path
 records explicit authoring intent and Core grants the dedicated MCP principal
@@ -182,10 +205,10 @@ the next call, including a replay.
 
 Scopes, capability identifiers and minimum versions, side effects, audit
 categories and idempotency posture are read from the canonical operation
-catalogue rather than restated in adapter code. A model can neither supply nor
-override the principal, workspace, scopes, purpose, capability or service
-endpoint. `tools/list` is deterministic for a given package version and admitted
-profile.
+catalogue rather than restated in adapter code. The tables above restate scopes
+and capabilities for reference only. A model can neither supply nor override the
+principal, workspace, scopes, purpose, capability or service endpoint.
+`tools/list` is deterministic for a given package version and admitted profile.
 
 ### Schemas
 
@@ -226,6 +249,10 @@ and every mutation not named by the selected manifest. These are not merely
 unadvertised — the allow-list is the only lookup the call path has, so an
 operation absent from it is not callable.
 
+Read-first is enforced at import: an entry whose catalogue metadata is not
+`side_effect="none"` and `audit_category="read"` makes the package fail to load,
+unless it is one of the ten named mutations.
+
 ## Lifecycle
 
 - The MCP process does **not** own the workspace lease.
@@ -256,13 +283,18 @@ database implementation — and `omnivia-core` must never depend back on it.
 
 The two manifest profiles, managed start, the stdio server and the call path are
 tested end to end against the official MCP SDK and a real
-`omnivia-core-service`. The source-tree acceptance suites cover all thirteen
-restricted tools and all five authoring additions, including empty-workspace
-capture, proposed-memory visibility, durable import observation, replay,
-conflict, restart and revocation. The installed qualification is driven from a
-clean wheel-only environment and retains a closed redacted record. Qualification
-by actual Claude Code and Codex CLI processes is tracked separately from those
-SDK-driven tests and must not be inferred from a configuration-form round trip.
+`omnivia-core-service`. `tests/test_mcp_stdio_end_to_end.py` calls all fourteen
+restricted tools over stdio against one governed workspace whose evidence,
+governed records and sealed relations were written through the accepted fenced
+Runtime writers in `tests/_mcp_v06_3_fixture.py` — the only place in this
+package's tests that imports the runtime at all. The source-tree acceptance
+suites cover all fourteen restricted tools and all eleven authoring additions,
+including empty-workspace capture, proposed-memory visibility, durable import
+observation, replay, conflict, restart and revocation. The installed
+qualification is driven from a clean wheel-only environment and retains a closed
+redacted record. Qualification by actual Claude Code and Codex CLI processes is
+tracked separately from those SDK-driven tests and must not be inferred from a
+configuration-form round trip.
 
 **The shared-client integration is closed.** `server.connect` composes
 `ServiceClient` for both managed-local and remote mode. The shared client owns

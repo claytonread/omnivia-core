@@ -1,7 +1,7 @@
 # OmniVia Core MCP authoring Phase 8 completion plan
 
 **Date:** 2026-10-03
-**Status:** Runtime and real-host evidence complete; exact-head acceptance pending
+**Status:** Historical 13/18 closeout evidence at `0d8cf362`; the live 14/25 candidate is not qualified; exact-head acceptance pending
 **Owner:** Codex (orchestration, review, acceptance); Claude Code (bounded implementation)
 **Target repository:** `omnivia-core`
 **Working branch:** `codex/core-mcp-authoring-phase8-closeout`
@@ -12,9 +12,12 @@ of the harness, checkpointed on the working branch)
 **Candidate key:**
 `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`.
 The exact candidate passed its restricted, authoring and lifecycle journeys and
-both pinned real hosts produced schema-valid passing records. The current work
-is the evidence-only closeout; full preflight and hosted checks remain before
-exact-head acceptance.
+both pinned real hosts produced schema-valid passing records. Those records are
+historical: they carry the 13/18-tool inventories and superseded harness and
+schema digests. They do not qualify the live candidate, which is manifest 2.5
+with 14 restricted and 25 authoring tools. Current-candidate installed-wheel and
+real-host qualification is an external credentialed residual. Full preflight and
+hosted checks remain before exact-head acceptance.
 
 ## 1. Objective
 
@@ -50,13 +53,18 @@ revision only and closes no current row. H-5 through H-7 and B-12 stay partial
 until the current release candidate is retested at one exact frozen commit,
 because the repository has changed since the merge.
 
-The remaining functional and release gates are:
+The live candidate is manifest 2.5, with fourteen restricted and twenty-five
+authoring tools and ten admitted mutations. Every gate below applies to that
+candidate. The 13/18 evidence at `0d8cf362` is historical: it satisfied the
+13/18 rows at that snapshot and satisfies none of them for the live candidate.
+
+The remaining functional and release gates for the live candidate are:
 
 | Gate | Required outcome |
 |---|---|
-| H-6 | An installed-wheel journey exercises the eighteen-tool authoring profile, not only the restricted profile. |
-| B-12 | A retained qualification record contains only the approved redacted fields. |
-| I-1 | Install the exact release artifact on the supported macOS qualification account/environment. |
+| H-6 | An installed-wheel journey exercises the live twenty-five-tool authoring profile, not only the restricted profile. The eighteen-tool run at `0d8cf362` is historical and does not close this row. |
+| B-12 | A retained qualification record for the live candidate contains only the approved redacted fields. The `0d8cf362` records are historical, bound to superseded digests, and are not a live-candidate record. |
+| I-1 | Install the exact live release artifact on the supported macOS qualification account/environment. |
 | I-2 | Configure restricted and authoring profiles using native Claude Code and Codex CLI settings. |
 | I-3 | Prove initialization and exact tool discovery under each real host. |
 | I-4 | Run the empty-workspace authoring journey under each real host. |
@@ -67,7 +75,8 @@ The remaining functional and release gates are:
 
 ## 4. Frozen qualification baseline
 
-At execution start the approved replacement baseline is:
+At execution start the approved replacement baseline was (the same pins apply to
+the live candidate, which still needs its own qualification records):
 
 | Component | Qualification value |
 |---|---|
@@ -85,21 +94,33 @@ forward by assumption.
 
 ### WP1 — Repair documentation and inventory drift
 
-1. Update the MCP package README to describe the restricted thirteen-tool and
-   authoring eighteen-tool profiles, including the five authoring additions.
+Status: executed for the 13/18 snapshot. For the live candidate the same items
+apply to fourteen restricted and twenty-five authoring tools; the v1.4 addendum
+records only the 13/18 snapshot.
+
+1. Update the MCP package README to describe the restricted profile and the
+   authoring profile, including the authoring additions. At the 13/18 snapshot
+   that was thirteen restricted tools and eighteen authoring tools with five
+   additions; the live profiles are fourteen and twenty-five, with eleven
+   additions.
 2. Update the interoperability guide so installed-wheel evidence and real-host
    evidence are explicitly separate.
-3. Correct the manifest comment from nineteen to eighteen tools.
+3. Correct the manifest comment from nineteen to eighteen tools (historical,
+   13/18 snapshot); the live manifest comment must match the live count.
 4. Update the traceability record with PR #107's accepted merge and historical
    H-5/H-7 evidence without claiming that the current candidate has passed.
 
 ### WP2 — Add installed-wheel authoring qualification
 
+Status: the journey exists and ran for the 13/18 snapshot. It must run again for
+the live candidate.
+
 Add a dedicated authoring qualification journey or a clearly separated
 authoring mode beside `scripts/run-standard-journey.py`. It must run only from
 installed wheels in an isolated installation and must prove:
 
-1. exact eighteen-tool discovery;
+1. exact discovery of the authoring profile: eighteen tools at the 13/18
+   snapshot, twenty-five for the live candidate;
 2. direct evidence capture and immediate evidence search;
 3. evidence-backed proposed-memory creation;
 4. default invisibility and candidate-view visibility;
@@ -244,7 +265,8 @@ existing closed, redacted schema:
    decision surface with no record (gates `i3`:
    `decision_evaluate_refused`, `decision_owner_observed`).
 2. Every excluded name is dispatched by the harness itself through the proxy,
-   with no model in the loop: 62 names for `restricted` and 57 for `authoring`.
+   with no model in the loop: 62 names for `restricted` and 57 for `authoring`
+  at the 13/18 snapshot.
    The authoring set is the 39 catalogue operations outside the manifest plus
    eighteen qualification sentinels spanning all nine section-7 administrative
    capability categories; restricted adds the five authoring-only tools. The
@@ -321,24 +343,23 @@ The qualification record and validator now also enforce the exact frozen
 macOS baseline (27.0 build 26A428, arm64), rather than accepting any
 well-formed macOS version/build string.
 
-Live checks run against the installed console scripts in this worktree (not
-host-driven): the authoring journey passes end to end, and the restricted probe
-(62 names), the authoring probe (57 names) and the restricted decision refusal
-with its owner observation all behave as the harness now requires. These live
-checks predate the final corrections and are not frozen-candidate evidence. The
-live authoring run reports `mcp` 2.3.0 in this development venv, not the reviewed
-`2.0.0` pin. Real-host records for Claude Code and Codex CLI are not produced
+Checks at that snapshot ran against the installed console scripts in this
+worktree (not host-driven): the authoring journey passed end to end, and the
+restricted probe (62 names), the authoring probe (57 names) and the restricted
+decision refusal with its owner observation all behaved as the harness then
+required. These checks predate the final corrections and are not frozen-candidate
+evidence. The authoring run then reported `mcp` 2.3.0 in this development venv, not
+the reviewed `2.0.0` pin. Real-host records for Claude Code and Codex CLI are not produced
 here: no exact-tip host run has happened, so no I row is green.
 
-WP1 and WP2 are implemented. The candidate builder now runs both the restricted
-installed-wheel journey and a separate eighteen-tool authoring journey, retains
-the authoring result, and validates it against a closed redaction schema. That
-retained-record gate is implemented locally only. No current frozen-candidate
-record exists, so B-12 and H-5 through H-7 stay partial. The
-package README, interoperability guide, manifest commentary, and Phase 7
-traceability record now distinguish installed-wheel evidence from real-host
-evidence and describe the thirteen-tool restricted and eighteen-tool authoring
-profiles.
+WP1 and WP2 were implemented at the 13/18 snapshot. The candidate builder then ran
+both the restricted installed-wheel journey and a separate eighteen-tool authoring
+journey, retained the authoring result, and validated it against a closed redaction
+schema. That retained-record gate was implemented locally only. No record exists for
+the live 14/25 candidate, so B-12 and H-5 through H-7 stay partial. The package
+README, interoperability guide, manifest commentary, and Phase 7 traceability
+record distinguished installed-wheel evidence from real-host evidence and described
+the thirteen-tool restricted and eighteen-tool authoring profiles of that snapshot.
 
 The first full preflight exposed an intermittent local-socket shutdown race:
 closing an accepted socket from another thread did not reliably wake a blocked
@@ -404,23 +425,25 @@ longer satisfy I-8. A focused read-only review of the final two-file hardening
 found no code defect; its three test-coverage observations were added. A full
 exact-tip independent review is still required before candidate freeze.
 
-Exact-tip Claude and Codex records now exist for qualified runtime commit
-`0d8cf362d15b43077a744542974b6160c283e1dc`. The operator authorized the fixed
+Historical, for the 13/18 snapshot only: exact-tip Claude and Codex records were
+produced for qualified runtime commit `0d8cf362d15b43077a744542974b6160c283e1dc`.
+The operator authorized the fixed
 qualification prompts and bounded service-derived results for both providers.
 Claude Code 2.1.289 used the selected existing-login mode and the modern MCP
 `server/discover` lifecycle; Codex CLI 0.146.0 used the isolated copied
-credential and legacy lifecycle. Both records validate under the same closed
-schema, bind the same 35-wheel closure and report every I-1 through I-8 field as
-`true`. WP3 and the real-host part of WP5 are complete. WP6 remains open only
-for the evidence-only closeout, exact-head preflight, hosted checks and final
-review.
+credential and legacy lifecycle. Both records were schema-valid under the closed
+schema of that time, bind the same 35-wheel closure and report every I-1 through
+I-8 field as `true`. WP3 and the real-host part of WP5 were complete for that
+snapshot only; the current schema bytes cannot validate those records, and the live
+candidate needs new ones. WP6 remained open for the evidence-only closeout,
+exact-head preflight, hosted checks and final review.
 
 ### Checks
 
 Counts from before the repair round are historical. The post-repair counts are
 given in the next block.
 
-Current review-closeout diff over `84b1510b`, the pushed reviewed PID-reuse
+Historical review-closeout diff over `84b1510b`, the pushed reviewed PID-reuse
 teardown repair: the three named focused files pass with 562 tests. The Gate A
 review baseline was 515, the completed review repair added 31 regressions (546),
 the final-review repair added seven more (553), and the teardown correction adds
@@ -498,8 +521,16 @@ frozen, and use renewable monitor leases without spawning a second writer.
 
 ### Next Step
 
-Commit the two closed redacted records and this evidence-only reconciliation,
-prove the diff from `0d8cf362` contains no executable or acceptance-rule change,
-then run full preflight, push PR #167 and obtain fresh hosted checks. Merge
-remains blocked until the user explicitly authorizes it and the hosted checks
-are green at the latest tip.
+Historical next step at `0d8cf362`: commit the two closed redacted records and
+this evidence-only reconciliation, prove the diff from `0d8cf362` contains no
+executable or acceptance-rule change, then run full preflight, push PR #167 and
+obtain fresh hosted checks.
+
+Live next step for the manifest 2.5 candidate (fourteen restricted, twenty-five
+authoring): freeze a clean exact tip, build and install its release-form wheels,
+run the restricted and authoring installed-wheel journeys against them, run both
+real hosts against that same tip to retain new records bound to the current
+harness and schema digests, update traceability only from those records, then run
+exact-head preflight and obtain fresh hosted checks. Merge remains blocked until
+the user explicitly authorizes it and the hosted checks are green at the latest
+tip.

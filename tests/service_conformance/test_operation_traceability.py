@@ -10,12 +10,12 @@ claiming a result.
 
 MCP and CLI are not service adapters here. Each is a single top-level
 client-surface decision, never a per-operation applicability claim. Format
-``v1.1`` records the accepted MCP mapping: the eighteen operations the curated
+``v1.1`` records the accepted MCP mapping: the twenty-five operations the curated
 MCP exposure manifest allow-lists, each with its tool name, and every other
 catalogue operation as an intentional omission with its reason. The CLI
 mapping is still not decided, and neither surface's evidence is evaluated
 here. This module proves that split holds and stays in step with the frozen
-fifty-seven-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
+sixty-nine-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
 recorded mapping to ``omnivia_core_mcp.manifest`` itself, which this module
 may not import.
 
@@ -28,7 +28,7 @@ Two things this module deliberately does *not* do:
   facts are correct was decided by
   ``omnivia_core.contracts.v1.generated.OPERATION_CATALOGUE`` and is checked
   again here only for *equality* with that source, never re-derived.
-* It copies no case from the accepted 121-case adapter-wire-conformance corpus.
+* It copies no case from the accepted 167-case adapter-wire-conformance corpus.
   It proves that corpus exists and is referenced by name, and nothing more.
 
 Standard library and ``omnivia_core.contracts.v1`` only. Nothing here may
@@ -71,7 +71,7 @@ MCP_MAPPING_STATE = "accepted"
 MCP_MAPPING_SOURCE = {
     "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
     "symbol": "EXPOSURE_MANIFEST",
-    "manifest_version": "2.3",
+    "manifest_version": "2.5",
 }
 #: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
 #: literally, like the MCP package's own review record, so a changed surface has
@@ -90,11 +90,18 @@ MCP_EXPOSED = (
     ("decision.record.get", "decision_record_get"),
     ("decision.record.list", "decision_record_list"),
     ("decision.status", "decision_status"),
+    ("trigger.health", "trigger_health"),
     ("memory.create", "memory_create"),
     ("evidence.capture", "evidence_capture"),
     ("import.start", "import_start"),
+    ("trigger.declare", "trigger_declare"),
+    ("trigger.lifecycle", "trigger_lifecycle"),
+    ("trigger.ingest", "trigger_ingest"),
     ("job.get", "job_get"),
     ("job.events", "job_events"),
+    ("skills.draft.create", "skills_draft_create"),
+    ("skills.draft.update", "skills_draft_update"),
+    ("skills.proposal.submit", "skills_proposal_submit"),
 )
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
@@ -120,7 +127,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 TRACEABILITY = _load_json(FIXTURE_PATH)
 CATALOGUE_BY_NAME = {entry.name: entry for entry in OPERATION_CATALOGUE}
 #: ``(operation name, fixture entry)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of fifty-seven.
+#: failure names the operation rather than an index into a list of sixty-nine.
 FIXTURE_OPERATIONS: list[dict[str, Any]] = TRACEABILITY["operations"]
 FIXTURE_NAMES = [op["contract"]["name"] for op in FIXTURE_OPERATIONS]
 FIXTURE_CASES = list(zip(FIXTURE_NAMES, FIXTURE_OPERATIONS))
@@ -151,10 +158,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 57
+    assert len(OPERATION_CATALOGUE) == 69
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 57
-    assert len(set(FIXTURE_NAMES)) == 57
+    assert len(FIXTURE_NAMES) == 69
+    assert len(set(FIXTURE_NAMES)) == 69
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -211,7 +218,7 @@ def test_every_operation_reports_pending_candidate_for_every_service_adapter_cla
 ) -> None:
     """No live product adapter may be marked passing until a committed candidate
     is independently exercised, and this slice has no candidate at all -- so
-    every one of the 28 x 3 service-adapter evidence states must read exactly
+    every one of the 61 x 3 service-adapter evidence states must read exactly
     ``pending_candidate``, never a value that could be mistaken for a result.
     """
     for adapter_class in ADAPTER_CLASSES:
@@ -281,8 +288,8 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert not set(exposed) & set(omitted)
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
-    assert len(exposed) == 18
-    assert len(omitted) == 39
+    assert len(exposed) == 25
+    assert len(omitted) == 44
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -299,10 +306,13 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
             # ADR-042: `decision.evaluate` is exposed with durable side effects
             # (audit/evaluation records); the tool description states this.
             # The authoring additions (`memory.create`, `evidence.capture`,
-            # `import.start`) were always mutation-bearing.
+            # `import.start`, the three trigger mutations and the three skill authoring
+            # mutations) are mutation-bearing.
             assert entry["operation"] in (
                 "decision.evaluate",
                 "memory.create", "evidence.capture", "import.start",
+                "trigger.declare", "trigger.lifecycle", "trigger.ingest",
+                "skills.draft.create", "skills.draft.update", "skills.proposal.submit",
             )
         else:
             assert op.scope.side_effect == "none"
@@ -331,11 +341,12 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         "analysis.start",
         "decision.result_use.evaluate",
         "workspace.list",
+        "skills.resolve",
     }
 
 
 # --------------------------------------------------------------------------
-# The referenced 153-case adapter-wire-conformance corpus
+# The referenced 167-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 
@@ -346,16 +357,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 156
+    assert reference["case_count"] == 189
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_156_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_189_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 156
-    assert len(set(case_ids)) == 156
+    assert len(case_ids) == 189
+    assert len(set(case_ids)) == 189
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

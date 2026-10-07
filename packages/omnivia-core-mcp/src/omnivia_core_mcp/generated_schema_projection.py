@@ -9402,6 +9402,1623 @@ SCHEMAS: Final[dict[str, dict[str, Any]]] = {
             },
         },
     },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftCreateInput",
+        "description": "Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from reviewed work or fresh. The skill name is fixed for the draft's life. It publishes nothing and installs nothing: authorship never grants either.",
+        "type": "object",
+        "properties": {
+            "manifest": {
+                "$ref": "#/$defs/runtime__SkillManifest",
+                "description": "The first revision of the draft's manifest.",
+            },
+            "source_work_ref": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The reviewed work this draft came from, when there is one.",
+            },
+        },
+        "required": [
+            "manifest",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__SkillDependency": {
+                "title": "SkillDependency",
+                "description": "A dependency on one exact published manifest of another skill. Resolution walks dependencies over these pinned ids, so a published skill never follows a moving dependency.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this one depends on.",
+                    },
+                    "manifest_id": {
+                        "$ref": "#/$defs/runtime__SkillManifestId",
+                        "description": "The exact published manifest this one depends on.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "manifest_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifest": {
+                "title": "SkillManifest",
+                "description": "A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is compatible with and the capabilities it requires to be present. It grants nothing. Its field set is closed, and a member that would state a permission, tool, budget, path, network right, credential, escalation or sandbox setting is refused, never ignored.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this names.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/runtime__SkillVersion",
+                        "description": "The version of that skill.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "What the skill is for, as inert text.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384,
+                        "description": "The skill's instruction text, carried as data and never executed.",
+                    },
+                    "references": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillReference",
+                        },
+                        "description": "Named digests of material the skill refers to.",
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillDependency",
+                        },
+                        "description": "Other skills this one needs, each pinned to one exact published manifest.",
+                    },
+                    "compatible_roles": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "The roles this skill may be selected for.",
+                    },
+                    "required_capabilities": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "Capabilities that must be present before execution. A requirement, never a grant.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "version",
+                    "description",
+                    "instructions",
+                    "references",
+                    "dependencies",
+                    "compatible_roles",
+                    "required_capabilities",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillReference": {
+                "title": "SkillReference",
+                "description": "A named content digest of material a skill refers to. The digest is recorded and never dereferenced.",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The name the skill uses for the referenced material.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The SHA-256 digest the referenced material or evidence must carry.",
+                    },
+                },
+                "required": [
+                    "name",
+                    "content_digest",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftCreateResult",
+        "description": "Result of `skills.draft.create`: the draft as recorded at its first revision. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "skill_name": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The skill this names.",
+            },
+            "draft_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The revision a draft stands at, numbered from 1.",
+            },
+            "version": {
+                "$ref": "#/$defs/runtime__SkillVersion",
+                "description": "The version of that skill.",
+            },
+            "manifest_id": {
+                "$ref": "#/$defs/runtime__SkillManifestId",
+                "description": "The immutable identity of one published skill version.",
+            },
+            "created_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the draft.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "skill_name",
+            "draft_revision",
+            "version",
+            "manifest_id",
+            "created_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftUpdateInput",
+        "description": "Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the revision the caller last read. A stale `expected_revision` is a conflict, so two authors never overwrite each other. A submitted draft is closed to revision.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "expected_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The draft revision the caller last read. A different current revision is a conflict.",
+            },
+            "manifest": {
+                "$ref": "#/$defs/runtime__SkillManifest",
+                "description": "The manifest, as inert data.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "expected_revision",
+            "manifest",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__SkillDependency": {
+                "title": "SkillDependency",
+                "description": "A dependency on one exact published manifest of another skill. Resolution walks dependencies over these pinned ids, so a published skill never follows a moving dependency.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this one depends on.",
+                    },
+                    "manifest_id": {
+                        "$ref": "#/$defs/runtime__SkillManifestId",
+                        "description": "The exact published manifest this one depends on.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "manifest_id",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifest": {
+                "title": "SkillManifest",
+                "description": "A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is compatible with and the capabilities it requires to be present. It grants nothing. Its field set is closed, and a member that would state a permission, tool, budget, path, network right, credential, escalation or sandbox setting is refused, never ignored.",
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The skill this names.",
+                    },
+                    "version": {
+                        "$ref": "#/$defs/runtime__SkillVersion",
+                        "description": "The version of that skill.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "What the skill is for, as inert text.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384,
+                        "description": "The skill's instruction text, carried as data and never executed.",
+                    },
+                    "references": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillReference",
+                        },
+                        "description": "Named digests of material the skill refers to.",
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/runtime__SkillDependency",
+                        },
+                        "description": "Other skills this one needs, each pinned to one exact published manifest.",
+                    },
+                    "compatible_roles": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "The roles this skill may be selected for.",
+                    },
+                    "required_capabilities": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                            "$ref": "#/$defs/common__Identifier",
+                        },
+                        "description": "Capabilities that must be present before execution. A requirement, never a grant.",
+                    },
+                },
+                "required": [
+                    "skill_name",
+                    "version",
+                    "description",
+                    "instructions",
+                    "references",
+                    "dependencies",
+                    "compatible_roles",
+                    "required_capabilities",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillReference": {
+                "title": "SkillReference",
+                "description": "A named content digest of material a skill refers to. The digest is recorded and never dereferenced.",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The name the skill uses for the referenced material.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The SHA-256 digest the referenced material or evidence must carry.",
+                    },
+                },
+                "required": [
+                    "name",
+                    "content_digest",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillDraftUpdateResult",
+        "description": "Result of `skills.draft.update`: the revision the draft now stands at. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "draft_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The revision a draft stands at, numbered from 1.",
+            },
+            "version": {
+                "$ref": "#/$defs/runtime__SkillVersion",
+                "description": "The version of that skill.",
+            },
+            "manifest_id": {
+                "$ref": "#/$defs/runtime__SkillManifestId",
+                "description": "The immutable identity of one published skill version.",
+            },
+            "updated_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the revision.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "draft_revision",
+            "version",
+            "manifest_id",
+            "updated_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__SkillManifestId": {
+                "title": "SkillManifestId",
+                "description": "The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical content has one identity; changed content has another.",
+                "type": "string",
+                "minLength": 70,
+                "maxLength": 70,
+            },
+            "runtime__SkillVersion": {
+                "title": "SkillVersion",
+                "description": "The version of one skill: three dot-separated integers with no leading zeros. Versions of one skill order as those integers, so two of them never tie.",
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 20,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillProposalSubmitInput",
+        "description": "Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher queue, once, with the evidence the author cites. Submitting grants no publication.",
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "expected_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The draft revision the caller last read. A different current revision is a conflict.",
+            },
+            "evidence_refs": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                    "$ref": "#/$defs/runtime__SkillEvidenceRef",
+                },
+                "description": "The evidence the author cites for the proposal.",
+            },
+        },
+        "required": [
+            "draft_id",
+            "expected_revision",
+            "evidence_refs",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__SkillEvidenceRef": {
+                "title": "SkillEvidenceRef",
+                "description": "A reference to reviewing evidence: its identifier and the content digest it must carry. Recorded for audit and never dereferenced here.",
+                "type": "object",
+                "properties": {
+                    "evidence_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The identifier of the reviewing evidence.",
+                    },
+                    "content_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "The SHA-256 digest the referenced material or evidence must carry.",
+                    },
+                },
+                "required": [
+                    "evidence_id",
+                    "content_digest",
+                ],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SkillProposalSubmitResult",
+        "description": "Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "proposal_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The proposal this names.",
+            },
+            "draft_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The draft this names.",
+            },
+            "draft_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The revision a draft stands at, numbered from 1.",
+            },
+            "submitted_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the proposal.",
+            },
+        },
+        "required": [
+            "proposal_id",
+            "draft_id",
+            "draft_revision",
+            "submitted_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerDeclareInput",
+        "description": "Input for `trigger.declare`. Declares one trigger, bound to one Project and one released Workflow version, with the subscription state it starts in, as one fenced write. Declaring starts nothing: no scheduler, driver or poll runs, and the trigger admits a stimulus only through `trigger.ingest`. A later declaration of the same trigger is a new numbered version. It may change the Workflow version, plan, event contract or configuration, but never the trigger's kind, Project or Workflow. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project the trigger belongs to.",
+            },
+            "workflow_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Workflow the trigger starts.",
+            },
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The trigger, named by its caller and unique within the workspace.",
+            },
+            "trigger_kind": {
+                "$ref": "#/$defs/runtime__TriggerKind",
+                "description": "The kind of stimulus the trigger declares.",
+            },
+            "workflow_version": {
+                "$ref": "#/$defs/common__ReleaseVersion",
+                "description": "The released Workflow version this declaration binds.",
+            },
+            "plan_hash": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "Digest of the sealed plan of that Workflow version.",
+            },
+            "event_type": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one event type this trigger admits.",
+            },
+            "event_contract_digest": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "Digest of the event contract a stimulus of this trigger must satisfy.",
+            },
+            "configuration_digest": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "Digest of the trigger's configuration.",
+            },
+            "subscription_state": {
+                "$ref": "#/$defs/runtime__TriggerInitialSubscriptionState",
+                "description": "The state the subscription starts in.",
+            },
+            "subscription_reason": {
+                "$ref": "#/$defs/common__OpenCode",
+                "description": "Open code naming why the subscription starts in that state.",
+            },
+        },
+        "required": [
+            "project_id",
+            "workflow_id",
+            "trigger_id",
+            "trigger_kind",
+            "workflow_version",
+            "plan_hash",
+            "event_type",
+            "event_contract_digest",
+            "configuration_digest",
+            "subscription_state",
+            "subscription_reason",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__ReleaseVersion": {
+                "title": "ReleaseVersion",
+                "description": "A SemVer 2.0.0 release string identifying a concrete build, not a contract.",
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$(?![\\s\\S])",
+                "maxLength": 128,
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "runtime__TriggerInitialSubscriptionState": {
+                "title": "TriggerInitialSubscriptionState",
+                "description": "The state a trigger's subscription starts in. A subscription begins `active` or `paused`; nothing returns to the start.",
+                "type": "string",
+                "enum": [
+                    "active",
+                    "paused",
+                ],
+            },
+            "runtime__TriggerKind": {
+                "title": "TriggerKind",
+                "description": "The kind of stimulus a trigger declares. Closed: a value outside this vocabulary is refused. Declaring a kind starts nothing, and `schedule` names no scheduler; the one stimulus this build admits is `trigger.ingest`.",
+                "type": "string",
+                "enum": [
+                    "manual",
+                    "schedule",
+                    "webhook",
+                    "cloudevent",
+                    "catalogue_event",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerDeclareResult",
+        "description": "Result of `trigger.declare`: the declaration as recorded, and the subscription it starts in. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The declared trigger.",
+            },
+            "declaration_sequence": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The number this declaration took in the trigger's history.",
+            },
+            "subscription_state": {
+                "$ref": "#/$defs/runtime__TriggerSubscriptionState",
+                "description": "The subscription state the trigger now holds.",
+            },
+            "subscription_sequence": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The number the initial subscription event took.",
+            },
+            "declared_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the declaration.",
+            },
+        },
+        "required": [
+            "trigger_id",
+            "declaration_sequence",
+            "subscription_state",
+            "subscription_sequence",
+            "declared_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__TriggerSubscriptionState": {
+                "title": "TriggerSubscriptionState",
+                "description": "The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription admits a stimulus; any other state dead-letters it as `inactive_trigger`.",
+                "type": "string",
+                "enum": [
+                    "active",
+                    "paused",
+                    "unavailable",
+                    "disabled",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerHealthInput",
+        "description": "Input for `trigger.health`: a bounded read of trigger health for one Project and one Workflow. Without `trigger_id` it reads one page of that Workflow's triggers, ordered by trigger identifier. With `trigger_id` it reads that one trigger, and `limit` and `page` must be absent. `observation_limit` bounds how many recent observations each trigger returns, newest first. A trigger of another Project or Workflow reads as not found, never as someone else's. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project whose triggers to read.",
+            },
+            "workflow_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Workflow whose triggers to read.",
+            },
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The one trigger to read. Absent reads a page of the Workflow's triggers.",
+            },
+            "observation_limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Most recent observations to return per trigger, newest first. Absent reads 5.",
+            },
+            "limit": {
+                "$ref": "#/$defs/common__PageLimit",
+                "description": "Most triggers to return in this page. The server returns at most 50.",
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "Continuation position from a prior page. Absent means the first page.",
+            },
+        },
+        "required": [
+            "project_id",
+            "workflow_id",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__PageLimit": {
+                "title": "PageLimit",
+                "description": "A bounded positive page size a caller requests for a paginated read.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerHealthResult",
+        "description": "Result of `trigger.health`. Expose trigger health through a shared aggregation keyed by Project/Workflow, including per-trigger subscription state, last observation, delivery/processing status, failures and uncertainty. Each trigger reports its subscription, its last observation, the delivery and processing status of its recent observations, the failures among them, and the uncertainty they carry. Uncertainty is derived on read and never stored as a guess. `delivery_counts` and `failures` cover only the observations returned, while `observation_total` counts the trigger's whole history.",
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "description": "The triggers in this page, ordered by trigger identifier. One item for an exact read.",
+                "items": {
+                    "$ref": "#/$defs/runtime__TriggerHealth",
+                },
+                "maxItems": 50,
+            },
+            "page": {
+                "$ref": "#/$defs/common__PageMetadata",
+                "description": "The position this read reached. A continuation token means more triggers remain; `{}` means the read is exhausted.",
+            },
+        },
+        "required": [
+            "items",
+            "page",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpaqueToken": {
+                "title": "OpaqueToken",
+                "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[!-~]+$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__PageMetadata": {
+                "title": "PageMetadata",
+                "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
+                "type": "object",
+                "properties": {
+                    "continuation_token": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field.",
+                    },
+                },
+                "required": [],
+                "unevaluatedProperties": False,
+            },
+            "common__ReleaseVersion": {
+                "title": "ReleaseVersion",
+                "description": "A SemVer 2.0.0 release string identifying a concrete build, not a contract.",
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$(?![\\s\\S])",
+                "maxLength": 128,
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+            "jobs__JobState": {
+                "title": "JobState",
+                "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "runtime__RunStatus": {
+                "title": "RunStatus",
+                "description": "Where a canonical `Run` stands. A Core-owned vocabulary, deliberately neither the scheduler's `JobState` (which cannot express waiting) nor the control plane's run status (which is not durable): `admitted` is accepted with a policy and budget snapshot pinned but not yet executing, `running` is executing, `waiting` is durably suspended on a `Wait`, `succeeded` completed with every step succeeded, `partially_completed` reached the end with some step not succeeded, `failed` ended on a failure, `cancelled` was stopped by request, and `uncertain` means the outcome of at least one effect is not known and has not been reconciled. Closed at the schema and open on the wire: an unrecognized status decodes and is preserved verbatim, but no semantic decision may be taken from it -- it is never terminal, never successful, never a licence to start a new effect.",
+                "type": "string",
+                "enum": [
+                    "admitted",
+                    "running",
+                    "waiting",
+                    "succeeded",
+                    "partially_completed",
+                    "failed",
+                    "cancelled",
+                    "uncertain",
+                ],
+            },
+            "runtime__TriggerDeliveryCounts": {
+                "title": "TriggerDeliveryCounts",
+                "description": "How many of a trigger's returned observations carry each delivery status.",
+                "type": "object",
+                "properties": {
+                    "accepted": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Observations accepted.",
+                    },
+                    "duplicate": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Observations that repeat an accepted one.",
+                    },
+                    "dead_lettered": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Observations recorded and not admitted.",
+                    },
+                    "uncertain": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Observations whose delivery could not be confirmed.",
+                    },
+                },
+                "required": [
+                    "accepted",
+                    "duplicate",
+                    "dead_lettered",
+                    "uncertain",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__TriggerDeliveryStatus": {
+                "title": "TriggerDeliveryStatus",
+                "description": "What happened to one stimulus at the door. `accepted` is a stimulus the trigger admitted. `duplicate` repeats an accepted stimulus with identical content. `dead_lettered` was recorded and not admitted, and its reason says why. `uncertain` could not be confirmed. Delivery says nothing about whether work ran; that is `TriggerProcessingStatus`.",
+                "type": "string",
+                "enum": [
+                    "accepted",
+                    "duplicate",
+                    "dead_lettered",
+                    "uncertain",
+                ],
+            },
+            "runtime__TriggerFailure": {
+                "title": "TriggerFailure",
+                "description": "One failure a trigger's telemetry can state, with where it was read from. `reason` is a code, never free text.",
+                "type": "object",
+                "properties": {
+                    "trigger_observation_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The observation the failure belongs to.",
+                    },
+                    "source": {
+                        "$ref": "#/$defs/runtime__TriggerFailureSource",
+                        "description": "Where the failure was read from.",
+                    },
+                    "reason": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Why it failed.",
+                    },
+                },
+                "required": [
+                    "trigger_observation_id",
+                    "source",
+                    "reason",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__TriggerFailureSource": {
+                "title": "TriggerFailureSource",
+                "description": "Where a trigger failure was read from: the delivery door, the job ledger or the run ledger.",
+                "type": "string",
+                "enum": [
+                    "delivery",
+                    "job",
+                    "run",
+                ],
+            },
+            "runtime__TriggerHealth": {
+                "title": "TriggerHealth",
+                "description": "One trigger's health: its declaration, its subscription, its last observation and recent observations, and the failures and uncertainty among them.",
+                "type": "object",
+                "properties": {
+                    "trigger_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The trigger.",
+                    },
+                    "trigger_kind": {
+                        "$ref": "#/$defs/runtime__TriggerKind",
+                        "description": "The kind the trigger declares.",
+                    },
+                    "workflow_version": {
+                        "$ref": "#/$defs/common__ReleaseVersion",
+                        "description": "The Workflow version of its latest declaration.",
+                    },
+                    "declaration_sequence": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The number of its latest declaration.",
+                    },
+                    "event_type": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The event type its latest declaration admits.",
+                    },
+                    "subscription": {
+                        "$ref": "#/$defs/runtime__TriggerSubscriptionHealth",
+                        "description": "Its current subscription.",
+                    },
+                    "last_observation": {
+                        "$ref": "#/$defs/runtime__TriggerObservationHealth",
+                        "description": "Its newest observation. Absent when none was recorded.",
+                    },
+                    "observation_total": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many observations it has recorded across its whole history.",
+                    },
+                    "observations": {
+                        "type": "array",
+                        "description": "Its newest observations, newest first, up to the requested observation limit.",
+                        "items": {
+                            "$ref": "#/$defs/runtime__TriggerObservationHealth",
+                        },
+                        "maxItems": 20,
+                    },
+                    "delivery_counts": {
+                        "$ref": "#/$defs/runtime__TriggerDeliveryCounts",
+                        "description": "How many of the observations returned carry each delivery status.",
+                    },
+                    "failures": {
+                        "type": "array",
+                        "description": "Failures among the observations returned.",
+                        "items": {
+                            "$ref": "#/$defs/runtime__TriggerFailure",
+                        },
+                    },
+                    "uncertainty": {
+                        "type": "array",
+                        "description": "Uncertainty carried by the subscription and the observations returned.",
+                        "items": {
+                            "$ref": "#/$defs/common__OpenCode",
+                        },
+                    },
+                },
+                "required": [
+                    "trigger_id",
+                    "trigger_kind",
+                    "workflow_version",
+                    "declaration_sequence",
+                    "event_type",
+                    "subscription",
+                    "observation_total",
+                    "observations",
+                    "delivery_counts",
+                    "failures",
+                    "uncertainty",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__TriggerKind": {
+                "title": "TriggerKind",
+                "description": "The kind of stimulus a trigger declares. Closed: a value outside this vocabulary is refused. Declaring a kind starts nothing, and `schedule` names no scheduler; the one stimulus this build admits is `trigger.ingest`.",
+                "type": "string",
+                "enum": [
+                    "manual",
+                    "schedule",
+                    "webhook",
+                    "cloudevent",
+                    "catalogue_event",
+                ],
+            },
+            "runtime__TriggerObservationHealth": {
+                "title": "TriggerObservationHealth",
+                "description": "One recorded observation of a trigger: what it was, what the door decided, and how far its processing has got. It carries digests and bounded metadata, never the event payload.",
+                "type": "object",
+                "properties": {
+                    "trigger_observation_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The observation.",
+                    },
+                    "observation_sequence": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The number it took in the trigger's history.",
+                    },
+                    "event_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The event's identifier as its source named it.",
+                    },
+                    "event_idempotency_key": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The source's key for the event.",
+                    },
+                    "event_type": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The event type the stimulus carried.",
+                    },
+                    "envelope_digest": {
+                        "$ref": "#/$defs/jobs__ContentChecksum",
+                        "description": "Digest of the event envelope.",
+                    },
+                    "occurred_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When the source said the event occurred. Absent means that time is unknown.",
+                    },
+                    "observed_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When Core observed the stimulus.",
+                    },
+                    "delivery_status": {
+                        "$ref": "#/$defs/runtime__TriggerDeliveryStatus",
+                        "description": "What the door decided.",
+                    },
+                    "delivery_reason": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Why the stimulus was dead-lettered or left uncertain. Present for those two statuses.",
+                    },
+                    "duplicate_of_observation_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The accepted observation a duplicate repeats. Present for a duplicate.",
+                    },
+                    "job_id": {
+                        "$ref": "#/$defs/common__OpaqueToken",
+                        "description": "The job this observation is linked to, when it is linked.",
+                    },
+                    "run_id": {
+                        "$ref": "#/$defs/common__Identifier",
+                        "description": "The run this observation is linked to, when it is linked.",
+                    },
+                    "processing": {
+                        "$ref": "#/$defs/runtime__TriggerProcessingStatus",
+                        "description": "How far the work the stimulus started has got.",
+                    },
+                    "job_state": {
+                        "$ref": "#/$defs/jobs__JobState",
+                        "description": "The linked job's latest recorded state, when a job is linked and known.",
+                    },
+                    "run_status": {
+                        "$ref": "#/$defs/runtime__RunStatus",
+                        "description": "The linked run's latest recorded status, when a run is linked and known.",
+                    },
+                    "uncertainty": {
+                        "type": "array",
+                        "description": "Uncertainty derived for this observation.",
+                        "items": {
+                            "$ref": "#/$defs/common__OpenCode",
+                        },
+                    },
+                },
+                "required": [
+                    "trigger_observation_id",
+                    "observation_sequence",
+                    "event_id",
+                    "event_idempotency_key",
+                    "event_type",
+                    "envelope_digest",
+                    "observed_at",
+                    "delivery_status",
+                    "processing",
+                    "uncertainty",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__TriggerProcessingStatus": {
+                "title": "TriggerProcessingStatus",
+                "description": "How far the work a stimulus started has got, read from the job and run ledgers through the observation's link. `not_applicable` is a stimulus that was not accepted. `unlinked` is an accepted stimulus with no job or run linked, which every stimulus `trigger.ingest` admits in this build, since it starts no work. Acceptance alone never reads as `succeeded`.",
+                "type": "string",
+                "enum": [
+                    "not_applicable",
+                    "unlinked",
+                    "unknown",
+                    "pending",
+                    "in_progress",
+                    "succeeded",
+                    "partially_completed",
+                    "failed",
+                    "cancelled",
+                    "uncertain",
+                ],
+            },
+            "runtime__TriggerSubscriptionHealth": {
+                "title": "TriggerSubscriptionHealth",
+                "description": "One trigger's current subscription. `state` is absent only when no subscription was ever recorded for it.",
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "$ref": "#/$defs/runtime__TriggerSubscriptionState",
+                        "description": "The state the subscription is in now.",
+                    },
+                    "reason": {
+                        "$ref": "#/$defs/common__OpenCode",
+                        "description": "Why it is in that state.",
+                    },
+                    "observed_at": {
+                        "$ref": "#/$defs/common__Timestamp",
+                        "description": "When Core recorded that state.",
+                    },
+                    "subscription_sequence": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The number of the latest subscription event, or 0 when none was recorded.",
+                    },
+                },
+                "required": [
+                    "subscription_sequence",
+                ],
+                "unevaluatedProperties": False,
+            },
+            "runtime__TriggerSubscriptionState": {
+                "title": "TriggerSubscriptionState",
+                "description": "The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription admits a stimulus; any other state dead-letters it as `inactive_trigger`.",
+                "type": "string",
+                "enum": [
+                    "active",
+                    "paused",
+                    "unavailable",
+                    "disabled",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerIngestInput",
+        "description": "Input for `trigger.ingest`: one synchronous, one-shot admission of one stimulus to a declared trigger. Core records exactly one observation of it, with its delivery decision and a digest of its envelope; the envelope and its payload are never stored. The decision is taken from the trigger's current declaration and subscription. An `active` subscription with a matching event type admits the stimulus. Any other state, or a mismatched type, is recorded as dead-lettered. A repeat of an accepted stimulus under the same event idempotency key is recorded as a duplicate when its digest matches, and refused as `idempotency_conflict` when it does not. Every admission in this build is record-only: it starts no job or run, so its processing reads `unlinked`. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project the trigger must belong to.",
+            },
+            "workflow_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Workflow the trigger must start.",
+            },
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The declared trigger the stimulus is delivered to.",
+            },
+            "event_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The event's identifier as its source names it.",
+            },
+            "event_idempotency_key": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The source's key for this event. An accepted key admits its event once; a repeat is a duplicate. This is not the request's idempotency key.",
+            },
+            "event_type": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The event type the stimulus carries.",
+            },
+            "envelope_digest": {
+                "$ref": "#/$defs/jobs__ContentChecksum",
+                "description": "Digest of the event envelope as the source sent it.",
+            },
+            "occurred_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When the source says the event occurred, when it says so. Absent leaves the source time unknown.",
+            },
+        },
+        "required": [
+            "project_id",
+            "workflow_id",
+            "trigger_id",
+            "event_id",
+            "event_idempotency_key",
+            "event_type",
+            "envelope_digest",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "jobs__ContentChecksum": {
+                "title": "ContentChecksum",
+                "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+                "type": "string",
+                "minLength": 71,
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerIngestResult",
+        "description": "Result of `trigger.ingest`: what the door decided and what that decision means for processing. Delivery and processing are separate fields. A dead-lettered or duplicate delivery reads `not_applicable`, and an accepted record-only delivery reads `unlinked`, never `succeeded`. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The trigger the stimulus was delivered to.",
+            },
+            "trigger_observation_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The observation recorded for this stimulus.",
+            },
+            "observation_sequence": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The number this observation took in the trigger's history.",
+            },
+            "delivery_status": {
+                "$ref": "#/$defs/runtime__TriggerDeliveryStatus",
+                "description": "What the door decided.",
+            },
+            "delivery_reason": {
+                "$ref": "#/$defs/common__OpenCode",
+                "description": "Why the stimulus was dead-lettered. Present for a dead-lettered delivery: `inactive_trigger` or `event_type_mismatch` in this build.",
+            },
+            "duplicate_of_observation_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The accepted observation a duplicate repeats. Present for a duplicate.",
+            },
+            "processing": {
+                "$ref": "#/$defs/runtime__TriggerProcessingStatus",
+                "description": "How far the work the stimulus started has got.",
+            },
+            "uncertainty": {
+                "type": "array",
+                "description": "Uncertainty derived for this observation, such as `processing_unlinked` or `source_time_unknown`.",
+                "items": {
+                    "$ref": "#/$defs/common__OpenCode",
+                },
+            },
+            "observed_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core observed the stimulus.",
+            },
+        },
+        "required": [
+            "trigger_id",
+            "trigger_observation_id",
+            "observation_sequence",
+            "delivery_status",
+            "processing",
+            "uncertainty",
+            "observed_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__TriggerDeliveryStatus": {
+                "title": "TriggerDeliveryStatus",
+                "description": "What happened to one stimulus at the door. `accepted` is a stimulus the trigger admitted. `duplicate` repeats an accepted stimulus with identical content. `dead_lettered` was recorded and not admitted, and its reason says why. `uncertain` could not be confirmed. Delivery says nothing about whether work ran; that is `TriggerProcessingStatus`.",
+                "type": "string",
+                "enum": [
+                    "accepted",
+                    "duplicate",
+                    "dead_lettered",
+                    "uncertain",
+                ],
+            },
+            "runtime__TriggerProcessingStatus": {
+                "title": "TriggerProcessingStatus",
+                "description": "How far the work a stimulus started has got, read from the job and run ledgers through the observation's link. `not_applicable` is a stimulus that was not accepted. `unlinked` is an accepted stimulus with no job or run linked, which every stimulus `trigger.ingest` admits in this build, since it starts no work. Acceptance alone never reads as `succeeded`.",
+                "type": "string",
+                "enum": [
+                    "not_applicable",
+                    "unlinked",
+                    "unknown",
+                    "pending",
+                    "in_progress",
+                    "succeeded",
+                    "partially_completed",
+                    "failed",
+                    "cancelled",
+                    "uncertain",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerLifecycleInput",
+        "description": "Input for `trigger.lifecycle`. Moves one declared trigger's subscription to a new state, through the transitions the trigger store enforces: `active` moves to `paused`, `unavailable` or `disabled`; `paused` moves to `active` or `disabled`; `unavailable` moves to `active`, `paused` or `disabled`; `disabled` moves nowhere. An invalid move is refused as `conflict`. The trigger must be bound to the Project and Workflow named, or it reads as not found. Workspace-scoped through the request envelope's selected workspace.",
+        "type": "object",
+        "properties": {
+            "project_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Project the trigger must belong to.",
+            },
+            "workflow_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The Workflow the trigger must start.",
+            },
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The declared trigger whose subscription moves.",
+            },
+            "subscription_state": {
+                "$ref": "#/$defs/runtime__TriggerSubscriptionState",
+                "description": "The state to move the subscription to.",
+            },
+            "reason": {
+                "$ref": "#/$defs/common__OpenCode",
+                "description": "Open code naming why the subscription moves.",
+            },
+        },
+        "required": [
+            "project_id",
+            "workflow_id",
+            "trigger_id",
+            "subscription_state",
+            "reason",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "runtime__TriggerSubscriptionState": {
+                "title": "TriggerSubscriptionState",
+                "description": "The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription admits a stimulus; any other state dead-letters it as `inactive_trigger`.",
+                "type": "string",
+                "enum": [
+                    "active",
+                    "paused",
+                    "unavailable",
+                    "disabled",
+                ],
+            },
+        },
+    },
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "TriggerLifecycleResult",
+        "description": "Result of `trigger.lifecycle`: the subscription state the trigger now holds. A replay under the same idempotency key returns this result without a second write.",
+        "type": "object",
+        "properties": {
+            "trigger_id": {
+                "$ref": "#/$defs/common__Identifier",
+                "description": "The trigger whose subscription moved.",
+            },
+            "subscription_state": {
+                "$ref": "#/$defs/runtime__TriggerSubscriptionState",
+                "description": "The subscription state now held.",
+            },
+            "subscription_sequence": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The number this subscription event took.",
+            },
+            "reason": {
+                "$ref": "#/$defs/common__OpenCode",
+                "description": "The reason recorded for the move.",
+            },
+            "observed_at": {
+                "$ref": "#/$defs/common__Timestamp",
+                "description": "When Core recorded the move.",
+            },
+        },
+        "required": [
+            "trigger_id",
+            "subscription_state",
+            "subscription_sequence",
+            "reason",
+            "observed_at",
+        ],
+        "unevaluatedProperties": False,
+        "$defs": {
+            "common__Identifier": {
+                "title": "Identifier",
+                "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+            },
+            "common__OpenCode": {
+                "title": "OpenCode",
+                "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+            },
+            "common__Timestamp": {
+                "title": "Timestamp",
+                "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+                "maxLength": 40,
+            },
+            "runtime__TriggerSubscriptionState": {
+                "title": "TriggerSubscriptionState",
+                "description": "The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription admits a stimulus; any other state dead-letters it as `inactive_trigger`.",
+                "type": "string",
+                "enum": [
+                    "active",
+                    "paused",
+                    "unavailable",
+                    "disabled",
+                ],
+            },
+        },
+    },
     "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceInspectInput": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "WorkspaceInspectInput",

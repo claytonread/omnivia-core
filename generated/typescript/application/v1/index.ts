@@ -2741,6 +2741,271 @@ export function isWorkflowResumeDiagnostic(value: unknown): value is WorkflowRes
 }
 
 /**
+ * The kind of stimulus a trigger declares. Closed: a value outside this vocabulary is refused.
+ * Declaring a kind starts nothing, and `schedule` names no scheduler; the one stimulus this
+ * build admits is `trigger.ingest`.
+ */
+export type TriggerKind = string;
+
+/**
+ * The closed `TriggerKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_KIND_VALUES = [
+  "manual",
+  "schedule",
+  "webhook",
+  "cloudevent",
+  "catalogue_event",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerKind`. The generated decoders do not call this --
+ * decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isTriggerKind(value: unknown): value is TriggerKind {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The state a trigger's subscription starts in. A subscription begins `active` or `paused`;
+ * nothing returns to the start.
+ */
+export type TriggerInitialSubscriptionState = string;
+
+/**
+ * The closed `TriggerInitialSubscriptionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_INITIAL_SUBSCRIPTION_STATE_VALUES = [
+  "active",
+  "paused",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerInitialSubscriptionState`. The generated decoders
+ * do not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerInitialSubscriptionState(value: unknown): value is TriggerInitialSubscriptionState {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_INITIAL_SUBSCRIPTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription
+ * admits a stimulus; any other state dead-letters it as `inactive_trigger`.
+ */
+export type TriggerSubscriptionState = string;
+
+/**
+ * The closed `TriggerSubscriptionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_SUBSCRIPTION_STATE_VALUES = [
+  "active",
+  "paused",
+  "unavailable",
+  "disabled",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerSubscriptionState`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerSubscriptionState(value: unknown): value is TriggerSubscriptionState {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_SUBSCRIPTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What happened to one stimulus at the door. `accepted` is a stimulus the trigger admitted.
+ * `duplicate` repeats an accepted stimulus with identical content. `dead_lettered` was recorded
+ * and not admitted, and its reason says why. `uncertain` could not be confirmed. Delivery says
+ * nothing about whether work ran; that is `TriggerProcessingStatus`.
+ */
+export type TriggerDeliveryStatus = string;
+
+/**
+ * The closed `TriggerDeliveryStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_DELIVERY_STATUS_VALUES = [
+  "accepted",
+  "duplicate",
+  "dead_lettered",
+  "uncertain",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerDeliveryStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerDeliveryStatus(value: unknown): value is TriggerDeliveryStatus {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_DELIVERY_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * How far the work a stimulus started has got, read from the job and run ledgers through the
+ * observation's link. `not_applicable` is a stimulus that was not accepted. `unlinked` is an
+ * accepted stimulus with no job or run linked, which every stimulus `trigger.ingest` admits in
+ * this build, since it starts no work. Acceptance alone never reads as `succeeded`.
+ */
+export type TriggerProcessingStatus = string;
+
+/**
+ * The closed `TriggerProcessingStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_PROCESSING_STATUS_VALUES = [
+  "not_applicable",
+  "unlinked",
+  "unknown",
+  "pending",
+  "in_progress",
+  "succeeded",
+  "partially_completed",
+  "failed",
+  "cancelled",
+  "uncertain",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerProcessingStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerProcessingStatus(value: unknown): value is TriggerProcessingStatus {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_PROCESSING_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where a trigger failure was read from: the delivery door, the job ledger or the run ledger.
+ */
+export type TriggerFailureSource = string;
+
+/**
+ * The closed `TriggerFailureSource` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_FAILURE_SOURCE_VALUES = [
+  "delivery",
+  "job",
+  "run",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerFailureSource`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerFailureSource(value: unknown): value is TriggerFailureSource {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_FAILURE_SOURCE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * How many of a trigger's returned observations carry each delivery status.
+ */
+export interface TriggerDeliveryCounts {
+  /**
+   * Observations accepted.
+   */
+  readonly accepted: number;
+  /**
+   * Observations that repeat an accepted one.
+   */
+  readonly duplicate: number;
+  /**
+   * Observations recorded and not admitted.
+   */
+  readonly dead_lettered: number;
+  /**
+   * Observations whose delivery could not be confirmed.
+   */
+  readonly uncertain: number;
+}
+
+/**
+ * The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its
+ * canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical
+ * content has one identity; changed content has another.
+ */
+export type SkillManifestId = string;
+
+/**
+ * The version of one skill: three dot-separated integers with no leading zeros. Versions of one
+ * skill order as those integers, so two of them never tie.
+ */
+export type SkillVersion = string;
+
+/**
+ * How one manifest entered a resolved closure: named explicitly, chosen as the highest
+ * compatible installed version, or pulled in as a pinned dependency. Closed, so a value outside
+ * it is refused.
+ */
+export type SkillSelectionKind = string;
+
+/**
+ * The closed `SkillSelectionKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const SKILL_SELECTION_KIND_VALUES = [
+  "explicit",
+  "highest_compatible",
+  "dependency",
+] as const;
+
+/**
+ * Return whether a value is a declared `SkillSelectionKind`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isSkillSelectionKind(value: unknown): value is SkillSelectionKind {
+  return (
+    typeof value === "string" &&
+    (SKILL_SELECTION_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Whether one published skill version is installed in this workspace. Removal is a recorded
+ * state and never a deletion of the version, its history or any Run that bound it.
+ */
+export type SkillInstallState = string;
+
+/**
+ * The closed `SkillInstallState` vocabulary, emitted from the schema's `enum`.
+ */
+export const SKILL_INSTALL_STATE_VALUES = [
+  "installed",
+  "removed",
+] as const;
+
+/**
+ * Return whether a value is a declared `SkillInstallState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isSkillInstallState(value: unknown): value is SkillInstallState {
+  return (
+    typeof value === "string" &&
+    (SKILL_INSTALL_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -5957,26 +6222,6 @@ export interface WorkflowJournalEntry {
 }
 
 /**
- * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
- * through the request envelope's selected workspace, so this payload never carries a second,
- * independent workspace identifier. There is no definition, plan, binding or logical-key member.
- * A caller that could state the material it runs against could state material nobody released,
- * so the plan is sealed and the binding is resolved server-side from the exact release this
- * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
- * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
- */
-export interface WorkflowStartInput {
-  /**
-   * The Workflow to run.
-   */
-  readonly workflow_id: Identifier;
-  /**
-   * The released version of it to run.
-   */
-  readonly workflow_version: ReleaseVersion;
-}
-
-/**
  * Input for `workflow.inspect`. Names one Workflow Run. Workspace-scoped through the request
  * envelope's selected workspace, so a Run of another workspace is invisible rather than merely
  * unlikely to be asked for.
@@ -6026,6 +6271,681 @@ export interface WorkflowReviewInput {
    * The Workflow Run to review.
    */
   readonly run_id: Identifier;
+}
+
+/**
+ * Input for `trigger.declare`. Declares one trigger, bound to one Project and one released
+ * Workflow version, with the subscription state it starts in, as one fenced write. Declaring
+ * starts nothing: no scheduler, driver or poll runs, and the trigger admits a stimulus only
+ * through `trigger.ingest`. A later declaration of the same trigger is a new numbered version.
+ * It may change the Workflow version, plan, event contract or configuration, but never the
+ * trigger's kind, Project or Workflow. Workspace-scoped through the request envelope's selected
+ * workspace.
+ */
+export interface TriggerDeclareInput {
+  /**
+   * The Project the trigger belongs to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow the trigger starts.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The trigger, named by its caller and unique within the workspace.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The kind of stimulus the trigger declares.
+   */
+  readonly trigger_kind: TriggerKind;
+  /**
+   * The released Workflow version this declaration binds.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * Digest of the sealed plan of that Workflow version.
+   */
+  readonly plan_hash: ContentChecksum;
+  /**
+   * The one event type this trigger admits.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Digest of the event contract a stimulus of this trigger must satisfy.
+   */
+  readonly event_contract_digest: ContentChecksum;
+  /**
+   * Digest of the trigger's configuration.
+   */
+  readonly configuration_digest: ContentChecksum;
+  /**
+   * The state the subscription starts in.
+   */
+  readonly subscription_state: TriggerInitialSubscriptionState;
+  /**
+   * Open code naming why the subscription starts in that state.
+   */
+  readonly subscription_reason: OpenCode;
+}
+
+/**
+ * Result of `trigger.declare`: the declaration as recorded, and the subscription it starts in. A
+ * replay under the same idempotency key returns this result without a second write.
+ */
+export interface TriggerDeclareResult {
+  /**
+   * The declared trigger.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The number this declaration took in the trigger's history.
+   */
+  readonly declaration_sequence: number;
+  /**
+   * The subscription state the trigger now holds.
+   */
+  readonly subscription_state: TriggerSubscriptionState;
+  /**
+   * The number the initial subscription event took.
+   */
+  readonly subscription_sequence: number;
+  /**
+   * When Core recorded the declaration.
+   */
+  readonly declared_at: Timestamp;
+}
+
+/**
+ * Input for `trigger.lifecycle`. Moves one declared trigger's subscription to a new state,
+ * through the transitions the trigger store enforces: `active` moves to `paused`, `unavailable`
+ * or `disabled`; `paused` moves to `active` or `disabled`; `unavailable` moves to `active`,
+ * `paused` or `disabled`; `disabled` moves nowhere. An invalid move is refused as `conflict`.
+ * The trigger must be bound to the Project and Workflow named, or it reads as not found.
+ * Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface TriggerLifecycleInput {
+  /**
+   * The Project the trigger must belong to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow the trigger must start.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The declared trigger whose subscription moves.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The state to move the subscription to.
+   */
+  readonly subscription_state: TriggerSubscriptionState;
+  /**
+   * Open code naming why the subscription moves.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * Result of `trigger.lifecycle`: the subscription state the trigger now holds. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface TriggerLifecycleResult {
+  /**
+   * The trigger whose subscription moved.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The subscription state now held.
+   */
+  readonly subscription_state: TriggerSubscriptionState;
+  /**
+   * The number this subscription event took.
+   */
+  readonly subscription_sequence: number;
+  /**
+   * The reason recorded for the move.
+   */
+  readonly reason: OpenCode;
+  /**
+   * When Core recorded the move.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * Input for `trigger.ingest`: one synchronous, one-shot admission of one stimulus to a declared
+ * trigger. Core records exactly one observation of it, with its delivery decision and a digest
+ * of its envelope; the envelope and its payload are never stored. The decision is taken from the
+ * trigger's current declaration and subscription. An `active` subscription with a matching event
+ * type admits the stimulus. Any other state, or a mismatched type, is recorded as dead-lettered.
+ * A repeat of an accepted stimulus under the same event idempotency key is recorded as a
+ * duplicate when its digest matches, and refused as `idempotency_conflict` when it does not.
+ * Every admission in this build is record-only: it starts no job or run, so its processing reads
+ * `unlinked`. Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface TriggerIngestInput {
+  /**
+   * The Project the trigger must belong to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow the trigger must start.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The declared trigger the stimulus is delivered to.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The event's identifier as its source names it.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The source's key for this event. An accepted key admits its event once; a repeat is a
+   * duplicate. This is not the request's idempotency key.
+   */
+  readonly event_idempotency_key: Identifier;
+  /**
+   * The event type the stimulus carries.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Digest of the event envelope as the source sent it.
+   */
+  readonly envelope_digest: ContentChecksum;
+  /**
+   * When the source says the event occurred, when it says so. Absent leaves the source time
+   * unknown.
+   */
+  readonly occurred_at?: Timestamp;
+}
+
+/**
+ * Result of `trigger.ingest`: what the door decided and what that decision means for processing.
+ * Delivery and processing are separate fields. A dead-lettered or duplicate delivery reads
+ * `not_applicable`, and an accepted record-only delivery reads `unlinked`, never `succeeded`. A
+ * replay under the same idempotency key returns this result without a second write.
+ */
+export interface TriggerIngestResult {
+  /**
+   * The trigger the stimulus was delivered to.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The observation recorded for this stimulus.
+   */
+  readonly trigger_observation_id: Identifier;
+  /**
+   * The number this observation took in the trigger's history.
+   */
+  readonly observation_sequence: number;
+  /**
+   * What the door decided.
+   */
+  readonly delivery_status: TriggerDeliveryStatus;
+  /**
+   * Why the stimulus was dead-lettered. Present for a dead-lettered delivery:
+   * `inactive_trigger` or `event_type_mismatch` in this build.
+   */
+  readonly delivery_reason?: OpenCode;
+  /**
+   * The accepted observation a duplicate repeats. Present for a duplicate.
+   */
+  readonly duplicate_of_observation_id?: Identifier;
+  /**
+   * How far the work the stimulus started has got.
+   */
+  readonly processing: TriggerProcessingStatus;
+  /**
+   * Uncertainty derived for this observation, such as `processing_unlinked` or
+   * `source_time_unknown`.
+   */
+  readonly uncertainty: readonly OpenCode[];
+  /**
+   * When Core observed the stimulus.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * One trigger's current subscription. `state` is absent only when no subscription was ever
+ * recorded for it.
+ */
+export interface TriggerSubscriptionHealth {
+  /**
+   * The state the subscription is in now.
+   */
+  readonly state?: TriggerSubscriptionState;
+  /**
+   * Why it is in that state.
+   */
+  readonly reason?: OpenCode;
+  /**
+   * When Core recorded that state.
+   */
+  readonly observed_at?: Timestamp;
+  /**
+   * The number of the latest subscription event, or 0 when none was recorded.
+   */
+  readonly subscription_sequence: number;
+}
+
+/**
+ * One recorded observation of a trigger: what it was, what the door decided, and how far its
+ * processing has got. It carries digests and bounded metadata, never the event payload.
+ */
+export interface TriggerObservationHealth {
+  /**
+   * The observation.
+   */
+  readonly trigger_observation_id: Identifier;
+  /**
+   * The number it took in the trigger's history.
+   */
+  readonly observation_sequence: number;
+  /**
+   * The event's identifier as its source named it.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The source's key for the event.
+   */
+  readonly event_idempotency_key: Identifier;
+  /**
+   * The event type the stimulus carried.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Digest of the event envelope.
+   */
+  readonly envelope_digest: ContentChecksum;
+  /**
+   * When the source said the event occurred. Absent means that time is unknown.
+   */
+  readonly occurred_at?: Timestamp;
+  /**
+   * When Core observed the stimulus.
+   */
+  readonly observed_at: Timestamp;
+  /**
+   * What the door decided.
+   */
+  readonly delivery_status: TriggerDeliveryStatus;
+  /**
+   * Why the stimulus was dead-lettered or left uncertain. Present for those two statuses.
+   */
+  readonly delivery_reason?: OpenCode;
+  /**
+   * The accepted observation a duplicate repeats. Present for a duplicate.
+   */
+  readonly duplicate_of_observation_id?: Identifier;
+  /**
+   * The job this observation is linked to, when it is linked.
+   */
+  readonly job_id?: OpaqueToken;
+  /**
+   * The run this observation is linked to, when it is linked.
+   */
+  readonly run_id?: Identifier;
+  /**
+   * How far the work the stimulus started has got.
+   */
+  readonly processing: TriggerProcessingStatus;
+  /**
+   * The linked job's latest recorded state, when a job is linked and known.
+   */
+  readonly job_state?: JobState;
+  /**
+   * The linked run's latest recorded status, when a run is linked and known.
+   */
+  readonly run_status?: RunStatus;
+  /**
+   * Uncertainty derived for this observation.
+   */
+  readonly uncertainty: readonly OpenCode[];
+}
+
+/**
+ * One failure a trigger's telemetry can state, with where it was read from. `reason` is a code,
+ * never free text.
+ */
+export interface TriggerFailure {
+  /**
+   * The observation the failure belongs to.
+   */
+  readonly trigger_observation_id: Identifier;
+  /**
+   * Where the failure was read from.
+   */
+  readonly source: TriggerFailureSource;
+  /**
+   * Why it failed.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * A named content digest of material a skill refers to. The digest is recorded and never
+ * dereferenced.
+ */
+export interface SkillReference {
+  /**
+   * The name the skill uses for the referenced material.
+   */
+  readonly name: Identifier;
+  /**
+   * The SHA-256 digest the referenced material or evidence must carry.
+   */
+  readonly content_digest: ContentChecksum;
+}
+
+/**
+ * A dependency on one exact published manifest of another skill. Resolution walks dependencies
+ * over these pinned ids, so a published skill never follows a moving dependency.
+ */
+export interface SkillDependency {
+  /**
+   * The skill this one depends on.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The exact published manifest this one depends on.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * A reference to reviewing evidence: its identifier and the content digest it must carry.
+ * Recorded for audit and never dereferenced here.
+ */
+export interface SkillEvidenceRef {
+  /**
+   * The identifier of the reviewing evidence.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * The SHA-256 digest the referenced material or evidence must carry.
+   */
+  readonly content_digest: ContentChecksum;
+}
+
+/**
+ * One skill a role asks for. Without a manifest id, the highest installed, non-deprecated
+ * version compatible with the role is chosen. With one, exactly that published manifest is
+ * chosen, and only if it is installed, not deprecated and compatible with the role: naming a
+ * manifest never widens what the role may use.
+ */
+export interface SkillSelection {
+  /**
+   * The skill selected.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The exact manifest to select, when the caller names one.
+   */
+  readonly manifest_id?: SkillManifestId;
+}
+
+/**
+ * One manifest in a resolved closure, with how it was selected.
+ */
+export interface SkillResolvedEntry {
+  /**
+   * The manifest in the closure.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * How this manifest entered the closure.
+   */
+  readonly selection: SkillSelectionKind;
+}
+
+/**
+ * Result of `skills.draft.create`: the draft as recorded at its first revision. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface SkillDraftCreateResult {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * When Core recorded the draft.
+   */
+  readonly created_at: Timestamp;
+}
+
+/**
+ * Result of `skills.draft.update`: the revision the draft now stands at. A replay under the same
+ * idempotency key returns this result without a second write.
+ */
+export interface SkillDraftUpdateResult {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * When Core recorded the revision.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay
+ * under the same idempotency key returns this result without a second write.
+ */
+export interface SkillProposalSubmitResult {
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * When Core recorded the proposal.
+   */
+  readonly submitted_at: Timestamp;
+}
+
+/**
+ * Result of `skills.version.publish`: the immutable version as published. A replay under the
+ * same idempotency key returns this result without a second write.
+ */
+export interface SkillVersionPublishResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * When Core recorded the publication.
+   */
+  readonly published_at: Timestamp;
+}
+
+/**
+ * Input for `skills.version.deprecate`. Marks one published version deprecated, once.
+ * Deprecation is append-only: the version is never deleted, and a deprecated version is never
+ * newly selected or installed. It needs the publisher role.
+ */
+export interface SkillVersionDeprecateInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * An open code naming why the version is deprecated.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * Result of `skills.version.deprecate`: the deprecation as recorded. A replay under the same
+ * idempotency key returns this result without a second write.
+ */
+export interface SkillVersionDeprecateResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * An open code naming why the version is deprecated.
+   */
+  readonly reason: OpenCode;
+  /**
+   * When Core recorded the deprecation.
+   */
+  readonly deprecated_at: Timestamp;
+}
+
+/**
+ * Input for `skills.install`. Binds one published version into this workspace's usable set.
+ * Installing is idempotent per workspace and manifest, and never executes content. It needs the
+ * workspace operator role.
+ */
+export interface SkillInstallInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * Result of `skills.install`: the installation state the version now holds. Installing an
+ * installed version returns its current state and records nothing new.
+ */
+export interface SkillInstallResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * Whether the version is installed in this workspace.
+   */
+  readonly install_state: SkillInstallState;
+  /**
+   * The number the recorded event took in the version's history.
+   */
+  readonly event_sequence: number;
+  /**
+   * When Core recorded this state.
+   */
+  readonly recorded_at: Timestamp;
+}
+
+/**
+ * Input for `skills.remove`. Unbinds one installed version from this workspace's usable set.
+ * Removal prevents new selection and touches nothing else: published versions, history and every
+ * Run already bound to the version stay exactly as they were. It needs the workspace operator
+ * role.
+ */
+export interface SkillRemoveInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * Result of `skills.remove`: the installation state the version now holds. Removing a version
+ * that is not installed returns its current state and records nothing new.
+ */
+export interface SkillRemoveResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * Whether the version is installed in this workspace.
+   */
+  readonly install_state: SkillInstallState;
+  /**
+   * The number the recorded event took in the version's history.
+   */
+  readonly event_sequence: number;
+  /**
+   * When Core recorded this state.
+   */
+  readonly recorded_at: Timestamp;
 }
 
 /**
@@ -8238,6 +9158,219 @@ export interface WorkflowRunProjection {
 }
 
 /**
+ * Input for `trigger.health`: a bounded read of trigger health for one Project and one Workflow.
+ * Without `trigger_id` it reads one page of that Workflow's triggers, ordered by trigger
+ * identifier. With `trigger_id` it reads that one trigger, and `limit` and `page` must be
+ * absent. `observation_limit` bounds how many recent observations each trigger returns, newest
+ * first. A trigger of another Project or Workflow reads as not found, never as someone else's.
+ * Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface TriggerHealthInput {
+  /**
+   * The Project whose triggers to read.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow whose triggers to read.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The one trigger to read. Absent reads a page of the Workflow's triggers.
+   */
+  readonly trigger_id?: Identifier;
+  /**
+   * Most recent observations to return per trigger, newest first. Absent reads 5.
+   */
+  readonly observation_limit?: number;
+  /**
+   * Most triggers to return in this page. The server returns at most 50.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page. Absent means the first page.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * One trigger's health: its declaration, its subscription, its last observation and recent
+ * observations, and the failures and uncertainty among them.
+ */
+export interface TriggerHealth {
+  /**
+   * The trigger.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The kind the trigger declares.
+   */
+  readonly trigger_kind: TriggerKind;
+  /**
+   * The Workflow version of its latest declaration.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * The number of its latest declaration.
+   */
+  readonly declaration_sequence: number;
+  /**
+   * The event type its latest declaration admits.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Its current subscription.
+   */
+  readonly subscription: TriggerSubscriptionHealth;
+  /**
+   * Its newest observation. Absent when none was recorded.
+   */
+  readonly last_observation?: TriggerObservationHealth;
+  /**
+   * How many observations it has recorded across its whole history.
+   */
+  readonly observation_total: number;
+  /**
+   * Its newest observations, newest first, up to the requested observation limit.
+   */
+  readonly observations: readonly TriggerObservationHealth[];
+  /**
+   * How many of the observations returned carry each delivery status.
+   */
+  readonly delivery_counts: TriggerDeliveryCounts;
+  /**
+   * Failures among the observations returned.
+   */
+  readonly failures: readonly TriggerFailure[];
+  /**
+   * Uncertainty carried by the subscription and the observations returned.
+   */
+  readonly uncertainty: readonly OpenCode[];
+}
+
+/**
+ * A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is
+ * compatible with and the capabilities it requires to be present. It grants nothing. Its field
+ * set is closed, and a member that would state a permission, tool, budget, path, network right,
+ * credential, escalation or sandbox setting is refused, never ignored.
+ */
+export interface SkillManifest {
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * What the skill is for, as inert text.
+   */
+  readonly description: string;
+  /**
+   * The skill's instruction text, carried as data and never executed.
+   */
+  readonly instructions: string;
+  /**
+   * Named digests of material the skill refers to.
+   */
+  readonly references: readonly SkillReference[];
+  /**
+   * Other skills this one needs, each pinned to one exact published manifest.
+   */
+  readonly dependencies: readonly SkillDependency[];
+  /**
+   * The roles this skill may be selected for.
+   */
+  readonly compatible_roles: readonly Identifier[];
+  /**
+   * Capabilities that must be present before execution. A requirement, never a grant.
+   */
+  readonly required_capabilities: readonly Identifier[];
+}
+
+/**
+ * The skills one Run role selects, in the caller's order. Core resolves each to exact manifest
+ * ids and a bounded closure, and the Run binds all of them in its admission.
+ */
+export interface SkillRoleSelection {
+  /**
+   * The Run role that selects these skills.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The skills the role asks for, in the caller's order.
+   */
+  readonly selections: readonly SkillSelection[];
+}
+
+/**
+ * Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher queue,
+ * once, with the evidence the author cites. Submitting grants no publication.
+ */
+export interface SkillProposalSubmitInput {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The draft revision the caller last read. A different current revision is a conflict.
+   */
+  readonly expected_revision: number;
+  /**
+   * The evidence the author cites for the proposal.
+   */
+  readonly evidence_refs: readonly SkillEvidenceRef[];
+}
+
+/**
+ * Input for `skills.version.publish`. Mints the immutable version a proposal submitted, naming
+ * the reviewing evidence and the publisher. It needs the publisher role, which authorship never
+ * implies. A version is published once per skill and version: changed content takes a new
+ * version.
+ */
+export interface SkillVersionPublishInput {
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The reviewing evidence the publisher relies on.
+   */
+  readonly review_evidence_refs: readonly SkillEvidenceRef[];
+}
+
+/**
+ * Input for `skills.resolve`. Resolves one role's skill selections to exact manifest ids and
+ * their bounded dependency closure, using the registry's precedence. It is a read: it binds
+ * nothing and changes nothing.
+ */
+export interface SkillResolveInput {
+  /**
+   * The Run role this names.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The skills the role asks for, in the caller's order.
+   */
+  readonly selections: readonly SkillSelection[];
+}
+
+/**
+ * Result of `skills.resolve`: the closure the role would be bound to, dependencies first.
+ * Bounded, and deterministic for the same registry state.
+ */
+export interface SkillResolveResult {
+  /**
+   * The Run role this names.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The resolved closure, dependencies first.
+   */
+  readonly entries: readonly SkillResolvedEntry[];
+}
+
+/**
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
@@ -9305,6 +10438,34 @@ export interface RunStep {
 }
 
 /**
+ * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
+ * through the request envelope's selected workspace, so this payload never carries a second,
+ * independent workspace identifier. There is no definition, plan, binding or logical-key member.
+ * A caller that could state the material it runs against could state material nobody released,
+ * so the plan is sealed and the binding is resolved server-side from the exact release this
+ * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
+ * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
+ * Its one optional member, `skill_selections`, names the skills each role selects; Core resolves
+ * them to exact manifest ids in the same admission, and no caller states a binding.
+ */
+export interface WorkflowStartInput {
+  /**
+   * The Workflow to run.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The released version of it to run.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * The skills each Run role selects, when the Run needs any. Absent, the Run binds no skill.
+   * Each selection is resolved to exact manifest ids and a bounded closure in the admission
+   * transaction, so a selection that cannot be resolved refuses the whole start.
+   */
+  readonly skill_selections?: readonly SkillRoleSelection[];
+}
+
+/**
  * Result of `workflow.start`: the Run as it now stands durably. There is no admitted-versus-
  * replayed member, because an honest replay is answered from the stored bytes of the first call
  * and so could not carry a different one; the Run this names is the caller's Run either way.
@@ -9396,6 +10557,63 @@ export interface WorkflowReviewResult {
    * Progress of a recorded stop on this Run, when there is one to report.
    */
   readonly stop?: RuntimeStopProjection;
+}
+
+/**
+ * Result of `trigger.health`. Expose trigger health through a shared aggregation keyed by
+ * Project/Workflow, including per-trigger subscription state, last observation,
+ * delivery/processing status, failures and uncertainty. Each trigger reports its subscription,
+ * its last observation, the delivery and processing status of its recent observations, the
+ * failures among them, and the uncertainty they carry. Uncertainty is derived on read and never
+ * stored as a guess. `delivery_counts` and `failures` cover only the observations returned,
+ * while `observation_total` counts the trigger's whole history.
+ */
+export interface TriggerHealthResult {
+  /**
+   * The triggers in this page, ordered by trigger identifier. One item for an exact read.
+   */
+  readonly items: readonly TriggerHealth[];
+  /**
+   * The position this read reached. A continuation token means more triggers remain; `{}`
+   * means the read is exhausted.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from reviewed
+ * work or fresh. The skill name is fixed for the draft's life. It publishes nothing and installs
+ * nothing: authorship never grants either.
+ */
+export interface SkillDraftCreateInput {
+  /**
+   * The first revision of the draft's manifest.
+   */
+  readonly manifest: SkillManifest;
+  /**
+   * The reviewed work this draft came from, when there is one.
+   */
+  readonly source_work_ref?: Identifier;
+}
+
+/**
+ * Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the
+ * revision the caller last read. A stale `expected_revision` is a conflict, so two authors never
+ * overwrite each other. A submitted draft is closed to revision.
+ */
+export interface SkillDraftUpdateInput {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The draft revision the caller last read. A different current revision is a conflict.
+   */
+  readonly expected_revision: number;
+  /**
+   * The manifest, as inert data.
+   */
+  readonly manifest: SkillManifest;
 }
 
 /**
@@ -11693,6 +12911,7 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "authorization_denied",
       "cancelled",
       "capability_not_granted",
+      "conflict",
       "deadline_exceeded",
       "dependency_unavailable",
       "idempotency_conflict",
@@ -12822,6 +14041,411 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_request",
       "rate_limited",
       "unsupported_minor_version",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.declare",
+    scope: {
+      required_scopes: ["trigger:configure"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareResult",
+    required_capability: { id: "trigger.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.lifecycle",
+    scope: {
+      required_scopes: ["trigger:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleResult",
+    required_capability: { id: "trigger.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.ingest",
+    scope: { required_scopes: ["trigger:invoke"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestResult",
+    required_capability: { id: "trigger.invoke", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.health",
+    scope: { required_scopes: ["trigger:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthResult",
+    required_capability: { id: "trigger.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 50 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.draft.create",
+    scope: { required_scopes: ["skill:author"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.draft.update",
+    scope: { required_scopes: ["skill:author"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.proposal.submit",
+    scope: { required_scopes: ["skill:author"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.version.publish",
+    scope: { required_scopes: ["skill:publish"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishResult",
+    required_capability: { id: "skill.publish", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.version.deprecate",
+    scope: { required_scopes: ["skill:publish"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateResult",
+    required_capability: { id: "skill.publish", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.install",
+    scope: { required_scopes: ["skill:install"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallResult",
+    required_capability: { id: "skill.install", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.remove",
+    scope: { required_scopes: ["skill:install"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveResult",
+    required_capability: { id: "skill.install", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.resolve",
+    scope: { required_scopes: ["skill:resolve"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult",
+    required_capability: { id: "skill.resolve", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
       "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",

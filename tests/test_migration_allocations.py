@@ -67,9 +67,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # allocation, not a file -- its SQL stays absent until a later change deliberately advances
 # this entry from reserved to candidate, with its content hash and introducing commit
 # recorded here.
-# 0043 is reserved to Workflow Runtime for trigger telemetry (C21-A, founder Decision 4A):
-# an allocation, not a file -- its SQL stays absent until founder design review of
-# docs/development/omnivia-core-trigger-telemetry-design-2026-09-23.md and a later change advances it to candidate.
+# 0043 is the Workflow Runtime trigger-telemetry candidate (C21-A, founder Decision 4A),
+# advanced from reserved to candidate with its content hash and introducing commit.
 # 0044-0046 are the Decision Runtime candidates (ADR-042, plan PR-3): settings,
 # immutable definition versions/qualifications, and the evaluation/attempt/
 # result/outcome/subscription/outbox record families, advanced from reservation
@@ -120,7 +119,7 @@ EXPECTED_ALLOCATION = (
     ),
     (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
     (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "candidate"),
-    (43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "reserved"),
+    (43, "0043_runtime_trigger_telemetry.sql", "Workflow Runtime", "candidate"),
     (44, "0044_decision_settings.sql", "Decision Runtime", "candidate"),
     (45, "0045_decision_definitions.sql", "Decision Runtime", "candidate"),
     (46, "0046_decision_records.sql", "Decision Runtime", "candidate"),
@@ -176,6 +175,9 @@ EXPECTED_ALLOCATION = (
         "Engineering Memory",
         "candidate",
     ),
+    (64, "0064_managed_skills_registry.sql", "Agent Runtime", "candidate"),
+    (65, "0065_review_finding_quarantine.sql", "Agent Runtime", "candidate"),
+    (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -219,6 +221,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
     42: "0373e229d2ded9b4c48fdba48fc8e760054f58a6",
+    43: "5395d463e7b172f39ced4a28f272ae9700afe989",
     # 0044-0046 were introduced by 72b84cf6 and repinned to the whitespace
     # repair b16217f6, which is where their current content lives.
     44: "b16217f679b304e80daf2af9566e26057d4a9049",
@@ -248,6 +251,15 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # its current content lives.
     62: "d54b3f447456534b4e436225233b0ab858eae49e",
     63: "2ed5e6a67763be23629eaaf392db70fd2b526084",
+    # 0064 was introduced by 29ae6c85 and repinned to its binding-generations
+    # repair cecb879b, which is where its current content lives.
+    64: "cecb879bda649e8323d218d0c7927a50cc299b9e",
+    # 0065 is the C13 review-finding quarantine candidate, pinned to the commit that
+    # introduced its SQL. 0066 was introduced by de6724f0, repinned to its
+    # completion-authority hardening a3319bd2, its exact-lineage repair 32fe9562,
+    # then its closed-event-shape repair b1193aaa, where its current content lives.
+    65: "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
+    66: "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

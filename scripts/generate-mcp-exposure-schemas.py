@@ -95,11 +95,18 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "decision.record.get",
     "decision.record.list",
     "decision.status",
+    "trigger.health",
     "memory.create",
     "evidence.capture",
     "import.start",
+    "trigger.declare",
+    "trigger.lifecycle",
+    "trigger.ingest",
     "job.get",
     "job.events",
+    "skills.draft.create",
+    "skills.draft.update",
+    "skills.proposal.submit",
 )
 
 #: Advertised schemas that belong to no operation. One entry: the canonical

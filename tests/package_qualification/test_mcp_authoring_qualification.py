@@ -13,6 +13,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import jsonschema
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +50,7 @@ def _record() -> dict[str, object]:
         "verdict": "pass",
         "profile": "authoring",
         "protocol_version": "2025-06-18",
-        "tool_count": 18,
+        "tool_count": 25,
         "tools": [
             "workspace_inspect",
             "evidence_search",
@@ -64,11 +65,18 @@ def _record() -> dict[str, object]:
             "decision_record_get",
             "decision_record_list",
             "decision_status",
+            "trigger_health",
             "memory_create",
             "evidence_capture",
             "import_start",
+            "trigger_declare",
+            "trigger_lifecycle",
+            "trigger_ingest",
             "job_get",
             "job_events",
+            "skills_draft_create",
+            "skills_draft_update",
+            "skills_proposal_submit",
         ],
         "sdk_versions": {"mcp": "2.0.0", "mcp-types": "2.0.0"},
         "environment": {
@@ -158,11 +166,28 @@ def test_closed_schema_and_builder_accept_the_exact_redacted_record() -> None:
     assert builder._require_authoring_qualification(_record()) == _record()
 
 
-def test_retained_installed_record_is_the_closed_schema_valid_result() -> None:
+def test_retained_18_tool_record_is_closed_historical_and_expired_for_current_candidates() -> None:
+    """The 2026-10-03 Phase 8 run is immutable evidence of an 18-tool inventory.
+
+    It is closed and bound to the historical inventory, an ordered subset of the live
+    25-tool list. The current builder refuses it only because the tool inventory has
+    advanced; the refusal is the fixed, payload-free message.
+    """
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    journey = _module(JOURNEY, "omnivia_authoring_retained_under_test")
     builder = _module(BUILDER, "build_standard_candidate_retained_authoring")
     retained = json.loads(RETAINED_RECORD.read_text(encoding="utf-8"))
 
-    assert builder._require_authoring_qualification(retained) == retained
+    assert set(retained) == set(schema["required"])
+    assert retained["tool_count"] == len(retained["tools"]) == 18
+    current = iter(journey.AUTHORING_TOOLS)
+    assert all(tool in current for tool in retained["tools"])
+    violations = {error.path[0] for error in jsonschema.Draft202012Validator(schema).iter_errors(retained)}
+    assert violations == {"tool_count", "tools"}
+
+    with pytest.raises(builder.CandidateError) as refused:
+        builder._require_authoring_qualification(retained)
+    assert str(refused.value) == "the MCP authoring qualification record is not the accepted redacted shape"
 
 
 @pytest.mark.parametrize(

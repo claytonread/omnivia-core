@@ -18,10 +18,10 @@ the day the catalogue moves, and no copy of it can go stale in between.
 **Least privilege is the shape of the data, not a rule about it.** The rights are
 stored one row per right and read back the same way; there is no pattern, no
 prefix, no "all of namespace x", and the schema refuses a `*` or a `?` in a
-granted value outright. A `restricted` principal holds thirteen operations, six
-scopes, nine capabilities, eight purposes and one role, and an `authoring` one
-holds those plus exactly five operations, two scopes, four capabilities and
-three purposes. It gains no additional role.
+granted value outright. A `restricted` principal holds fourteen operations, seven
+scopes, ten capabilities, nine purposes and one role, and an `authoring` one
+holds those plus exactly eleven operations, five scopes, seven capabilities and
+six purposes. It gains no additional role.
 
 **The one role is a grant, not an inference.** R004 section 9.1 requires an
 authoring setup to hold "workspace contributor authority sufficient for
@@ -124,7 +124,7 @@ _MESSAGE_NOT_AUTHENTICATED: Final = (
 # --- the two exact profiles ---------------------------------------------------
 #
 # The operation and the purpose are the MCP exposure manifest's (`manifest.py`,
-# `MANIFEST_VERSION` 2.3) and are restated here because the runtime must not
+# `MANIFEST_VERSION` 2.4) and are restated here because the runtime must not
 # import the MCP package: an agent-facing allow-list is a decision that package
 # owns, and a dependency in this direction would make the service unable to start
 # without it. Everything else about each operation is read from the catalogue.
@@ -143,6 +143,7 @@ _RESTRICTED_OPERATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("decision.record.get", "decision_record"),
     ("decision.record.list", "decision_record"),
     ("decision.status", "decision_status"),
+    ("trigger.health", "trigger_observation"),
 )
 
 _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
@@ -151,6 +152,12 @@ _AUTHORING_ADDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("import.start", "content_ingestion"),
     ("job.get", "job_observation"),
     ("job.events", "job_observation"),
+    ("trigger.declare", "trigger_configuration"),
+    ("trigger.lifecycle", "trigger_configuration"),
+    ("trigger.ingest", "trigger_ingestion"),
+    ("skills.draft.create", "skill_authoring"),
+    ("skills.draft.update", "skill_authoring"),
+    ("skills.proposal.submit", "skill_authoring"),
 )
 
 
@@ -207,7 +214,7 @@ def _derive_policy(entries: tuple[tuple[str, str], ...]) -> tuple[McpGrant, ...]
 #: `INSTALLATION_ADMINISTRATOR_ROLE`, which administers this catalogue.
 _AUTHORING_ROLE: Final = McpGrant(McpGrantKind.ROLE, WORKSPACE_CONTRIBUTOR_ROLE)
 
-#: The restricted grant: exactly the manifest's restricted thirteen and what they
+#: The restricted grant: exactly the manifest's restricted fourteen and what they
 #: need. `decision.evaluate` is a mutation the restricted manifest admits, and
 #: the mutation coordinator serves it under the one workspace-contributor role,
 #: so the restricted principal holds that role -- and nothing else.
@@ -215,8 +222,9 @@ RESTRICTED_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(set(_derive_policy(_RESTRICTED_OPERATIONS)) | {_AUTHORING_ROLE})
 )
 
-#: The authoring grant: the restricted rights, exactly the five additions, and
-#: the one role both profiles' mutations need.
+#: The authoring grant: the restricted rights, exactly the eleven additions, and
+#: the one role both profiles' mutations need. Publication and installation are not
+#: additions: they need the publisher and operator roles, which no profile here grants.
 AUTHORING_POLICY: Final[tuple[McpGrant, ...]] = tuple(
     sorted(
         set(_derive_policy(_RESTRICTED_OPERATIONS + _AUTHORING_ADDITIONS))

@@ -1169,6 +1169,144 @@
     },
     "ResultUseEvaluateResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/ResultUseEvaluateResult"
+    },
+    "TriggerKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerKind"
+    },
+    "TriggerInitialSubscriptionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerInitialSubscriptionState"
+    },
+    "TriggerSubscriptionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerSubscriptionState"
+    },
+    "TriggerDeliveryStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeliveryStatus"
+    },
+    "TriggerProcessingStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerProcessingStatus"
+    },
+    "TriggerFailureSource": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerFailureSource"
+    },
+    "TriggerDeclareInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput"
+    },
+    "TriggerDeclareResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareResult"
+    },
+    "TriggerLifecycleInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleInput"
+    },
+    "TriggerLifecycleResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleResult"
+    },
+    "TriggerIngestInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestInput"
+    },
+    "TriggerIngestResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestResult"
+    },
+    "TriggerHealthInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthInput"
+    },
+    "TriggerHealthResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthResult"
+    },
+    "TriggerHealth": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealth"
+    },
+    "TriggerSubscriptionHealth": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerSubscriptionHealth"
+    },
+    "TriggerObservationHealth": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerObservationHealth"
+    },
+    "TriggerFailure": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerFailure"
+    },
+    "TriggerDeliveryCounts": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeliveryCounts"
+    },
+    "SkillManifestId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifestId"
+    },
+    "SkillVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersion"
+    },
+    "SkillSelectionKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelectionKind"
+    },
+    "SkillInstallState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallState"
+    },
+    "SkillReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillReference"
+    },
+    "SkillDependency": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDependency"
+    },
+    "SkillManifest": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillManifest"
+    },
+    "SkillEvidenceRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillEvidenceRef"
+    },
+    "SkillSelection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillSelection"
+    },
+    "SkillRoleSelection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRoleSelection"
+    },
+    "SkillResolvedEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolvedEntry"
+    },
+    "SkillDraftCreateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput"
+    },
+    "SkillDraftCreateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult"
+    },
+    "SkillDraftUpdateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput"
+    },
+    "SkillDraftUpdateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult"
+    },
+    "SkillProposalSubmitInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput"
+    },
+    "SkillProposalSubmitResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult"
+    },
+    "SkillVersionPublishInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishInput"
+    },
+    "SkillVersionPublishResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishResult"
+    },
+    "SkillVersionDeprecateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateInput"
+    },
+    "SkillVersionDeprecateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateResult"
+    },
+    "SkillInstallInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallInput"
+    },
+    "SkillInstallResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallResult"
+    },
+    "SkillRemoveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveInput"
+    },
+    "SkillRemoveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveResult"
+    },
+    "SkillResolveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveInput"
+    },
+    "SkillResolveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult"
     }
   }
 }

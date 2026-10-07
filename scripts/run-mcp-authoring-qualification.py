@@ -74,11 +74,18 @@ AUTHORING_TOOLS: Final = (
     "decision_record_get",
     "decision_record_list",
     "decision_status",
+    "trigger_health",
     "memory_create",
     "evidence_capture",
     "import_start",
+    "trigger_declare",
+    "trigger_lifecycle",
+    "trigger_ingest",
     "job_get",
     "job_events",
+    "skills_draft_create",
+    "skills_draft_update",
+    "skills_proposal_submit",
 )
 RECORD_FILE: Final = "mcp-authoring-qualification.json"
 #: The sanitized message of an installed credential that is no longer held.
@@ -445,7 +452,7 @@ async def _empty_workspace_journey(
     async with _session_lifetime(stack):
         listed = await session.list_tools()
         tools = [tool.name for tool in listed.tools]
-        _require(tools == list(AUTHORING_TOOLS), "the authoring inventory was not the accepted eighteen")
+        _require(tools == list(AUTHORING_TOOLS), "the authoring inventory was not the accepted twenty-five")
         checks["tool_discovery"] = True
         empty_evidence = _success(await _call(session, "evidence_search", {"query": TOKEN}), "empty evidence search")
         empty_memory = _success(await _call(session, "memory_search", {"query": TOKEN}), "empty memory search")

@@ -129,6 +129,49 @@ from omnivia_core.contracts.v1.semantics_jobs import (
     IDEMPOTENCY_REPLAY,
 )
 
+#: Trigger vocabularies (C21): the closed enums `runtime.schema.json` declares for trigger
+#: declarations, subscriptions, observations and health. `storage/trigger_telemetry.py`
+#: enforces the same domains; this module is the contract's own copy, held equal to the
+#: schema by the vocabulary test.
+TRIGGER_KINDS: Final[tuple[str, ...]] = (
+    "manual",
+    "schedule",
+    "webhook",
+    "cloudevent",
+    "catalogue_event",
+)
+TRIGGER_INITIAL_SUBSCRIPTION_STATES: Final[tuple[str, ...]] = ("active", "paused")
+TRIGGER_SUBSCRIPTION_STATES: Final[tuple[str, ...]] = (
+    "active",
+    "paused",
+    "unavailable",
+    "disabled",
+)
+TRIGGER_DELIVERY_STATUSES: Final[tuple[str, ...]] = (
+    "accepted",
+    "duplicate",
+    "dead_lettered",
+    "uncertain",
+)
+TRIGGER_PROCESSING_STATUSES: Final[tuple[str, ...]] = (
+    "not_applicable",
+    "unlinked",
+    "unknown",
+    "pending",
+    "in_progress",
+    "succeeded",
+    "partially_completed",
+    "failed",
+    "cancelled",
+    "uncertain",
+)
+TRIGGER_FAILURE_SOURCES: Final[tuple[str, ...]] = ("delivery", "job", "run")
+#: Managed Skills vocabularies (C17): the schema is the authority and these restate it. A
+#: skill selection names how a manifest entered a closure; an install state is recorded, never
+#: deleted.
+SKILL_SELECTION_KINDS: Final[tuple[str, ...]] = ("explicit", "highest_compatible", "dependency")
+SKILL_INSTALL_STATES: Final[tuple[str, ...]] = ("installed", "removed")
+
 __all__ = [
     "APPROVAL_DECISIONS",
     "APPROVAL_DECISION_APPROVED",
@@ -170,6 +213,14 @@ __all__ = [
     "RUN_STEP_STATUSES",
     "RUN_STEP_TERMINAL_STATUSES",
     "RUN_TERMINAL_STATUSES",
+    "SKILL_INSTALL_STATES",
+    "SKILL_SELECTION_KINDS",
+    "TRIGGER_DELIVERY_STATUSES",
+    "TRIGGER_FAILURE_SOURCES",
+    "TRIGGER_INITIAL_SUBSCRIPTION_STATES",
+    "TRIGGER_KINDS",
+    "TRIGGER_PROCESSING_STATUSES",
+    "TRIGGER_SUBSCRIPTION_STATES",
     "WAIT_KINDS",
     "WAIT_RESOLUTIONS",
     "WAIT_RESOLUTION_CANCELLED",

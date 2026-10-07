@@ -25,6 +25,7 @@ import test_rt102_agent_runtime_migration as m18
 import test_rt102_agent_runtime_repository as rt102
 import test_rt104_runtime_command_transaction as rt104
 import test_v06_5_s0_mutation_foundation as s0
+from _completion_gate_fixture import gate
 from omnivia_core_runtime.ownership.fencing import StaleGeneration, open_guard
 from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.ownership.lease import acquire_lease
@@ -259,6 +260,7 @@ def scheduler_at(holder: m1.Owned, at_us: int = RECOVER_US) -> RuntimeScheduler:
         WORKSPACE_ID,
         holder.generation,
         clock_at(at_us),
+        completion=gate(),
     )
 
 

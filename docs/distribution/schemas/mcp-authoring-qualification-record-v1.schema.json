@@ -21,7 +21,7 @@
     "verdict": {"const": "pass"},
     "profile": {"const": "authoring"},
     "protocol_version": {"const": "2025-06-18"},
-    "tool_count": {"const": 18},
+    "tool_count": {"const": 25},
     "tools": {
       "type": "array",
       "prefixItems": [
@@ -38,15 +38,22 @@
         {"const": "decision_record_get"},
         {"const": "decision_record_list"},
         {"const": "decision_status"},
+        {"const": "trigger_health"},
         {"const": "memory_create"},
         {"const": "evidence_capture"},
         {"const": "import_start"},
+        {"const": "trigger_declare"},
+        {"const": "trigger_lifecycle"},
+        {"const": "trigger_ingest"},
         {"const": "job_get"},
-        {"const": "job_events"}
+        {"const": "job_events"},
+        {"const": "skills_draft_create"},
+        {"const": "skills_draft_update"},
+        {"const": "skills_proposal_submit"}
       ],
       "items": false,
-      "minItems": 18,
-      "maxItems": 18
+      "minItems": 25,
+      "maxItems": 25
     },
     "sdk_versions": {
       "type": "object",

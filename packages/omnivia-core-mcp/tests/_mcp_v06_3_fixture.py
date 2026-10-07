@@ -86,7 +86,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+from omnivia_core_cli import main as cli_main
+from omnivia_core_cli.dispatch import dispatch_application, find_application_command
 from omnivia_core_client import (
     Credential,
     CredentialReference,
@@ -151,7 +154,7 @@ MCP_HOST = "claude-code"
 
 #: The two profiles `mcp.configure` knows, spelled as the service's own
 #: `McpProfile` spells them. `serving()` asks for the restricted one unless a
-#: caller says otherwise: the restricted thirteen are what every read-side test in
+#: caller says otherwise: the restricted fourteen are what every read-side test in
 #: the suite expects, and the wider profile is an explicit act here for the same
 #: reason it is one in production -- authoring intent is recorded, never
 #: inferred.
@@ -1264,7 +1267,7 @@ def _diagnosis(process: subprocess.Popen[bytes], log: Path) -> str:
     return f"the service is {state}; it wrote {said!r}"
 
 
-#: The read operations the HTTP embedder's session grants: the ten the MCP
+#: The read operations the HTTP embedder's session grants: the reads the MCP
 #: exposure manifest allow-lists, stated here rather than imported so this file
 #: stays independent of the package under test.
 _HTTP_GRANTED_OPERATIONS = (
@@ -1280,6 +1283,7 @@ _HTTP_GRANTED_OPERATIONS = (
     "decision.record.get",
     "decision.record.list",
     "decision.status",
+    "trigger.health",
 )
 
 #: A test-only embedder of the service's own `main()`. `omnivia-core-service`
@@ -1313,6 +1317,39 @@ def resolve(presented):
 
 sys.exit(main(argv, resolve_credential=resolve))
 """
+
+
+def cli_dispatch(
+    client: Any,
+    command: tuple[str, ...],
+    *,
+    payload: object,
+    idempotency_key: str | None,
+) -> Any:
+    """One application call through the CLI's own dispatch helper, over `client`.
+
+    The parity suite compares the two surfaces, so this is where it reaches the CLI: this
+    module is the one file in the MCP tests allowed to import another package.
+    """
+    return dispatch_application(
+        client,
+        find_application_command(command),
+        payload=payload,
+        deadline=Deadline.after(2.5, clock=lambda: 0.0),
+        idempotency_key=idempotency_key,
+    )
+
+
+def cli_report(response: Any, capsys: Any) -> tuple[int, str, str]:
+    """What the CLI prints for `response`: its status, stdout and stderr."""
+    status = cli_main._report_application(response, as_json=False)
+    captured = capsys.readouterr()
+    return status, captured.out, captured.err
+
+
+def cli_exit_code(code: str) -> int:
+    """The process status the CLI gives one application error code."""
+    return cli_main.exit_code_for(code)
 
 
 def installed_cli(
@@ -1437,7 +1474,7 @@ def serving(
     issues.
 
     `profile` is what that setup records: `restricted` by default, which is the
-    thirteen every read-side test expects, and `authoring` for the one test that
+    fourteen every read-side test expects, and `authoring` for the one test that
     needs the wider surface.
 
     `seed=False` serves the workspace exactly as the installation bootstrap left

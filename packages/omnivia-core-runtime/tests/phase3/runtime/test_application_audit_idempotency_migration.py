@@ -1395,15 +1395,13 @@ def test_m1_19b_a_dangling_link_is_refused_without_wedging_the_connection(
     fails, `fenced_transaction` rolls the transaction back on its way out, and the
     connection is ready for the next write.
 
-    The second half is the cost of the alternative, made permanent rather than left as
-    a claim in a comment. `PRAGMA defer_foreign_keys` moves exactly these checks to
-    COMMIT without altering the schema, which is what `DEFERRABLE INITIALLY DEFERRED`
-    would do durably. SQLite then leaves the transaction *open* when COMMIT fails,
-    and `fenced_transaction` issues its COMMIT outside the block that rolls back --
-    so the service's single authoritative write connection is left inside an open
-    transaction, refusing every later write, until something rolls it back by hand.
-    Nothing in the product does. That is why none of these foreign keys is deferred,
-    and why M1-20b asserts that none of them ever becomes so.
+    The second half is the deferred alternative, made permanent rather than left as a
+    claim in a comment. `PRAGMA defer_foreign_keys` moves exactly these checks to COMMIT
+    without altering the schema, which is what `DEFERRABLE INITIALLY DEFERRED` would do
+    durably. SQLite leaves the transaction *open* when COMMIT fails, and
+    `fenced_transaction` rolls that transaction back itself, so the refusal does not
+    wedge the service's write connection. The foreign keys stay immediate regardless:
+    M1-20b asserts that none of them is deferred.
     """
     seed_triad(owned)
 
@@ -1434,15 +1432,10 @@ def test_m1_19b_a_dangling_link_is_refused_without_wedging_the_connection(
             audit_ref="aud-missing",
         )
 
-    assert owned.connection.in_transaction is True
-    with pytest.raises(sqlite3.OperationalError, match="within a transaction"):
-        write(owned, M1_TABLES[0], audit_ref="aud-never-reached")
-
-    # Only an explicit rollback -- which no product path issues after a failed COMMIT
-    # -- gets the connection back, and none of the refused rows is durable.
-    owned.connection.execute("ROLLBACK")
+    # The fence rolls back the COMMIT it refused, so no transaction is left open for the
+    # next write, and none of the refused rows is durable.
     assert owned.connection.in_transaction is False
-    write(owned, M1_TABLES[0], audit_ref="aud-after-rollback")
+    write(owned, M1_TABLES[0], audit_ref="aud-after-deferred-refusal")
     assert count(owned.connection, M1_TABLES[0]) == 3
     assert count(owned.connection, M1_TABLES[1]) == 1
     assert count(owned.connection, M1_TABLES[2]) == 1
@@ -1527,7 +1520,7 @@ def test_m1_20b_every_declared_foreign_key_names_the_workspace_column(
                 assert len(columns) == 2, (table, columns)
         assert seen == 5, seen
 
-        # And none of them is deferred: see M1-19b for what that would cost.
+        # And none of them is deferred: M1-19b's second half shows a deferred refusal at COMMIT.
         for table in M1_TABLES:
             row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",

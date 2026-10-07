@@ -107,6 +107,18 @@ EXPECTED_COMMANDS = (
         "decision.result_use.evaluate",
         "decision_result_use",
     ),
+    (("trigger", "declare"), "trigger.declare", "trigger_configuration"),
+    (("trigger", "lifecycle"), "trigger.lifecycle", "trigger_configuration"),
+    (("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
+    (("trigger", "health"), "trigger.health", "trigger_observation"),
+    (("skills", "draft-create"), "skills.draft.create", "skill_authoring"),
+    (("skills", "draft-update"), "skills.draft.update", "skill_authoring"),
+    (("skills", "propose"), "skills.proposal.submit", "skill_authoring"),
+    (("skills", "publish"), "skills.version.publish", "skill_publication"),
+    (("skills", "deprecate"), "skills.version.deprecate", "skill_publication"),
+    (("skills", "install"), "skills.install", "skill_installation"),
+    (("skills", "remove"), "skills.remove", "skill_installation"),
+    (("skills", "resolve"), "skills.resolve", "skill_resolution"),
 )
 
 EXPECTED_PROBES = (
@@ -155,14 +167,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_fifty_six_application_commands_are_declared_in_order() -> None:
+def test_the_sixty_nine_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 57
+    assert len(APPLICATION_COMMANDS) == 69
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

@@ -41,13 +41,25 @@ holds -- identical in status, reason and approval means the same accepted answer
 without a second write, because a wait stops being pending exactly once. A second key
 carrying a *different* resolution is :class:`WaitResolutionConflict`, raised before any
 write, and the transaction rolls back with it.
+
+**External signals are observed, and a refused one is recorded.** An accepted
+`external_signal` resolution writes its wait-signal observation (0043) in the settlement's own
+fenced transaction, beside the wait's close. A refusal the telemetry can state (see
+:attr:`WaitResolutionConflict.dead_letter_reason`) rolls that transaction back, then is recorded
+in a fenced transaction of its own: a `refused` audit event, and a dead-lettered observation that
+names it. Nothing else is recorded. A refusal made before the settlement runs (an idempotency
+conflict, a stale grant, a run-sequence mismatch), a refusal of a wait that is not there, and a
+policy denial are answered without a record: each names no signal the telemetry may hold.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Any, Final, Literal
 
@@ -76,6 +88,7 @@ from omnivia_core_runtime.service.mutation import (
     MutationOutcome,
     MutationSettlementContext,
     ResultValidator,
+    record_refused_audit,
 )
 from omnivia_core_runtime.service.operations import OperationError
 from omnivia_core_runtime.service.runtime_command import (
@@ -83,6 +96,11 @@ from omnivia_core_runtime.service.runtime_command import (
     execute_runtime_command,
 )
 from omnivia_core_runtime.storage.agent_runtime import RuntimeWriter, read_run
+from omnivia_core_runtime.storage.trigger_telemetry import (
+    read_wait_signal_observation,
+    transaction_local_telemetry_writer,
+    trigger_telemetry_writer,
+)
 
 #: The `WaitStatus` each `WaitResolution` settles the wait in. The contract already fixes
 #: which resolution may resolve which kind of wait; this is the one thing left to say --
@@ -103,6 +121,17 @@ _STEP_STATUS_RUNNING: Final = "running"
 
 _EVENT_KIND_WAIT_OPENED: Final = "wait_opened"
 _EVENT_KIND_WAIT_RESOLVED: Final = "wait_resolved"
+
+_EXTERNAL_SIGNAL: Final = "external_signal"
+_ACCEPTED: Final = "accepted"
+_DEAD_LETTERED: Final = "dead_lettered"
+#: The `WAIT_DEAD_LETTER_REASONS` a refused resolution records as, each stated where the
+#: refusal is made: a request malformed for its wait, a request the stored wait or run does
+#: not admit, a resolution after the deadline, and a second resolution of a settled wait.
+_PAYLOAD_REJECTED: Final = "payload_rejected"
+_CONTRACT_REJECTED: Final = "contract_rejected"
+_DEADLINE_PASSED: Final = "deadline_passed"
+_WAIT_ALREADY_RESOLVED: Final = "wait_already_resolved"
 
 #: The wait's raw deadline, in the microseconds it was stored in. Read rather than parsed
 #: back out of the contract record: `Wait.expires_at` is rendered to millisecond precision,
@@ -134,12 +163,22 @@ class WaitResolutionConflict(OperationError):
     run are currently in -- something the caller has to re-read and re-decide against.
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        dead_letter_reason: str | None = None,
+        audit_reference: str | None = None,
+    ) -> None:
         super().__init__(
             ERROR_CODE_CONFLICT,
             message,
             retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_CONFLICT],
+            audit_reference=audit_reference,
         )
+        #: The `WAIT_DEAD_LETTER_REASONS` code this refusal records an external signal as, or
+        #: `None` where the telemetry has no such code to state. Set where the refusal is made.
+        self.dead_letter_reason = dead_letter_reason
 
 
 class WaitPolicyDenied(MutationDenied):
@@ -336,7 +375,7 @@ def resolve_runtime_wait(
                 "wait in"
             )
 
-        with _semantic_refusal():
+        with _semantic_refusal(_PAYLOAD_REJECTED):
             validate_resolve_wait_shape(command)
         _require_resolution_identity(command, wait)
         if wait.status != WAIT_STATUS_PENDING:
@@ -352,7 +391,7 @@ def resolve_runtime_wait(
                 resolution_reason=None,
                 approval_id=None,
             )
-            with _semantic_refusal():
+            with _semantic_refusal(_CONTRACT_REJECTED):
                 validate_resolve_wait(
                     command,
                     wait=pending_view,
@@ -368,6 +407,7 @@ def resolve_runtime_wait(
             wait.run_step_id,
             run_status=RUN_STATUS_WAITING,
             step_status=_STEP_STATUS_WAITING,
+            dead_letter_reason=_CONTRACT_REJECTED,
         )
         _require_deadline_honoured(
             writer.connection, workspace_id, command, status, settlement.settled_at_us
@@ -377,7 +417,7 @@ def resolve_runtime_wait(
         # duplicate cannot use policy as an identifier oracle.
         approval = _policy_approval(policy, context, command, wait)
 
-        with _semantic_refusal():
+        with _semantic_refusal(_CONTRACT_REJECTED):
             validate_resolve_wait(
                 command,
                 wait=wait,
@@ -391,6 +431,30 @@ def resolve_runtime_wait(
             resolution_reason=command.reason,
             approval_id=command.approval_id,
         )
+        if command.resolution == _EXTERNAL_SIGNAL:
+            # The signal this resolution accepted, observed in the same fenced transaction:
+            # the wait closes and its observation lands together, or neither does. Its
+            # source time is not stated by the command, so the read model reports it unknown.
+            transaction_local_telemetry_writer(
+                writer.connection, workspace_id=workspace_id
+            ).record_wait_signal(
+                wait_signal_observation_id=_derived(
+                    "wsig",
+                    workspace_id,
+                    _ACCEPTED,
+                    command.wait_id,
+                    grant.idempotency_key,
+                ),
+                wait_id=command.wait_id,
+                event_id=_derived(
+                    "sig", workspace_id, command.wait_id, grant.idempotency_key
+                ),
+                envelope_digest=grant.request_fingerprint,
+                occurred_at_us=None,
+                observed_at_us=settlement.settled_at_us,
+                delivery_status=_ACCEPTED,
+                audit_ref=settlement.audit_ref,
+            )
         # The same step, under the attempt it already had. Nothing is requeued and no
         # retry is scheduled: this is the resumption the wait suspended.
         writer.record_step_status(
@@ -417,24 +481,48 @@ def resolve_runtime_wait(
             ),
         )
 
-    return execute_runtime_command(
-        connection,
-        identity,
-        grant=grant,
-        context=context,
-        equivalence=equivalence,
-        command=settle,
-        validate_result=validate_result,
-        clock=clock,
-        expected=expected,
-    )
+    try:
+        return execute_runtime_command(
+            connection,
+            identity,
+            grant=grant,
+            context=context,
+            equivalence=equivalence,
+            command=settle,
+            validate_result=validate_result,
+            clock=clock,
+            expected=expected,
+        )
+    except WaitResolutionConflict as refusal:
+        # The settlement above has rolled back, so nothing it wrote is left to contradict the
+        # record of the refusal written here, in a transaction of its own.
+        recorded = _recorded_refusal(
+            connection,
+            identity,
+            grant=grant,
+            context=context,
+            command=command,
+            refusal=refusal,
+            clock=clock,
+        )
+        if recorded is None:
+            raise
+        raise recorded from refusal
 
 
 # --- the parts the command is assembled from ------------------------------------
 
 
 class _semantic_refusal:
-    """Render the accepted contract's own refusal as this seam's typed conflict."""
+    """Render the accepted contract's own refusal as this seam's typed conflict.
+
+    `dead_letter_reason` is the telemetry code the refusal records an external signal as,
+    stated by the caller because only the caller knows whether the request or the stored
+    wait refused it.
+    """
+
+    def __init__(self, dead_letter_reason: str) -> None:
+        self._dead_letter_reason = dead_letter_reason
 
     def __enter__(self) -> None:
         return None
@@ -443,7 +531,9 @@ class _semantic_refusal:
         self, kind: object, error: BaseException | None, trace: object
     ) -> Literal[False]:
         if isinstance(error, ContractSemanticError):
-            raise WaitResolutionConflict(str(error)) from error
+            raise WaitResolutionConflict(
+                str(error), dead_letter_reason=self._dead_letter_reason
+            ) from error
         return False
 
 
@@ -460,7 +550,8 @@ def _require_resolution_identity(command: ResolveWait, wait: Wait) -> None:
     """Reject a stale or kind-mismatched resolution before consulting policy."""
     if command.resume_digest != wait.resume_digest:
         raise WaitResolutionConflict(
-            f"resume_digest does not match the digest wait {wait.wait_id!r} published"
+            f"resume_digest does not match the digest wait {wait.wait_id!r} published",
+            dead_letter_reason=_PAYLOAD_REJECTED,
         )
     expected = WAIT_RESOLUTION_FOR_KIND.get(wait.kind)
     if (
@@ -468,7 +559,8 @@ def _require_resolution_identity(command: ResolveWait, wait: Wait) -> None:
         and command.resolution != expected
     ):
         raise WaitResolutionConflict(
-            f"resolution {command.resolution!r} does not resolve a {wait.kind!r} wait"
+            f"resolution {command.resolution!r} does not resolve a {wait.kind!r} wait",
+            dead_letter_reason=_PAYLOAD_REJECTED,
         )
 
 
@@ -480,6 +572,7 @@ def _require_active_attempt(
     *,
     run_status: str,
     step_status: str,
+    dead_letter_reason: str | None = None,
 ) -> None:
     """Prove the wait suspends and resumes one currently active attempt.
 
@@ -494,7 +587,8 @@ def _require_active_attempt(
         raise WaitNotFound(f"workspace {workspace_id!r} holds no run {run_id!r}")
     if snapshot.status != run_status:
         raise WaitResolutionConflict(
-            f"run {run_id!r} is {snapshot.status!r}, not {run_status!r}"
+            f"run {run_id!r} is {snapshot.status!r}, not {run_status!r}",
+            dead_letter_reason=dead_letter_reason,
         )
     step = next(
         (
@@ -508,11 +602,13 @@ def _require_active_attempt(
         raise WaitNotFound(f"run {run_id!r} holds no step {run_step_id!r}")
     if step.status != step_status:
         raise WaitResolutionConflict(
-            f"step {run_step_id!r} is {step.status!r}, not {step_status!r}"
+            f"step {run_step_id!r} is {step.status!r}, not {step_status!r}",
+            dead_letter_reason=dead_letter_reason,
         )
     if not step.attempts or step.attempts[-1].status != "running":
         raise WaitResolutionConflict(
-            f"step {run_step_id!r} has no active attempt to suspend or resume"
+            f"step {run_step_id!r} has no active attempt to suspend or resume",
+            dead_letter_reason=dead_letter_reason,
         )
 
 
@@ -590,7 +686,8 @@ def _require_deadline_honoured(
             )
     elif status == "resolved" and deadline is not None and settled_at_us > deadline:
         raise WaitResolutionConflict(
-            f"wait {command.wait_id!r} passed its deadline; it has expired, not resolved"
+            f"wait {command.wait_id!r} passed its deadline; it has expired, not resolved",
+            dead_letter_reason=_DEADLINE_PASSED,
         )
 
 
@@ -610,11 +707,12 @@ def _replayed_resolution(
     since resumed, and holding a replay to the state it was answered from would refuse
     the very answer it is entitled to.
     """
-    with _semantic_refusal():
+    with _semantic_refusal(_PAYLOAD_REJECTED):
         validate_resolve_wait_shape(command)
     if command.resume_digest != wait.resume_digest:
         raise WaitResolutionConflict(
-            f"resume_digest does not match the digest wait {wait.wait_id!r} published"
+            f"resume_digest does not match the digest wait {wait.wait_id!r} published",
+            dead_letter_reason=_PAYLOAD_REJECTED,
         )
     if (wait.status, wait.resolution_reason, wait.approval_id) != (
         status,
@@ -623,7 +721,8 @@ def _replayed_resolution(
     ):
         raise WaitResolutionConflict(
             f"wait {wait.wait_id!r} is already {wait.status!r} for "
-            f"{wait.resolution_reason!r}; a wait is resolved exactly once"
+            f"{wait.resolution_reason!r}; a wait is resolved exactly once",
+            dead_letter_reason=_WAIT_ALREADY_RESOLVED,
         )
     return _resolution_result(
         wait,
@@ -652,6 +751,105 @@ def _resolution_result(
     if approval_id is not None:
         result["approval_id"] = approval_id
     return result
+
+
+def _recorded_refusal(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    grant: MutationGrant,
+    context: AuthorizedApplicationContext,
+    command: ResolveWait,
+    refusal: WaitResolutionConflict,
+    clock: Clock,
+) -> WaitResolutionConflict | None:
+    """Record a refused external signal, and return the refusal naming its record.
+
+    `None` where the telemetry has nothing to record: a resolution that is not a signal, a
+    refusal that states no dead-letter reason, or a wait that is absent or is not an
+    `external_signal` wait. A retry of a refused signal under the same key finds the record
+    its first refusal wrote, and writes nothing more.
+    """
+    if refusal.dead_letter_reason is None or command.resolution != _EXTERNAL_SIGNAL:
+        return None
+    try:
+        wait = _stored_wait(connection, grant.workspace_id, command)
+    except WaitNotFound:
+        return None
+    if wait.kind != _EXTERNAL_SIGNAL:
+        return None
+    workspace_id = grant.workspace_id
+    observation_id = _derived(
+        "wsig", workspace_id, _DEAD_LETTERED, command.wait_id, grant.idempotency_key
+    )
+    audit_ref = _derived("audrf", workspace_id, command.wait_id, grant.idempotency_key)
+    with trigger_telemetry_writer(
+        connection,
+        identity,
+        workspace_id=grant.workspace_id,
+        fencing_generation=grant.fencing_generation,
+    ) as telemetry:
+        stored = read_wait_signal_observation(
+            connection,
+            workspace_id=grant.workspace_id,
+            wait_id=command.wait_id,
+            wait_signal_observation_id=observation_id,
+        )
+        if stored is not None:
+            audit_ref = stored.audit_ref
+        else:
+            now = _wall_us(clock)
+            record_refused_audit(
+                connection,
+                grant=grant,
+                context=context,
+                audit_ref=audit_ref,
+                error_code=ERROR_CODE_CONFLICT,
+                recorded_at_us=now,
+            )
+            telemetry.record_wait_signal(
+                wait_signal_observation_id=observation_id,
+                wait_id=command.wait_id,
+                event_id=_derived(
+                    "sig", workspace_id, command.wait_id, grant.idempotency_key
+                ),
+                envelope_digest=grant.request_fingerprint,
+                occurred_at_us=None,
+                observed_at_us=now,
+                delivery_status=_DEAD_LETTERED,
+                delivery_reason=refusal.dead_letter_reason,
+                audit_ref=audit_ref,
+            )
+    return WaitResolutionConflict(
+        f"{refusal}; the signal was refused and no workflow mutation was committed",
+        dead_letter_reason=refusal.dead_letter_reason,
+        audit_reference=audit_ref,
+    )
+
+
+def _derived(prefix: str, workspace_id: str, *parts: str) -> str:
+    """A stable identifier for one signal, so that a retry of it names the same record.
+
+    Built from the workspace the signal belongs to, what the signal is -- its wait, its
+    idempotency key and the status it was recorded with -- and never from the clock or an
+    allocator, because a retry must find the record it made rather than make another. The
+    workspace is part of the identity: `audit_ref` is a primary key with no workspace in it,
+    so two workspaces that use the same wait and key must not derive the same one.
+    """
+    digest = sha256(json.dumps([workspace_id, *parts]).encode("utf-8")).hexdigest()
+    return f"{prefix}-{digest[:40]}"
+
+
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _wall_us(clock: Clock) -> int:
+    """The clock's wall reading in microseconds since the epoch. Recorded, never judged.
+
+    Exact integer arithmetic, as the workflow handler's reading is: a float conversion would
+    truncate a microsecond now and then, and the record would disagree with the instant.
+    """
+    return (clock.wall_time() - _EPOCH) // timedelta(microseconds=1)
 
 
 __all__ = [

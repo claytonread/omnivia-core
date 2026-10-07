@@ -288,10 +288,10 @@
       "filename": "0043_runtime_trigger_telemetry.sql",
       "owner": "Workflow Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 42,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "b461b50fa2e3e31437e2f483420550096c35c6c71fcd71d2aeca1ad56a485193",
+      "introduced_commit": "5395d463e7b172f39ced4a28f272ae9700afe989",
       "accepted_commit": null
     },
     {
@@ -512,6 +512,39 @@
       "predecessor": 62,
       "sha256": "44206c9e3460b837eba580e6103e5b600ba597c2c75106f57ec8d09d6aaeffe3",
       "introduced_commit": "2ed5e6a67763be23629eaaf392db70fd2b526084",
+      "accepted_commit": null
+    },
+    {
+      "number": 64,
+      "filename": "0064_managed_skills_registry.sql",
+      "owner": "Agent Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 63,
+      "sha256": "16780d25bd4716e75281e0fcad53f1b6114388c5fcc4688fae12bbb2fdec97e0",
+      "introduced_commit": "cecb879bda649e8323d218d0c7927a50cc299b9e",
+      "accepted_commit": null
+    },
+    {
+      "number": 65,
+      "filename": "0065_review_finding_quarantine.sql",
+      "owner": "Agent Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 64,
+      "sha256": "0a06b2600f8de00336742fb9418a2c9e9c2d14b01d0efb0de31b906ea9db7854",
+      "introduced_commit": "f89a7bd06ff074f1775a75c8b2a7379976c714ba",
+      "accepted_commit": null
+    },
+    {
+      "number": 66,
+      "filename": "0066_completion_decisions.sql",
+      "owner": "Agent Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 65,
+      "sha256": "770b8395d757665338f25f8fdb0db8c7dd5de0ce1c74968e1a48c9976bd9135e",
+      "introduced_commit": "b1193aaa9d76ff6370df5d1a934339977b06ddcd",
       "accepted_commit": null
     }
   ]

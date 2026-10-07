@@ -203,7 +203,7 @@
           ],
           "properties": {
             "tool_count": {
-              "const": 13
+              "const": 14
             },
             "tools": {
               "type": "array",
@@ -246,11 +246,14 @@
                 },
                 {
                   "const": "decision_status"
-                }
+                },
+                  {
+                    "const": "trigger_health"
+                  }
               ],
               "items": false,
-              "minItems": 13,
-              "maxItems": 13
+              "minItems": 14,
+              "maxItems": 14
             }
           }
         },
@@ -263,7 +266,7 @@
           ],
           "properties": {
             "tool_count": {
-              "const": 18
+              "const": 25
             },
             "tools": {
               "type": "array",
@@ -308,6 +311,9 @@
                   "const": "decision_status"
                 },
                 {
+                  "const": "trigger_health"
+                },
+                {
                   "const": "memory_create"
                 },
                 {
@@ -317,15 +323,33 @@
                   "const": "import_start"
                 },
                 {
+                  "const": "trigger_declare"
+                },
+                {
+                  "const": "trigger_lifecycle"
+                },
+                {
+                  "const": "trigger_ingest"
+                },
+                {
                   "const": "job_get"
                 },
                 {
                   "const": "job_events"
+                },
+                {
+                  "const": "skills_draft_create"
+                },
+                {
+                  "const": "skills_draft_update"
+                },
+                {
+                  "const": "skills_proposal_submit"
                 }
               ],
               "items": false,
-              "minItems": 18,
-              "maxItems": 18
+              "minItems": 25,
+              "maxItems": 25
             }
           }
         }

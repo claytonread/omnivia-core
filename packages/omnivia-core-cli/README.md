@@ -46,7 +46,7 @@ be reached, and cannot be added without adding it to the frozen surface first.
 ## Service administration
 
 The administrative commands are explicitly namespaced and do not change the
-22-command application surface or the 3-probe surface:
+61-command application surface or the 3-probe surface:
 
 - `service start` attaches to the selected service or uses the shared managed
   local launcher and waits for a live readiness answer.
@@ -120,7 +120,7 @@ edge — so the handshake verification is looked up by name at the moment it is
 needed. An installation without `omnivia-core-mcp` gets one fixed sentence
 saying so, and the setup is compensated rather than left half-published.
 
-## The 22 application commands
+## The 61 application commands
 
 Each reaches exactly one operation of the frozen `OPERATION_CATALOGUE`, one to
 one, checked at import. Each declares the purpose it calls under.
@@ -139,6 +139,7 @@ one, checked at import. Each declares the purpose it calls under.
 | `job cancel` | `job.cancel` | `job_control` |
 | `job retry` | `job.retry` | `job_control` |
 | `job events` | `job.events` | `job_observation` |
+| `evidence capture` | `evidence.capture` | `content_ingestion` |
 | `evidence search` | `evidence.search` | `knowledge_retrieval` |
 | `knowledge search` | `knowledge.search` | `knowledge_retrieval` |
 | `governance propose` | `knowledge.propose` | `knowledge_governance` |
@@ -149,6 +150,44 @@ one, checked at import. Each declares the purpose it calls under.
 | `context-pack build` | `context_pack.build` | `knowledge_retrieval` |
 | `chat command` | `chat.command` | `chat_authoring` |
 | `chat events` | `chat.events` | `chat_observation` |
+| `chat snapshot` | `chat.snapshot` | `chat_observation` |
+| `workflow start` | `workflow.start` | `workflow_execution` |
+| `workflow inspect` | `workflow.inspect` | `workflow_observation` |
+| `workflow control` | `workflow.control` | `workflow_control` |
+| `workflow review` | `workflow.review` | `workflow_observation` |
+| `decisions status` | `decision.status` | `decision_status` |
+| `decisions evaluate` | `decision.evaluate` | `decision_evaluation` |
+| `decisions record` | `decision.record.get` | `decision_record` |
+| `decisions records` | `decision.record.list` | `decision_record` |
+| `decisions definitions` | `decision.definition.list` | `decision_read` |
+| `decisions definition` | `decision.definition.get` | `decision_read` |
+| `decisions publish` | `decision.definition.publish` | `decision_configuration` |
+| `decisions disable` | `decision.definition.disable` | `decision_configuration` |
+| `decisions outcome` | `decision.outcome.submit` | `decision_evaluation` |
+| `decisions models` | `decision.model.list` | `decision_read` |
+| `decisions install` | `decision.model.install` | `decision_configuration` |
+| `decisions activate` | `decision.model.activate` | `decision_configuration` |
+| `decisions remove` | `decision.model.remove` | `decision_configuration` |
+| `decisions settings` | `decision.settings.get` | `decision_settings` |
+| `decisions configure` | `decision.settings.update` | `decision_configuration` |
+| `continuity register` | `continuity.session.register` | `continuity_session` |
+| `continuity checkpoint` | `continuity.checkpoint.append` | `continuity_checkpoint` |
+| `continuity close` | `continuity.session.close` | `continuity_session` |
+| `continuity handoff` | `continuity.handoff.read` | `continuity_handoff` |
+| `engineering search` | `engineering.search` | `engineering_search` |
+| `engineering expand` | `engineering.expand` | `engineering_expand` |
+| `engineering context` | `engineering.context.build` | `engineering_context` |
+| `context priority` | `context.priority.set` | `context_priority` |
+| `engineering review` | `engineering.review.record` | `engineering_review` |
+| `engineering capture` | `engineering.source.capture.commit` | `engineering_source` |
+| `engineering source` | `engineering.source.record` | `engineering_source` |
+| `repository register` | `engineering.repository.register` | `engineering_repository` |
+| `analysis start` | `analysis.start` | `insights_analysis_request` |
+| `decisions result-use` | `decision.result_use.evaluate` | `decision_result_use` |
+| `trigger declare` | `trigger.declare` | `trigger_configuration` |
+| `trigger lifecycle` | `trigger.lifecycle` | `trigger_configuration` |
+| `trigger ingest` | `trigger.ingest` | `trigger_ingestion` |
+| `trigger health` | `trigger.health` | `trigger_observation` |
 
 Options on every application command:
 

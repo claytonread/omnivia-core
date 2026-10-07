@@ -10780,6 +10780,1742 @@
           "request_id": "req-drue-uminor"
         }
       }
+    },
+    {
+      "id": "trigger.declare/primary-success",
+      "operation": "trigger.declare",
+      "description": "trigger.declare declares one trigger bound to a released Workflow version and starts its subscription active on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.declare-success",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.declare"
+        },
+        "operation": "trigger.declare",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "trigger_kind": "webhook",
+          "workflow_version": "1.0.0",
+          "plan_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event_type": "invoice.received",
+          "event_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "configuration_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subscription_state": "active",
+          "subscription_reason": "subscription.created"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.declare-success",
+          "audit_reference": "audit-trigger.declare"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "declaration_sequence": 1,
+          "subscription_state": "active",
+          "subscription_sequence": 1,
+          "declared_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.declare/honest-replay",
+      "operation": "trigger.declare",
+      "description": "trigger.declare repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "trigger.declare/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.declare-replay",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.declare"
+        },
+        "operation": "trigger.declare",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "trigger_kind": "webhook",
+          "workflow_version": "1.0.0",
+          "plan_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event_type": "invoice.received",
+          "event_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "configuration_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subscription_state": "active",
+          "subscription_reason": "subscription.created"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.declare-replay",
+          "audit_reference": "audit-trigger.declare"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "declaration_sequence": 1,
+          "subscription_state": "active",
+          "subscription_sequence": 1,
+          "declared_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.declare/idempotency-conflict",
+      "operation": "trigger.declare",
+      "description": "trigger.declare reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "trigger.declare/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.declare-conflict",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.declare"
+        },
+        "operation": "trigger.declare",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "trigger_kind": "webhook",
+          "workflow_version": "1.0.0",
+          "plan_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event_type": "invoice.received",
+          "event_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "configuration_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subscription_state": "paused",
+          "subscription_reason": "subscription.created"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.declare-conflict",
+          "audit_reference": "audit-trigger.declare"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "trigger.lifecycle/primary-success",
+      "operation": "trigger.lifecycle",
+      "description": "trigger.lifecycle moves a declared trigger's subscription from active to paused on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-success",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.lifecycle"
+        },
+        "operation": "trigger.lifecycle",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "reason": "operator.paused"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-success",
+          "audit_reference": "audit-trigger.lifecycle"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "subscription_sequence": 2,
+          "reason": "operator.paused",
+          "observed_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.lifecycle/honest-replay",
+      "operation": "trigger.lifecycle",
+      "description": "trigger.lifecycle repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "trigger.lifecycle/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-replay",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.lifecycle"
+        },
+        "operation": "trigger.lifecycle",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "reason": "operator.paused"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-replay",
+          "audit_reference": "audit-trigger.lifecycle"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "subscription_state": "paused",
+          "subscription_sequence": 2,
+          "reason": "operator.paused",
+          "observed_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.lifecycle/idempotency-conflict",
+      "operation": "trigger.lifecycle",
+      "description": "trigger.lifecycle reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "trigger.lifecycle/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-conflict",
+          "required_capabilities": [
+            {
+              "id": "trigger.configure",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:configure"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.lifecycle"
+        },
+        "operation": "trigger.lifecycle",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "subscription_state": "active",
+          "reason": "operator.resumed"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.lifecycle-conflict",
+          "audit_reference": "audit-trigger.lifecycle"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "trigger.ingest/primary-success",
+      "operation": "trigger.ingest",
+      "description": "trigger.ingest admits one stimulus to an active trigger, recorded accepted and unlinked on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-success",
+          "required_capabilities": [
+            {
+              "id": "trigger.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.ingest"
+        },
+        "operation": "trigger.ingest",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "event_id": "event-1",
+          "event_idempotency_key": "key-1",
+          "event_type": "invoice.received",
+          "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "occurred_at": "2026-10-04T02:59:00.000000Z"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-success",
+          "audit_reference": "audit-trigger.ingest"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "trigger_observation_id": "obs-1",
+          "observation_sequence": 1,
+          "delivery_status": "accepted",
+          "processing": "unlinked",
+          "uncertainty": [
+            "processing_unlinked"
+          ],
+          "observed_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.ingest/honest-replay",
+      "operation": "trigger.ingest",
+      "description": "trigger.ingest repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "trigger.ingest/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-replay",
+          "required_capabilities": [
+            {
+              "id": "trigger.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.ingest"
+        },
+        "operation": "trigger.ingest",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "event_id": "event-1",
+          "event_idempotency_key": "key-1",
+          "event_type": "invoice.received",
+          "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "occurred_at": "2026-10-04T02:59:00.000000Z"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-replay",
+          "audit_reference": "audit-trigger.ingest"
+        },
+        "result": {
+          "trigger_id": "trigger-1",
+          "trigger_observation_id": "obs-1",
+          "observation_sequence": 1,
+          "delivery_status": "accepted",
+          "processing": "unlinked",
+          "uncertainty": [
+            "processing_unlinked"
+          ],
+          "observed_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "trigger.ingest/idempotency-conflict",
+      "operation": "trigger.ingest",
+      "description": "trigger.ingest reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "trigger.ingest/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-conflict",
+          "required_capabilities": [
+            {
+              "id": "trigger.invoke",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:invoke"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-trigger.ingest"
+        },
+        "operation": "trigger.ingest",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "trigger_id": "trigger-1",
+          "event_id": "event-1",
+          "event_idempotency_key": "key-1",
+          "event_type": "invoice.received",
+          "envelope_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "occurred_at": "2026-10-04T02:59:00.000000Z"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.ingest-conflict",
+          "audit_reference": "audit-trigger.ingest"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "trigger.health/primary-success",
+      "operation": "trigger.health",
+      "description": "trigger.health reads one page of a Workflow's triggers: the first trigger, with a continuation token because another remains.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.health-primary",
+          "required_capabilities": [
+            {
+              "id": "trigger.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "trigger.health",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "limit": 1
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.health-primary"
+        },
+        "result": {
+          "items": [
+            {
+              "trigger_id": "trigger-1",
+              "trigger_kind": "webhook",
+              "workflow_version": "1.0.0",
+              "declaration_sequence": 1,
+              "event_type": "invoice.received",
+              "subscription": {
+                "state": "active",
+                "reason": "subscription.created",
+                "observed_at": "2026-10-04T03:00:00.000000Z",
+                "subscription_sequence": 1
+              },
+              "last_observation": {
+                "trigger_observation_id": "obs-1",
+                "observation_sequence": 1,
+                "event_id": "event-1",
+                "event_idempotency_key": "key-1",
+                "event_type": "invoice.received",
+                "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "occurred_at": "2026-10-04T02:59:00.000000Z",
+                "observed_at": "2026-10-04T03:10:00.000000Z",
+                "delivery_status": "accepted",
+                "processing": "unlinked",
+                "uncertainty": [
+                  "processing_unlinked"
+                ]
+              },
+              "observation_total": 1,
+              "observations": [
+                {
+                  "trigger_observation_id": "obs-1",
+                  "observation_sequence": 1,
+                  "event_id": "event-1",
+                  "event_idempotency_key": "key-1",
+                  "event_type": "invoice.received",
+                  "envelope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "occurred_at": "2026-10-04T02:59:00.000000Z",
+                  "observed_at": "2026-10-04T03:10:00.000000Z",
+                  "delivery_status": "accepted",
+                  "processing": "unlinked",
+                  "uncertainty": [
+                    "processing_unlinked"
+                  ]
+                }
+              ],
+              "delivery_counts": {
+                "accepted": 1,
+                "duplicate": 0,
+                "dead_lettered": 0,
+                "uncertain": 0
+              },
+              "failures": [],
+              "uncertainty": [
+                "processing_unlinked"
+              ]
+            }
+          ],
+          "page": {
+            "continuation_token": "trigger-1"
+          }
+        }
+      }
+    },
+    {
+      "id": "trigger.health/page-2",
+      "operation": "trigger.health",
+      "description": "trigger.health second page: the request presents exactly the continuation token the first page issued, returns the next trigger, and issues no further token.",
+      "expect": {
+        "branch": "success",
+        "page_of": "trigger.health/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-trigger.health-page2",
+          "required_capabilities": [
+            {
+              "id": "trigger.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "trigger:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "trigger.health",
+        "input": {
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "limit": 1,
+          "page": {
+            "continuation_token": "trigger-1"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-trigger.health-page2"
+        },
+        "result": {
+          "items": [
+            {
+              "trigger_id": "trigger-2",
+              "trigger_kind": "manual",
+              "workflow_version": "1.0.0",
+              "declaration_sequence": 1,
+              "event_type": "invoice.received",
+              "subscription": {
+                "state": "paused",
+                "reason": "subscription.created",
+                "observed_at": "2026-10-04T03:01:00.000000Z",
+                "subscription_sequence": 1
+              },
+              "observation_total": 0,
+              "observations": [],
+              "delivery_counts": {
+                "accepted": 0,
+                "duplicate": 0,
+                "dead_lettered": 0,
+                "uncertain": 0
+              },
+              "failures": [],
+              "uncertainty": []
+            }
+          ],
+          "page": {}
+        }
+      }
+    },
+    {
+      "id": "skills.draft.create/primary-success",
+      "operation": "skills.draft.create",
+      "description": "skills.draft.create answers a well-formed request on the success branch. It opens the draft at revision 1.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.draft.create-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.draft.create"
+        },
+        "operation": "skills.draft.create",
+        "input": {
+          "manifest": {
+            "skill_name": "triage",
+            "version": "1.0.0",
+            "description": "Triage inbound invoices.",
+            "instructions": "Read the invoice and classify it against the policy reference.",
+            "references": [
+              {
+                "name": "policy",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "dependencies": [],
+            "compatible_roles": [
+              "reviewer"
+            ],
+            "required_capabilities": []
+          },
+          "source_work_ref": "work-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.draft.create-primary-success",
+          "audit_reference": "audit-skills.draft.create"
+        },
+        "result": {
+          "draft_id": "draft-1",
+          "skill_name": "triage",
+          "draft_revision": 1,
+          "version": "1.0.0",
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.draft.create/honest-replay",
+      "operation": "skills.draft.create",
+      "description": "skills.draft.create repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.draft.create/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.draft.create-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.draft.create"
+        },
+        "operation": "skills.draft.create",
+        "input": {
+          "manifest": {
+            "skill_name": "triage",
+            "version": "1.0.0",
+            "description": "Triage inbound invoices.",
+            "instructions": "Read the invoice and classify it against the policy reference.",
+            "references": [
+              {
+                "name": "policy",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "dependencies": [],
+            "compatible_roles": [
+              "reviewer"
+            ],
+            "required_capabilities": []
+          },
+          "source_work_ref": "work-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.draft.create-honest-replay",
+          "audit_reference": "audit-skills.draft.create"
+        },
+        "result": {
+          "draft_id": "draft-1",
+          "skill_name": "triage",
+          "draft_revision": 1,
+          "version": "1.0.0",
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at": "2026-10-04T03:00:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.draft.create/idempotency-conflict",
+      "operation": "skills.draft.create",
+      "description": "skills.draft.create reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.draft.create/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.draft.create-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.draft.create"
+        },
+        "operation": "skills.draft.create",
+        "input": {
+          "manifest": {
+            "skill_name": "triage",
+            "version": "1.0.1",
+            "description": "Triage inbound invoices.",
+            "instructions": "Read the invoice and classify it against the policy reference.",
+            "references": [
+              {
+                "name": "policy",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "dependencies": [],
+            "compatible_roles": [
+              "reviewer"
+            ],
+            "required_capabilities": []
+          },
+          "source_work_ref": "work-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.draft.create-idempotency-conflict",
+          "audit_reference": "audit-skills.draft.create"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.draft.update/primary-success",
+      "operation": "skills.draft.update",
+      "description": "skills.draft.update answers a well-formed request on the success branch. It appends revision 2 on top of the revision the caller read.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.draft.update-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.draft.update"
+        },
+        "operation": "skills.draft.update",
+        "input": {
+          "draft_id": "draft-1",
+          "expected_revision": 1,
+          "manifest": {
+            "skill_name": "triage",
+            "version": "1.0.1",
+            "description": "Triage inbound invoices.",
+            "instructions": "Read the invoice and classify it against the policy reference.",
+            "references": [
+              {
+                "name": "policy",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "dependencies": [],
+            "compatible_roles": [
+              "reviewer"
+            ],
+            "required_capabilities": []
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.draft.update-primary-success",
+          "audit_reference": "audit-skills.draft.update"
+        },
+        "result": {
+          "draft_id": "draft-1",
+          "draft_revision": 2,
+          "version": "1.0.1",
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "updated_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.draft.update/honest-replay",
+      "operation": "skills.draft.update",
+      "description": "skills.draft.update repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.draft.update/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.draft.update-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.draft.update"
+        },
+        "operation": "skills.draft.update",
+        "input": {
+          "draft_id": "draft-1",
+          "expected_revision": 1,
+          "manifest": {
+            "skill_name": "triage",
+            "version": "1.0.1",
+            "description": "Triage inbound invoices.",
+            "instructions": "Read the invoice and classify it against the policy reference.",
+            "references": [
+              {
+                "name": "policy",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "dependencies": [],
+            "compatible_roles": [
+              "reviewer"
+            ],
+            "required_capabilities": []
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.draft.update-honest-replay",
+          "audit_reference": "audit-skills.draft.update"
+        },
+        "result": {
+          "draft_id": "draft-1",
+          "draft_revision": 2,
+          "version": "1.0.1",
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "updated_at": "2026-10-04T03:05:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.draft.update/idempotency-conflict",
+      "operation": "skills.draft.update",
+      "description": "skills.draft.update reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.draft.update/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.draft.update-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.draft.update"
+        },
+        "operation": "skills.draft.update",
+        "input": {
+          "draft_id": "draft-1",
+          "expected_revision": 1,
+          "manifest": {
+            "skill_name": "triage",
+            "version": "1.0.2",
+            "description": "Triage inbound invoices.",
+            "instructions": "Read the invoice and classify it against the policy reference.",
+            "references": [
+              {
+                "name": "policy",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "dependencies": [],
+            "compatible_roles": [
+              "reviewer"
+            ],
+            "required_capabilities": []
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.draft.update-idempotency-conflict",
+          "audit_reference": "audit-skills.draft.update"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.proposal.submit/primary-success",
+      "operation": "skills.proposal.submit",
+      "description": "skills.proposal.submit answers a well-formed request on the success branch. It sends revision 2 to the publisher queue.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.proposal.submit-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.proposal.submit"
+        },
+        "operation": "skills.proposal.submit",
+        "input": {
+          "draft_id": "draft-1",
+          "expected_revision": 2,
+          "evidence_refs": [
+            {
+              "evidence_id": "evidence-1",
+              "content_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.proposal.submit-primary-success",
+          "audit_reference": "audit-skills.proposal.submit"
+        },
+        "result": {
+          "proposal_id": "proposal-1",
+          "draft_id": "draft-1",
+          "draft_revision": 2,
+          "submitted_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.proposal.submit/honest-replay",
+      "operation": "skills.proposal.submit",
+      "description": "skills.proposal.submit repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.proposal.submit/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.proposal.submit-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.proposal.submit"
+        },
+        "operation": "skills.proposal.submit",
+        "input": {
+          "draft_id": "draft-1",
+          "expected_revision": 2,
+          "evidence_refs": [
+            {
+              "evidence_id": "evidence-1",
+              "content_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.proposal.submit-honest-replay",
+          "audit_reference": "audit-skills.proposal.submit"
+        },
+        "result": {
+          "proposal_id": "proposal-1",
+          "draft_id": "draft-1",
+          "draft_revision": 2,
+          "submitted_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.proposal.submit/idempotency-conflict",
+      "operation": "skills.proposal.submit",
+      "description": "skills.proposal.submit reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.proposal.submit/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.proposal.submit-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.author",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:author"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.proposal.submit"
+        },
+        "operation": "skills.proposal.submit",
+        "input": {
+          "draft_id": "draft-1",
+          "expected_revision": 2,
+          "evidence_refs": [
+            {
+              "evidence_id": "evidence-2",
+              "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.proposal.submit-idempotency-conflict",
+          "audit_reference": "audit-skills.proposal.submit"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.version.publish/primary-success",
+      "operation": "skills.version.publish",
+      "description": "skills.version.publish answers a well-formed request on the success branch. It publishes the revision the proposal submitted, as an immutable version.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.version.publish-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.publish",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:publish"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.version.publish"
+        },
+        "operation": "skills.version.publish",
+        "input": {
+          "proposal_id": "proposal-1",
+          "review_evidence_refs": [
+            {
+              "evidence_id": "evidence-2",
+              "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.version.publish-primary-success",
+          "audit_reference": "audit-skills.version.publish"
+        },
+        "result": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_name": "triage",
+          "version": "1.0.1",
+          "proposal_id": "proposal-1",
+          "draft_id": "draft-1",
+          "draft_revision": 2,
+          "published_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.version.publish/honest-replay",
+      "operation": "skills.version.publish",
+      "description": "skills.version.publish repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.version.publish/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.version.publish-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.publish",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:publish"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.version.publish"
+        },
+        "operation": "skills.version.publish",
+        "input": {
+          "proposal_id": "proposal-1",
+          "review_evidence_refs": [
+            {
+              "evidence_id": "evidence-2",
+              "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.version.publish-honest-replay",
+          "audit_reference": "audit-skills.version.publish"
+        },
+        "result": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_name": "triage",
+          "version": "1.0.1",
+          "proposal_id": "proposal-1",
+          "draft_id": "draft-1",
+          "draft_revision": 2,
+          "published_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.version.publish/idempotency-conflict",
+      "operation": "skills.version.publish",
+      "description": "skills.version.publish reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.version.publish/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.version.publish-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.publish",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:publish"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.version.publish"
+        },
+        "operation": "skills.version.publish",
+        "input": {
+          "proposal_id": "proposal-1",
+          "review_evidence_refs": [
+            {
+              "evidence_id": "evidence-3",
+              "content_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.version.publish-idempotency-conflict",
+          "audit_reference": "audit-skills.version.publish"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.version.deprecate/primary-success",
+      "operation": "skills.version.deprecate",
+      "description": "skills.version.deprecate answers a well-formed request on the success branch. It marks the version deprecated, and deletes nothing.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.version.deprecate-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.publish",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:publish"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.version.deprecate"
+        },
+        "operation": "skills.version.deprecate",
+        "input": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "reason": "superseded.by_newer_version"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.version.deprecate-primary-success",
+          "audit_reference": "audit-skills.version.deprecate"
+        },
+        "result": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "reason": "superseded.by_newer_version",
+          "deprecated_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.version.deprecate/honest-replay",
+      "operation": "skills.version.deprecate",
+      "description": "skills.version.deprecate repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.version.deprecate/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.version.deprecate-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.publish",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:publish"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.version.deprecate"
+        },
+        "operation": "skills.version.deprecate",
+        "input": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "reason": "superseded.by_newer_version"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.version.deprecate-honest-replay",
+          "audit_reference": "audit-skills.version.deprecate"
+        },
+        "result": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "reason": "superseded.by_newer_version",
+          "deprecated_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.version.deprecate/idempotency-conflict",
+      "operation": "skills.version.deprecate",
+      "description": "skills.version.deprecate reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.version.deprecate/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.version.deprecate-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.publish",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:publish"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.version.deprecate"
+        },
+        "operation": "skills.version.deprecate",
+        "input": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "reason": "withdrawn.by_publisher"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.version.deprecate-idempotency-conflict",
+          "audit_reference": "audit-skills.version.deprecate"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.install/primary-success",
+      "operation": "skills.install",
+      "description": "skills.install answers a well-formed request on the success branch. It binds the published version into the workspace's usable set.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.install-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.install",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:install"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.install"
+        },
+        "operation": "skills.install",
+        "input": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.install-primary-success",
+          "audit_reference": "audit-skills.install"
+        },
+        "result": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_name": "triage",
+          "version": "1.0.1",
+          "install_state": "installed",
+          "event_sequence": 1,
+          "recorded_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.install/honest-replay",
+      "operation": "skills.install",
+      "description": "skills.install repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.install/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.install-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.install",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:install"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.install"
+        },
+        "operation": "skills.install",
+        "input": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.install-honest-replay",
+          "audit_reference": "audit-skills.install"
+        },
+        "result": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_name": "triage",
+          "version": "1.0.1",
+          "install_state": "installed",
+          "event_sequence": 1,
+          "recorded_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.install/idempotency-conflict",
+      "operation": "skills.install",
+      "description": "skills.install reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.install/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.install-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.install",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:install"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.install"
+        },
+        "operation": "skills.install",
+        "input": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.install-idempotency-conflict",
+          "audit_reference": "audit-skills.install"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.remove/primary-success",
+      "operation": "skills.remove",
+      "description": "skills.remove answers a well-formed request on the success branch. It unbinds the version, and leaves its history and every bound Run as they were.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.remove-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.install",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:install"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.remove"
+        },
+        "operation": "skills.remove",
+        "input": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.remove-primary-success",
+          "audit_reference": "audit-skills.remove"
+        },
+        "result": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_name": "triage",
+          "version": "1.0.1",
+          "install_state": "removed",
+          "event_sequence": 2,
+          "recorded_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.remove/honest-replay",
+      "operation": "skills.remove",
+      "description": "skills.remove repeated with the same idempotency key and the same input: the recorded answer is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "skills.remove/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.remove-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "skill.install",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:install"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.remove"
+        },
+        "operation": "skills.remove",
+        "input": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.remove-honest-replay",
+          "audit_reference": "audit-skills.remove"
+        },
+        "result": {
+          "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_name": "triage",
+          "version": "1.0.1",
+          "install_state": "removed",
+          "event_sequence": 2,
+          "recorded_at": "2026-10-04T03:10:00.000000Z"
+        }
+      }
+    },
+    {
+      "id": "skills.remove/idempotency-conflict",
+      "operation": "skills.remove",
+      "description": "skills.remove reusing one idempotency key for a different request: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "skills.remove/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.remove-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "skill.install",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:install"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-skills.remove"
+        },
+        "operation": "skills.remove",
+        "input": {
+          "manifest_id": "skill-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.remove-idempotency-conflict",
+          "audit_reference": "audit-skills.remove"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "skills.resolve/primary-success",
+      "operation": "skills.resolve",
+      "description": "skills.resolve resolves a role's selection to the highest installed compatible version, and binds nothing.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-skills.resolve-primary-success",
+          "required_capabilities": [
+            {
+              "id": "skill.resolve",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "skill:resolve"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "skills.resolve",
+        "input": {
+          "role_id": "reviewer",
+          "selections": [
+            {
+              "skill_name": "triage"
+            }
+          ]
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-skills.resolve-primary-success"
+        },
+        "result": {
+          "role_id": "reviewer",
+          "entries": [
+            {
+              "manifest_id": "skill-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "skill_name": "triage",
+              "version": "1.0.1",
+              "selection": "highest_compatible"
+            }
+          ]
+        }
+      }
     }
   ],
   "contract_version": "1.0",

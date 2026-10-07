@@ -125,6 +125,19 @@ ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
 #: identity. Its own purpose, like its own scope and capability, so neither a
 #: contributed observation nor a trusted source stream carries this authority.
 ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
+#: Declaring a trigger and moving its subscription are one configuration act, as the decision
+#: definition and model acts share one purpose: a grant to configure a trigger is the same
+#: authority whichever of the two it performs.
+TRIGGER_CONFIGURATION_PURPOSE: Final = "trigger_configuration"
+#: Delivering one stimulus to a declared trigger. Its own purpose, so a grant to configure
+#: triggers never carries the authority to deliver a stimulus to one.
+TRIGGER_INGESTION_PURPOSE: Final = "trigger_ingestion"
+#: Managed Skills (C17). Authoring and submitting a draft are one contributor act; publishing and
+#: deprecating a version are the publisher's; installing and removing are the workspace operator's.
+#: Three purposes, so a grant for one never carries the others.
+SKILL_AUTHORING_PURPOSE: Final = "skill_authoring"
+SKILL_PUBLICATION_PURPOSE: Final = "skill_publication"
+SKILL_INSTALLATION_PURPOSE: Final = "skill_installation"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -161,6 +174,16 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.source.capture.commit": ENGINEERING_SOURCE_PURPOSE,
         "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
         "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
+        "trigger.declare": TRIGGER_CONFIGURATION_PURPOSE,
+        "trigger.lifecycle": TRIGGER_CONFIGURATION_PURPOSE,
+        "trigger.ingest": TRIGGER_INGESTION_PURPOSE,
+        "skills.draft.create": SKILL_AUTHORING_PURPOSE,
+        "skills.draft.update": SKILL_AUTHORING_PURPOSE,
+        "skills.proposal.submit": SKILL_AUTHORING_PURPOSE,
+        "skills.version.publish": SKILL_PUBLICATION_PURPOSE,
+        "skills.version.deprecate": SKILL_PUBLICATION_PURPOSE,
+        "skills.install": SKILL_INSTALLATION_PURPOSE,
+        "skills.remove": SKILL_INSTALLATION_PURPOSE,
     }
 )
 
@@ -175,6 +198,10 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 INSTALLATION_ADMINISTRATOR_ROLE: Final = "installation_administrator"
 WORKSPACE_CONTRIBUTOR_ROLE: Final = "workspace_contributor"
 KNOWLEDGE_REVIEWER_ROLE: Final = "knowledge_reviewer"
+#: Publishing and deprecating a skill version is a publisher's act, which authorship never implies.
+SKILL_PUBLISHER_ROLE: Final = "skill_publisher"
+#: Installing and removing a published skill version in one workspace is an operator's act.
+WORKSPACE_OPERATOR_ROLE: Final = "workspace_operator"
 
 MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -224,6 +251,21 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Its own `engineering:repository` scope and `engineering.repository` capability
         # are what only an explicitly authorized local operator's grant holds.
         "engineering.repository.register": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Configuring a trigger and delivering a stimulus to one are contributor work in one
+        # workspace: neither reviews nor administers anything, and neither starts a run.
+        "trigger.declare": WORKSPACE_CONTRIBUTOR_ROLE,
+        "trigger.lifecycle": WORKSPACE_CONTRIBUTOR_ROLE,
+        "trigger.ingest": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Authoring and submitting a draft is contributor work: it publishes nothing and installs
+        # nothing. Publication and installation each need their own role, which a contributor
+        # never holds, so authorship never implies either.
+        "skills.draft.create": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.draft.update": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.proposal.submit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.version.publish": SKILL_PUBLISHER_ROLE,
+        "skills.version.deprecate": SKILL_PUBLISHER_ROLE,
+        "skills.install": WORKSPACE_OPERATOR_ROLE,
+        "skills.remove": WORKSPACE_OPERATOR_ROLE,
     }
 )
 
@@ -1020,6 +1062,43 @@ def execute_mutation(
         )
 
 
+def record_refused_audit(
+    connection: sqlite3.Connection,
+    *,
+    grant: MutationGrant,
+    context: AuthorizedApplicationContext,
+    audit_ref: str,
+    error_code: str,
+    recorded_at_us: int,
+) -> None:
+    """Write the audit event of a refused mutation, inside a fenced transaction of its own.
+
+    A refused mutation rolls back everything it wrote, its audit event included, so a
+    refusal that something must reference afterwards needs an event of its own. `refused`
+    is the outcome class 0007 admits for that, and it carries the error code.
+    """
+    connection.execute(
+        "INSERT INTO omnivia_application_audit_events "
+        "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
+        "correlation_id, trace_id, granted_authority_json, outcome_class, "
+        "error_code, recorded_at_us) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'refused', ?, ?)",
+        (
+            audit_ref,
+            grant.workspace_id,
+            grant.principal_id,
+            grant.operation,
+            grant.purpose,
+            context.request_id,
+            context.correlation_id,
+            context.trace_id,
+            to_canonical_json(context.authority.to_wire()),
+            error_code,
+            recorded_at_us,
+        ),
+    )
+
+
 def _require_current(grant: MutationGrant, clock: Clock) -> int:
     """The monotonic settlement reading, or a refusal because the grant expired.
 
@@ -1218,8 +1297,13 @@ __all__ = [
     "MUTATING_OPERATIONS",
     "MUTATION_PURPOSES",
     "MUTATION_ROLES",
+    "SKILL_AUTHORING_PURPOSE",
+    "SKILL_INSTALLATION_PURPOSE",
+    "SKILL_PUBLICATION_PURPOSE",
+    "SKILL_PUBLISHER_ROLE",
     "WORKSPACE_ADMINISTRATION_PURPOSE",
     "WORKSPACE_CONTRIBUTOR_ROLE",
+    "WORKSPACE_OPERATOR_ROLE",
     "DomainMutation",
     "MutationDenied",
     "MutationGrant",
