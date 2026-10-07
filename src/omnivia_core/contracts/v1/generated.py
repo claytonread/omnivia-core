@@ -25783,57 +25783,6 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         ),
     ),
     OperationMetadata(
-        name="chat.draft",
-        scope=OperationScope(
-            required_scopes=("chat:read",),
-            side_effect="none",
-            scope_kind="workspace",
-        ),
-        input_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
-            "#/$defs/ChatDraftInput"
-        ),
-        result_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
-            "#/$defs/ChatDraftResult"
-        ),
-        required_capability=CapabilityRequirement(
-            id="chat.read",
-            minimum_version="1.0",
-            required=True,
-        ),
-        job=OperationJobMetadata(completion_mode="synchronous"),
-        pagination=OperationPaginationMetadata(paginated=False),
-        idempotency=OperationIdempotencyMetadata(
-            supports_idempotency_key=False,
-            required=False,
-            safe_to_retry=True,
-        ),
-        precondition=OperationPreconditionMetadata(
-            supports_mutation_precondition=False,
-            required=False,
-        ),
-        audit=OperationAuditMetadata(audited=True, audit_category="read"),
-        allowed_errors=(
-            "authentication_required",
-            "authorization_denied",
-            "cancelled",
-            "capability_not_granted",
-            "deadline_exceeded",
-            "dependency_unavailable",
-            "incompatible_version",
-            "internal_non_recoverable",
-            "internal_recoverable",
-            "invalid_purpose",
-            "invalid_request",
-            "not_found",
-            "rate_limited",
-            "upgrade_required",
-            "workspace_migration_required",
-            "workspace_not_granted",
-        ),
-    ),
-    OperationMetadata(
         name="chat.events",
         scope=OperationScope(
             required_scopes=("chat:read",),
@@ -29927,6 +29876,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.draft",
+        scope=OperationScope(
+            required_scopes=("chat:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatDraftInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatDraftResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

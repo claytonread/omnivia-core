@@ -163,7 +163,6 @@
         "candidate.approve",
         "candidate.reject",
         "chat.command",
-        "chat.draft",
         "chat.events",
         "chat.snapshot",
         "context_pack.build",
@@ -239,7 +238,8 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "chat.draft"
       ]
     },
     {
@@ -476,7 +476,6 @@
         "candidate.approve",
         "candidate.reject",
         "chat.command",
-        "chat.draft",
         "chat.events",
         "chat.snapshot",
         "context_pack.build",
@@ -552,7 +551,8 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "chat.draft"
       ]
     },
     {
@@ -565,7 +565,6 @@
         "candidate.approve",
         "candidate.reject",
         "chat.command",
-        "chat.draft",
         "chat.events",
         "chat.snapshot",
         "context_pack.build",
@@ -641,7 +640,8 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "chat.draft"
       ]
     },
     {
