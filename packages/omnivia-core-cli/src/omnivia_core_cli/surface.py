@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The seventy-nine application commands map onto the
-seventy-nine operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The eighty-one application commands map onto the
+eighty-one operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -121,6 +121,11 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ),
     ApplicationCommand(
         ("governance", "reject"), "candidate.reject", "knowledge_governance"
+    ),
+    ApplicationCommand(
+        ("governance", "decision-get"),
+        "candidate.decision.get",
+        "knowledge_retrieval",
     ),
     ApplicationCommand(
         ("governance", "supersede"), "record.supersede", "knowledge_governance"
@@ -293,6 +298,11 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         ("knowledge", "share-lineage"),
         "knowledge.share.lineage",
         "knowledge_share_observation",
+    ),
+    # Governed knowledge evaluation (C16b). Producing a report and registering its evidence is one contributor
+    # act under its own purpose; the caller states no verdict, and the producer derives the report.
+    ApplicationCommand(
+        ("knowledge", "evaluation-produce"), "knowledge.evaluation.produce", "knowledge_evaluation"
     ),
     # Task-context exports and outcome requests (DEV-REQ-159, DEV-REQ-008). Exporting and requesting an
     # outcome are separate acts, and a read of either is an observation that no writing grant carries.

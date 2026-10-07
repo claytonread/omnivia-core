@@ -1419,7 +1419,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 79 application operations, in the frozen insertion order. Runtime
+#: The exact 81 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1765,6 +1765,20 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "project.context.switch": FrozenOperation(
         "workspace", ("project_context:switch",), "update", "project_context.switch",
         "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
+    ),
+    # Governed knowledge evaluation (C16b). Producing a report and its evidence is a contributor's
+    # create: it writes evidence and derives the verdict itself, so it takes the governance capability
+    # and the workspace memory scope that proposing a record already holds, and the sharing error set.
+    "knowledge.evaluation.produce": FrozenOperation(
+        "workspace", ("memory:write",), "create", "knowledge.govern",
+        "knowledge", "KnowledgeEvaluationProduce", "SHARE_MUT", False,
+    ),
+    # Governed candidate decision readback (C16). One point read of the latest governance decision of a
+    # record, under the retrieval read pattern: the workspace memory read scope and the knowledge read
+    # capability that `knowledge.search` already holds, and the point-read error set `memory.get` has.
+    "candidate.decision.get": FrozenOperation(
+        "workspace", ("memory:read",), "none", "knowledge.read",
+        "knowledge", "CandidateDecisionGet", "POINT_READ", False,
     ),
 }
 

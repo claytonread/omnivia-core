@@ -33,6 +33,7 @@ from omnivia_core_runtime.service.application import (
     KNOWLEDGE_SHARING_FAMILY_PURPOSES,
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
+    build_knowledge_evaluation_application_dispatcher,
     build_task_context_application_dispatcher,
     compose_production_application_surface,
 )
@@ -273,7 +274,7 @@ def test_the_four_operations_sit_at_their_frozen_positions_and_are_distinct() ->
         "knowledge.share.lineage",
     )
     assert SHARING_OPERATIONS == tuple(names[69:73])
-    assert len(names) == len(set(names)) == 79
+    assert len(names) == len(set(names)) == 81
 
 
 def test_appending_the_family_changed_no_earlier_operation_contract() -> None:
@@ -290,7 +291,7 @@ def test_the_production_registry_holds_the_four_operations_under_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 79
+    assert len(surface.registry.operations) == 81
     assert set(SHARING_OPERATIONS) <= surface.registry.operations
     families = {id(surface._routes[name]) for name in SHARING_OPERATIONS}
     assert len(families) == 1
@@ -328,6 +329,14 @@ def test_the_sharing_family_cannot_be_registered_twice_or_under_another_name(
     }
     started = SimpleNamespace(**vars(harness.holder), workspace_id=WS, clock=SystemClock())
     kwargs["task_context"] = build_task_context_application_dispatcher(
+        service=started,
+        principal_id=PRINCIPAL,
+        installation_id=s0.INSTALLATION_ID,
+        workspace_id=WS,
+        fallback=sharing,
+        clock=started.clock,
+    )
+    kwargs["knowledge_evaluation"] = build_knowledge_evaluation_application_dispatcher(
         service=started,
         principal_id=PRINCIPAL,
         installation_id=s0.INSTALLATION_ID,

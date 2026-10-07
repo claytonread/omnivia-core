@@ -179,7 +179,7 @@ def test_closed_schema_and_builder_accept_the_exact_redacted_record() -> None:
 def test_retained_18_tool_record_is_closed_historical_and_expired_for_current_candidates() -> None:
     """The 2026-10-03 Phase 8 run is immutable evidence of an 18-tool inventory.
 
-    It is closed and bound to the historical inventory, an ordered subset of the live
+    It is closed and bound to the historical inventory, an ordered subset of the current
     35-tool list. The current builder refuses it only because the tool inventory has
     advanced; the refusal is the fixed, payload-free message.
     """

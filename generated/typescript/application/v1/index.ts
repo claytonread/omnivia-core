@@ -1775,6 +1775,14 @@ export function isKnowledgeShareState(value: unknown): value is KnowledgeShareSt
 }
 
 /**
+ * One caller-held Stage 2 content object (the candidate overlay, the evaluation suite, a case,
+ * an attempt or a worker binding) exactly as its governed-knowledge profile states it. Core
+ * validates the shape and derives every status, total, finding and digest from it; a caller-
+ * supplied derived field is refused by the producer.
+ */
+export type KnowledgeEvaluationContent = { readonly [key: string]: JsonValue };
+
+/**
  * The opaque token naming one Workspace's active Project context generation: the prefix
  * `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning
  * from it.
@@ -5519,6 +5527,55 @@ export interface GovernanceRationale {
 }
 
 /**
+ * Input for `candidate.decision.get`: the one workspace-scoped governed record whose latest
+ * governance decision is read back. Workspace-scoped through the request envelope's selected
+ * workspace; a record of another workspace is indistinguishable from an unknown one.
+ */
+export interface CandidateDecisionGetInput {
+  /**
+   * Identifier of the governed record whose latest decision is read.
+   */
+  readonly record_id: RecordId;
+}
+
+/**
+ * Result of `candidate.decision.get`: the latest governance decision metadata of one governed
+ * record and nothing else. It carries no record content, no rejected-candidate content, no
+ * rationale text and no earlier history, and it never widens what the canonical-only
+ * `memory.get` views serve.
+ */
+export interface CandidateDecisionGetResult {
+  /**
+   * The governed record this result describes.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The latest governed version of the record, whichever governance state it is in.
+   */
+  readonly version: RecordVersion;
+  /**
+   * The state the latest governance act left the record in: `proposed` (a candidate with no
+   * decision), `accepted` (approved), `rejected`, or `superseded` (an accepted record later
+   * corrected by a replacement).
+   */
+  readonly governance_state: GovernanceState;
+  /**
+   * The principal that took the latest decision, as the server authenticated it. Absent while
+   * the record is `proposed`, because nothing has yet been decided.
+   */
+  readonly decision_actor_id?: Identifier;
+  /**
+   * Open code naming the kind of that principal, such as `user`. Present exactly when
+   * `decision_actor_id` is.
+   */
+  readonly decision_actor_kind?: OpenCode;
+  /**
+   * When Core recorded the latest decision. Present exactly when `decision_actor_id` is.
+   */
+  readonly decided_at?: Timestamp;
+}
+
+/**
  * One decision recorded against a share, kept after a later revocation so a source owner can
  * still read how the share was authorised.
  */
@@ -5711,6 +5768,61 @@ export interface KnowledgeShareLineageInput {
    * The share whose lineage is read.
    */
   readonly share_id: Identifier;
+}
+
+/**
+ * The source the evaluated material came from, as the evidence ledger's source record states it.
+ * `locator` is a pointer and never content, and its prefix must match `locator_scheme`. Core
+ * derives every evidence and content reference from this source and the report, so the caller
+ * names none of them.
+ */
+export interface KnowledgeEvaluationSource {
+  /**
+   * The caller-chosen identity of the source. Reusing it for a different locator or version is
+   * a conflict.
+   */
+  readonly source_id: Identifier;
+  /**
+   * The source kind: `manual`, `document`, `record` or `event`.
+   */
+  readonly kind: string;
+  /**
+   * How `locator` is read: `urn`, `file`, `https` or `opaque`.
+   */
+  readonly locator_scheme: string;
+  /**
+   * The pointer to the source. It must start with `urn:`, `file:` or `https:` when the scheme
+   * says so.
+   */
+  readonly locator: string;
+  /**
+   * The version of the source the evaluation was run against.
+   */
+  readonly version: Identifier;
+}
+
+/**
+ * One canonical record registered in the evidence ledger by a produce call: its deterministic
+ * evidence identity, the record it stands for, and the checksum of that record's canonical
+ * content.
+ */
+export interface KnowledgeEvaluationEvidenceRecord {
+  /**
+   * The evidence identity Core assigned to this record.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * The canonical record kind, such as `evaluation_attempt` or `evaluation_report`.
+   */
+  readonly record_kind: string;
+  /**
+   * The identity the record carries in its own canonical content.
+   */
+  readonly record_id: Identifier;
+  /**
+   * The checksum of the record's canonical content, exactly as the evidence ledger stores it.
+   */
+  readonly content_digest: ContentChecksum;
 }
 
 /**
@@ -9638,6 +9750,84 @@ export interface KnowledgeShareLineageResult {
    * Every decision recorded against the share, accepted and revoked, in the order recorded.
    */
   readonly decisions: readonly KnowledgeShareDecisionRecord[];
+}
+
+/**
+ * Input for `knowledge.evaluation.produce`. The caller submits the exact Stage 2 content it
+ * holds (the overlay, the suite, its cases, the evaluation attempts and their worker bindings)
+ * and the identifiers and classification the evidence ledger needs. Core derives the evaluation
+ * report, its status, coverage, findings and integrity digest from that content and never
+ * accepts them. The caller states no verdict. The request principal attests that these attempts
+ * were submitted; Core does not claim it observed any external model output. Workspace-scoped
+ * through the request envelope's selected workspace.
+ */
+export interface KnowledgeEvaluationProduceInput {
+  /**
+   * The candidate overlay under evaluation.
+   */
+  readonly overlay: KnowledgeEvaluationContent;
+  /**
+   * The evaluation suite the cases belong to.
+   */
+  readonly suite: KnowledgeEvaluationContent;
+  /**
+   * The suite's cases, in the suite's own order.
+   */
+  readonly cases: readonly KnowledgeEvaluationContent[];
+  /**
+   * The evaluation attempts submitted as evidence. At least one is required.
+   */
+  readonly attempts: readonly KnowledgeEvaluationContent[];
+  /**
+   * The worker bindings, which must be exactly those the attempts reference.
+   */
+  readonly worker_bindings: readonly KnowledgeEvaluationContent[];
+  /**
+   * The caller-chosen identity of the evaluation report.
+   */
+  readonly report_id: Identifier;
+  /**
+   * The case that triggered this evaluation.
+   */
+  readonly triggering_case_ref: Identifier;
+  /**
+   * The data classification of the report and its evidence: `public`, `internal`,
+   * `confidential` or `restricted`.
+   */
+  readonly classification: string;
+  /**
+   * The retention class the report and its evidence are kept under.
+   */
+  readonly retention_class: Identifier;
+  /**
+   * The source the evaluated material came from.
+   */
+  readonly source: KnowledgeEvaluationSource;
+}
+
+/**
+ * Result of `knowledge.evaluation.produce`: the report Core derived from the submitted content,
+ * the authenticated principal that submitted it, and every evidence record registered for it. A
+ * replay under the same idempotency key returns this result without a second write.
+ */
+export interface KnowledgeEvaluationProduceResult {
+  /**
+   * The report this result describes.
+   */
+  readonly report_id: Identifier;
+  /**
+   * The derived evaluation report content, including its status, coverage, findings and
+   * integrity digest.
+   */
+  readonly report: KnowledgeEvaluationContent;
+  /**
+   * The principal that submitted the attempts, as the server authenticated it.
+   */
+  readonly submitted_by: Identifier;
+  /**
+   * Every canonical record registered, in the producer's record order.
+   */
+  readonly evidence: readonly KnowledgeEvaluationEvidenceRecord[];
 }
 
 /**
@@ -15837,6 +16027,70 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.evaluation.produce",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationProduceInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationProduceResult",
+    required_capability: { id: "knowledge.govern", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "candidate.decision.get",
+    scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateDecisionGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateDecisionGetResult",
+    required_capability: { id: "knowledge.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

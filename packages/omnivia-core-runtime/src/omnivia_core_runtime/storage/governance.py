@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Final
 
@@ -16,6 +17,7 @@ from omnivia_core.contracts.v1 import (
     RETRY_CLASS_RETRYABLE_AFTER_DELAY,
     CandidateApproveInput,
     CandidateApproveResult,
+    CandidateDecisionGetResult,
     CandidateRejectInput,
     CandidateRejectResult,
     GovernedRecord,
@@ -33,6 +35,7 @@ from omnivia_core_runtime.storage import (
     engineering_preview,
     engineering_source,
 )
+from omnivia_core_runtime.storage.connection import authorised
 from omnivia_core_runtime.storage.engineering_validation import VALIDATION_RECEIPT_FIELD
 from omnivia_core_runtime.storage.governed import (
     hydrate_authorized_governed_record_values,
@@ -52,6 +55,7 @@ from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant
 KNOWLEDGE_PROPOSE_OPERATION: Final = "knowledge.propose"
 CANDIDATE_APPROVE_OPERATION: Final = "candidate.approve"
 CANDIDATE_REJECT_OPERATION: Final = "candidate.reject"
+CANDIDATE_DECISION_GET_OPERATION: Final = "candidate.decision.get"
 RECORD_SUPERSEDE_OPERATION: Final = "record.supersede"
 
 _AUTHORITY_POLICY_ID: Final = "omnivia.human-governance"
@@ -153,6 +157,71 @@ def read_governance_precondition(
     if len(rows) != 1:
         return None
     return str(rows[0][0])
+
+
+def read_candidate_decision(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    record_id: str,
+) -> dict[str, object] | None:
+    """Return the latest sealed application-governance decision for one record.
+
+    The application transition bridge is the source of the operation, actor and
+    settlement time. Its target is joined to the authoritative sealed-version
+    view so an incomplete transition endpoint cannot become readable. Only
+    decision metadata is selected: record content, claim bytes and rationale
+    columns never enter this read.
+
+    ``knowledge.propose`` is deliberately reported without its transition actor:
+    that actor proposed the candidate but has not made a decision. A later
+    approval, rejection or supersession reports the reviewer recorded by that
+    exact transition.
+    """
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        row = fenced.execute(
+            "SELECT t.target_record_version_id, t.operation, t.actor_id, "
+            "t.actor_kind, t.settled_at_us "
+            "FROM omnivia_application_governance_transitions t "
+            "JOIN omnivia_authoritative_governed_versions v "
+            "ON v.workspace_id=t.workspace_id "
+            "AND v.assembly_id=t.target_assembly_id "
+            "AND v.governed_record_id=t.governed_record_id "
+            "AND v.governed_record_version_id=t.target_record_version_id "
+            "WHERE t.workspace_id=? AND t.governed_record_id=? "
+            "ORDER BY v.append_ordinal DESC, v.recorded_at_us DESC, "
+            "t.target_assembly_id DESC, t.transition_id DESC LIMIT 1",
+            (workspace_id, record_id),
+        ).fetchone()
+    if row is None:
+        return None
+    version_id, operation, actor_id, actor_kind, settled_at_us = row
+    state = {
+        KNOWLEDGE_PROPOSE_OPERATION: "proposed",
+        CANDIDATE_APPROVE_OPERATION: "accepted",
+        CANDIDATE_REJECT_OPERATION: "rejected",
+        RECORD_SUPERSEDE_OPERATION: "superseded",
+    }[str(operation)]
+    result: dict[str, object] = {
+        "record_id": record_id,
+        "version": str(version_id),
+        "governance_state": state,
+    }
+    if state != "proposed":
+        result.update(
+            {
+                "decision_actor_id": str(actor_id),
+                "decision_actor_kind": str(actor_kind),
+                "decided_at": _decision_timestamp(int(settled_at_us)),
+            }
+        )
+    CandidateDecisionGetResult.from_wire(result)
+    return result
+
+
+def _decision_timestamp(value: int) -> str:
+    moment = datetime.fromtimestamp(value / 1_000_000, tz=UTC)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
 def _source(
@@ -693,9 +762,11 @@ def _microseconds(value: str) -> int:
 
 __all__ = [
     "CANDIDATE_APPROVE_OPERATION",
+    "CANDIDATE_DECISION_GET_OPERATION",
     "CANDIDATE_REJECT_OPERATION",
     "KNOWLEDGE_PROPOSE_OPERATION",
     "RECORD_SUPERSEDE_OPERATION",
     "apply_governance_transition",
+    "read_candidate_decision",
     "read_governance_precondition",
 ]

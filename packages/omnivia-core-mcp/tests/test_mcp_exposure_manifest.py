@@ -182,7 +182,7 @@ def test_the_manifest_is_curated_not_the_whole_catalogue(profile: str) -> None:
     catalogue = {entry.name for entry in OPERATION_CATALOGUE}
     assert exposed < catalogue, "the manifest must be a strict subset"
     assert len(catalogue) > len(exposed) + 1, (
-        "the catalogue is a capability list of seventy-nine operations; a manifest "
+        "the catalogue is a capability list of eighty-one operations; a manifest "
         "that had grown to nearly all of it would no longer be a curated surface"
     )
 
@@ -385,7 +385,7 @@ def test_the_restricted_profile_admits_only_reads_and_the_decision_mutation() ->
             assert catalogue.audit.audit_category == "read", entry.operation
 
 
-def test_the_authoring_profile_has_fourteen_mutations_and_nineteen_reads() -> None:
+def test_the_authoring_profile_has_fifteen_mutations_and_twenty_reads() -> None:
     """The exit criterion, read off the catalogue rather than off the tool names.
 
     Twenty of the thirty-five declare no side effect and audit as reads; the other

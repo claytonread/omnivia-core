@@ -188,6 +188,8 @@ __all__ = [
     "CandidateApproveInput",
     "CandidateApproveResult",
     "CandidateAssertion",
+    "CandidateDecisionGetInput",
+    "CandidateDecisionGetResult",
     "CandidateExtractionMetadata",
     "CandidateRejectInput",
     "CandidateRejectResult",
@@ -423,6 +425,11 @@ __all__ = [
     "JobTerminalResult",
     "JobTerminalSuccess",
     "JsonObject",
+    "KnowledgeEvaluationContent",
+    "KnowledgeEvaluationEvidenceRecord",
+    "KnowledgeEvaluationProduceInput",
+    "KnowledgeEvaluationProduceResult",
+    "KnowledgeEvaluationSource",
     "KnowledgeProposeInput",
     "KnowledgeProposeResult",
     "KnowledgeSearchInput",
@@ -3706,6 +3713,13 @@ KnowledgeShareState: TypeAlias = str
 """Where one knowledge share stands, derived from its decisions on every read and never stored as a
 flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and
 `revoked` was accepted and is no longer eligible.
+"""
+
+KnowledgeEvaluationContent: TypeAlias = Mapping[str, Any]
+"""One caller-held Stage 2 content object (the candidate overlay, the evaluation suite, a case, an
+attempt or a worker binding) exactly as its governed-knowledge profile states it. Core validates
+the shape and derives every status, total, finding and digest from it; a caller-supplied derived
+field is refused by the producer.
 """
 
 ProjectContextToken: TypeAlias = str
@@ -8775,6 +8789,137 @@ class GovernanceRationale:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateDecisionGetInput:
+    """Input for `candidate.decision.get`: the one workspace-scoped governed record whose latest
+    governance decision is read back. Workspace-scoped through the request envelope's
+    selected workspace; a record of another workspace is indistinguishable from an unknown
+    one.
+    """
+
+    record_id: RecordId
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateDecisionGetInput"
+    ) -> CandidateDecisionGetInput:
+        """Decode a wire payload into a CandidateDecisionGetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        return cls(
+            record_id=field_record_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateDecisionGetResult:
+    """Result of `candidate.decision.get`: the latest governance decision metadata of one
+    governed record and nothing else. It carries no record content, no rejected-candidate
+    content, no rationale text and no earlier history, and it never widens what the
+    canonical-only `memory.get` views serve.
+    """
+
+    record_id: RecordId
+    version: RecordVersion
+    governance_state: GovernanceState
+    decision_actor_id: Identifier | None = None
+    decision_actor_kind: OpenCode | None = None
+    decided_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["version"] = self.version
+        wire["governance_state"] = self.governance_state
+        if self.decision_actor_id is not None:
+            wire["decision_actor_id"] = self.decision_actor_id
+        if self.decision_actor_kind is not None:
+            wire["decision_actor_kind"] = self.decision_actor_kind
+        if self.decided_at is not None:
+            wire["decided_at"] = self.decided_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateDecisionGetResult"
+    ) -> CandidateDecisionGetResult:
+        """Decode a wire payload into a CandidateDecisionGetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        field_governance_state = _decode_str(
+            _require_field(mapping, "governance_state", path),
+            f"{path}.governance_state",
+        )
+        field_decision_actor_id: Identifier | None = None
+        if "decision_actor_id" in mapping:
+            raw_decision_actor_id = mapping["decision_actor_id"]
+            if raw_decision_actor_id is None:
+                raise ContractDecodeError(
+                    f"{path}.decision_actor_id: null is not a valid value"
+                )
+            field_decision_actor_id = _decode_str(
+                raw_decision_actor_id,
+                f"{path}.decision_actor_id",
+            )
+        field_decision_actor_kind: OpenCode | None = None
+        if "decision_actor_kind" in mapping:
+            raw_decision_actor_kind = mapping["decision_actor_kind"]
+            if raw_decision_actor_kind is None:
+                raise ContractDecodeError(
+                    f"{path}.decision_actor_kind: null is not a valid value"
+                )
+            field_decision_actor_kind = _decode_str(
+                raw_decision_actor_kind,
+                f"{path}.decision_actor_kind",
+            )
+        field_decided_at: Timestamp | None = None
+        if "decided_at" in mapping:
+            raw_decided_at = mapping["decided_at"]
+            if raw_decided_at is None:
+                raise ContractDecodeError(
+                    f"{path}.decided_at: null is not a valid value"
+                )
+            field_decided_at = _decode_str(raw_decided_at, f"{path}.decided_at")
+        return cls(
+            record_id=field_record_id,
+            version=field_version,
+            governance_state=field_governance_state,
+            decision_actor_id=field_decision_actor_id,
+            decision_actor_kind=field_decision_actor_kind,
+            decided_at=field_decided_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeShareDecisionRecord:
     """One decision recorded against a share, kept after a later revocation so a source owner
     can still read how the share was authorised.
@@ -9202,6 +9347,123 @@ class KnowledgeShareLineageInput:
         field_share_id = _decode_str(_require_field(mapping, "share_id", path), f"{path}.share_id")
         return cls(
             share_id=field_share_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeEvaluationSource:
+    """The source the evaluated material came from, as the evidence ledger's source record
+    states it. `locator` is a pointer and never content, and its prefix must match
+    `locator_scheme`. Core derives every evidence and content reference from this source and
+    the report, so the caller names none of them.
+    """
+
+    source_id: Identifier
+    kind: str
+    locator_scheme: str
+    locator: str
+    version: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["source_id"] = self.source_id
+        wire["kind"] = self.kind
+        wire["locator_scheme"] = self.locator_scheme
+        wire["locator"] = self.locator
+        wire["version"] = self.version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeEvaluationSource"
+    ) -> KnowledgeEvaluationSource:
+        """Decode a wire payload into a KnowledgeEvaluationSource.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_source_id = _decode_str(
+            _require_field(mapping, "source_id", path),
+            f"{path}.source_id",
+        )
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_locator_scheme = _decode_str(
+            _require_field(mapping, "locator_scheme", path),
+            f"{path}.locator_scheme",
+        )
+        field_locator = _decode_str(_require_field(mapping, "locator", path), f"{path}.locator")
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        return cls(
+            source_id=field_source_id,
+            kind=field_kind,
+            locator_scheme=field_locator_scheme,
+            locator=field_locator,
+            version=field_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeEvaluationEvidenceRecord:
+    """One canonical record registered in the evidence ledger by a produce call: its
+    deterministic evidence identity, the record it stands for, and the checksum of that
+    record's canonical content.
+    """
+
+    evidence_id: Identifier
+    record_kind: str
+    record_id: Identifier
+    content_digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["record_kind"] = self.record_kind
+        wire["record_id"] = self.record_id
+        wire["content_digest"] = self.content_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeEvaluationEvidenceRecord"
+    ) -> KnowledgeEvaluationEvidenceRecord:
+        """Decode a wire payload into a KnowledgeEvaluationEvidenceRecord.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_record_kind = _decode_str(
+            _require_field(mapping, "record_kind", path),
+            f"{path}.record_kind",
+        )
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+            record_kind=field_record_kind,
+            record_id=field_record_id,
+            content_digest=field_content_digest,
         )
 
 
@@ -18426,6 +18688,184 @@ class KnowledgeShareLineageResult:
             state=field_state,
             proposed_by=field_proposed_by,
             decisions=field_decisions,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeEvaluationProduceInput:
+    """Input for `knowledge.evaluation.produce`. The caller submits the exact Stage 2 content it
+    holds (the overlay, the suite, its cases, the evaluation attempts and their worker
+    bindings) and the identifiers and classification the evidence ledger needs. Core derives
+    the evaluation report, its status, coverage, findings and integrity digest from that
+    content and never accepts them. The caller states no verdict. The request principal
+    attests that these attempts were submitted; Core does not claim it observed any external
+    model output. Workspace-scoped through the request envelope's selected workspace.
+    """
+
+    overlay: KnowledgeEvaluationContent
+    suite: KnowledgeEvaluationContent
+    cases: tuple[KnowledgeEvaluationContent, ...]
+    attempts: tuple[KnowledgeEvaluationContent, ...]
+    worker_bindings: tuple[KnowledgeEvaluationContent, ...]
+    report_id: Identifier
+    triggering_case_ref: Identifier
+    classification: str
+    retention_class: Identifier
+    source: KnowledgeEvaluationSource
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["overlay"] = _encode_json_object(self.overlay)
+        wire["suite"] = _encode_json_object(self.suite)
+        wire["cases"] = [_encode_json_object(item) for item in self.cases]
+        wire["attempts"] = [_encode_json_object(item) for item in self.attempts]
+        wire["worker_bindings"] = [_encode_json_object(item) for item in self.worker_bindings]
+        wire["report_id"] = self.report_id
+        wire["triggering_case_ref"] = self.triggering_case_ref
+        wire["classification"] = self.classification
+        wire["retention_class"] = self.retention_class
+        wire["source"] = self.source.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeEvaluationProduceInput"
+    ) -> KnowledgeEvaluationProduceInput:
+        """Decode a wire payload into a KnowledgeEvaluationProduceInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_overlay = _decode_json_object(
+            _require_field(mapping, "overlay", path),
+            f"{path}.overlay",
+        )
+        field_suite = _decode_json_object(_require_field(mapping, "suite", path), f"{path}.suite")
+        field_cases_items = _decode_sequence(
+            _require_field(mapping, "cases", path),
+            f"{path}.cases",
+        )
+        field_cases = tuple(
+            _decode_json_object(item, f"{path}.cases[{index}]")
+            for index, item in enumerate(field_cases_items)
+        )
+        field_attempts_items = _decode_sequence(
+            _require_field(mapping, "attempts", path),
+            f"{path}.attempts",
+        )
+        field_attempts = tuple(
+            _decode_json_object(item, f"{path}.attempts[{index}]")
+            for index, item in enumerate(field_attempts_items)
+        )
+        field_worker_bindings_items = _decode_sequence(
+            _require_field(mapping, "worker_bindings", path),
+            f"{path}.worker_bindings",
+        )
+        field_worker_bindings = tuple(
+            _decode_json_object(item, f"{path}.worker_bindings[{index}]")
+            for index, item in enumerate(field_worker_bindings_items)
+        )
+        field_report_id = _decode_str(
+            _require_field(mapping, "report_id", path),
+            f"{path}.report_id",
+        )
+        field_triggering_case_ref = _decode_str(
+            _require_field(mapping, "triggering_case_ref", path),
+            f"{path}.triggering_case_ref",
+        )
+        field_classification = _decode_str(
+            _require_field(mapping, "classification", path),
+            f"{path}.classification",
+        )
+        field_retention_class = _decode_str(
+            _require_field(mapping, "retention_class", path),
+            f"{path}.retention_class",
+        )
+        field_source = KnowledgeEvaluationSource.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        return cls(
+            overlay=field_overlay,
+            suite=field_suite,
+            cases=field_cases,
+            attempts=field_attempts,
+            worker_bindings=field_worker_bindings,
+            report_id=field_report_id,
+            triggering_case_ref=field_triggering_case_ref,
+            classification=field_classification,
+            retention_class=field_retention_class,
+            source=field_source,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeEvaluationProduceResult:
+    """Result of `knowledge.evaluation.produce`: the report Core derived from the submitted
+    content, the authenticated principal that submitted it, and every evidence record
+    registered for it. A replay under the same idempotency key returns this result without a
+    second write.
+    """
+
+    report_id: Identifier
+    report: KnowledgeEvaluationContent
+    submitted_by: Identifier
+    evidence: tuple[KnowledgeEvaluationEvidenceRecord, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["report_id"] = self.report_id
+        wire["report"] = _encode_json_object(self.report)
+        wire["submitted_by"] = self.submitted_by
+        wire["evidence"] = [item.to_wire() for item in self.evidence]
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeEvaluationProduceResult"
+    ) -> KnowledgeEvaluationProduceResult:
+        """Decode a wire payload into a KnowledgeEvaluationProduceResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_report_id = _decode_str(
+            _require_field(mapping, "report_id", path),
+            f"{path}.report_id",
+        )
+        field_report = _decode_json_object(
+            _require_field(mapping, "report", path),
+            f"{path}.report",
+        )
+        field_submitted_by = _decode_str(
+            _require_field(mapping, "submitted_by", path),
+            f"{path}.submitted_by",
+        )
+        field_evidence_items = _decode_sequence(
+            _require_field(mapping, "evidence", path),
+            f"{path}.evidence",
+        )
+        field_evidence = tuple(
+            KnowledgeEvaluationEvidenceRecord.from_wire(item, f"{path}.evidence[{index}]")
+            for index, item in enumerate(field_evidence_items)
+        )
+        return cls(
+            report_id=field_report_id,
+            report=field_report,
+            submitted_by=field_submitted_by,
+            evidence=field_evidence,
         )
 
 
@@ -29780,6 +30220,112 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.evaluation.produce",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeEvaluationProduceInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeEvaluationProduceResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.govern",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="candidate.decision.get",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateDecisionGetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateDecisionGetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

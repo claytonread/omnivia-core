@@ -19,6 +19,7 @@ from omnivia_core_runtime.service.application import (
     build_governance_application_dispatcher,
 )
 from omnivia_core_runtime.service.operations import OperationError
+from omnivia_core_runtime.storage.governance import read_candidate_decision
 from omnivia_core_runtime.storage.retrieval import CONFIGURED_LOCAL_OWNER
 from test_v06_5_s2_memory_migration import _apply_through
 
@@ -109,6 +110,19 @@ def _request(
         trace_id=f"trc-s4-{tag}",
         idempotency_key=(f"idem-s4-{tag}" if idempotency_key is None else idempotency_key),
         mutation_precondition=MutationPrecondition(record_version=version),
+        purpose=GOVERNANCE_FAMILY_PURPOSES[operation],
+        workspace_id=m3.WORKSPACE_ID,
+    )
+
+
+def _decision_request(record_id: str, *, tag: str) -> RequestEnvelope:
+    operation = "candidate.decision.get"
+    return s0.envelope_for(
+        get_operation_metadata(operation),
+        operation_input={"record_id": record_id},
+        request_id=f"req-s4-{tag}",
+        correlation_id=f"cor-s4-{tag}",
+        trace_id=f"trc-s4-{tag}",
         purpose=GOVERNANCE_FAMILY_PURPOSES[operation],
         workspace_id=m3.WORKSPACE_ID,
     )
@@ -369,6 +383,110 @@ def test_v06_5_s4_candidate_reject_is_a_terminal_governance_transition(
         item["action"]
         for item in rejected.result["updated_record"]["provenance"]["history"]
     ] == ["knowledge.propose", "candidate.reject"]
+
+
+@pytest.mark.parametrize(
+    ("state", "operations"),
+    (
+        ("proposed", ("knowledge.propose",)),
+        ("accepted", ("knowledge.propose", "candidate.approve")),
+        ("rejected", ("knowledge.propose", "candidate.reject")),
+        (
+            "superseded",
+            ("knowledge.propose", "candidate.approve", "record.supersede"),
+        ),
+    ),
+)
+def test_v06_5_s4_candidate_decision_get_reads_each_sealed_state_without_content(
+    owned: m3.m2.Owned,
+    state: str,
+    operations: tuple[str, ...],
+) -> None:
+    memory, governance = _dispatchers(owned, tag=f"decision-{state}")
+    created = _create_source(memory, tag=f"decision-{state}")
+    identity = created.result["record"]["provenance"]["identity"]
+    record_id = identity["record_id"]
+    version = identity["version"]
+    for index, operation in enumerate(operations):
+        replacement = (
+            s2._memory_input("decision replacement")
+            if operation == "record.supersede"
+            else None
+        )
+        transitioned = _transition(
+            governance,
+            operation=operation,
+            record_id=record_id,
+            version=version,
+            tag=f"decision-{state}-{index}",
+            replacement=replacement,
+        )
+        version = _identity(transitioned, "updated")["version"]
+
+    response = governance.dispatch(
+        _decision_request(record_id, tag=f"decision-{state}-read")
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result["record_id"] == record_id
+    assert response.result["version"] == version
+    assert response.result["governance_state"] == state
+    if state == "proposed":
+        assert set(response.result) == {"record_id", "version", "governance_state"}
+    else:
+        assert set(response.result) == {
+            "record_id",
+            "version",
+            "governance_state",
+            "decision_actor_id",
+            "decision_actor_kind",
+            "decided_at",
+        }
+        assert response.result["decision_actor_id"] == CONFIGURED_LOCAL_OWNER
+        assert response.result["decision_actor_kind"] == "user"
+        assert response.result["decided_at"] == "2030-03-17T17:46:40.000Z"
+    assert "content" not in response.result
+    assert "rationale" not in response.result
+
+
+def test_v06_5_s4_candidate_decision_get_unknown_and_other_workspace_are_not_found(
+    owned: m3.m2.Owned,
+) -> None:
+    memory, governance = _dispatchers(owned, tag="decision-isolation")
+    created = _create_source(memory, tag="decision-isolation")
+    identity = created.result["record"]["provenance"]["identity"]
+    _transition(
+        governance,
+        operation="knowledge.propose",
+        record_id=identity["record_id"],
+        version=identity["version"],
+        tag="decision-isolation-propose",
+    )
+
+    missing = governance.dispatch(
+        _decision_request("record-not-present", tag="decision-missing")
+    )
+    assert isinstance(missing, ErrorResponseEnvelope), missing
+    assert missing.error.code == ERROR_CODE_NOT_FOUND
+    assert (
+        read_candidate_decision(
+            owned.connection,
+            workspace_id="workspace-other",
+            record_id=identity["record_id"],
+        )
+        is None
+    )
+
+
+def test_v06_5_s4_candidate_decision_get_rejects_invalid_input(
+    owned: m3.m2.Owned,
+) -> None:
+    _memory, governance = _dispatchers(owned, tag="decision-invalid")
+    invalid = governance.dispatch(
+        replace(_decision_request("record-placeholder", tag="decision-invalid"), input={})
+    )
+    assert isinstance(invalid, ErrorResponseEnvelope), invalid
+    assert invalid.error.code == ERROR_CODE_INVALID_REQUEST
 
 
 def test_v06_5_s4_transition_requires_reviewer_authority(

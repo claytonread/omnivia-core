@@ -35,7 +35,7 @@ The final section holds the v1.4 completion addendum and its reference chain. Th
 addendum is a dated snapshot: its inventory, classification and version statements
 are held to its own values (manifest 2.3, thirteen and eighteen tools, 57 operations,
 four mutations) and to the catalogue entries they name. The live contract -- manifest
-2.8, 79 operations, fourteen restricted and thirty-five authoring tools, fifteen
+2.8, 81 operations, fourteen restricted and thirty-five authoring tools, fifteen
 admitted mutations -- is held to the current manifest source, the catalogue and the
 current traceability record, so a later version cannot leave this module green by
 drifting.
@@ -746,7 +746,7 @@ ADDENDUM_ENTRIES = [
 
 #: The live contract, as the current manifest source and traceability record state it.
 CURRENT_MANIFEST_VERSION = "2.8"
-CURRENT_CATALOGUE_COUNT = 79
+CURRENT_CATALOGUE_COUNT = 81
 CURRENT_RESTRICTED_INVENTORY = (*RESTRICTED_INVENTORY, ("trigger_health", "trigger.health"))
 CURRENT_ADDITIONS_INVENTORY = (
     ("memory_create", "memory.create"),
@@ -817,8 +817,7 @@ def test_the_addendum_snapshot_is_its_reviewed_thirteen_and_eighteen() -> None:
     assert [tool for tool, _ in ADDENDUM_AUTHORING] == [entry["tool_name"] for entry in ADDENDUM_ENTRIES]
 
 
-# The name keeps its original figures because the dated traceability ledger cites it.
-def test_the_live_inventories_are_the_fourteen_and_twenty_five_the_current_record_names() -> None:
+def test_the_live_inventories_are_fourteen_and_thirty_five() -> None:
     assert [(entry["tool_name"], entry["operation"]) for entry in RESTRICTED] == list(
         CURRENT_RESTRICTED_INVENTORY
     )
@@ -831,16 +830,14 @@ def test_the_live_inventories_are_the_fourteen_and_twenty_five_the_current_recor
     assert "exactly thirty-five tools" in DOCUMENT
 
 
-# The name keeps its original figures because the dated traceability ledger cites it.
-def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_5() -> None:
+def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_8() -> None:
     assert f"`{ADDENDUM_MANIFEST_VERSION}`" in ADDENDUM
     assert MANIFEST_VERSION == CURRENT_MANIFEST_VERSION == "2.8"
 
 
-# The name keeps its original figures because the dated traceability ledger cites it.
-def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_sixty_nine() -> None:
+def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_eighty_one() -> None:
     assert f"{ADDENDUM_CATALOGUE_COUNT} operations" in ADDENDUM
-    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 79
+    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 81
     assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
     assert "fifty-four" not in MANIFEST_SOURCE
 
@@ -1057,7 +1054,7 @@ def test_the_interoperability_guide_states_the_live_profile_and_exclusion_counts
     unexposed = len(CATALOGUE_ENTRIES) - len(AUTHORING)
     restricted_excluded = unexposed + SECTION7_SENTINEL_COUNT + len(ADDITIONS)
     authoring_excluded = unexposed + SECTION7_SENTINEL_COUNT
-    assert (unexposed, restricted_excluded, authoring_excluded) == (44, 83, 62)
+    assert (unexposed, restricted_excluded, authoring_excluded) == (46, 85, 64)
     assert "restricted fourteen-tool inventory" in text
     assert "thirty-five-tool inventory: the restricted fourteen plus:" in text
     assert f"has {restricted_excluded} such names and the authoring profile {authoring_excluded}" in text

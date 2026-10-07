@@ -149,6 +149,10 @@ OUTCOME_REQUEST_PURPOSE: Final = "outcome_request"
 #: Making a bound Project the Workspace's active context (C08). A grant to switch context is not a grant to
 #: request an outcome, and an outcome request never moves the active Project.
 PROJECT_CONTEXT_PURPOSE: Final = "project_context"
+#: Producing a governed-knowledge evaluation report and registering its canonical records as evidence (C16b).
+#: A grant to produce evidence is not a grant to govern, propose or approve knowledge, and the report it writes
+#: derives its own verdict, so no purpose here can state one.
+KNOWLEDGE_EVALUATION_PURPOSE: Final = "knowledge_evaluation"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -200,6 +204,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "task_context.export": TASK_CONTEXT_EXPORT_PURPOSE,
         "outcome.request.create": OUTCOME_REQUEST_PURPOSE,
         "project.context.switch": PROJECT_CONTEXT_PURPOSE,
+        "knowledge.evaluation.produce": KNOWLEDGE_EVALUATION_PURPOSE,
     }
 )
 
@@ -294,6 +299,9 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Choosing the active Project is contributor work in one workspace: it writes no record and
         # reaches nothing outside it. Membership of the chosen Project is checked by the handler.
         "project.context.switch": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Producing evidence for an evaluation is contributor work in one workspace: the caller attests the
+        # attempts it submits, and the producer derives the report and its verdict, which no role can state.
+        "knowledge.evaluation.produce": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

@@ -13557,6 +13557,288 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "id": "knowledge.evaluation.produce/primary-success",
+      "operation": "knowledge.evaluation.produce",
+      "description": "knowledge.evaluation.produce derives one evaluation report from the submitted Stage 2 content and registers its canonical records as evidence on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.evaluation.produce-primary-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.govern",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.evaluation.produce"
+        },
+        "operation": "knowledge.evaluation.produce",
+        "input": {
+          "overlay": {
+            "overlay_id": "overlay-1"
+          },
+          "suite": {
+            "suite_id": "suite-1"
+          },
+          "cases": [
+            {
+              "case_id": "case-1"
+            }
+          ],
+          "attempts": [
+            {
+              "attempt_id": "attempt-1"
+            }
+          ],
+          "worker_bindings": [
+            {
+              "binding_id": "binding-1"
+            }
+          ],
+          "report_id": "report-1",
+          "triggering_case_ref": "case-1",
+          "classification": "internal",
+          "retention_class": "evaluation-standard",
+          "source": {
+            "source_id": "source-1",
+            "kind": "record",
+            "locator_scheme": "urn",
+            "locator": "urn:omnivia:evaluation:suite-1",
+            "version": "v1"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.evaluation.produce-primary-success",
+          "audit_reference": "audit-knowledge.evaluation.produce"
+        },
+        "result": {
+          "report_id": "report-1",
+          "report": {
+            "report_id": "report-1",
+            "status": "inconclusive"
+          },
+          "submitted_by": "user-42",
+          "evidence": [
+            {
+              "evidence_id": "ev-gk-0000000000000000000000000000000a",
+              "record_kind": "evaluation_report",
+              "record_id": "report-1",
+              "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "knowledge.evaluation.produce/honest-replay",
+      "operation": "knowledge.evaluation.produce",
+      "description": "knowledge.evaluation.produce repeated with the same idempotency key and the same input: the stored result is returned without a second write.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "knowledge.evaluation.produce/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.evaluation.produce-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "knowledge.govern",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.evaluation.produce"
+        },
+        "operation": "knowledge.evaluation.produce",
+        "input": {
+          "overlay": {
+            "overlay_id": "overlay-1"
+          },
+          "suite": {
+            "suite_id": "suite-1"
+          },
+          "cases": [
+            {
+              "case_id": "case-1"
+            }
+          ],
+          "attempts": [
+            {
+              "attempt_id": "attempt-1"
+            }
+          ],
+          "worker_bindings": [
+            {
+              "binding_id": "binding-1"
+            }
+          ],
+          "report_id": "report-1",
+          "triggering_case_ref": "case-1",
+          "classification": "internal",
+          "retention_class": "evaluation-standard",
+          "source": {
+            "source_id": "source-1",
+            "kind": "record",
+            "locator_scheme": "urn",
+            "locator": "urn:omnivia:evaluation:suite-1",
+            "version": "v1"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.evaluation.produce-honest-replay",
+          "audit_reference": "audit-knowledge.evaluation.produce"
+        },
+        "result": {
+          "report_id": "report-1",
+          "report": {
+            "report_id": "report-1",
+            "status": "inconclusive"
+          },
+          "submitted_by": "user-42",
+          "evidence": [
+            {
+              "evidence_id": "ev-gk-0000000000000000000000000000000a",
+              "record_kind": "evaluation_report",
+              "record_id": "report-1",
+              "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "knowledge.evaluation.produce/idempotency-conflict",
+      "operation": "knowledge.evaluation.produce",
+      "description": "knowledge.evaluation.produce reusing one idempotency key for a different submission: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "knowledge.evaluation.produce/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-knowledge.evaluation.produce-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "knowledge.govern",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-knowledge.evaluation.produce"
+        },
+        "operation": "knowledge.evaluation.produce",
+        "input": {
+          "overlay": {
+            "overlay_id": "overlay-1"
+          },
+          "suite": {
+            "suite_id": "suite-1"
+          },
+          "cases": [
+            {
+              "case_id": "case-1"
+            }
+          ],
+          "attempts": [
+            {
+              "attempt_id": "attempt-2"
+            }
+          ],
+          "worker_bindings": [
+            {
+              "binding_id": "binding-1"
+            }
+          ],
+          "report_id": "report-1",
+          "triggering_case_ref": "case-1",
+          "classification": "internal",
+          "retention_class": "evaluation-standard",
+          "source": {
+            "source_id": "source-1",
+            "kind": "record",
+            "locator_scheme": "urn",
+            "locator": "urn:omnivia:evaluation:suite-1",
+            "version": "v1"
+          }
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-knowledge.evaluation.produce-idempotency-conflict",
+          "audit_reference": "audit-knowledge.evaluation.produce"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "candidate.decision.get/primary-success",
+      "operation": "candidate.decision.get",
+      "description": "candidate.decision.get answers the latest governance decision of one record, and nothing else, on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-candidate.decision.get-primary-success",
+          "required_capabilities": [
+            {
+              "id": "knowledge.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "candidate.decision.get",
+        "input": {
+          "record_id": "rec-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-candidate.decision.get-primary-success"
+        },
+        "result": {
+          "record_id": "rec-1",
+          "version": "v2",
+          "governance_state": "rejected",
+          "decision_actor_id": "reviewer-1",
+          "decision_actor_kind": "user",
+          "decided_at": "2024-01-02T00:00:00Z"
+        }
+      }
     }
   ],
   "contract_version": "1.0",
