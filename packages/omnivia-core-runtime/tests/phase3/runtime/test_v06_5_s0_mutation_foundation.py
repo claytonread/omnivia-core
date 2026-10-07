@@ -749,7 +749,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the forty-three, explicitly, with a mismatch failing closed for each."""
+    """Exactly the forty-five, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -795,10 +795,11 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "task_context.export",
         "outcome.request.create",
         "project.context.switch",
+        "knowledge.evaluation.produce",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 44
+    assert len(MUTATION_PURPOSES) == 45
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -830,7 +831,9 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # a stimulus holds alone, so a configuration grant never delivers one.
     # Knowledge sharing adds one more: proposing a share and deciding one are both
     # held under `knowledge_sharing`, distinct from the governance family's purpose.
-    assert len(set(MUTATION_PURPOSES.values())) == 25
+    # Knowledge evaluation adds one more still: producing an evaluation holds its
+    # own purpose, distinct from every family above.
+    assert len(set(MUTATION_PURPOSES.values())) == 26
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1819,6 +1822,7 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "task_context.export": "workspace_contributor",
         "outcome.request.create": "workspace_contributor",
         "project.context.switch": "workspace_contributor",
+        "knowledge.evaluation.produce": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

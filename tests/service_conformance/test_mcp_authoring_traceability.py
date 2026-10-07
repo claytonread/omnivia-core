@@ -489,7 +489,7 @@ ADDENDUM_ENTRIES = [
 
 #: The live contract, as the current manifest source and traceability record state it.
 CURRENT_MANIFEST_VERSION = "2.8"
-CURRENT_CATALOGUE_COUNT = 79
+CURRENT_CATALOGUE_COUNT = 80
 CURRENT_RESTRICTED_INVENTORY = (*RESTRICTED_INVENTORY, ("trigger_health", "trigger.health"))
 CURRENT_ADDITIONS_INVENTORY = (
     ("memory_create", "memory.create"),
@@ -581,7 +581,7 @@ def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_7() -
 
 def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_seventy_nine() -> None:
     assert f"{ADDENDUM_CATALOGUE_COUNT} operations" in ADDENDUM
-    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 79
+    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 80
     assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
     assert "fifty-four" not in MANIFEST_SOURCE
 
@@ -787,7 +787,7 @@ def test_the_interoperability_guide_states_the_live_profile_and_exclusion_counts
     unexposed = len(CATALOGUE_ENTRIES) - len(AUTHORING)
     restricted_excluded = unexposed + SECTION7_SENTINEL_COUNT + len(ADDITIONS)
     authoring_excluded = unexposed + SECTION7_SENTINEL_COUNT
-    assert (unexposed, restricted_excluded, authoring_excluded) == (44, 83, 62)
+    assert (unexposed, restricted_excluded, authoring_excluded) == (45, 84, 63)
     assert "restricted fourteen-tool inventory" in text
     assert "thirty-five-tool inventory: the restricted fourteen plus:" in text
     assert f"has {restricted_excluded} such names and the authoring profile {authoring_excluded}" in text

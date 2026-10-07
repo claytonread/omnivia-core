@@ -334,13 +334,17 @@ class OutcomeAdmissionAuthority:
         if revision not in source.revisions:
             raise OutcomeAdmissionRefused(REFUSED_UNKNOWN_REVISION)
         # A string is refused too: its characters are never a scope name, so it fails the subset check.
+        unscopeable = False
         try:
             requested = tuple(scopes)
             distinct = set(requested)
         except TypeError:
-            raise OutcomeAdmissionRefused(REFUSED_SCOPE) from None
+            unscopeable = True
+            requested = ()
+            distinct = set()
         if (
-            not requested
+            unscopeable
+            or not requested
             or len(distinct) != len(requested)
             or not distinct <= set(binding.requested_scopes)
         ):

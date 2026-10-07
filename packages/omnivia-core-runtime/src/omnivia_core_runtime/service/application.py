@@ -121,6 +121,11 @@ from omnivia_core_runtime.service.handlers.knowledge import (
     knowledge_search,
     memory_search,
 )
+from omnivia_core_runtime.service.handlers.knowledge_evaluation import (
+    KNOWLEDGE_EVALUATION_FAMILY_OPERATIONS,
+    OPERATION_EVALUATION_PRODUCE,
+    KnowledgeEvaluationHandlers,
+)
 from omnivia_core_runtime.service.handlers.knowledge_sharing import (
     KNOWLEDGE_SHARING_FAMILY_OPERATIONS,
     KnowledgeSharingHandlers,
@@ -1790,6 +1795,82 @@ def build_knowledge_sharing_application_dispatcher(
     )
 
 
+#: Governed knowledge evaluation (C16b): one mutation, served under its own mutation purpose. Its
+#: session is a contributor ceiling over that one operation, so a grant to produce evidence carries no
+#: sharing, governance or task-context authority. This table is not part of `OPERATION_PURPOSES`, which
+#: feeds the read-only local-owner session.
+KNOWLEDGE_EVALUATION_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {OPERATION_EVALUATION_PRODUCE: MUTATION_PURPOSES[OPERATION_EVALUATION_PRODUCE]}
+)
+
+
+def knowledge_evaluation_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor ceiling for one workspace's evaluation surface.
+
+    Holding the operation says only that a session may ask. The principal is the authenticated caller's and
+    the workspace is the one the session names; neither is a request field.
+    """
+    return _contributor_family_session(
+        operations=KNOWLEDGE_EVALUATION_FAMILY_OPERATIONS,
+        purposes=KNOWLEDGE_EVALUATION_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_knowledge_evaluation_registry(
+    handlers: KnowledgeEvaluationHandlers,
+) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        OPERATION_EVALUATION_PRODUCE, cast(OperationHandler, handlers.knowledge_evaluation_produce)
+    )
+    return registry
+
+
+def build_knowledge_evaluation_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the evaluation operation around the existing router."""
+    session = knowledge_evaluation_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_knowledge_evaluation_registry(
+        KnowledgeEvaluationHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+            allocate_identifier=allocate_identifier,
+        )
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -1950,7 +2031,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 77/77 complete.
+    is anything other than 80/80 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1969,9 +2050,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 14:
+        if len(distinct_routes) != 15:
             raise ValueError(
-                "the production surface requires exactly fourteen authority families"
+                "the production surface requires exactly fifteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -2042,6 +2123,7 @@ def compose_production_application_surface(
     engineering: ApplicationDispatcher,
     knowledge_sharing: ApplicationDispatcher,
     task_context: ApplicationDispatcher,
+    knowledge_evaluation: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -2061,6 +2143,7 @@ def compose_production_application_surface(
         engineering,
         knowledge_sharing,
         task_context,
+        knowledge_evaluation,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -2782,6 +2865,7 @@ __all__ = [
     "build_installation_registry",
     "build_job_application_dispatcher",
     "build_job_registry",
+    "build_knowledge_evaluation_application_dispatcher",
     "build_memory_application_dispatcher",
     "build_memory_registry",
     "build_skill_application_dispatcher",

@@ -46,6 +46,7 @@ from omnivia_core_runtime.service.application import (
     build_engineering_application_dispatcher,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
+    build_knowledge_evaluation_application_dispatcher,
     build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
     build_skill_application_dispatcher,
@@ -479,6 +480,16 @@ def _build_production_application_surface(
         admission=admission_authority,
         clock=started.clock,
     )
+    # Governed knowledge evaluation (C16b) is one mutation over the Stage 2 producer. It sits last in the chain
+    # and holds no sharing, governance or task-context authority of its own.
+    knowledge_evaluation = build_knowledge_evaluation_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=task_context,
+        clock=started.clock,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -494,6 +505,7 @@ def _build_production_application_surface(
         engineering=engineering,
         knowledge_sharing=knowledge_sharing,
         task_context=task_context,
+        knowledge_evaluation=knowledge_evaluation,
         probe=probe,
     )
 

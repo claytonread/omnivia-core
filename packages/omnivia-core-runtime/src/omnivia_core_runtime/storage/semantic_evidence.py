@@ -128,6 +128,13 @@ def _read_source(
     )
 
 
+def read_evidence_source(
+    connection: sqlite3.Connection, workspace_id: str, source_id: str
+) -> EvidenceSource | None:
+    """Read one evidence source's identity, so a caller can refuse a conflict before any write."""
+    return _read_source(connection, workspace_id, source_id)
+
+
 def read_evidence_item(
     connection: sqlite3.Connection, workspace_id: str, evidence_id: str
 ) -> EvidenceItem | None:
@@ -604,6 +611,7 @@ __all__ = [
     "read_evidence_by_digest",
     "read_evidence_extraction",
     "read_evidence_item",
+    "read_evidence_source",
     "read_observation_bundle",
     "semantic_evidence_writer",
     "verify_evidence_observation_digests",

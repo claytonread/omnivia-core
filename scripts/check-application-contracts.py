@@ -1419,7 +1419,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 79 application operations, in the frozen insertion order. Runtime
+#: The exact 80 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1765,6 +1765,13 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "project.context.switch": FrozenOperation(
         "workspace", ("project_context:switch",), "update", "project_context.switch",
         "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
+    ),
+    # Governed knowledge evaluation (C16b). Producing a report and its evidence is a contributor's
+    # create: it writes evidence and derives the verdict itself, so it takes the governance capability
+    # and the workspace memory scope that proposing a record already holds, and the sharing error set.
+    "knowledge.evaluation.produce": FrozenOperation(
+        "workspace", ("memory:write",), "create", "knowledge.govern",
+        "knowledge", "KnowledgeEvaluationProduce", "SHARE_MUT", False,
     ),
 }
 

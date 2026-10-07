@@ -527,6 +527,178 @@
       ],
       "unevaluatedProperties": false
     },
+    "KnowledgeEvaluationContent": {
+      "title": "KnowledgeEvaluationContent",
+      "description": "One caller-held Stage 2 content object (the candidate overlay, the evaluation suite, a case, an attempt or a worker binding) exactly as its governed-knowledge profile states it. Core validates the shape and derives every status, total, finding and digest from it; a caller-supplied derived field is refused by the producer.",
+      "type": "object"
+    },
+    "KnowledgeEvaluationSource": {
+      "title": "KnowledgeEvaluationSource",
+      "description": "The source the evaluated material came from, as the evidence ledger's source record states it. `locator` is a pointer and never content, and its prefix must match `locator_scheme`. Core derives every evidence and content reference from this source and the report, so the caller names none of them.",
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The caller-chosen identity of the source. Reusing it for a different locator or version is a conflict."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The source kind: `manual`, `document`, `record` or `event`."
+        },
+        "locator_scheme": {
+          "type": "string",
+          "description": "How `locator` is read: `urn`, `file`, `https` or `opaque`."
+        },
+        "locator": {
+          "type": "string",
+          "description": "The pointer to the source. It must start with `urn:`, `file:` or `https:` when the scheme says so."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The version of the source the evaluation was run against."
+        }
+      },
+      "required": [
+        "source_id",
+        "kind",
+        "locator_scheme",
+        "locator",
+        "version"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeEvaluationProduceInput": {
+      "title": "KnowledgeEvaluationProduceInput",
+      "description": "Input for `knowledge.evaluation.produce`. The caller submits the exact Stage 2 content it holds (the overlay, the suite, its cases, the evaluation attempts and their worker bindings) and the identifiers and classification the evidence ledger needs. Core derives the evaluation report, its status, coverage, findings and integrity digest from that content and never accepts them. The caller states no verdict. The request principal attests that these attempts were submitted; Core does not claim it observed any external model output. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "overlay": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationContent",
+          "description": "The candidate overlay under evaluation."
+        },
+        "suite": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationContent",
+          "description": "The evaluation suite the cases belong to."
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationContent"
+          },
+          "description": "The suite's cases, in the suite's own order."
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationContent"
+          },
+          "description": "The evaluation attempts submitted as evidence. At least one is required."
+        },
+        "worker_bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationContent"
+          },
+          "description": "The worker bindings, which must be exactly those the attempts reference."
+        },
+        "report_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The caller-chosen identity of the evaluation report."
+        },
+        "triggering_case_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The case that triggered this evaluation."
+        },
+        "classification": {
+          "type": "string",
+          "description": "The data classification of the report and its evidence: `public`, `internal`, `confidential` or `restricted`."
+        },
+        "retention_class": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The retention class the report and its evidence are kept under."
+        },
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationSource",
+          "description": "The source the evaluated material came from."
+        }
+      },
+      "required": [
+        "overlay",
+        "suite",
+        "cases",
+        "attempts",
+        "worker_bindings",
+        "report_id",
+        "triggering_case_ref",
+        "classification",
+        "retention_class",
+        "source"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeEvaluationEvidenceRecord": {
+      "title": "KnowledgeEvaluationEvidenceRecord",
+      "description": "One canonical record registered in the evidence ledger by a produce call: its deterministic evidence identity, the record it stands for, and the checksum of that record's canonical content.",
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The evidence identity Core assigned to this record."
+        },
+        "record_kind": {
+          "type": "string",
+          "description": "The canonical record kind, such as `evaluation_attempt` or `evaluation_report`."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The identity the record carries in its own canonical content."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The checksum of the record's canonical content, exactly as the evidence ledger stores it."
+        }
+      },
+      "required": [
+        "evidence_id",
+        "record_kind",
+        "record_id",
+        "content_digest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeEvaluationProduceResult": {
+      "title": "KnowledgeEvaluationProduceResult",
+      "description": "Result of `knowledge.evaluation.produce`: the report Core derived from the submitted content, the authenticated principal that submitted it, and every evidence record registered for it. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "report_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The report this result describes."
+        },
+        "report": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationContent",
+          "description": "The derived evaluation report content, including its status, coverage, findings and integrity digest."
+        },
+        "submitted_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that submitted the attempts, as the server authenticated it."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeEvaluationEvidenceRecord"
+          },
+          "description": "Every canonical record registered, in the producer's record order."
+        }
+      },
+      "required": [
+        "report_id",
+        "report",
+        "submitted_by",
+        "evidence"
+      ],
+      "unevaluatedProperties": false
+    },
     "TaskContextExportInput": {
       "title": "TaskContextExportInput",
       "description": "Input for `task_context.export`. The caller hands over one assembled task-context handoff and the explicit budgets the export must fit. The handoff is data: Core verifies its recorded identity against its content and projects one fixed set of content sections under Core's redaction patterns. The workspace, the exporting principal, the fencing generation and the policy are the server's own and are never stated here. An export is never truncated: a handoff that does not fit its budgets is refused.",
