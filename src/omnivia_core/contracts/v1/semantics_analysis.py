@@ -32,12 +32,17 @@ this boundary, in a fixed order:
 
 Classification is total over any JSON document a transport could deliver: a
 crash is a failure of the refusal boundary, so every malformed input maps to a
-typed outcome rather than an exception escaping to the caller.
+typed outcome rather than an exception escaping to the caller. Scalars are gated
+by exact type and object keys are checked before any set or lookup, so a
+str/int/float subclass supplied in process is refused without its operators
+running. Totality is scoped to JSON-origin values and well-behaved abstract
+containers, not to hostile container protocol methods.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from .generated import (
@@ -97,9 +102,40 @@ _INVALID_REQUEST_DETAIL: Final = (
 )
 
 
+#: Scalar and byte-like ancestry. A value with any of these in its MRO is never a
+#: JSON container, even when it also mixes in a Mapping or Sequence ABC, so the
+#: scalar barrier runs before any container protocol is entered.
+_NON_CONTAINER_ANCESTORS: Final = (str, int, float, bytes, bytearray, memoryview)
+
+
+def _is_array(value: Any) -> bool:
+    """A JSON array: any non-text, non-bytes ``Sequence`` (list, tuple, custom)."""
+    return not isinstance(value, _NON_CONTAINER_ANCESTORS) and isinstance(
+        value, Sequence
+    )
+
+
+def _mapping_keys(value: Any) -> frozenset[str] | None:
+    """The keys of a Mapping as a built-in frozenset, or None when ``value`` is
+    not a Mapping or any key is not an exact ``str``.
+
+    Each key's type is checked before anything hashes or compares it, so a
+    hostile ``str`` subclass key is refused without entering a set or lookup.
+    A scalar or byte-like hybrid is refused before its Mapping protocol runs.
+    """
+    if isinstance(value, _NON_CONTAINER_ANCESTORS) or not isinstance(value, Mapping):
+        return None
+    keys: list[str] = []
+    for key in value:
+        if type(key) is not str:
+            return None
+        keys.append(key)
+    return frozenset(keys)
+
+
 def _identifier_ok(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and 1 <= len(value) <= _IDENTIFIER_MAX
         and _IDENTIFIER_PATTERN.fullmatch(value) is not None
     )
@@ -107,9 +143,8 @@ def _identifier_ok(value: Any) -> bool:
 
 def _strict_fields(document: Any, allowed: frozenset[str]) -> bool:
     """Every present key is declared and every value is JSON data."""
-    if not isinstance(document, dict):
-        return False
-    if not set(document) <= allowed:
+    keys = _mapping_keys(document)
+    if keys is None or not keys <= allowed:
         return False
     return all(_json_data(value) for value in document.values())
 
@@ -117,27 +152,34 @@ def _strict_fields(document: Any, allowed: frozenset[str]) -> bool:
 def _json_data(value: Any, depth: int = 0) -> bool:
     """A JSON value: null, bool, int, float, str, or a (bounded-depth)
     composition of those. Bounded depth keeps a hostile nesting bomb from
-    turning the strict decode into unbounded work."""
+    turning the strict decode into unbounded work.
+
+    Scalars are gated by exact type, so a subclass is refused before any of its
+    methods run; the NaN/infinity comparisons only ever see an exact float. A
+    scalar or byte-like subclass that also mixes in a container ABC is refused by
+    the ancestry barrier before its Mapping or Sequence branch is entered.
+    """
     if depth > 32:
         return False
-    if value is None or isinstance(value, (bool, str)):
+    kind = type(value)
+    if value is None or kind is bool or kind is str or kind is int:
         return True
-    if isinstance(value, int):
-        return True
-    if isinstance(value, float):
+    if kind is float:
         return value == value and value not in (float("inf"), float("-inf"))  # noqa: PLR0124 - NaN check
-    if isinstance(value, list):
-        return all(_json_data(item, depth + 1) for item in value)
-    if isinstance(value, dict):
-        return all(
-            isinstance(key, str) and _json_data(item, depth + 1)
-            for key, item in value.items()
+    if isinstance(value, _NON_CONTAINER_ANCESTORS):
+        return False
+    if isinstance(value, Mapping):
+        keys = _mapping_keys(value)
+        return keys is not None and all(
+            _json_data(item, depth + 1) for item in value.values()
         )
+    if _is_array(value):
+        return all(_json_data(item, depth + 1) for item in value)
     return False
 
 
 def _business_date_ok(value: Any) -> bool:
-    if not isinstance(value, str) or _DATE_PATTERN.fullmatch(value) is None:
+    if type(value) is not str or _DATE_PATTERN.fullmatch(value) is None:
         return False
     year, month, day = (int(part) for part in value.split("-"))
     if not 1 <= month <= 12:
@@ -154,7 +196,7 @@ def _days_in_month(year: int, month: int) -> int:
 
 def _timezone_ok(value: Any) -> bool:
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or not 1 <= len(value) <= _TIMEZONE_MAX
         or _TIMEZONE_PATTERN.fullmatch(value) is None
     ):
@@ -169,47 +211,60 @@ def _timezone_ok(value: Any) -> bool:
 
 
 def _target_ok(target: Any) -> bool:
-    if not isinstance(target, dict):
+    keys = _mapping_keys(target)
+    if keys is None:
         return False
     kind = target.get("kind")
+    if type(kind) is not str:
+        return False
     if kind == "metric":
-        if not set(target) <= _ANALYSIS_METRIC_FIELDS:
+        if not keys <= _ANALYSIS_METRIC_FIELDS:
             return False
         return _identifier_ok(target.get("metric_revision_id"))
     if kind == "data_view":
-        if not set(target) <= _ANALYSIS_DATA_VIEW_FIELDS:
+        if not keys <= _ANALYSIS_DATA_VIEW_FIELDS:
             return False
         return _identifier_ok(target.get("data_view_revision_id"))
     return False
 
 
 def _parameters_ok(parameters: Any) -> bool:
-    if parameters is None:
-        return True
-    if not isinstance(parameters, list):
+    """A present ``parameters`` value: an array of exact ``{name, value}`` pairs.
+
+    Callers check presence first, so an explicit null is refused here as a
+    non-array, matching the generated decoder.
+    """
+    if not _is_array(parameters):
         return False
     names: set[str] = set()
     for parameter in parameters:
-        if not isinstance(parameter, dict) or set(parameter) != _PARAMETER_FIELDS:
+        if _mapping_keys(parameter) != _PARAMETER_FIELDS:
             return False
-        name = parameter.get("name")
-        if not isinstance(name, str) or name in names:
+        name = parameter["name"]
+        # The identifier gate runs before set membership, so a hostile name is
+        # never hashed or compared.
+        if not _identifier_ok(name) or name in names:
             return False
-        if not _identifier_ok(name) or not _json_data(parameter.get("value")):
+        value = parameter["value"]
+        # A parameter value is a JSON object (the generated ``JsonObject``), so
+        # its top level must be a Mapping before the nested JSON data is checked.
+        if not isinstance(value, Mapping) or not _json_data(value):
             return False
         names.add(name)
     return True
 
 
 def _output_bounds_ok(bounds: Any) -> bool:
-    if bounds is None:
-        return True
-    if not isinstance(bounds, dict) or not set(bounds) <= _OUTPUT_BOUNDS_FIELDS:
+    """A present ``output_bounds`` value: an object whose ``max_rows``, when
+    present, is a positive integer. An omitted ``max_rows`` is valid; a present
+    null is not."""
+    keys = _mapping_keys(bounds)
+    if keys is None or not keys <= _OUTPUT_BOUNDS_FIELDS:
         return False
-    max_rows = bounds.get("max_rows")
-    return max_rows is None or (
-        isinstance(max_rows, int) and not isinstance(max_rows, bool) and max_rows >= 1
-    )
+    if "max_rows" not in keys:
+        return True
+    max_rows = bounds["max_rows"]
+    return type(max_rows) is int and max_rows >= 1
 
 
 def classify_analysis_start_request(document: Any) -> tuple[str, str]:
@@ -218,16 +273,21 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     Returns ``(outcome_code, detail)`` where ``outcome_code`` is one of the
     four typed outcomes CO-3 fixes: ``invalid_request``,
     ``incompatible_version``, ``unsupported_minor_version`` or
-    ``dependency_unavailable``. The function never raises and never touches
-    storage, the network, credentials or a worker: classification is the whole
-    of milestone 1, and the caller's only job is to render the outcome.
+    ``dependency_unavailable``. It never raises for JSON-origin documents or the
+    guarded hostile scalar/key cases; arbitrary hostile Mapping/Sequence protocol
+    implementations are outside that guarantee. It never touches storage, the
+    network, credentials or a worker: classification is the whole of milestone
+    1, and the caller's only job is to render the outcome.
     """
-    if not isinstance(document, dict):
+    # The document must be a JSON object: a non-Mapping, or a Mapping with any
+    # non-str key, is refused before its keys are looked up or compared.
+    keys = _mapping_keys(document)
+    if keys is None:
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     version = document.get("request_version")
     if (
-        not isinstance(version, str)
+        type(version) is not str
         or len(version) > _VERSION_MAX
         or _VERSION_PATTERN.fullmatch(version) is None
     ):
@@ -248,21 +308,23 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     # Supported version: the strict shape boundary applies now. Unknown fields
     # are refused here, never silently preserved the way the tolerant
     # production decoder would preserve them.
-    if not set(document) <= _ANALYSIS_INPUT_FIELDS:
+    if not _strict_fields(document, _ANALYSIS_INPUT_FIELDS):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     use_class = document.get("use_class")
-    if use_class not in ADMITTED_ANALYSIS_USE_CLASSES:
+    if type(use_class) is not str or use_class not in ADMITTED_ANALYSIS_USE_CLASSES:
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     if not _target_ok(document.get("target")):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
-    has_as_of = "as_of_date" in document
-    has_period = "period_start" in document or "period_end" in document
+    has_as_of = "as_of_date" in keys
+    has_period = "period_start" in keys or "period_end" in keys
     if has_period and not (
-        "period_start" in document
-        and "period_end" in document
+        "period_start" in keys
+        and "period_end" in keys
+        and _business_date_ok(document["period_start"])
+        and _business_date_ok(document["period_end"])
         and document["period_start"] <= document["period_end"]
     ):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
@@ -271,7 +333,7 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     temporal_values = [
         document[key]
         for key in ("as_of_date", "period_start", "period_end")
-        if key in document
+        if key in keys
     ]
     if not all(_business_date_ok(value) for value in temporal_values):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
@@ -279,9 +341,11 @@ def classify_analysis_start_request(document: Any) -> tuple[str, str]:
     if not _timezone_ok(document.get("business_timezone")):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
-    if not _parameters_ok(document.get("parameters")):
+    # Optional fields: omitted is valid, but a present value (including null)
+    # must satisfy its schema, so presence is tested rather than ``.get()``.
+    if "parameters" in keys and not _parameters_ok(document["parameters"]):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
-    if not _output_bounds_ok(document.get("output_bounds")):
+    if "output_bounds" in keys and not _output_bounds_ok(document["output_bounds"]):
         return ERROR_CODE_INVALID_REQUEST, _INVALID_REQUEST_DETAIL
 
     purpose = document.get("purpose_reference")

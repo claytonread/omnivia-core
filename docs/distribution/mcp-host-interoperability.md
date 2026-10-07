@@ -228,14 +228,21 @@ model's report:
   uses `pip --require-hashes` from a generated file-URL list, with no index. The
   record binds the normalized full closure by count and digest, and separately
   binds the exact harness and record-schema bytes by SHA-256.
-- **Protocol:** initialize must negotiate `2025-06-18`; an initialize error,
-  missing or malformed version, version mismatch, or paginated tool listing is
-  a protocol violation. Once the interruption response is withheld, the relay
-  is sealed and cannot forward another host or child frame. For qualification
-  pagination, the host requests page one and the proxy reads later pages on the
-  same MCP child connection, copying only the preceding host-principal token.
-  The first answer is released after the final page; tokens and page bodies are
-  never retained.
+- **Protocol:** two lifecycles are pinned, and neither is negotiated. Legacy:
+  `initialize` must negotiate `2025-06-18`. Modern: a successful
+  `server/discover` that advertises `2026-07-28` stands for `initialize`; it must
+  be a success object with a bounded, unique `supportedVersions` string list
+  containing `2026-07-28`, a `capabilities` object, `resultType` `complete`, a
+  nonnegative integer `ttlMs`, `cacheScope` `public` or `private`, and, where
+  present, a top-level `protocolVersion` of exactly `2026-07-28`, a top-level
+  `serverInfo` with nonempty bounded `name` and `version` strings, and an object
+  `_meta` whose reserved `io.modelcontextprotocol/serverInfo` (same shape) and
+  `io.modelcontextprotocol/protocolVersion` (`2026-07-28`) entries are valid.
+  Other `_meta` and result keys are open and no value is retained. An initialize
+  error, missing or malformed version, version mismatch, a malformed discovery
+  that advertises `2026-07-28`, or a paginated tool listing is a protocol
+  violation. Once the interruption response is withheld, the relay
+  is sealed and cannot forward another host or child frame.
 - **Platform:** a passing record is limited to macOS 27.0 build 26A428 on arm64,
   rather than any syntactically valid macOS version/build.
 - **Cleanup:** the runtime root is removed and verified before a pass is written.
@@ -275,7 +282,9 @@ The approved replacement host baseline is Claude Code `2.1.289` (the installed
 supported CLI verified on 2026-10-04, replacing the Phase 8 start value
 `2.1.288`), Codex CLI `0.146.0`, and macOS `27.0` build `26A428` on arm64. These
 values qualify nothing by themselves; they become evidence only after the
-corresponding real-host run passes at the frozen candidate commit.
+corresponding real-host run passes at the frozen candidate commit. The records
+committed under `docs/development/qualification/` are historical: they cover the
+13/18-tool snapshot at `0d8cf362` and do not qualify the live 14/25 candidate.
 
 The executable harness is `scripts/run-mcp-real-host-qualification.py`. A run
 names one host, its installed binary, one clean candidate directory, one
@@ -359,9 +368,40 @@ login only through `claude auth status --json` in the session environment. The
 MCP server process is pointed at the harness-owned home and configuration
 directories with an empty `CLAUDE_CODE_OAUTH_TOKEN`, so Core never sees the real
 profile. This mode is less isolated than file mode, the login is not isolated
-per run, and it runs only when the operator passes the flag. Its guardrails are
-`--safe-mode`, `--restricted`, a private per-run `TMPDIR`, strict MCP config,
-the bounded tool allowlist, and no session persistence.
+per run, and it runs only when the operator passes the flag. The Claude command is
+identical to token mode. Its guardrails are strict MCP config with the exact
+`--mcp-config`, project-only setting sources in an empty workspace, `--allowedTools`
+set to the exact MCP tool names only, `dontAsk` permissions with no prompts, a
+private per-run `TMPDIR`, and no session persistence. Ambient MCP servers and
+executable built-ins are not pre-authorized. It passes no `--safe-mode`,
+`--restricted` or `--tools` flag: `--safe-mode` disables all MCP servers, and
+Claude Code 2.1.289 loads `--mcp-config` asynchronously, so any `--tools` filter
+is evaluated before the MCP tools register and the run reports
+`host_initialize_missing`.
+
+Claude Code 2.1.289 with `mcp` 2.0.0 uses the modern lifecycle: a successful
+`server/discover`, then `tools/list` and `tools/call`, with no `initialize`. It is
+not a probe followed by an `initialize`. The proxy accepts that discovery as
+initialization only when its result is a valid modern discovery for
+`2026-07-28`, and then writes `proxy_started`, `initialize_request` and
+`initialize_response` (`ok=true`), in that order, before it forwards the answer.
+A discovery that returns an error, or that does not advertise `2026-07-28`, is
+relayed unobserved so the host can fall back to the legacy `initialize` path,
+which is still validated exactly. A discovery that advertises `2026-07-28` but is
+malformed is recorded as a failed initialize and a protocol violation, and is not
+forwarded. The observation file is created exclusively, so a launch that
+observes nothing, such as a discovery that is empty, unanswered, an error or
+non-modern, must not leave one behind: a later launch could not create it and
+the run would report `host_initialize_missing`. The proxy therefore creates the
+file lazily, with mode `0600` and `O_EXCL`/`O_NOFOLLOW`, immediately before it
+writes the first validated event, and it writes `proxy_started` automatically,
+once, immediately before its first closed-vocabulary event. An unobserved
+launch (an empty launch, or a `server/discover` request and a response that is
+an error or non-modern, relayed byte for byte) emits no event and never creates
+the path. The proxy never deletes or replaces an observation
+path. A launch that emits an event fails closed if any file, symlink or other
+entry already exists at the path, and leaves that entry unchanged. No event
+content, token or path is added to the stream.
 
 Before Core starts, the harness provisions the credential and asks that host's
 own authentication-status command to prove it works in the session environment.
@@ -370,6 +410,28 @@ operator's keychain or normal configuration fails as `authentication_unavailable
 In existing-login mode the same command runs against the operator's profile, as
 described above. The harness does not weaken file-mode isolation or point a file
 run at the operator's normal host state.
+
+Paged reads, such as the import's `job_events` walk, chain through the host's own
+tokens. Each page is one fresh host session that makes exactly one call. Page one
+uses the base arguments. Each later page carries the continuation token that the
+host's preceding successful call returned, never the owner's token: owner-side
+tokens are not sent to a host. The transparent proxy hands off only that one
+token, from the targeted call's first successful answer, to a private `0600`
+handoff file. The parent reads it after the host has exited, checks its closed
+shape and that it agrees with the observed capture, and unlinks it on every path.
+Tokens bind to the same Core principal, not to a transport session, so a fresh
+session can continue the walk. The host's presence or absence of a token must
+match the owner page at the same position, and the final page carries none.
+
+The token is exposed to the host in two places, and the harness cannot prevent
+either. First, the provider necessarily sees it in the preceding MCP tool result,
+because the proxy forwards that answer unchanged. Second, it appears again in the
+next fresh session's exact prompt and arguments, as the page's arguments already
+do. The harness does not retain it: it is never written to the observation
+stream, a qualification record, a durable log or the final output. The in-memory
+result holds it only for the next call of the same walk, and its representation
+hides it. Runtime cleanup removes the private session artifacts, including the
+handoff file, so no copy survives the run.
 
 Success and failure records are validated against the closed schema before an
 atomic write. Early failures use the schema's minimal failure branch; once the

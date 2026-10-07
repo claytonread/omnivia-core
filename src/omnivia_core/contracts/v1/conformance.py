@@ -51,7 +51,8 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
-from typing import Any, Final
+from types import MappingProxyType
+from typing import Any, Final, NoReturn, TypeVar
 
 from omnivia_core.contracts.v1 import generated
 from omnivia_core.contracts.v1.adapter import ApplicationWireAdapter
@@ -151,9 +152,17 @@ from omnivia_core.contracts.v1.semantics_operations import (
 __all__ = [
     "ADAPTER_CONFORMANCE_CORPUS_FILE",
     "ADAPTER_CONFORMANCE_CORPUS_FORMAT",
+    "PHYSICAL_SCHEMA_PROFILE",
+    "PHYSICAL_SCHEMA_PROFILE_VERSION",
     "AdapterConformanceCase",
     "AdapterConformanceError",
+    "SchemaEvaluationBudgetExceeded",
+    "SchemaEvaluationError",
+    "evaluate_json_schema",
+    "evaluate_physical_json_schema",
     "load_adapter_conformance_corpus",
+    "require_supported_json_schema",
+    "require_supported_physical_json_schema",
     "run_adapter_conformance",
     "validate_case_collection",
 ]
@@ -726,9 +735,163 @@ _JSON_TYPES: Final[dict[str, tuple[type, ...]]] = {
     "null": (type(None),),
 }
 
+PHYSICAL_SCHEMA_PROFILE_VERSION: Final = "1.0.0"
+_PHYSICAL_SCHEMA_DIALECT: Final = "https://json-schema.org/draft/2020-12/schema"
+_PHYSICAL_SCHEMA_KEYWORDS: Final[frozenset[str]] = frozenset({
+    "$schema", "$id", "$ref", "$defs", "title", "description", "type",
+    "const", "enum", "minimum", "maximum", "minLength", "maxLength",
+    "pattern", "items", "minItems", "maxItems", "properties", "required",
+    "additionalProperties", "allOf", "oneOf", "unevaluatedProperties", "format",
+})
+_PHYSICAL_DEFINITION_NAME_RE: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]{0,127}\Z")
+_PHYSICAL_LOCAL_REF_RE: Final = re.compile(
+    r"#/\$defs/([A-Za-z_][A-Za-z0-9_.\-]{0,127})\Z"
+)
+_PHYSICAL_MAX_DEPTH: Final = 64
+_PHYSICAL_MAX_DEFINITIONS: Final = 256
+_PHYSICAL_MAX_REFERENCE_HOPS: Final = 32
+_PHYSICAL_MAX_PATTERN_LENGTH: Final = 1_024
+_PHYSICAL_MAX_WORK: Final = 100_000
+_PHYSICAL_MAX_FINDINGS: Final = 32
+_PHYSICAL_MAX_ANNOTATION_LENGTH: Final = 4_096
+_PHYSICAL_MAX_EXTENSION_NAME_LENGTH: Final = 128
+_PHYSICAL_MAX_LITERAL_STRING_LENGTH: Final = 65_536
+_PHYSICAL_MAX_COLLECTION_ITEMS: Final = 256
+_PHYSICAL_MAX_PROPERTIES: Final = 256
+_PHYSICAL_MAX_COMPOSITION_BRANCHES: Final = 64
+_PHYSICAL_MAX_COUNT_OPERAND: Final = 1_048_576
 
-class _SchemaEvaluationError(ContractSemanticError):
-    """The canonical schema asks the bounded evaluator to do unsupported work."""
+# Immutable and directly inspectable so a caller can pin the exact admission
+# policy alongside a retained result. Host-level byte, subject and deadline
+# bounds deliberately stay outside this pure evaluator policy.
+PHYSICAL_SCHEMA_PROFILE: Final[Mapping[str, object]] = MappingProxyType({
+    "version": PHYSICAL_SCHEMA_PROFILE_VERSION,
+    "dialect": _PHYSICAL_SCHEMA_DIALECT,
+    "keywords": tuple(sorted(_PHYSICAL_SCHEMA_KEYWORDS)),
+    "max_depth": _PHYSICAL_MAX_DEPTH,
+    "max_definitions": _PHYSICAL_MAX_DEFINITIONS,
+    "max_reference_hops": _PHYSICAL_MAX_REFERENCE_HOPS,
+    "max_pattern_length": _PHYSICAL_MAX_PATTERN_LENGTH,
+    "max_work": _PHYSICAL_MAX_WORK,
+    "max_findings": _PHYSICAL_MAX_FINDINGS,
+    "max_annotation_length": _PHYSICAL_MAX_ANNOTATION_LENGTH,
+    "max_extension_name_length": _PHYSICAL_MAX_EXTENSION_NAME_LENGTH,
+    "max_literal_string_length": _PHYSICAL_MAX_LITERAL_STRING_LENGTH,
+    "max_collection_items": _PHYSICAL_MAX_COLLECTION_ITEMS,
+    "max_properties": _PHYSICAL_MAX_PROPERTIES,
+    "max_composition_branches": _PHYSICAL_MAX_COMPOSITION_BRANCHES,
+    "max_count_operand": _PHYSICAL_MAX_COUNT_OPERAND,
+})
+
+
+_T = TypeVar("_T")
+
+
+class SchemaEvaluationError(ContractSemanticError):
+    """The schema asks the bounded evaluator to do unsupported work."""
+
+
+class SchemaEvaluationBudgetExceeded(ContractSemanticError):
+    """The evaluator exhausted a deterministic profile limit.
+
+    Messages are stable policy labels only. They never include a schema path,
+    schema content, instance content, pattern, key or underlying exception.
+    """
+
+
+_SchemaEvaluationError = SchemaEvaluationError  # the evaluator's historical internal name
+
+
+@dataclass
+class _EvaluationBudget:
+    work: int = 0
+    reference_hops: int = 0
+    findings: int = 0
+
+    def spend(self, amount: int = 1) -> None:
+        self.work += amount
+        if self.work > _PHYSICAL_MAX_WORK:
+            raise SchemaEvaluationBudgetExceeded("physical-schema work limit exceeded")
+
+    def enter(self, depth: int) -> None:
+        if depth > _PHYSICAL_MAX_DEPTH:
+            raise SchemaEvaluationBudgetExceeded("physical-schema depth limit exceeded")
+        self.spend()
+
+    def follow_reference(self) -> None:
+        self.reference_hops += 1
+        if self.reference_hops > _PHYSICAL_MAX_REFERENCE_HOPS:
+            raise SchemaEvaluationBudgetExceeded(
+                "physical-schema reference-hop limit exceeded"
+            )
+        self.spend()
+
+    def leave_reference(self) -> None:
+        self.reference_hops -= 1
+
+    def record_finding(self) -> None:
+        self.findings += 1
+        if self.findings > _PHYSICAL_MAX_FINDINGS:
+            raise SchemaEvaluationBudgetExceeded("physical-schema finding limit exceeded")
+
+
+def _is_json_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
+
+
+def _is_json_integer(value: object) -> bool:
+    return _is_json_number(value) and (
+        isinstance(value, int) or (isinstance(value, float) and value.is_integer())
+    )
+
+
+def _json_equal(
+    left: object,
+    right: object,
+    budget: _EvaluationBudget | None = None,
+    depth: int = 0,
+) -> bool:
+    """JSON instance equality, without Python's boolean/number coercion."""
+    if budget is not None:
+        budget.enter(depth)
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left == right
+    if _is_json_number(left) or _is_json_number(right):
+        return _is_json_number(left) and _is_json_number(right) and left == right
+    if left is None or right is None:
+        return left is None and right is None
+    if isinstance(left, str) or isinstance(right, str):
+        return isinstance(left, str) and isinstance(right, str) and left == right
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+            return False
+        return len(left) == len(right) and all(
+            _json_equal(left_item, right_item, budget, depth + 1)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        if not all(isinstance(key, str) for key in left) or not all(
+            isinstance(key, str) for key in right
+        ):
+            return False
+        return set(left) == set(right) and all(
+            _json_equal(left[key], right[key], budget, depth + 1) for key in left
+        )
+    return False
+
+
+def _record_finding(
+    findings: list[str], finding: str, budget: _EvaluationBudget | None
+) -> None:
+    if budget is not None:
+        budget.record_finding()
+    findings.append(finding)
 
 
 class _CanonicalSchemas:
@@ -763,6 +926,399 @@ class _CanonicalSchemas:
         if not isinstance(defs, Mapping) or pointer not in defs:
             raise ContractSemanticError(f"schema reference {ref!r} resolves to nothing")
         return _require_mapping(defs[pointer], ref)
+
+
+class _ClosedSchemas(_CanonicalSchemas):
+    """Resolves only ``#/$defs/<name>`` against the caller's own root schema."""
+
+    def __init__(self, root: Mapping[str, Any]) -> None:
+        super().__init__()
+        self._root = root
+
+    def resolve(self, ref: str) -> Mapping[str, Any]:
+        name = ref.removeprefix("#/$defs/")
+        defs = self._root.get("$defs")
+        if name == ref or "/" in name or not isinstance(defs, Mapping):
+            raise SchemaEvaluationError("$ref is not a local #/$defs/<name> reference")
+        target = defs.get(name)
+        if not isinstance(target, Mapping):
+            raise SchemaEvaluationError("$ref resolves to no local schema")
+        return target
+
+
+def _closed_run(schema: object, run: Callable[[_ClosedSchemas], _T]) -> _T:
+    """Run the evaluator over a caller schema; anything unevaluable is a SchemaEvaluationError."""
+    if not isinstance(schema, Mapping):
+        raise SchemaEvaluationError("schema must be a JSON object")
+    try:
+        return run(_ClosedSchemas(schema))
+    except SchemaEvaluationBudgetExceeded:
+        raise
+    except SchemaEvaluationError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError, RecursionError) as error:
+        raise SchemaEvaluationError(
+            f"schema cannot be evaluated ({type(error).__name__})"
+        ) from error
+
+
+def require_supported_json_schema(schema: Mapping[str, Any]) -> None:
+    """Raise :class:`SchemaEvaluationError` unless `schema` stays inside the bounded subset.
+
+    Public narrow wrapper over the evaluator's preflight, for a caller-supplied schema rather
+    than a packaged canonical one. The schema must be self-contained: the only ``$ref`` form
+    accepted is ``#/$defs/<name>`` into its own root ``$defs``; external, absolute, nested-pointer
+    and unresolved references are refused, as are cycles, so nothing is read from packaged
+    resources. A schema that is not a JSON-shaped mapping is refused the same way.
+    """
+    _closed_run(schema, lambda closed: _preflight_schema(schema, closed, "$"))
+
+
+def evaluate_json_schema(value: object, schema: Mapping[str, Any]) -> tuple[str, ...]:
+    """Evaluate `value` against a self-contained `schema`; return its findings (empty when valid).
+
+    Runs the same bounded evaluator as the conformance gate, after the same full-schema
+    preflight, so an unsupported keyword anywhere raises :class:`SchemaEvaluationError`
+    instead of being skipped. ``$ref`` is limited as in :func:`require_supported_json_schema`.
+    Finding text may quote the instance (``const``, ``enum``, ``pattern``, property names); a
+    caller that must not leak payload contents must not forward it.
+    """
+    return _closed_run(
+        schema,
+        lambda closed: tuple(_validate_against_schema(value, schema, closed, "$")),
+    )
+
+
+def require_supported_physical_json_schema(
+    schema: Mapping[str, Any], schema_id: str
+) -> None:
+    """Require the exact physical-schema profile without evaluating an instance."""
+    budget = _EvaluationBudget()
+    _closed_run(
+        schema,
+        lambda closed: _preflight_physical_schema(schema, schema_id, closed, budget),
+    )
+
+
+def evaluate_physical_json_schema(
+    value: object, schema: Mapping[str, Any], schema_id: str
+) -> tuple[str, ...]:
+    """Evaluate one instance under physical-schema profile ``1.0.0``.
+
+    Deterministic budget exhaustion propagates as
+    :class:`SchemaEvaluationBudgetExceeded`, distinct from unsupported schema
+    content and from a completed incompatible value.
+    """
+    budget = _EvaluationBudget()
+
+    def run(closed: _ClosedSchemas) -> tuple[str, ...]:
+        _preflight_physical_schema(schema, schema_id, closed, budget)
+        return tuple(
+            _validate_value_against_schema(
+                value, schema, closed, "$", budget=budget, depth=0
+            )
+        )
+
+    return _closed_run(schema, run)
+
+
+def _preflight_physical_schema(
+    schema: Mapping[str, Any],
+    schema_id: str,
+    schemas: _ClosedSchemas,
+    budget: _EvaluationBudget,
+) -> None:
+    """Validate the complete closed physical-schema profile ``1.0.0`` closure."""
+
+    visited_nodes: set[int] = set()
+    active_nodes: set[int] = set()
+    visited_refs: set[str] = set()
+    active_refs: set[str] = set()
+    root_id = id(schema)
+
+    def unsupported(reason: str) -> NoReturn:
+        # Reasons are fixed policy labels only: no caller-controlled path,
+        # property name, pattern, literal or exception text is included.
+        raise SchemaEvaluationError(f"physical-schema profile: {reason}")
+
+    def bounded_json_literal(
+        value: object, depth: int, active: set[int]
+    ) -> None:
+        budget.enter(depth)
+        if value is None or isinstance(value, (bool, int)):
+            return
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                unsupported("literal must be finite JSON")
+            return
+        if isinstance(value, str):
+            if len(value) > _PHYSICAL_MAX_LITERAL_STRING_LENGTH:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema literal-string limit exceeded"
+                )
+            return
+        if isinstance(value, list):
+            if len(value) > _PHYSICAL_MAX_COLLECTION_ITEMS:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema collection limit exceeded"
+                )
+            marker = id(value)
+            if marker in active:
+                unsupported("literal contains a cycle")
+            nested = active | {marker}
+            for item in value:
+                bounded_json_literal(item, depth + 1, nested)
+            return
+        if isinstance(value, Mapping) and all(
+            isinstance(key, str) for key in value
+        ):
+            if len(value) > _PHYSICAL_MAX_COLLECTION_ITEMS:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema collection limit exceeded"
+                )
+            marker = id(value)
+            if marker in active:
+                unsupported("literal contains a cycle")
+            nested = active | {marker}
+            for key, item in value.items():
+                bounded_json_literal(key, depth + 1, nested)
+                bounded_json_literal(item, depth + 1, nested)
+            return
+        unsupported("literal must be JSON")
+
+    def require_count(node: Mapping[str, Any], keyword: str) -> None:
+        if keyword not in node:
+            return
+        operand = node[keyword]
+        if (
+            not isinstance(operand, int)
+            or isinstance(operand, bool)
+            or operand < 0
+        ):
+            unsupported("count operand must be a non-negative integer")
+        if operand > _PHYSICAL_MAX_COUNT_OPERAND:
+            raise SchemaEvaluationBudgetExceeded(
+                "physical-schema count-operand limit exceeded"
+            )
+
+    def require_number(node: Mapping[str, Any], keyword: str) -> None:
+        if keyword in node and not _is_json_number(node[keyword]):
+            unsupported("numeric operand must be finite")
+
+    def require_portable_pattern(pattern: object) -> None:
+        if not isinstance(pattern, str):
+            unsupported("pattern must be a string")
+        if len(pattern) > _PHYSICAL_MAX_PATTERN_LENGTH:
+            raise SchemaEvaluationBudgetExceeded(
+                "physical-schema pattern-length limit exceeded"
+            )
+        if (
+            "(?" in pattern
+            or re.search(r"\\[1-9]", pattern) is not None
+            or "\\g" in pattern
+            or "\\A" in pattern
+            or "\\Z" in pattern
+            or "\\z" in pattern
+            or "\\N{" in pattern
+        ):
+            unsupported("pattern syntax is outside the portable subset")
+        try:
+            re.compile(pattern)
+        except re.error:
+            unsupported("pattern syntax is invalid")
+
+    def visit(node: Mapping[str, Any], depth: int) -> None:
+        budget.enter(depth)
+        if not all(isinstance(key, str) for key in node):
+            unsupported("schema keys must be strings")
+        marker = id(node)
+        if marker in active_nodes:
+            unsupported("schema contains an object cycle")
+        if marker in visited_nodes:
+            return
+        active_nodes.add(marker)
+        is_root = marker == root_id
+
+        unknown = [
+            key
+            for key in node
+            if key not in _PHYSICAL_SCHEMA_KEYWORDS and not key.startswith("x-")
+        ]
+        if unknown:
+            unsupported("schema uses an unsupported keyword")
+
+        for key, value in node.items():
+            if not key.startswith("x-"):
+                continue
+            if len(key) > _PHYSICAL_MAX_EXTENSION_NAME_LENGTH:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema extension-name limit exceeded"
+                )
+            bounded_json_literal(value, depth + 1, set())
+
+        if "$schema" in node and (
+            not is_root or node["$schema"] != _PHYSICAL_SCHEMA_DIALECT
+        ):
+            unsupported("dialect is unsupported or nested")
+        if "$id" in node and (not is_root or node["$id"] != schema_id):
+            unsupported("schema identity is unsupported, nested or mismatched")
+
+        for annotation in ("title", "description"):
+            if annotation not in node:
+                continue
+            value = node[annotation]
+            if not isinstance(value, str):
+                unsupported("annotation must be a string")
+            if len(value) > _PHYSICAL_MAX_ANNOTATION_LENGTH:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema annotation limit exceeded"
+                )
+
+        if "type" in node:
+            declared = node["type"]
+            if not isinstance(declared, str) or declared not in _JSON_TYPES:
+                unsupported("type declaration is unsupported")
+
+        if "const" in node:
+            bounded_json_literal(node["const"], depth + 1, set())
+        if "enum" in node:
+            enum = node["enum"]
+            if not isinstance(enum, list) or not enum:
+                unsupported("enum must be a non-empty array")
+            if len(enum) > _PHYSICAL_MAX_COLLECTION_ITEMS:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema collection limit exceeded"
+                )
+            for item in enum:
+                bounded_json_literal(item, depth + 1, set())
+            for index, item in enumerate(enum):
+                if any(
+                    _json_equal(item, other, budget, depth + 1)
+                    for other in enum[:index]
+                ):
+                    unsupported("enum values must be unique")
+
+        for keyword in ("minimum", "maximum"):
+            require_number(node, keyword)
+        for keyword in ("minLength", "maxLength", "minItems", "maxItems"):
+            require_count(node, keyword)
+        if "pattern" in node:
+            require_portable_pattern(node["pattern"])
+        if "format" in node and node["format"] != "uri":
+            unsupported("format is unsupported")
+
+        required = node.get("required")
+        if "required" in node:
+            if (
+                not isinstance(required, list)
+                or not all(isinstance(name, str) for name in required)
+                or len(set(required)) != len(required)
+            ):
+                unsupported("required must contain unique strings")
+            if len(required) > _PHYSICAL_MAX_COLLECTION_ITEMS:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema collection limit exceeded"
+                )
+
+        if "unevaluatedProperties" in node and (
+            node["unevaluatedProperties"] is not False
+            or node.get("type") != "object"
+            or not isinstance(node.get("properties"), Mapping)
+            or any(
+                keyword in node
+                for keyword in (
+                    "$ref", "allOf", "oneOf", "if", "then", "additionalProperties"
+                )
+            )
+        ):
+            unsupported("unevaluatedProperties form is unsupported")
+
+        if "$ref" in node:
+            ref = node["$ref"]
+            if not isinstance(ref, str) or _PHYSICAL_LOCAL_REF_RE.fullmatch(ref) is None:
+                unsupported("reference form is unsupported")
+            if ref in active_refs:
+                unsupported("reference cycle is unsupported")
+            if ref not in visited_refs:
+                budget.follow_reference()
+                active_refs.add(ref)
+                try:
+                    try:
+                        target = schemas.resolve(ref)
+                    except SchemaEvaluationError:
+                        unsupported("reference is unresolved")
+                    visit(target, depth + 1)
+                finally:
+                    active_refs.discard(ref)
+                    budget.leave_reference()
+                visited_refs.add(ref)
+
+        if "$defs" in node:
+            if not is_root:
+                unsupported("nested definitions are unsupported")
+            definitions = node["$defs"]
+            if not isinstance(definitions, Mapping):
+                unsupported("definitions must be a named schema map")
+            if len(definitions) > _PHYSICAL_MAX_DEFINITIONS:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema definition-count limit exceeded"
+                )
+            for name, child in definitions.items():
+                if (
+                    not isinstance(name, str)
+                    or _PHYSICAL_DEFINITION_NAME_RE.fullmatch(name) is None
+                    or not isinstance(child, Mapping)
+                ):
+                    unsupported("definition name or schema is unsupported")
+                visit(child, depth + 1)
+
+        if "properties" in node:
+            properties = node["properties"]
+            if not isinstance(properties, Mapping):
+                unsupported("properties must be a named schema map")
+            if len(properties) > _PHYSICAL_MAX_PROPERTIES:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema property-count limit exceeded"
+                )
+            for name, child in properties.items():
+                if not isinstance(name, str) or not isinstance(child, Mapping):
+                    unsupported("property name or schema is unsupported")
+                visit(child, depth + 1)
+
+        if "items" in node:
+            items = node["items"]
+            if not isinstance(items, Mapping):
+                unsupported("items must contain one schema")
+            visit(items, depth + 1)
+
+        if "additionalProperties" in node:
+            additional = node["additionalProperties"]
+            if isinstance(additional, Mapping):
+                visit(additional, depth + 1)
+            elif not isinstance(additional, bool):
+                unsupported("additionalProperties form is unsupported")
+
+        for keyword in ("allOf", "oneOf"):
+            if keyword not in node:
+                continue
+            branches = node[keyword]
+            if (
+                not isinstance(branches, list)
+                or not branches
+                or not all(isinstance(branch, Mapping) for branch in branches)
+            ):
+                unsupported("composition must contain schemas")
+            if len(branches) > _PHYSICAL_MAX_COMPOSITION_BRANCHES:
+                raise SchemaEvaluationBudgetExceeded(
+                    "physical-schema composition limit exceeded"
+                )
+            for branch in branches:
+                visit(branch, depth + 1)
+
+        active_nodes.remove(marker)
+        visited_nodes.add(marker)
+
+    visit(schema, 0)
 
 
 def _preflight_schema(
@@ -1067,9 +1623,16 @@ def _validate_against_schema(
 
 
 def _validate_value_against_schema(
-    value: object, schema: Mapping[str, Any], schemas: _CanonicalSchemas, path: str
+    value: object,
+    schema: Mapping[str, Any],
+    schemas: _CanonicalSchemas,
+    path: str,
+    budget: _EvaluationBudget | None = None,
+    depth: int = 0,
 ) -> list[str]:
     """Validate a value after the full reachable schema has passed preflight."""
+    if budget is not None:
+        budget.enter(depth)
     findings: list[str] = []
 
     unknown = sorted(set(schema) - _SUPPORTED_SCHEMA_KEYWORDS)
@@ -1080,9 +1643,22 @@ def _validate_value_against_schema(
         )
 
     if "$ref" in schema:
-        return _validate_value_against_schema(
-            value, schemas.resolve(schema["$ref"]), schemas, path
-        )
+        if budget is not None:
+            budget.follow_reference()
+        try:
+            findings.extend(
+                _validate_value_against_schema(
+                    value,
+                    schemas.resolve(schema["$ref"]),
+                    schemas,
+                    path,
+                    budget=budget,
+                    depth=depth + 1,
+                )
+            )
+        finally:
+            if budget is not None:
+                budget.leave_reference()
 
     declared = schema.get("type")
     if isinstance(declared, str):
@@ -1091,43 +1667,66 @@ def _validate_value_against_schema(
             raise _SchemaEvaluationError(
                 f"{path}: canonical schema declares unknown type {declared!r}"
             )
-        # bool is an int in Python; JSON keeps them apart and so must this.
-        if declared in {"integer", "number"} and isinstance(value, bool):
-            return [f"{path}: expected {declared}, got boolean"]
-        if not isinstance(value, expected):
-            return [f"{path}: expected {declared}, got {type(value).__name__}"]
+        type_matches = (
+            _is_json_integer(value)
+            if declared == "integer"
+            else _is_json_number(value)
+            if declared == "number"
+            else isinstance(value, expected)
+        )
+        if not type_matches:
+            _record_finding(
+                findings,
+                f"{path}: expected {declared}, got {type(value).__name__}",
+                budget,
+            )
+            return findings
 
-    if "const" in schema and value != schema["const"]:
-        findings.append(f"{path}: must be {schema['const']!r}, got {value!r}")
-    if "enum" in schema and value not in schema["enum"]:
-        findings.append(f"{path}: must be one of {schema['enum']!r}, got {value!r}")
+    if "const" in schema and not _json_equal(value, schema["const"], budget, depth + 1):
+        _record_finding(
+            findings, f"{path}: must be {schema['const']!r}, got {value!r}", budget
+        )
+    if "enum" in schema and not any(
+        _json_equal(value, option, budget, depth + 1) for option in schema["enum"]
+    ):
+        _record_finding(
+            findings,
+            f"{path}: must be one of {schema['enum']!r}, got {value!r}",
+            budget,
+        )
 
     if isinstance(value, str):
         declared_format = schema.get("format")
         if isinstance(declared_format, str):
-            findings.extend(_validate_format(value, declared_format, path))
+            findings.extend(_validate_format(value, declared_format, path, budget))
         pattern = schema.get("pattern")
         if isinstance(pattern, str) and re.search(pattern, value) is None:
-            findings.append(f"{path}: {value!r} does not match {pattern}")
+            _record_finding(
+                findings, f"{path}: {value!r} does not match {pattern}", budget
+            )
         minimum_length = schema.get("minLength")
         if isinstance(minimum_length, int) and len(value) < minimum_length:
-            findings.append(f"{path}: shorter than minLength {minimum_length}")
+            _record_finding(
+                findings, f"{path}: shorter than minLength {minimum_length}", budget
+            )
         maximum_length = schema.get("maxLength")
         if isinstance(maximum_length, int) and len(value) > maximum_length:
-            findings.append(f"{path}: longer than maxLength {maximum_length}")
+            _record_finding(
+                findings, f"{path}: longer than maxLength {maximum_length}", budget
+            )
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         minimum = schema.get("minimum")
         if isinstance(minimum, (int, float)) and value < minimum:
-            findings.append(f"{path}: below minimum {minimum}")
+            _record_finding(findings, f"{path}: below minimum {minimum}", budget)
         maximum = schema.get("maximum")
         if isinstance(maximum, (int, float)) and value > maximum:
-            findings.append(f"{path}: above maximum {maximum}")
+            _record_finding(findings, f"{path}: above maximum {maximum}", budget)
 
     if isinstance(value, (list, tuple)):
-        findings.extend(_validate_array(value, schema, schemas, path))
+        findings.extend(_validate_array(value, schema, schemas, path, budget, depth))
     elif isinstance(value, Mapping):
-        findings.extend(_validate_object(value, schema, schemas, path))
+        findings.extend(_validate_object(value, schema, schemas, path, budget, depth))
 
     if "oneOf" in schema:
         branches = schema["oneOf"]
@@ -1141,12 +1740,21 @@ def _validate_value_against_schema(
             matched = [
                 branch
                 for branch in branches
-                if not _validate_value_against_schema(value, branch, schemas, path)
+                if not _validate_value_against_schema(
+                    value,
+                    branch,
+                    schemas,
+                    path,
+                    budget=budget,
+                    depth=depth + 1,
+                )
             ]
             if len(matched) != 1:
-                findings.append(
+                _record_finding(
+                    findings,
                     f"{path}: must match exactly one of {len(branches)} alternatives, matched "
-                    f"{len(matched)}"
+                    f"{len(matched)}",
+                    budget,
                 )
 
     if "allOf" in schema:
@@ -1160,7 +1768,14 @@ def _validate_value_against_schema(
         else:
             for branch in branches:
                 findings.extend(
-                    _validate_value_against_schema(value, branch, schemas, path)
+                    _validate_value_against_schema(
+                        value,
+                        branch,
+                        schemas,
+                        path,
+                        budget=budget,
+                        depth=depth + 1,
+                    )
                 )
 
     if "if" in schema:
@@ -1170,7 +1785,14 @@ def _validate_value_against_schema(
                 f"{path}: canonical schema if must contain a schema"
             )
         elif (
-            not _validate_value_against_schema(value, condition, schemas, path)
+            not _validate_value_against_schema(
+                value,
+                condition,
+                schemas,
+                path,
+                budget=budget,
+                depth=depth + 1,
+            )
             and "then" in schema
         ):
             consequence = schema["then"]
@@ -1180,7 +1802,14 @@ def _validate_value_against_schema(
                 )
             else:
                 findings.extend(
-                    _validate_value_against_schema(value, consequence, schemas, path)
+                    _validate_value_against_schema(
+                        value,
+                        consequence,
+                        schemas,
+                        path,
+                        budget=budget,
+                        depth=depth + 1,
+                    )
                 )
 
     if "not" in schema:
@@ -1189,12 +1818,26 @@ def _validate_value_against_schema(
             raise _SchemaEvaluationError(
                 f"{path}: canonical schema not must contain a schema"
             )
-        elif not _validate_value_against_schema(value, excluded, schemas, path):
-            findings.append(f"{path}: must not satisfy the excluded schema")
+        elif not _validate_value_against_schema(
+            value,
+            excluded,
+            schemas,
+            path,
+            budget=budget,
+            depth=depth + 1,
+        ):
+            _record_finding(
+                findings, f"{path}: must not satisfy the excluded schema", budget
+            )
     return findings
 
 
-def _validate_format(value: str, declared: str, path: str) -> list[str]:
+def _validate_format(
+    value: str,
+    declared: str,
+    path: str,
+    budget: _EvaluationBudget | None = None,
+) -> list[str]:
     """Assert the formats this contract actually declares.
 
     A pattern is not a calendar. ``2024-99-99T99:99:99Z`` satisfies the
@@ -1215,46 +1858,71 @@ def _validate_format(value: str, declared: str, path: str) -> list[str]:
     try:
         datetime.fromisoformat(text)
     except ValueError:
-        return [f"{path}: {value!r} is not a valid RFC 3339 date-time"]
+        findings: list[str] = []
+        _record_finding(
+            findings, f"{path}: {value!r} is not a valid RFC 3339 date-time", budget
+        )
+        return findings
     return []
 
 
 def _validate_array(
-    value: Sequence[Any], schema: Mapping[str, Any], schemas: _CanonicalSchemas, path: str
+    value: Sequence[Any],
+    schema: Mapping[str, Any],
+    schemas: _CanonicalSchemas,
+    path: str,
+    budget: _EvaluationBudget | None = None,
+    depth: int = 0,
 ) -> list[str]:
     findings: list[str] = []
     minimum_items = schema.get("minItems")
     if isinstance(minimum_items, int) and len(value) < minimum_items:
-        findings.append(f"{path}: fewer than minItems {minimum_items}")
+        _record_finding(findings, f"{path}: fewer than minItems {minimum_items}", budget)
     maximum_items = schema.get("maxItems")
     if isinstance(maximum_items, int) and len(value) > maximum_items:
-        findings.append(f"{path}: more than maxItems {maximum_items}")
+        _record_finding(findings, f"{path}: more than maxItems {maximum_items}", budget)
     if schema.get("uniqueItems") is True:
         seen: list[str] = [to_canonical_json(_plain(item)) for item in value]
         if len(set(seen)) != len(seen):
-            findings.append(f"{path}: items must be unique")
+            _record_finding(findings, f"{path}: items must be unique", budget)
     items = schema.get("items")
     if isinstance(items, Mapping):
         for index, item in enumerate(value):
             findings.extend(
-                _validate_value_against_schema(item, items, schemas, f"{path}[{index}]")
+                _validate_value_against_schema(
+                    item,
+                    items,
+                    schemas,
+                    f"{path}[{index}]",
+                    budget=budget,
+                    depth=depth + 1,
+                )
             )
     return findings
 
 
 def _validate_object(
-    value: Mapping[str, Any], schema: Mapping[str, Any], schemas: _CanonicalSchemas, path: str
+    value: Mapping[str, Any],
+    schema: Mapping[str, Any],
+    schemas: _CanonicalSchemas,
+    path: str,
+    budget: _EvaluationBudget | None = None,
+    depth: int = 0,
 ) -> list[str]:
     findings: list[str] = []
     minimum_properties = schema.get("minProperties")
     if isinstance(minimum_properties, int) and len(value) < minimum_properties:
-        findings.append(f"{path}: fewer than minProperties {minimum_properties}")
+        _record_finding(
+            findings, f"{path}: fewer than minProperties {minimum_properties}", budget
+        )
 
     required = schema.get("required")
     if isinstance(required, list):
         missing = sorted(name for name in required if name not in value)
         if missing:
-            findings.append(f"{path}: missing required field(s) {missing}")
+            _record_finding(
+                findings, f"{path}: missing required field(s) {missing}", budget
+            )
 
     properties = schema.get("properties")
     declared_names: set[str] = set()
@@ -1264,7 +1932,12 @@ def _validate_object(
             if name in value and isinstance(subschema, Mapping):
                 findings.extend(
                     _validate_value_against_schema(
-                        value[name], subschema, schemas, f"{path}.{name}"
+                        value[name],
+                        subschema,
+                        schemas,
+                        f"{path}.{name}",
+                        budget=budget,
+                        depth=depth + 1,
                     )
                 )
 
@@ -1273,7 +1946,12 @@ def _validate_object(
         for name in value:
             findings.extend(
                 _validate_value_against_schema(
-                    name, property_names, schemas, f"{path}<key {name!r}>"
+                    name,
+                    property_names,
+                    schemas,
+                    f"{path}<key {name!r}>",
+                    budget=budget,
+                    depth=depth + 1,
                 )
             )
 
@@ -1282,17 +1960,22 @@ def _validate_object(
     if closed is False:
         extra = sorted(set(value) - declared_names)
         if extra:
-            findings.append(f"{path}: undeclared field(s) {extra}")
+            _record_finding(findings, f"{path}: undeclared field(s) {extra}", budget)
     additional = schema.get("additionalProperties")
     if additional is False:
         extra = sorted(set(value) - declared_names)
         if extra:
-            findings.append(f"{path}: undeclared field(s) {extra}")
+            _record_finding(findings, f"{path}: undeclared field(s) {extra}", budget)
     elif isinstance(additional, Mapping):
         for name in sorted(set(value) - declared_names):
             findings.extend(
                 _validate_value_against_schema(
-                    value[name], additional, schemas, f"{path}.{name}"
+                    value[name],
+                    additional,
+                    schemas,
+                    f"{path}.{name}",
+                    budget=budget,
+                    depth=depth + 1,
                 )
             )
     return findings

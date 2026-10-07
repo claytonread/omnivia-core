@@ -10773,7 +10773,7 @@
       "response": {
         "error": {
           "code": "unsupported_minor_version",
-          "message": "payload version 1.7 is not supported; supported version is 1.0",
+          "message": "the result-use request payload minor version is unsupported",
           "retry_class": "non_retryable"
         },
         "metadata": {
