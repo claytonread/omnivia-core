@@ -152,7 +152,7 @@ path, so the server cannot supply the `--workspace` value itself.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-Manifest version `2.7` advertises fourteen tools under the `restricted` profile,
+Manifest version `2.8` advertises fourteen tools under the `restricted` profile,
 in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
@@ -172,7 +172,7 @@ in this order:
 | `decision_status` | `decision.status` | `decision_status` | `decision:read` | `decision.read` ≥ 1.0 |
 | `trigger_health` | `trigger.health` | `trigger_observation` | `trigger:read` | `trigger.read` ≥ 1.0 |
 
-The `authoring` profile advertises those fourteen, then these eleven, in this order:
+The `authoring` profile advertises those fourteen, then these fifteen, in this order:
 
 | Tool | Operation | Purpose | Scopes | Capability |
 |---|---|---|---|---|
@@ -187,15 +187,20 @@ The `authoring` profile advertises those fourteen, then these eleven, in this or
 | `skills_draft_create` | `skills.draft.create` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
 | `skills_draft_update` | `skills.draft.update` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
 | `skills_proposal_submit` | `skills.proposal.submit` | `skill_authoring` | `skill:author` | `skill.author` ≥ 1.0 |
+| `knowledge_share_propose` | `knowledge.share.propose` | `knowledge_sharing` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
+| `knowledge_share_decide` | `knowledge.share.decide` | `knowledge_sharing` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
+| `knowledge_share_read` | `knowledge.share.read` | `knowledge_share_observation` | `knowledge:share_read` | `knowledge.share_read` ≥ 1.0 |
+| `knowledge_share_lineage` | `knowledge.share.lineage` | `knowledge_share_observation` | `knowledge:share` | `knowledge.share` ≥ 1.0 |
 
 Every read declares `side_effect: none` and `audit_category: read` in the operation
-catalogue. Ten operations are side-effecting -- `decision.evaluate`,
+catalogue. Twelve operations are side-effecting -- `decision.evaluate`,
 `memory.create`, `evidence.capture`, `import.start`, the three trigger
-mutations and the three skill authoring mutations -- and the manifest admits
-exactly those by name rather than by catalogue metadata, refusing at import any
-other entry that is not a read. Each of the ten requires a caller-chosen
-idempotency key, and `import.start` always answers with a job that `job.get` and
-the paged `job.events` observe.
+mutations, the three skill authoring mutations and the two knowledge sharing
+mutations (`knowledge.share.propose` and `knowledge.share.decide`) -- and the
+manifest admits exactly those by name rather than by catalogue metadata,
+refusing at import any other entry that is not a read. Each of the twelve
+requires a caller-chosen idempotency key, and `import.start` always answers
+with a job that `job.get` and the paged `job.events` observe.
 
 The authoring additions are available only after the installed owner path
 records explicit authoring intent and Core grants the dedicated MCP principal
@@ -251,7 +256,7 @@ operation absent from it is not callable.
 
 Read-first is enforced at import: an entry whose catalogue metadata is not
 `side_effect="none"` and `audit_category="read"` makes the package fail to load,
-unless it is one of the ten named mutations.
+unless it is one of the twelve named mutations.
 
 ## Lifecycle
 
@@ -288,9 +293,10 @@ restricted tools over stdio against one governed workspace whose evidence,
 governed records and sealed relations were written through the accepted fenced
 Runtime writers in `tests/_mcp_v06_3_fixture.py` — the only place in this
 package's tests that imports the runtime at all. The source-tree acceptance
-suites cover all fourteen restricted tools and the eleven original authoring additions,
+suites cover all fourteen restricted tools and the fifteen authoring additions,
 including empty-workspace capture, proposed-memory visibility, durable import
-observation, replay, conflict, restart and revocation. The installed
+observation, replay, conflict, restart, revocation, and knowledge-share
+propose/decide/read/lineage. The installed
 qualification is driven from a clean wheel-only environment and retains a closed
 redacted record. Qualification by actual Claude Code and Codex CLI processes is
 tracked separately from those SDK-driven tests and must not be inferred from a

@@ -284,7 +284,7 @@ supported CLI verified on 2026-10-04, replacing the Phase 8 start value
 values qualify nothing by themselves; they become evidence only after the
 corresponding real-host run passes at the frozen candidate commit. The records
 committed under `docs/development/qualification/` are historical: they cover the
-13/18-tool snapshot at `0d8cf362` and do not qualify the live 14/25 candidate.
+13/18-tool snapshot at `0d8cf362` and do not qualify the live 14/29 candidate.
 
 The executable harness is `scripts/run-mcp-real-host-qualification.py`. A run
 names one host, its installed binary, one clean candidate directory, one

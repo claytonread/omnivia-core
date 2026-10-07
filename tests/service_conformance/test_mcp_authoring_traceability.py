@@ -35,9 +35,10 @@ The final section holds the v1.4 completion addendum and its reference chain. Th
 addendum is a dated snapshot: its inventory, classification and version statements
 are held to its own values (manifest 2.3, thirteen and eighteen tools, 57 operations,
 four mutations) and to the catalogue entries they name. The live contract -- manifest
-2.7, 77 operations, fourteen restricted and thirty-three authoring tools, fourteen
-admitted mutations -- is held to the current manifest source, the catalogue and the current
-traceability record, so a later version cannot leave this module green by drifting.
+2.8, 81 operations, fourteen restricted and thirty-five authoring tools, fifteen
+admitted mutations -- is held to the current manifest source, the catalogue and the
+current traceability record, so a later version cannot leave this module green by
+drifting.
 """
 
 from __future__ import annotations
@@ -441,7 +442,7 @@ def _require_historical_pair(records: dict[tuple[str, str], dict[str, Any]]) -> 
 def _require_expired_for_current(records: dict[tuple[str, str], dict[str, Any]]) -> None:
     """Assert every retained record is stale for the live candidate and claims no current bytes.
 
-    The live candidate is manifest 2.5 with 14 restricted and 25 authoring tools, bound to the
+    The live candidate is manifest 2.6 with 14 restricted and 29 authoring tools, bound to the
     current harness and schema digests. A retained record must match none of those.
     """
     harness, schema = _sha256(_HARNESS), _sha256(_RECORD_SCHEMA_PATH)
@@ -826,16 +827,17 @@ def test_the_live_inventories_are_fourteen_and_thirty_five() -> None:
     assert len(RESTRICTED) == 14
     assert len(AUTHORING) == 35
     assert "exactly fourteen restricted tools" in DOCUMENT
-    # Deliberately the dated 2026-09-12 record's A-2 row (manifest 2.5), not a live count.
-    assert "exactly twenty-five tools" in DOCUMENT
+    # The dated 2026-09-12 record's A-2 row was last bumped for knowledge sharing
+    # (manifest 2.6) and not touched again; it names twenty-nine, not a live count.
+    assert "exactly twenty-nine tools" in DOCUMENT
 
 
-def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_7() -> None:
+def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_8() -> None:
     assert f"`{ADDENDUM_MANIFEST_VERSION}`" in ADDENDUM
     assert MANIFEST_VERSION == CURRENT_MANIFEST_VERSION == "2.8"
 
 
-def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_seventy_nine() -> None:
+def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_eighty_one() -> None:
     assert f"{ADDENDUM_CATALOGUE_COUNT} operations" in ADDENDUM
     assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 81
     assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
@@ -1023,11 +1025,12 @@ def test_the_plans_declare_no_completion_while_no_current_host_pair_exists() -> 
         assert claimed == _host_rows_may_be_green(), _status_line(text)
 
 
+# The name keeps its original figures because the dated traceability ledger cites it.
 def test_both_completion_plans_state_the_13_18_history_and_an_unqualified_live_14_25() -> None:
-    """Each status line names the 13/18 ``0d8cf362`` evidence as historical and the live 14/25 candidate as unqualified."""
+    """Each status line names the 13/18 ``0d8cf362`` evidence as historical and the live 14/29 candidate as unqualified."""
     for index, text in enumerate(COMPLETION_PLANS):
         status = _status_line(text)
-        for fact in ("historical", "0d8cf362", "13/18", "14/25", "not qualified"):
+        for fact in ("historical", "0d8cf362", "13/18", "14/29", "not qualified"):
             assert fact in status.lower(), (index, fact)
         assert not _completion_claims(status), (index, status)
 

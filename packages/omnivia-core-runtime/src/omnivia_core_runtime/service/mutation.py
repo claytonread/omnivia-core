@@ -89,9 +89,9 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.operations import OperationError
 
 #: The purpose each mutating catalogue operation is served under, and the only purposes
-#: a mutation grant may ever carry. Six values over ten operations: a purpose names a
-#: coherent operation family rather than restating an operation name, which is the same
-#: shape `application.OPERATION_PURPOSES` uses for the read operations.
+#: a mutation grant may ever carry. Twenty-two values over forty-one operations: a
+#: purpose names a coherent operation family rather than restating an operation name,
+#: which is the same shape `application.OPERATION_PURPOSES` uses for the read operations.
 #:
 #: Every mutating operation is listed explicitly. There is no prefix rule, no fallback
 #: and no default: an operation absent from this map cannot be granted at all, and a
