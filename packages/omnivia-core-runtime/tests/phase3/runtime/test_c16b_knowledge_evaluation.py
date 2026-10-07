@@ -9,6 +9,7 @@ session's, and no payload member can state a verdict, an actor or a workspace.
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,9 @@ import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service.application import (
+    EVIDENCE_SEARCH_OPERATION,
     KNOWLEDGE_EVALUATION_FAMILY_PURPOSES,
+    KNOWLEDGE_RETRIEVAL_PURPOSE,
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
 )
@@ -32,6 +35,7 @@ from omnivia_core_runtime.service.handlers.knowledge_evaluation import (
 from omnivia_core_runtime.service.main import _build_production_application_surface
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.storage.semantic_evidence import read_evidence_item
+from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
@@ -39,6 +43,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_WORKSPACE_NOT_GRANTED,
     ErrorResponseEnvelope,
+    EvidenceSearchResult,
     SuccessResponseEnvelope,
     get_operation_metadata,
 )
@@ -98,7 +103,15 @@ def _surface(holder: Any) -> ProductionApplicationSurface:
         ),
         holder,
     )
-    started = SimpleNamespace(**vars(holder), workspace_id=WS, clock=SystemClock())
+    # `knowledge.evaluation.produce` now publishes each canonical record's content to the
+    # workspace's blob root, the same fact `evidence.capture`'s own barrier reads off
+    # `service.layout.blobs_path`. `holder.path` is the sqlite file `m1.take_ownership` opened,
+    # so its parent is the portable workspace root `WorkspaceLayout` already names.
+    layout = WorkspaceLayout(root=holder.path.parent)
+    layout.blobs_path.mkdir(parents=True, exist_ok=True)
+    started = SimpleNamespace(
+        **vars(holder), workspace_id=WS, clock=SystemClock(), layout=layout
+    )
     installation = build_installation_application_dispatcher(
         service=_InstallationService(),  # type: ignore[arg-type]
         principal_id=SERVICE_PRINCIPAL,
@@ -266,6 +279,62 @@ class Harness:
     def stored(self, evidence_id: str) -> Any:
         return read_evidence_item(self.holder.connection, WS, evidence_id)
 
+    def l0_count(self) -> int:
+        """How many rows the evidence ledger `evidence.search` reads holds for this workspace."""
+        return int(
+            self.holder.connection.execute(
+                "SELECT COUNT(*) FROM omnivia_evidence_artifacts WHERE workspace_id = ?",
+                (WS,),
+            ).fetchone()[0]
+        )
+
+    def l0_row(self, evidence_id: str) -> Any:
+        """The one L0 row a Dev consumer of `evidence.search` reads for this `evidence_id`."""
+        row = self.holder.connection.execute(
+            "SELECT source_kind, source_native_id, source_locator, original_metadata_json "
+            "FROM omnivia_evidence_artifacts WHERE workspace_id = ? AND evidence_id = ?",
+            (WS, evidence_id),
+        ).fetchone()
+        assert row is not None, evidence_id
+        return SimpleNamespace(
+            source_kind=row[0],
+            source_native_id=row[1],
+            source_locator=row[2],
+            metadata=json.loads(row[3]),
+        )
+
+    def search_session(self, principal: str = SERVICE_PRINCIPAL) -> AuthenticatedSession:
+        base = self.surface.session_for(EVIDENCE_SEARCH_OPERATION)
+        assert base is not None
+        return dataclasses.replace(
+            base, principal_id=principal, operations=frozenset({EVIDENCE_SEARCH_OPERATION})
+        )
+
+    def search(
+        self, query: str, *, principal: str = SERVICE_PRINCIPAL, limit: int = 50
+    ) -> Any:
+        """`evidence.search`, through its own real operation surface and session."""
+        self._requests += 1
+        request_id = f"req-search-{self._requests}"
+        entry = get_operation_metadata(EVIDENCE_SEARCH_OPERATION)
+        envelope = s0.envelope_for(
+            entry,
+            operation_input={"query": query, "limit": limit},
+            request_id=request_id,
+            correlation_id=f"cor-{request_id}",
+            trace_id=f"trc-{request_id}",
+            purpose=KNOWLEDGE_RETRIEVAL_PURPOSE,
+            workspace_id=WS,
+            idempotency_key=None,
+        )
+        return self.surface.dispatch_for_session(envelope, self.search_session(principal))
+
+    def found(self, query: str, **kwargs: Any) -> tuple[str, ...]:
+        response = self.search(query, **kwargs)
+        assert isinstance(response, SuccessResponseEnvelope), response
+        result = EvidenceSearchResult.from_wire(response.to_wire()["result"])
+        return tuple(item.evidence_id for item in result.evidence)
+
 
 @pytest.fixture
 def owned(tmp_path: Path) -> Iterator[m1.Owned]:
@@ -323,6 +392,26 @@ def test_an_eligible_pilot_registers_every_record_under_its_profile_id_and_check
         assert stored.content_digest == record.checksum
         assert stored.integrity_digest == record.checksum
     assert harness.evidence_count() == len(expected.records) == 42
+
+
+def test_the_l0_source_identity_is_the_record_id_not_the_callers_redacted_source(
+    harness: Harness,
+) -> None:
+    """A Dev consumer of `evidence.search` redacts `source` and must derive source identity from
+    the authorized record alone. `source_native_id` and `source_locator` are each record's own
+    `record_id` -- deterministic and guessable from what Dev can read -- never the caller's
+    `source.source_id`, which Dev cannot see. The caller's source is preserved, but only in L0
+    metadata, for provenance, not as the identity Dev must resolve.
+    """
+    content = _content()
+    result = harness.ok(_request(content, source_id="src-caller-held"))
+    for item in result["evidence"]:
+        row = harness.l0_row(item["evidence_id"])
+        assert row.source_kind == "governed_knowledge.evaluation"
+        assert row.source_native_id == item["record_id"] == item["evidence_id"]
+        assert row.source_locator == item["record_id"]
+        assert row.metadata["caller_source_id"] == "src-caller-held"
+        assert "source_id" not in row.metadata
 
 
 def test_the_principal_is_the_authenticated_session_and_no_caller_field_is_honoured(
@@ -403,22 +492,26 @@ def test_a_source_identity_conflict_writes_none_of_the_records(harness: Harness)
     content = _content()
     harness.ok(_request(content))
     before = harness.evidence_count()
+    before_l0 = harness.l0_count()
     other = harness.call(
         _request(content, report_id="report-2", locator="urn:omnivia:stage2:other-pilot")
     )
     assert isinstance(other, ErrorResponseEnvelope)
     assert other.error.code == ERROR_CODE_CONFLICT
     assert harness.evidence_count() == before
+    assert harness.l0_count() == before_l0
     assert harness.stored("report-2") is None
 
 
 def test_a_record_identity_conflict_writes_none_of_the_records(harness: Harness) -> None:
     harness.ok(_request(_content()))
     before = harness.evidence_count()
+    before_l0 = harness.l0_count()
     changed = _content()
     _attempt(changed, "PC-05-attempt-1")["output_ref"] = "a-different-output"
     assert harness.code(_request(changed, report_id="report-2")) == ERROR_CODE_CONFLICT
     assert harness.evidence_count() == before
+    assert harness.l0_count() == before_l0
     assert harness.stored("report-2") is None
 
 
@@ -431,15 +524,86 @@ def test_an_equivalent_replay_returns_the_stored_result_and_writes_nothing_more(
     request = _request(_content())
     first = harness.ok(request, key="idem-produce")
     count = harness.evidence_count()
+    count_l0 = harness.l0_count()
     assert harness.ok(request, key="idem-produce") == first
     assert harness.evidence_count() == count
+    assert harness.l0_count() == count_l0
 
 
 def test_the_same_key_for_a_different_input_is_an_idempotency_conflict(harness: Harness) -> None:
     content = _content()
     harness.ok(_request(content), key="idem-one")
     count = harness.evidence_count()
+    count_l0 = harness.l0_count()
     assert harness.code(_request(content, report_id="report-2"), key="idem-one") == (
         ERROR_CODE_IDEMPOTENCY_CONFLICT
     )
     assert harness.evidence_count() == count
+    assert harness.l0_count() == count_l0
+
+
+# -- evidence.search durably serves what this operation produced -------------------------
+
+
+def test_every_returned_record_is_findable_through_evidence_search_by_record_id_and_checksum(
+    harness: Harness,
+) -> None:
+    """The sanctioned Dev consumer path: produce once, then read every record back by `evidence.search`.
+
+    This is the C16 Stage 2 contract defect itself, pinned end to end: every canonical record
+    `knowledge.evaluation.produce` reports is durably registered under its exact `record_id` and
+    `checksum` in the ledger `evidence.search` actually reads, not merely in the semantic ledger.
+    """
+    content = _content()
+    result = harness.ok(_request(content, source_id="src-findable"))
+    expected_ids = {item["evidence_id"] for item in result["evidence"]}
+    expected_checksums = {item["evidence_id"]: item["content_digest"] for item in result["evidence"]}
+    assert len(expected_ids) == 42
+
+    # The real Dev consumer: `LedgerAccess` looks a record up by its own exact `evidence_id`,
+    # bounded to the one row it names. Every record this call reported is findable that way,
+    # not merely by a term the whole submission happens to share.
+    for evidence_id in expected_ids:
+        assert evidence_id in harness.found(evidence_id, limit=1)
+
+    for evidence_id, checksum in expected_checksums.items():
+        row = harness.holder.connection.execute(
+            "SELECT content_checksum, blob_content_digest FROM omnivia_evidence_artifacts "
+            "WHERE workspace_id = ? AND evidence_id = ?",
+            (WS, evidence_id),
+        ).fetchone()
+        assert row is not None, evidence_id
+        assert row[0] == checksum
+        assert row[1] == checksum
+
+
+def test_a_replay_remains_findable_and_writes_no_second_l0_row(harness: Harness) -> None:
+    request = _request(_content(), source_id="src-replay")
+    first = harness.ok(request, key="idem-replay")
+    ids = {item["evidence_id"] for item in first["evidence"]}
+    before_l0 = harness.l0_count()
+
+    replayed = harness.ok(request, key="idem-replay")
+    assert replayed == first
+    assert harness.l0_count() == before_l0
+
+    # Findable by each record's own id -- the L0 source identity, not the caller's redacted source.
+    for evidence_id in ids:
+        assert evidence_id in harness.found(evidence_id, limit=1)
+
+
+def test_a_rolled_back_conflict_leaves_nothing_for_evidence_search_to_find(
+    harness: Harness,
+) -> None:
+    content = _content()
+    harness.ok(_request(content, source_id="src-conflict"))
+    before_l0 = harness.l0_count()
+    changed = _content()
+    _attempt(changed, "PC-05-attempt-1")["output_ref"] = "a-different-output"
+    assert harness.code(
+        _request(changed, report_id="report-2", source_id="src-conflict")
+    ) == ERROR_CODE_CONFLICT
+    assert harness.l0_count() == before_l0
+    # Nothing was written for the rolled-back submission, so its own would-be record id,
+    # the L0 source identity, finds nothing either.
+    assert "report-2" not in harness.found("report-2")

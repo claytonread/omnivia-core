@@ -14,18 +14,30 @@ Evidence identity is the profile's own ID. Each record is registered under its `
 the Stage 2 profile by the ID Dev reads it by, and its content and integrity digests are the record's checksum.
 The same canonical record submitted again is the same evidence and is reused rather than duplicated. A different
 record, source, classification or retention under an existing identity is a conflict.
+
+Every record registered in the semantic ledger above is, in the same transaction, also registered as one L0
+evidence artifact under the same identity and checksum -- the ledger `evidence.search` actually reads. The two
+registrations are one fact, not two independent writes: `evidence.search` is the sanctioned way a consumer reads
+back what this operation produced, and a record this operation reports but `evidence.search` cannot find is a
+contract defect this module exists to not have. The post-commit step that proves a reported record is findable
+is the same barrier `evidence.capture` and `import.start`'s execution run after their own commits, for the same
+reason: nesting the projection lifecycle inside the business transaction would either deadlock the single write
+connection or roll back durable evidence because an index lagged.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+    ERROR_CODE_INTERNAL_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ContractDecodeError,
     ContractSemanticError,
@@ -33,6 +45,7 @@ from omnivia_core.contracts.v1 import (
     KnowledgeEvaluationProduceInput,
     KnowledgeEvaluationProduceResult,
     idempotency_equivalence,
+    to_canonical_json,
 )
 from omnivia_core.governed_knowledge.errors import GovernedKnowledgeError
 from omnivia_core.governed_knowledge.evaluation import evaluation_report_to_content
@@ -71,11 +84,20 @@ from omnivia_core_runtime.service.operations import (
     OperationContext,
     application_refusal,
 )
+from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.projections.fts import (
+    build_search_projection,
+    open_search_projection,
+)
 from omnivia_core_runtime.storage.semantic_evidence import (
     EvidenceObservationWriter,
     read_evidence_by_digest,
     read_evidence_item,
     read_evidence_source,
+)
+from omnivia_core_runtime.workspace.blob_publication import (
+    BlobPublicationRefused,
+    publish_blob,
 )
 
 OPERATION_EVALUATION_PRODUCE: Final = "knowledge.evaluation.produce"
@@ -103,6 +125,25 @@ _MESSAGE_NO_STORAGE: Final = (
 _MESSAGE_INVALID: Final = "the request payload is not valid for this evaluation"
 _MESSAGE_CONFLICT: Final = (
     "the submitted evidence conflicts with evidence already registered under the same identity"
+)
+
+#: The L0 `source_kind` this operation's own artifacts carry. Reserved to this operation the
+#: way `direct_submission` is reserved to `evidence.capture`: nothing else in this build writes
+#: it, so the 0041 source-identity index (workspace, kind, native id, locator, retrieved-at)
+#: can never collide with an unrelated writer's rows.
+_L0_SOURCE_KIND: Final = "governed_knowledge.evaluation"
+_L0_PARSER_STATUS: Final = "not_parsed"
+_L0_INGESTION_STATUS: Final = "ingested"
+_L0_ACTOR_KIND: Final = "agent"
+_L0_PROVENANCE_ACTION: Final = "governed_knowledge.produced"
+_MESSAGE_BLOB_UNPUBLISHED: Final = (
+    "the submitted evidence content could not be made durable in this workspace"
+)
+_MESSAGE_NOT_SEARCHABLE: Final = (
+    "the evidence this evaluation produced did not become findable by evidence.search"
+)
+_MESSAGE_DIGEST_COLLISION: Final = (
+    "one content digest names two different byte lengths in this workspace"
 )
 
 
@@ -256,6 +297,14 @@ class KnowledgeEvaluationHandlers:
             raise application_refusal(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
         return connection, identity, guard
 
+    def _blobs_root(self) -> Path:
+        """The workspace's blob root, the same fact `evidence.capture`'s own barrier reads it from."""
+        layout = getattr(self.service, "layout", None)
+        blobs_root = getattr(layout, "blobs_path", None)
+        if not isinstance(blobs_root, Path):
+            raise application_refusal(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        return blobs_root
+
     @staticmethod
     def _input(context: OperationContext) -> KnowledgeEvaluationProduceInput:
         """Decode the request, refusing any key the operation does not declare rather than dropping it."""
@@ -292,6 +341,185 @@ class KnowledgeEvaluationHandlers:
             clock=self.clock,
         )
         return grant, equivalence
+
+    def _register_l0_artifact(
+        self,
+        fenced: Any,
+        *,
+        workspace_id: str,
+        record: CanonicalRecord,
+        caller_source_id: str,
+        sensitivity: str,
+        now_us: int,
+        principal: str,
+        audit_ref: str,
+        blobs_root: Path,
+    ) -> None:
+        """Register one canonical record as the L0 artifact `evidence.search` reads.
+
+        The same identity as the semantic registration beside it: `evidence_id` is the record's own
+        `record_id`, and `content_checksum`/`blob_content_digest` are its `checksum`. `source_native_id`
+        and `source_locator` are that same `record_id` too -- a Dev consumer of `evidence.search`, which
+        redacts `source`, can derive the exact identity of the row it is looking at from the record it
+        was authorized to see, rather than from the caller's own `source.source_id`, which it cannot read.
+        Distinct per record, which is what keeps 0041's source-identity index (workspace, kind, native id,
+        locator, retrieved-at) satisfied across every record one submission produces. The caller's source
+        is not lost: it is still the semantic registration's `EvidenceSource` and is carried here too, in
+        `original_metadata_json`, as `caller_source_id` -- present for provenance, never the row's own
+        identity. `staged_source_ref` and `import_run_id` are left NULL; there is no staging claim and no
+        import run behind a Stage 2 submission to name.
+
+        Bytes before the row that names them, the same order `evidence.capture` writes in: the content this
+        checksum addresses is published to the blob store first, so the row this call is about to insert can
+        never outlive its own bytes.
+        """
+        source_native_id = record.record_id
+        content = record.canonical_json.encode("utf-8")
+        checksum = record.checksum
+        published = True
+        try:
+            publish_blob(blobs_root, checksum, content)
+        except (BlobPublicationRefused, OSError):
+            published = False
+        if not published:
+            raise application_refusal(ERROR_CODE_INTERNAL_RECOVERABLE, _MESSAGE_BLOB_UNPUBLISHED)
+
+        blob = fenced.execute(
+            "SELECT content_length_bytes FROM omnivia_blob_objects "
+            "WHERE workspace_id = ? AND content_digest = ?",
+            (workspace_id, checksum),
+        ).fetchone()
+        if blob is None:
+            fenced.execute(
+                "INSERT INTO omnivia_blob_objects "
+                "(workspace_id, content_digest, content_length_bytes, created_at_us, "
+                "verified_at_us) VALUES (?, ?, ?, ?, ?)",
+                (workspace_id, checksum, len(content), now_us, now_us),
+            )
+            integrity_sequence = int(
+                fenced.execute(
+                    "SELECT COALESCE(MAX(integrity_sequence), 0) + 1 "
+                    "FROM omnivia_blob_integrity_events "
+                    "WHERE workspace_id = ? AND content_digest = ?",
+                    (workspace_id, checksum),
+                ).fetchone()[0]
+            )
+            fenced.execute(
+                "INSERT INTO omnivia_blob_integrity_events "
+                "(integrity_event_id, workspace_id, content_digest, integrity_sequence, "
+                "outcome, observed_digest, observed_length_bytes, expected_length_bytes, "
+                "inventory_id, checked_at_us) VALUES (?, ?, ?, ?, 'verified', ?, ?, ?, NULL, ?)",
+                (
+                    self.allocate_identifier("bie"),
+                    workspace_id,
+                    checksum,
+                    integrity_sequence,
+                    checksum,
+                    len(content),
+                    len(content),
+                    now_us,
+                ),
+            )
+        elif int(blob[0]) != len(content):
+            # One content address, two byte lengths: the Stage 2 producer disagrees with itself about
+            # what these bytes are. Not the caller's doing -- `_plan_writes` already proved this exact
+            # digest is new -- and not repairable here.
+            raise application_refusal(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_DIGEST_COLLISION)
+
+        metadata = to_canonical_json(
+            {
+                "produced_by": OPERATION_EVALUATION_PRODUCE,
+                "record_kind": record.kind,
+                "caller_source_id": caller_source_id,
+            }
+        )
+        metadata_digest = f"sha256:{hashlib.sha256(metadata.encode('utf-8')).hexdigest()}"
+        fenced.execute(
+            "INSERT INTO omnivia_evidence_artifacts "
+            "(evidence_id, workspace_id, source_kind, source_native_id, source_locator, "
+            "source_retrieved_at_us, event_at_us, observed_at_us, ingested_at_us, "
+            "recorded_at_us, content_checksum, blob_content_digest, media_type, "
+            "original_metadata_json, original_metadata_digest, sensitivity, parser_status, "
+            "ingestion_status, staged_source_ref, import_run_id) "
+            "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+            (
+                record.record_id,
+                workspace_id,
+                _L0_SOURCE_KIND,
+                source_native_id,
+                record.record_id,
+                now_us,
+                now_us,
+                checksum,
+                checksum,
+                _EVIDENCE_MIME_TYPE,
+                metadata,
+                metadata_digest,
+                sensitivity,
+                _L0_PARSER_STATUS,
+                _L0_INGESTION_STATUS,
+            ),
+        )
+        fenced.execute(
+            "INSERT INTO omnivia_evidence_provenance_events "
+            "(provenance_event_id, evidence_id, workspace_id, provenance_sequence, actor_id, "
+            "actor_kind, action, occurred_at_us, reason_code, reason_comment, parser_status, "
+            "ingestion_status, tombstoned_observation, source_kind, source_native_id, "
+            "audit_ref) VALUES (?, ?, ?, 1, ?, ?, ?, ?, NULL, NULL, ?, ?, 0, ?, ?, ?)",
+            (
+                self.allocate_identifier("prv"),
+                record.record_id,
+                workspace_id,
+                principal,
+                _L0_ACTOR_KIND,
+                _L0_PROVENANCE_ACTION,
+                now_us,
+                _L0_PARSER_STATUS,
+                _L0_INGESTION_STATUS,
+                _L0_SOURCE_KIND,
+                source_native_id,
+                audit_ref,
+            ),
+        )
+
+    def _require_findable(
+        self, connection: Any, identity: Any, *, workspace_id: str, evidence_ids: tuple[str, ...]
+    ) -> None:
+        """Gate A for this operation: refuse to report success `evidence.search` would contradict.
+
+        The same barrier `evidence.capture` and `import.start`'s execution run after their own commits.
+        The guard is re-read rather than reused, so the generation this runs under is the live one and not
+        the one the mutation began with. Membership in the rebuilt projection's material is what is asked,
+        the same fact `import_execution.py`'s own barrier asks for an artifact whose bytes this path does
+        not claim to make full-text searchable -- the identity surface is what the frozen frontier and the
+        ranker key off, and that is exactly what `SearchProjection.material` carries.
+        """
+        if not evidence_ids:
+            return
+        failed = False
+        try:
+            guard = read_guard(connection)
+            if guard is None:
+                failed = True
+            else:
+                build_search_projection(
+                    connection,
+                    identity,
+                    workspace_id=workspace_id,
+                    fencing_generation=guard.fencing_generation,
+                    now_us=int(self.clock.wall_time().timestamp() * 1_000_000),
+                )
+                projection = open_search_projection(
+                    connection, workspace_id=workspace_id, blobs_root=self._blobs_root()
+                )
+                failed = any(
+                    evidence_id not in projection.material for evidence_id in evidence_ids
+                )
+        except (StorageError, OSError):
+            failed = True
+        if not failed:
+            return
+        raise application_refusal(ERROR_CODE_INTERNAL_RECOVERABLE, _MESSAGE_NOT_SEARCHABLE)
 
     def _produce(
         self,
@@ -348,9 +576,22 @@ class KnowledgeEvaluationHandlers:
                 items=items,
             )
         )
+        records_by_id = {record.record_id: record for record in production.records}
+        blobs_root = self._blobs_root()
         writer = EvidenceObservationWriter(fenced, context.workspace_id)
         for item in planned:
             writer.register_evidence(item)
+            self._register_l0_artifact(
+                fenced,
+                workspace_id=context.workspace_id,
+                record=records_by_id[item.evidence_id],
+                caller_source_id=source.source_id,
+                sensitivity=request.classification,
+                now_us=settlement.settled_at_us,
+                principal=context.principal,
+                audit_ref=settlement.audit_ref,
+                blobs_root=blobs_root,
+            )
         return KnowledgeEvaluationProduceResult(
             report_id=production.report.report_id,
             report=evaluation_report_to_content(production.report),
@@ -382,6 +623,17 @@ class KnowledgeEvaluationHandlers:
             validate_result=_VALID_PRODUCE,
             clock=self.clock,
             allocate_identifier=self.allocate_identifier,
+        )
+        # Gate A, after the commit and outside it -- on a replay too, since a replay's stored result
+        # names the same records a first attempt would have, and nothing here may report a success
+        # `evidence.search` would contradict.
+        evidence_ids = tuple(
+            entry["evidence_id"]
+            for entry in outcome.result.get("evidence", ())
+            if isinstance(entry, Mapping) and isinstance(entry.get("evidence_id"), str)
+        )
+        self._require_findable(
+            connection, identity, workspace_id=context.workspace_id, evidence_ids=evidence_ids
         )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
